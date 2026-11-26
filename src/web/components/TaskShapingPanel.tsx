@@ -12,9 +12,11 @@ import {
   signInConnectionKey,
   signInControlConnection,
   signInControlSubject,
+  signInAttemptIn,
   signInLinkFor,
   signInLinkHeld,
   signInLinksAfter,
+  signInLinksShown,
   signInMovedSince,
   signInMovesAfter,
   signInMovesSince,
@@ -220,10 +222,10 @@ function useShaperSignIn(
     setRefusals((current) => ({ ...current, [key]: refusal }));
   }, [stillActive, sameTarget, refusalFor]);
   /**
-   * Opens a held sign-in link. One that did not open leaves a refusal on the row, shown while
-   * that sign-in is pending, pointing at the two controls that offer the link again.
+   * Opens a held sign-in link for `attempt`. One that did not open leaves a refusal on the row,
+   * shown while that attempt is pending, pointing at the two controls that offer the link again.
    */
-  const open = useCallback((connection: string, url: string, key: string): void => {
+  const open = useCallback((connection: string, url: string, attempt: number | null, key: string): void => {
     // The desktop bridge may answer late. A failure that lands after the sign-in moved on, such
     // as one another window cancelled or finished meanwhile, after the flag changed, or after
     // another window changed what the shaper signs in to, no longer describes the row and is not
@@ -232,7 +234,7 @@ function useShaperSignIn(
     void openExternalChecked(url).then((opened) => {
       if (opened || !stillActive(request.sentIn) || !sameTarget(request, key)) return;
       if (signInMovedSince(request.sent, moves.current.moves, connection)) return;
-      refuse(key, SIGN_IN_TAB_NOT_OPENED, signInSubject(connection, "pending"));
+      refuse(key, SIGN_IN_TAB_NOT_OPENED, signInSubject(connection, "pending", attempt));
     });
   }, [refuse, stillActive, requestState, sameTarget]);
   const onSignIn = useCallback((shaper: string, key: string): void => {
@@ -249,23 +251,26 @@ function useShaperSignIn(
         settle(key, key, null, request);
         return;
       }
-      if (!reply.ok || !reply.authorizationUrl || !reply.connection) {
+      if (!reply.ok || !reply.authorizationUrl || !reply.connection || typeof reply.attempt !== "number") {
         settle(key, key, refusalText(reply, "sign-in"), request);
         return;
       }
-      const { authorizationUrl, connection } = reply;
-      const link = signInLinkFor(latest.current, connection, authorizationUrl, signInMovesSince(sent, moves.current.moves, connection));
+      // The attempt the reply started, which the list names while it is the one pending.
+      const { authorizationUrl, connection, attempt } = reply;
+      const link = signInLinkFor(
+        latest.current, connection, { url: authorizationUrl, attempt }, signInMovesSince(sent, moves.current.moves, connection),
+      );
       if (!signInUrlOpenable(authorizationUrl)) {
         // The daemon did start this sign-in, so the refusal stands while it is pending and goes
         // once it lapses or is cancelled, whichever of its event and this reply came first. One
         // already over when the reply lands has nothing left to refuse.
-        settle(key, key, link ? SIGN_IN_URL_REFUSED : null, request, signInSubject(connection, "pending"));
+        settle(key, key, link ? SIGN_IN_URL_REFUSED : null, request, signInSubject(connection, "pending", attempt));
         return;
       }
       setHeld((current) => signInLinkHeld(current, connection, link));
       settle(key, key, null, request);
       // A sign-in that is already over has no page worth opening.
-      if (link) open(connection, authorizationUrl, key);
+      if (link) open(connection, authorizationUrl, attempt, key);
     });
   }, [begin, settle, open, stillActive, requestState, sameTarget]);
   const onSignOut = useCallback((connection: string, key: string): void => {
@@ -281,9 +286,12 @@ function useShaperSignIn(
   }, [begin, settle, requestState]);
   const onOpen = useCallback((connection: string, url: string, key: string): void => {
     setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
-    if (signInUrlOpenable(url)) open(connection, url, key);
+    // A row offers a link only while the list shows its attempt pending, so that is the attempt opened.
+    if (signInUrlOpenable(url)) open(connection, url, signInAttemptIn(latest.current, connection), key);
   }, [open]);
-  const links = useMemo(() => Object.fromEntries(Object.entries(held).map(([connection, link]) => [connection, link.url])), [held]);
+  // Drawn from the list being rendered, so a link whose attempt another window replaced is never
+  // offered, not even for the render before the effect above drops it.
+  const links = useMemo(() => signInLinksShown(held, shown), [held, shown]);
   const errors = useMemo(() => Object.fromEntries(Object.entries(refusals).map(([key, refusal]) => [key, refusal.text])), [refusals]);
   return useMemo(() => ({
     enabled, signIns: enabled ? signIns : NO_SHAPING_SIGN_INS, links, busy, errors, onSignIn, onSignOut, onOpen,

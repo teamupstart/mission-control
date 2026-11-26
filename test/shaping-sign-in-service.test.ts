@@ -389,6 +389,7 @@ test("a whole sign-in: begin, the redirect, complete, then the token and signed_
   for (const name of ["client_id", "state", "code_challenge"]) assert.ok(url.searchParams.get(name), name);
   assert.equal(url.searchParams.get("code_verifier"), null);
   assert.equal(viewOf(h, answer.connection)?.state, "pending");
+  assert.equal(viewOf(h, answer.connection)?.attempt, answer.attempt, "the view names the attempt the reply started");
   assert.equal(tokenOf(h, signInTarget), null, "a pending sign-in hands out no token");
 
   const back = await authorize(answer.authorizationUrl);
@@ -405,7 +406,7 @@ test("a whole sign-in: begin, the redirect, complete, then the token and signed_
   await settle(h);
   assert.deepEqual(viewOf(h, answer.connection), {
     id: answer.connection, url: h.fake.resourceUrl, scope: "mcp:context", issuer: null, state: "signed_in",
-    storage: "memory", expiresAt: NOW + HOUR, reason: null, shapers: ["context"],
+    storage: "memory", expiresAt: NOW + HOUR, attempt: null, reason: null, shapers: ["context"],
   });
 });
 
@@ -839,6 +840,73 @@ test("change reports: one per changed view, carrying that view, and none for a c
   await settle(h);
   assert.equal(h.changes.length, 3);
   assert.deepEqual(heard, []);
+});
+
+test("a sign-in that replaces a pending one is a view and a report of its own, named by its reply's attempt", async (t) => {
+  const h = await harness(t);
+  const a = target(h.fake);
+  h.svc.setInUse([use(a, "x")]);
+  const first = await begun(h, a);
+  await settle(h);
+  assert.equal(viewOf(h, first.connection)?.attempt, first.attempt);
+  assert.ok(Number.isSafeInteger(first.attempt));
+  h.changes.length = 0;
+
+  // Begun in the same millisecond, the replacement is still another attempt, and lapses on time.
+  const second = await begun(h, a);
+  assert.equal(second.connection, first.connection);
+  assert.equal(second.attempt, first.attempt + 1);
+  assert.equal(second.expiresAt, NOW + PENDING_SIGN_IN_MS);
+  await settle(h);
+  assert.equal(h.changes.length, 1, "pending to pending is a change of its own");
+  const entry = h.changes[0]!.find((item) => item.id === first.connection);
+  assert.equal(entry?.state, "pending");
+  assert.equal(entry?.attempt, second.attempt);
+  // The view names no secret of either attempt: no URL, `state`, challenge or client id in it.
+  const serialized = JSON.stringify(h.changes[0]);
+  for (const answer of [first, second]) {
+    const url = new URL(answer.authorizationUrl);
+    for (const name of ["state", "code_challenge", "client_id"]) assert.ok(!serialized.includes(url.searchParams.get(name)!), name);
+    assert.ok(!serialized.includes(answer.authorizationUrl));
+  }
+
+  // A later attempt takes the next number, whatever the clock reads.
+  await h.clock.advance(MINUTE);
+  const third = await begun(h, a);
+  assert.equal(third.attempt, second.attempt + 1);
+  assert.equal(third.expiresAt, NOW + MINUTE + PENDING_SIGN_IN_MS);
+  assert.equal(viewOf(h, first.connection)?.attempt, third.attempt);
+
+  // Only the attempt the view names finishes: the replaced ones' links are refused.
+  for (const replaced of [first, second]) {
+    const done = await h.svc.complete(callback(await authorize(replaced.authorizationUrl)));
+    assert.equal((done as { code?: string }).code, "unknown_state");
+  }
+  assert.ok((await h.svc.complete(callback(await authorize(third.authorizationUrl)))).ok);
+  await settle(h);
+  assert.equal(viewOf(h, first.connection)?.state, "signed_in");
+  assert.equal(viewOf(h, first.connection)?.attempt, null, "a sign-in that is not pending names no attempt");
+});
+
+test("a restarted service at the same clock reading gives attempt numbers the one before it did not", async (t) => {
+  // Each daemon's count starts at its own random point, so this compares many restarts, not one:
+  // a counter that started again at a fixed value, or at the clock's reading, repeats at once.
+  const records = createMemorySignInStore();
+  const first = await harness(t, { store: controlledStore("memory", records) });
+  const a = target(first.fake);
+  const given = new Set<number>();
+  for (let n = 0; n < 3; n++) given.add((await begun(first, a)).attempt);
+  assert.equal(given.size, 3);
+  await first.svc.stop();
+  for (let restart = 0; restart < 8; restart++) {
+    // The same fixture and the same clock, which has not moved: a restart within one millisecond.
+    const next = await harness(t, { fake: first.fake, clock: first.clock, store: controlledStore("memory", records) });
+    const answer = await begun(next, a);
+    assert.ok(Number.isSafeInteger(answer.attempt));
+    assert.ok(!given.has(answer.attempt), `restart ${restart} reused attempt ${answer.attempt}`);
+    given.add(answer.attempt);
+    await next.svc.stop();
+  }
 });
 
 test("stop waits for a held refresh only until its 10 second deadline", async (t) => {

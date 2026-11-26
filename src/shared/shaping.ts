@@ -937,6 +937,15 @@ export interface ShapingSignInView {
   storage: ShapingSignInStorage;
   /** Epoch milliseconds when the access token expires, or null when none is held. */
   expiresAt: number | null;
+  /**
+   * While `state` is `pending`, which attempt is pending: the `attempt` of the
+   * `POST /api/shaping/sign-in` reply that started it. Null otherwise. No two attempts of one
+   * daemon share one, so a sign-in that replaces a pending one changes it. A restarted daemon
+   * counts from a new random point, which makes repeating an earlier daemon's number very
+   * unlikely but not impossible. A plain number, not a secret: it opens nothing and the callback
+   * never reads it.
+   */
+  attempt: number | null;
   /** One of `SIGN_IN_REASONS`, or null when there is nothing to say. */
   reason: string | null;
   /** The ids of the known shapers that name this connection. Empty for an unused one. */
@@ -2493,6 +2502,11 @@ export interface ShaperSignInReply {
   expiresAt: number;
   /** The connection id the sign-in is for. */
   connection: string;
+  /**
+   * Which attempt this sign-in is. The sign-in list shows it as the entry's `attempt` for as long
+   * as this attempt is the one pending, so a window can tell its own from one that replaced it.
+   */
+  attempt: number;
 }
 
 /** What `POST /api/shaping/sign-out` answers: the sign-in list after it. */

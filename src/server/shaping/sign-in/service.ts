@@ -16,7 +16,7 @@
 // - A refresh that a call asks for never starts while one is running or while a later try is
 //   already set, and refreshes that refusals ask for are spaced by `BACKOFF_MS`.
 
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import {
   SHAPING_SIGN_IN_CLIENTS, SIGN_IN_REASONS,
   type ShapingSignInClient, type ShapingSignInView, type SignInReason, type SignInTarget,
@@ -28,6 +28,12 @@ import {
   type SignInClient, type SignInDiscovery, type SignInFailureCode, type SignInTokens, type TokensResult,
 } from "./flow.ts";
 import type { SignInStorage, SignInStore, StoredSignIn } from "./store.ts";
+
+/**
+ * Attempt numbers start at a random point below this, the largest bound `randomInt` takes, and
+ * count up by one, so every number stays a safe integer however long a daemon runs.
+ */
+const ATTEMPT_START_BOUND = 2 ** 48 - 1;
 
 /** How long a pending sign-in's `state` and verifier are kept. */
 export const PENDING_SIGN_IN_MS = 10 * 60_000;
@@ -113,7 +119,7 @@ export type AccessTokenAnswer = { ok: true; token: string } | { ok: false; reaso
 
 export type BeginFailureCode = keyof typeof SIGN_IN_BEGIN_REFUSALS | SignInFailureCode;
 export type BeginAnswer =
-  | { ok: true; connection: string; authorizationUrl: string; expiresAt: number }
+  | { ok: true; connection: string; authorizationUrl: string; expiresAt: number; attempt: number }
   | { ok: false; code: BeginFailureCode; reason: string };
 
 export type CompleteFailureCode = keyof typeof SIGN_IN_COMPLETE_REFUSALS | SignInFailureCode;
@@ -166,6 +172,8 @@ interface Pending {
   discovery: SignInDiscovery;
   createdAt: number;
   expiresAt: number;
+  /** Which attempt this is, as the view and the sign-in reply name it. */
+  attempt: number;
   timer: TimerHandle | null;
 }
 
@@ -270,6 +278,14 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   let loadsActive = 0;
 
   let beginTail: Promise<unknown> = Promise.resolve();
+  /**
+   * The number the last pending sign-in begun was given. Each new one takes the next, so no two
+   * attempts of this service share one. The count starts at a random point, read from no clock and
+   * no store, so a restarted daemon, even one at the same clock reading, is very unlikely to repeat
+   * a number an earlier one gave. Unlikely, not impossible: the two ranges overlap only when their
+   * random starts fall within the attempts either daemon made of each other, out of 2^48.
+   */
+  let lastAttempt = randomInt(ATTEMPT_START_BOUND);
 
   let lastView = "[]";
   let flushQueued = false;
@@ -292,7 +308,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   const viewOf = (conn: Connection): ShapingSignInView => {
     const record = conn.record;
     const expired = record?.expiresAt != null && record.expiresAt <= now();
-    const state = livePending(conn) ? "pending" : !record ? "signed_out" : refused(conn) || expired ? "renewing" : "signed_in";
+    const pending = livePending(conn);
+    const state = pending ? "pending" : !record ? "signed_out" : refused(conn) || expired ? "renewing" : "signed_in";
     const reason = refused(conn) ? SIGN_IN_REASONS.refused : conn.reason ? SIGN_IN_REASONS[conn.reason] : null;
     return {
       id: conn.id,
@@ -302,6 +319,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       state,
       storage: conn.storage ?? getStore().kind,
       expiresAt: record?.expiresAt ?? null,
+      attempt: pending?.attempt ?? null,
       reason,
       shapers: [...(inUse.get(conn.id)?.shapers ?? [])].sort(),
     };
@@ -827,12 +845,13 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     // Either branch, reused client or new: a flag reset while the flow ran leaves nothing pending.
     if (reset()) return refusal("flag_off");
     const at = now();
+    const attempt = ++lastAttempt;
     setPending(conn, {
       state: result.state, codeVerifier: result.codeVerifier, client: result.client, discovery,
-      createdAt: at, expiresAt: at + PENDING_SIGN_IN_MS, timer: null,
+      createdAt: at, expiresAt: at + PENDING_SIGN_IN_MS, attempt, timer: null,
     });
     notify();
-    return { ok: true, connection: conn.id, authorizationUrl: result.authorizationUrl, expiresAt: at + PENDING_SIGN_IN_MS };
+    return { ok: true, connection: conn.id, authorizationUrl: result.authorizationUrl, expiresAt: at + PENDING_SIGN_IN_MS, attempt };
   };
 
   const begin = (target: SignInTarget): Promise<BeginAnswer> => {

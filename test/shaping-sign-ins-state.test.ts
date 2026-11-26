@@ -10,7 +10,7 @@ import { NO_SHAPING_SIGN_INS, shapingSignInsAfter } from "../src/web/lib/shaping
 
 const view = (id: string, state: ShapingSignInView["state"]): ShapingSignInView => ({
   id, url: "https://tools.example/mcp", scope: "mcp:context", issuer: null, state, storage: "memory",
-  expiresAt: null, reason: null, shapers: ["notes"],
+  expiresAt: null, attempt: state === "pending" ? 1_700_000_600_000 : null, reason: null, shapers: ["notes"],
 });
 // Only the field under test: the reduction reads nothing else from a snapshot.
 const snapshot = (shapingSignIns?: ShapingSignInView[]) =>

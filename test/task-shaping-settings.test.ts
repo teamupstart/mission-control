@@ -51,7 +51,9 @@ import {
   signInSubject,
   signInLinkFor,
   signInLinkHeld,
+  signInLinkKept,
   signInLinksAfter,
+  signInLinksShown,
   signInMovedSince,
   signInMovesAfter,
   signInMovesSince,
@@ -61,6 +63,7 @@ import {
   signInTargetsByShaper,
   signInTargetUnchanged,
   signInStateIn,
+  signInAttemptIn,
   type SignInMoves,
   signInUrlOpenable,
   SIGN_IN_OFF_TEXT,
@@ -965,13 +968,24 @@ const signedMcp = {
 };
 const CONNECTION = "0123456789abcdef0123456789abcdef";
 const FAKE_LINK = "https://tools.acme.example/authorize?client_id=fake-client-1&state=fake-state";
+/** Fake attempt numbers, each naming one pending sign-in: this window's, one before it and one after. */
+const ATTEMPT = 1_700_000_000_000;
+const OLDER_ATTEMPT = ATTEMPT - 1;
+const NEWER_ATTEMPT = ATTEMPT + 1;
+/** The sign-in reply this window's Sign in received. */
+const REPLY = { url: FAKE_LINK, attempt: ATTEMPT };
 
+/** A list entry. A pending one is this window's attempt unless `attempt` says otherwise. */
 function signInEntry(extra: Partial<ShapingSignInView> = {}): ShapingSignInView {
   return {
     id: CONNECTION, url: "https://tools.acme.example/mcp", scope: "mcp:context", issuer: null,
-    state: "signed_out", storage: "keychain", expiresAt: null, reason: null, shapers: ["signed-mcp"], ...extra,
+    state: "signed_out", storage: "keychain", expiresAt: null, attempt: extra.state === "pending" ? ATTEMPT : null,
+    reason: null, shapers: ["signed-mcp"], ...extra,
   };
 }
+
+/** A link this window holds for its own attempt, seen pending. */
+const SEEN_LINK = { url: FAKE_LINK, attempt: ATTEMPT, seenPending: true, waitingIn: null };
 
 function renderSignIn(
   signIns: ShapingSignInView[],
@@ -1120,11 +1134,11 @@ test("the dashboard opens only an https or loopback http sign-in URL", () => {
 });
 
 test("a window keeps a pending sign-in's link until the list shows that sign-in in another state", () => {
-  const held = { [CONNECTION]: { url: FAKE_LINK, seenPending: false, waitingIn: "signed_out" as const } };
+  const held = { [CONNECTION]: { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "signed_out" as const, attempt: null } } };
   // The reply landed before the event: the list still says signed out, and the link stays.
   assert.equal(signInLinksAfter(held, [signInEntry()]), held);
   const pending = signInLinksAfter(held, [signInEntry({ state: "pending" })]);
-  assert.deepEqual(pending, { [CONNECTION]: { url: FAKE_LINK, seenPending: true, waitingIn: null } });
+  assert.deepEqual(pending, { [CONNECTION]: SEEN_LINK });
   assert.equal(signInLinksAfter(pending, [signInEntry({ state: "pending" })]), pending, "unchanged, the same object");
   // Once seen pending, any other state, or none, ends it.
   assert.deepEqual(signInLinksAfter(pending, [signInEntry({ state: "signed_in" })]), {});
@@ -1133,6 +1147,25 @@ test("a window keeps a pending sign-in's link until the list shows that sign-in 
   // Not yet seen pending, a state other than the one it was stored in ends it too.
   assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "signed_in" })]), {});
   assert.deepEqual(signInLinksAfter(held, []), {});
+});
+
+test("another window's sign-in that replaces this window's pending one ends its link, though the row stays pending", () => {
+  const replaced = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  // Seen pending, then replaced: the list still says pending, with another attempt.
+  assert.deepEqual(signInLinksAfter({ [CONNECTION]: SEEN_LINK }, replaced), {});
+  // Not yet seen, and the list moves straight on to another attempt: never this one's.
+  const waiting = { [CONNECTION]: { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "signed_out" as const, attempt: null } } };
+  assert.deepEqual(signInLinksAfter(waiting, replaced), {});
+  // What a row may offer is drawn from the list itself, so the replaced link is offered by no
+  // render at all, not even one drawn before the bookkeeping above catches up.
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, [signInEntry({ state: "pending" })]), { [CONNECTION]: FAKE_LINK });
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, replaced), {});
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, [signInEntry({ state: "signed_in" })]), {});
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, []), {});
+  const row = rowMarkup(renderSignIn(replaced, { links: signInLinksShown({ [CONNECTION]: SEEN_LINK }, replaced) }), "Signed MCP");
+  assert.match(row, /Started in another window, or before this page was reloaded\./);
+  assert.deepEqual(signInControls(row), ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"]);
+  assert.doesNotMatch(row, /Open the sign-in page|Copy the sign-in link/);
 });
 
 /** The state-change counts after a window draws each list in turn, from an empty start. */
@@ -1155,6 +1188,12 @@ test("each connection's state changes are counted, and a state that comes back s
   assert.equal(signInMovesAfter(sent, signedOut, [signInEntry()]), sent);
   const otherMoved = signInMovesAfter(sent, signedOut, [...signedOut, signInEntry({ id: "e".repeat(32), state: "pending", shapers: [] })]);
   assert.equal(signInMovedSince(sent, otherMoved, CONNECTION), false);
+  // One pending attempt replaced by another is a move, though the state stays pending.
+  const replaced = movesThrough([signedOut, pending, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]]);
+  assert.equal(signInMovesSince(movesThrough([signedOut, pending]), replaced, CONNECTION), 1);
+  assert.equal(signInAttemptIn(pending, CONNECTION), ATTEMPT);
+  assert.equal(signInAttemptIn(signedOut, CONNECTION), null);
+  assert.equal(signInAttemptIn([signInEntry({ state: "signed_in", attempt: ATTEMPT })], CONNECTION), null, "only a pending entry names an attempt");
   // Pending, then signed out again: the state is back where it started, and the counts say it moved.
   const back = movesThrough([signedOut, pending, signedOut]);
   assert.equal(signInStateIn(signedOut, CONNECTION), "signed_out");
@@ -1165,27 +1204,94 @@ test("each connection's state changes are counted, and a state that comes back s
 
 test("a link is kept only for a sign-in still waiting for its event or still pending, whichever arrived first", () => {
   // The event came first: the list already says pending when the reply hands the window its link.
-  const pendingLink = signInLinkFor([signInEntry({ state: "pending" })], CONNECTION, FAKE_LINK, 1);
-  assert.deepEqual(pendingLink, { url: FAKE_LINK, seenPending: true, waitingIn: null });
+  const pendingLink = signInLinkFor([signInEntry({ state: "pending" })], CONNECTION, REPLY, 1);
+  assert.deepEqual(pendingLink, SEEN_LINK);
   const held = signInLinkHeld({}, CONNECTION, pendingLink);
   // No further pending frame need come: the next list, signed in, ends the link.
   assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "signed_in" })]), {});
   // The reply first: nothing moved while the request was in flight, from no entry at all or a
   // signed-out one, and the link waits for the pending event.
   for (const list of [[], [signInEntry()]]) {
-    const early = signInLinkFor(list, CONNECTION, FAKE_LINK, 0);
+    const early = signInLinkFor(list, CONNECTION, REPLY, 0);
     const state = list.length === 0 ? "absent" : "signed_out";
-    assert.deepEqual(early, { url: FAKE_LINK, seenPending: false, waitingIn: state });
+    assert.deepEqual(early, { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state, attempt: null } });
     const waiting = signInLinkHeld({}, CONNECTION, early);
     assert.equal(signInLinksAfter(waiting, list), waiting);
   }
   // Another window's link for another connection is kept, and an older link for this one replaced.
   const otherId = "e".repeat(32);
-  const both = signInLinkHeld({ [otherId]: { url: "https://x.example/a", seenPending: true, waitingIn: null },
-    [CONNECTION]: { url: "https://old.example/a", seenPending: true, waitingIn: null } }, CONNECTION, pendingLink);
+  const both = signInLinkHeld({ [otherId]: { url: "https://x.example/a", attempt: ATTEMPT, seenPending: true, waitingIn: null },
+    [CONNECTION]: { url: "https://old.example/a", attempt: OLDER_ATTEMPT, seenPending: true, waitingIn: null } }, CONNECTION, pendingLink);
   assert.equal(both[otherId]!.url, "https://x.example/a");
   assert.equal(both[CONNECTION]!.url, FAKE_LINK);
-  assert.deepEqual(signInLinkHeld(both, CONNECTION, null), { [otherId]: both[otherId] });
+  // A reply that keeps no link, as a stale one, leaves every held link as it was, the same object.
+  assert.equal(signInLinkHeld(both, CONNECTION, null), both);
+});
+
+test("an older reply on a connection two rows share keeps the newer attempt's link, and ends nothing", () => {
+  // Row A's Sign in is in flight; row B's, on the same connection, replaces it and lands first.
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  const older = [signInEntry({ state: "pending", attempt: OLDER_ATTEMPT })];
+  const newer = [signInEntry({ state: "pending" })];
+  const now = movesThrough([signedOut, older, newer]);
+  const held = signInLinkHeld({}, CONNECTION, signInLinkFor(newer, CONNECTION, REPLY, signInMovesSince(sent, movesThrough([signedOut, newer]), CONNECTION)));
+  assert.deepEqual(held, { [CONNECTION]: SEEN_LINK });
+  // Then A's reply lands: its attempt was replaced, so it keeps no link and B's stays offered.
+  const stale = signInLinkFor(newer, CONNECTION, { url: "https://tools.acme.example/authorize?state=fake-older", attempt: OLDER_ATTEMPT }, signInMovesSince(sent, now, CONNECTION));
+  assert.equal(stale, null);
+  const after = signInLinkHeld(held, CONNECTION, stale);
+  assert.equal(after, held);
+  assert.deepEqual(signInLinksShown(after, newer), { [CONNECTION]: FAKE_LINK });
+});
+
+test("two replies on one connection that land before either list frame keep the newer attempt's link through both frames", () => {
+  // Rows A and B share a connection; A's attempt begins first, then B's replaces it. Both replies
+  // land while the list still shows the connection signed out, B's first.
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  const newer = signInLinkFor(signedOut, CONNECTION, { url: FAKE_LINK, attempt: NEWER_ATTEMPT }, signInMovesSince(sent, sent, CONNECTION));
+  const olderUrl = "https://tools.acme.example/authorize?state=fake-older";
+  const older = signInLinkFor(signedOut, CONNECTION, { url: olderUrl, attempt: ATTEMPT }, signInMovesSince(sent, sent, CONNECTION));
+  assert.ok(newer && older, "nothing moved, so each reply alone would wait for its event");
+  const held = signInLinkHeld(signInLinkHeld({}, CONNECTION, newer), CONNECTION, older);
+  assert.equal(held[CONNECTION]!.url, FAKE_LINK, "the older reply does not displace the newer attempt's link");
+  assert.equal(signInLinkHeld(held, CONNECTION, older), held, "the same object: nothing changed");
+  // Only the newer reply's link is kept, so only it may open a page or show a refusal.
+  assert.equal(signInLinkKept(signInLinkHeld({}, CONNECTION, newer), CONNECTION, older), false);
+  assert.equal(signInLinkKept({}, CONNECTION, newer), true);
+  assert.equal(signInLinkKept(signInLinkHeld({}, CONNECTION, older), CONNECTION, newer), true);
+  assert.equal(signInLinkKept(held, CONNECTION, null), false);
+  // In the other order the newer reply replaces the older one's link.
+  assert.equal(signInLinkHeld(signInLinkHeld({}, CONNECTION, older), CONNECTION, newer)[CONNECTION]!.url, FAKE_LINK);
+  // The daemon's frames then arrive in the order it began the attempts: A's first, then B's.
+  const aPending = [signInEntry({ state: "pending", attempt: ATTEMPT })];
+  const bPending = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  const afterA = signInLinksAfter(held, aPending);
+  assert.equal(afterA, held, "A's frame shows an older attempt, so B's link keeps waiting");
+  assert.deepEqual(signInLinksShown(afterA, aPending), {}, "and A's attempt offers no link of B's");
+  const afterB = signInLinksAfter(afterA, bPending);
+  assert.deepEqual(afterB, { [CONNECTION]: { url: FAKE_LINK, attempt: NEWER_ATTEMPT, seenPending: true, waitingIn: null } });
+  assert.deepEqual(signInLinksShown(afterB, bPending), { [CONNECTION]: FAKE_LINK });
+});
+
+test("a reply that lands after an older attempt's frame waits for its own, and one that lands after a newer attempt's keeps nothing", () => {
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  // A's frame arrived while B's request was in flight: one move, and the list shows A's older attempt.
+  const aPending = [signInEntry({ state: "pending", attempt: OLDER_ATTEMPT })];
+  const moved = signInMovesSince(sent, movesThrough([signedOut, aPending]), CONNECTION);
+  assert.equal(moved, 1);
+  const waiting = signInLinkFor(aPending, CONNECTION, REPLY, moved);
+  assert.deepEqual(waiting, { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "pending", attempt: OLDER_ATTEMPT } });
+  assert.deepEqual(signInLinksAfter(signInLinkHeld({}, CONNECTION, waiting), [signInEntry({ state: "pending" })]), { [CONNECTION]: SEEN_LINK });
+  // A newer attempt pending, or a state other than pending, after a move: this attempt is over.
+  assert.equal(signInLinkFor([signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })], CONNECTION, REPLY, 1), null);
+  assert.equal(signInLinkFor([signInEntry({ state: "signed_out" })], CONNECTION, REPLY, 1), null);
+  // A waiting link goes once a newer attempt shows, or the list leaves pending for another state.
+  const held = signInLinkHeld({}, CONNECTION, waiting);
+  assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]), {});
+  assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "signed_in" })]), {});
 });
 
 test("a sign-in that moved on before its reply landed keeps no link, even one back in the state it started in", () => {
@@ -1193,21 +1299,21 @@ test("a sign-in that moved on before its reply landed keeps no link, even one ba
   const sent = movesThrough([signedOut]);
   // Finished elsewhere before the reply: signed in.
   const finished = movesThrough([signedOut, [signInEntry({ state: "pending" })], [signInEntry({ state: "signed_in" })]]);
-  assert.equal(signInLinkFor([signInEntry({ state: "signed_in" })], CONNECTION, FAKE_LINK, signInMovesSince(sent, finished, CONNECTION)), null);
+  assert.equal(signInLinkFor([signInEntry({ state: "signed_in" })], CONNECTION, REPLY, signInMovesSince(sent, finished, CONNECTION)), null);
   // Cancelled elsewhere before the reply: signed out again, the very state it was sent from.
   const cancelled = movesThrough([signedOut, [signInEntry({ state: "pending" })], signedOut]);
-  const link = signInLinkFor(signedOut, CONNECTION, FAKE_LINK, signInMovesSince(sent, cancelled, CONNECTION));
+  const link = signInLinkFor(signedOut, CONNECTION, REPLY, signInMovesSince(sent, cancelled, CONNECTION));
   assert.equal(link, null, "a return to the starting state is not a reply that came first");
   // So a later pending sign-in, another window's, is never offered the dead link.
-  const laterPending = [signInEntry({ state: "pending" })];
+  const laterPending = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
   const after = signInLinksAfter(signInLinkHeld({}, CONNECTION, link), laterPending);
   assert.deepEqual(after, {});
-  const row = rowMarkup(renderSignIn(laterPending, { links: Object.fromEntries(Object.entries(after).map(([id, held]) => [id, held.url])) }), "Signed MCP");
+  const row = rowMarkup(renderSignIn(laterPending, { links: signInLinksShown(after, laterPending) }), "Signed MCP");
   assert.deepEqual(signInControls(row), ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"]);
   assert.doesNotMatch(row, /Open the sign-in page|Copy the sign-in link/);
   // A sign-in sent from no entry at all that came and went is over too.
   const fromNothing = movesThrough([[], [signInEntry({ state: "pending" })], []]);
-  assert.equal(signInLinkFor([], CONNECTION, FAKE_LINK, signInMovesSince({}, fromNothing, CONNECTION)), null);
+  assert.equal(signInLinkFor([], CONNECTION, REPLY, signInMovesSince({}, fromNothing, CONNECTION)), null);
 });
 
 test("a refusal that lands after its connection changed state is about a moment that has passed", () => {
@@ -1247,10 +1353,11 @@ test("a sign-in refusal is dropped once the list shows its connection in another
   const startRefused = { [rowKey]: { text: "Refused start.", subject: signInControlSubject([signInEntry()], rowKey) } };
   assert.deepEqual(signInRefusalsAfter(startRefused, [signInEntry({ state: "signed_in" })]), {});
   // The unsafe-link refusal expects its own pending sign-in: it stands while that is pending and
-  // goes once it lapses or is cancelled.
-  const unsafe = { [rowKey]: { text: "Not opened.", subject: `${CONNECTION}|pending` } };
+  // goes once it lapses, is cancelled or is replaced by another window's attempt.
+  const unsafe = { [rowKey]: { text: "Not opened.", subject: `${CONNECTION}|pending@${ATTEMPT}` } };
   assert.equal(signInRefusalsAfter(unsafe, [signInEntry({ state: "pending" })]), unsafe);
   assert.deepEqual(signInRefusalsAfter(unsafe, [signInEntry({ state: "signed_out" })]), {});
+  assert.deepEqual(signInRefusalsAfter(unsafe, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]), {});
 });
 
 test("a late reply whose sign-in left pending and another attempt is pending now keeps no link", () => {
@@ -1259,23 +1366,46 @@ test("a late reply whose sign-in left pending and another attempt is pending now
   const sent = movesThrough([signedOut]);
   // Window A sends Sign in from a signed-out row. Its sign-in goes pending, another window cancels
   // it and starts a new attempt, and only then does A's reply land: the list says pending again.
-  const now = movesThrough([signedOut, pending, signedOut, pending]);
+  const later = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  const now = movesThrough([signedOut, pending, signedOut, later]);
   assert.equal(signInMovesSince(sent, now, CONNECTION), 3);
-  const link = signInLinkFor(pending, CONNECTION, FAKE_LINK, signInMovesSince(sent, now, CONNECTION));
+  const link = signInLinkFor(later, CONNECTION, REPLY, signInMovesSince(sent, now, CONNECTION));
   assert.equal(link, null, "the pending attempt is not A's, so A's link is neither kept nor opened");
-  const row = rowMarkup(renderSignIn(pending, { links: {} }), "Signed MCP");
+  const row = rowMarkup(renderSignIn(later, { links: {} }), "Signed MCP");
   assert.deepEqual(signInControls(row), ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"]);
   // Against that, A's own pending event is one change, and A's link is kept and seen.
   const own = movesThrough([signedOut, pending]);
-  assert.deepEqual(signInLinkFor(pending, CONNECTION, FAKE_LINK, signInMovesSince(sent, own, CONNECTION)), { url: FAKE_LINK, seenPending: true, waitingIn: null });
-  // A restart from a row already pending shows no change at all, and its link is kept: one pending
-  // sign-in replacing another is the case the list cannot tell apart, documented in the guide.
-  const fromPending = movesThrough([signedOut, pending]);
-  assert.deepEqual(signInLinkFor(pending, CONNECTION, FAKE_LINK, signInMovesSince(fromPending, fromPending, CONNECTION)), { url: FAKE_LINK, seenPending: true, waitingIn: null });
-  // Two changes that end in a state other than pending are over too, as is any count past one.
-  assert.equal(signInLinkFor([signInEntry({ state: "signed_in" })], CONNECTION, FAKE_LINK, 2), null);
-  assert.equal(signInLinkFor(pending, CONNECTION, FAKE_LINK, 2), null);
-  assert.equal(signInLinkFor(signedOut, CONNECTION, FAKE_LINK, 1), null, "one change to a state other than pending is not this sign-in's event");
+  assert.deepEqual(signInLinkFor(pending, CONNECTION, REPLY, signInMovesSince(sent, own, CONNECTION)), SEEN_LINK);
+  // A's own attempt pending is A's link however many changes came before it, such as another
+  // window's attempt that A's replaced while A's request was in flight.
+  const overtaken = movesThrough([signedOut, later, pending]);
+  assert.deepEqual(signInLinkFor(pending, CONNECTION, REPLY, signInMovesSince(sent, overtaken, CONNECTION)), SEEN_LINK);
+  // Two changes that end anywhere but A's attempt are over, as is any count past one.
+  assert.equal(signInLinkFor([signInEntry({ state: "signed_in" })], CONNECTION, REPLY, 2), null);
+  assert.equal(signInLinkFor(later, CONNECTION, REPLY, 2), null);
+  assert.equal(signInLinkFor(signedOut, CONNECTION, REPLY, 1), null, "one change to a state other than pending is not this sign-in's event");
+});
+
+test("Sign in on a row pending elsewhere holds its link for its own attempt, never the one it replaces", () => {
+  // The row is pending with another window's attempt when this window sends Sign in, and the
+  // reply lands before its event: nothing moved, and the list still shows the older attempt.
+  const elsewhere = [signInEntry({ state: "pending", attempt: OLDER_ATTEMPT })];
+  const sent = movesThrough([elsewhere]);
+  const link = signInLinkFor(elsewhere, CONNECTION, REPLY, signInMovesSince(sent, sent, CONNECTION));
+  assert.deepEqual(link, { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "pending", attempt: OLDER_ATTEMPT } });
+  const held = signInLinkHeld({}, CONNECTION, link);
+  // It waits while the older attempt shows, and offers nothing: that attempt's link is not this one.
+  assert.equal(signInLinksAfter(held, elsewhere), held);
+  assert.deepEqual(signInLinksShown(held, elsewhere), {});
+  // Its own event arrives: seen, and offered.
+  const own = [signInEntry({ state: "pending" })];
+  const seen = signInLinksAfter(held, own);
+  assert.deepEqual(seen, { [CONNECTION]: SEEN_LINK });
+  assert.deepEqual(signInLinksShown(seen, own), { [CONNECTION]: FAKE_LINK });
+  // A third window replaces it: the link ends, and the counts say the connection moved.
+  const replaced = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  assert.deepEqual(signInLinksAfter(seen, replaced), {});
+  assert.equal(signInMovesSince(movesThrough([own]), movesThrough([own, replaced]), CONNECTION), 1);
 });
 
 test("sign-in control keys and refusal subjects come from one builder each, and read back", () => {
@@ -1285,13 +1415,15 @@ test("sign-in control keys and refusal subjects come from one builder each, and 
   assert.equal(signInControlConnection(list, signInRowKey("no-such-shaper")), null);
   assert.equal(signInControlConnection(list, "something-else"), null);
   // The subject a control's refusal is shown against is the one `signInSubject` builds, so a refusal
-  // made with `signInSubject(connection, "pending")` survives exactly while the list shows that.
+  // made with `signInSubject(connection, "pending", attempt)` survives exactly while the list shows that.
   assert.equal(signInControlSubject(list, signInRowKey("signed-mcp")), signInSubject(CONNECTION, "signed_in"));
   assert.equal(signInControlSubject([], signInRowKey("signed-mcp")), signInSubject(null, "absent"));
+  assert.equal(signInControlSubject([signInEntry({ state: "pending" })], signInRowKey("signed-mcp")), signInSubject(CONNECTION, "pending", ATTEMPT));
   const key = signInRowKey("signed-mcp");
-  const refusal = { [key]: { text: "Not opened.", subject: signInSubject(CONNECTION, "pending") } };
+  const refusal = { [key]: { text: "Not opened.", subject: signInSubject(CONNECTION, "pending", ATTEMPT) } };
   assert.equal(signInRefusalsAfter(refusal, [signInEntry({ state: "pending" })]), refusal);
   assert.deepEqual(signInRefusalsAfter(refusal, [signInEntry({ state: "signed_out" })]), {});
+  assert.deepEqual(signInRefusalsAfter(refusal, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]), {});
 });
 
 test("a Cancel or Sign out in flight on a connection makes every row and entry on it wait", () => {

@@ -1137,14 +1137,17 @@ refresh that fails and an expiry show with no reload.
   authorization URL, and a reload drops it. A sign-in already open in a browser tab still
   finishes there, and the row shows the result when it arrives.
 - **Sign in** on a pending row starts a new sign-in, which replaces the pending one, so the
-  link the earlier one opened stops working. The sign-in list does not say which attempt a
-  pending sign-in is, so a window whose sign-in another window replaced still offers its own
-  link, with **Open the sign-in page**, **Copy link** and **Cancel sign-in** but no
-  **Sign in**. Only the link is affected, never a token: the other window's sign-in works, and
-  the daemon's callback refuses the replaced `state`, so the old link ends on the page "The
-  sign-in did not finish." with "Start again from Settings > Task shaping." To start
-  again from that window, reload it, which offers **Sign in**, or select **Cancel sign-in**,
-  which also ends the other window's attempt, and then **Sign in**.
+  link the earlier one opened stops working: the daemon's callback refuses the replaced
+  `state`. The sign-in list names which attempt is pending, so a window whose sign-in another
+  window replaced drops its link as the list arrives, with no reload. Its row reads as pending
+  elsewhere and offers **Sign in** and **Cancel sign-in** again, and the window whose sign-in
+  is pending now offers the link.
+  One rare case is a known limit. If Mission Control restarts in the moment between a window
+  receiving its sign-in reply and the list showing that sign-in, that window may not keep the
+  link of its next **Sign in** until the row leaves pending: the row reads as pending elsewhere and
+  offers **Sign in** and **Cancel sign-in**, with no **Open the sign-in page** or **Copy link**
+  for it. No dead link appears, and no token is affected. To get the link, reload the window
+  or select **Cancel sign-in**, then select **Sign in** again.
 - **Cancel sign-in** and **Sign out** end the connection's sign-in: a pending one is dropped,
   and a held one's tokens are removed from where they are kept and revoked at the server.
   Every shaper that shares the connection is signed out with it.
@@ -1181,9 +1184,12 @@ reason that repeats no key or value it was sent.
 
 - **`POST /api/shaping/sign-in`** takes `{ shaper }`, the id of a registered shaper this build
   can run or of a valid manifest in the shapers folder, a registered one first. It starts a
-  sign-in for the shaper's connection and answers `{ authorizationUrl, expiresAt, connection }`:
-  the link to open in a browser, when the pending sign-in lapses (10 minutes), and the
-  connection id. The link carries the client id, the OAuth `state` parameter and the PKCE
+  sign-in for the shaper's connection and answers `{ authorizationUrl, expiresAt, connection, attempt }`:
+  the link to open in a browser, when the pending sign-in lapses (10 minutes), the
+  connection id, and a number that names this attempt. No two attempts of one daemon share
+  one: it counts up by one from where it started. Across a restart the separation is only
+  probabilistic. Each daemon starts counting at a random point below 2^48, so a restarted
+  daemon is very unlikely, though not certain, to repeat a number an earlier one gave. The link carries the client id, the OAuth `state` parameter and the PKCE
   challenge, which the browser must present, and this reply is the only place it appears. An unknown id is 404
   `unknown_shaper`, and a shaper with no `auth` marker is 400 `no_sign_in`. A refusal that is
   Mission Control's own is 409: `registration_limit` when all 16 client registrations are
@@ -1212,9 +1218,10 @@ reason that repeats no key or value it was sent.
 
 The sign-in list, in `GET /api/shaping`, the sign-out reply and
 [the `shaping_sign_ins` event](event-stream.md#task-shaping), has one entry per connection:
-`{ id, url, scope, issuer, state, storage, expiresAt, reason, shapers }`, where `state` is the
+`{ id, url, scope, issuer, state, storage, expiresAt, attempt, reason, shapers }`, where `state` is the
 connection's status, `signed_out`, `pending`, `signed_in` or `renewing`, `storage` is `keychain`
-or `memory`, and `shapers` lists the ids of the known shapers that name it, empty for an unused
+or `memory`, `attempt` is the pending attempt's number from its sign-in reply, null unless
+`state` is `pending`, and `shapers` lists the ids of the known shapers that name it, empty for an unused
 one. It never holds a token, a code, the OAuth `state` parameter, a verifier or an authorization
 URL, so a pending entry has no link: a window without one starts the sign-in again. A sign-in whose shaper is removed before
 the callback still completes and is then listed as unused.

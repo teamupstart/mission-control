@@ -140,11 +140,11 @@ async function authorize(authorizationUrl: string): Promise<URL> {
   return back;
 }
 
-async function begun(seen: Seen[], shaper: string): Promise<{ authorizationUrl: string; connection: string; expiresAt: number; state: string }> {
+async function begun(seen: Seen[], shaper: string): Promise<{ authorizationUrl: string; connection: string; expiresAt: number; attempt: number; state: string }> {
   const reply = await record(seen, `sign-in reply for ${shaper}`, await startSignIn(shaper));
   assert.equal(reply.status, 200, reply.text);
-  const body = JSON.parse(reply.text) as { authorizationUrl: string; connection: string; expiresAt: number };
-  assert.deepEqual(Object.keys(body).sort(), ["authorizationUrl", "connection", "expiresAt"]);
+  const body = JSON.parse(reply.text) as { authorizationUrl: string; connection: string; expiresAt: number; attempt: number };
+  assert.deepEqual(Object.keys(body).sort(), ["attempt", "authorizationUrl", "connection", "expiresAt"]);
   return { ...body, state: new URL(body.authorizationUrl).searchParams.get("state")! };
 }
 
@@ -180,7 +180,7 @@ test("the leak check itself refuses a token, a state outside the URL and a clien
   assert.throws(() => assertNothingLeaked([{ from: "event", text: "{\"s\":\"fake-state-x\"}" }], ["fake-state-x"]));
   assert.throws(() => assertNothingLeaked([{ from: "sign-in reply", text: JSON.stringify({ authorizationUrl: url, state: "fake-state-x" }) }], ["fake-state-x"]));
   assert.throws(() => assertNothingLeaked([{ from: "sign-out reply", text: "{\"c\":\"fake-client-9\"}" }], []));
-  assertNothingLeaked([{ from: "sign-in reply", text: JSON.stringify({ authorizationUrl: url, connection: "c", expiresAt: 1 }) }], ["fake-state-x"]);
+  assertNothingLeaked([{ from: "sign-in reply", text: JSON.stringify({ authorizationUrl: url, connection: "c", expiresAt: 1, attempt: 1 }) }], ["fake-state-x"]);
 });
 
 // ---- the flow ----
@@ -194,6 +194,7 @@ test("a whole sign-in over HTTP: start, the fixture's redirect, the success page
 
   const pending = entryOf(await listed(seen), started.connection);
   assert.equal(pending?.state, "pending");
+  assert.equal(pending?.attempt, started.attempt, "the list names the attempt the reply started");
   assert.deepEqual(pending?.shapers, ["flow"]);
 
   const back = await authorize(started.authorizationUrl);

@@ -79,7 +79,7 @@ function callbackPage(c: Context, page: { status: 200 | 400; body: string }): Re
  * loopback `Host` check every `/api` route has.
  *
  * - `POST /api/shaping/sign-in` `{ shaper }` starts a sign-in and answers
- *   `{ authorizationUrl, expiresAt, connection }`. The URL is the one place the OAuth `state`
+ *   `{ authorizationUrl, expiresAt, connection, attempt }`. The URL is the one place the OAuth `state`
  *   parameter and the client id leave the daemon.
  * - `POST /api/shaping/sign-out` `{ connection }` ends a pending or held sign-in and answers
  *   `{ signIns }`.
@@ -113,7 +113,9 @@ export function registerShaperSignInRoutes(
       if (status !== 409) console.warn(`[shaping] sign-in for "${shaper.id}" did not start (${answer.code}): ${answer.reason}`);
       return c.json({ error: answer.code, reason: SIGN_IN_START_FAILURES[answer.code] }, status);
     }
-    const reply: ShaperSignInReply = { authorizationUrl: answer.authorizationUrl, expiresAt: answer.expiresAt, connection: answer.connection };
+    const reply: ShaperSignInReply = {
+      authorizationUrl: answer.authorizationUrl, expiresAt: answer.expiresAt, connection: answer.connection, attempt: answer.attempt,
+    };
     return c.json(reply);
   });
 

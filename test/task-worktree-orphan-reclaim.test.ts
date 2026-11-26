@@ -601,7 +601,7 @@ function mergedOnOrigin(t: TestContext, origin: string, branch: string, files: R
 }
 
 /** Record a task's work episode the way the daemon does, with its pull request and merge. */
-function recordEpisode(taskId: string, episode: string, branch: string | null, pr: { url: string; head: string; mergedAt: number | null }) {
+function recordEpisode(taskId: string, episode: string, branch: string | null, pr: { url: string; head: string | null; mergedAt: number | null }) {
   bindTaskWorkEpisode({
     taskId, episodeId: `${taskId}-${episode}`, sessionId: `session-${taskId}-${episode}`,
     agentSessionId: `agent-${taskId}-${episode}`, branch, prUrl: pr.url, prHeadSha: pr.head,
@@ -1079,4 +1079,42 @@ test("report-only names the base commit when the only difference from it is a de
   assert.deepEqual(pass.cleanups, {});
   assert.equal(w.row()?.lastError, "report only: orphaned checkout matches its base commit and would be removed");
   assert.ok(existsSync(w.path));
+});
+
+test("an open pull request recorded for the checkout's branch is not proof, so its content is archived first", async (t) => {
+  enable(t);
+  let head = "";
+  const w = world(t, {
+    prepare: (path, { origin, branch }) => {
+      head = mergedOnOrigin(t, origin, branch, PR_FILES);
+      for (const [file, content] of Object.entries(PR_FILES)) writeFileSync(join(path, file), content);
+    },
+  });
+  // Exactly this branch, exactly this head - but never merged.
+  recordEpisode(w.id, "a", w.branch, { url: "https://github.com/example/repo/pull/16", head, mergedAt: null });
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, { reclaimed: 1 });
+  assert.ok(w.state.preserved.length > 0, "the matching content was archived as local-only work");
+  for (const entry of w.state.preserved) assert.deepEqual(entry.files.map((file) => file.path), ["feature.txt", "keep.txt"]);
+  assert.ok(w.state.held.length > 0, "and deleted only while its archive was held");
+});
+
+test("a merged pull request with no recorded head commit holds the orphan", async (t) => {
+  enable(t);
+  const w = world(t, {
+    prepare: (path) => {
+      for (const [file, content] of Object.entries(PR_FILES)) writeFileSync(join(path, file), content);
+    },
+  });
+  recordEpisode(w.id, "a", w.branch, { url: "https://github.com/example/repo/pull/17", head: null, mergedAt: 1_500 });
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, { "validation-unknown": 1 }, "no deletion is authorized");
+  assert.match(w.row()?.lastError ?? "", /merged pull request head commit was not recorded/);
+  assert.equal(readFileSync(join(w.path, "feature.txt"), "utf8"), PR_FILES["feature.txt"]);
+  assert.equal(w.task().worktreePath, w.path);
+  assert.deepEqual(w.state.preserved, [], "nothing was archived on an unproven record");
+  // Retries keep holding: a later pass at the retry time still refuses.
+  w.state.now = w.row()!.retryAt!;
+  assert.deepEqual((await w.observer.runPass()).cleanups, { "validation-unknown": 1 });
+  assert.ok(existsSync(join(w.path, "feature.txt")));
 });

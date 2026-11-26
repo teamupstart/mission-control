@@ -50,7 +50,7 @@ import { getTask } from "../db.ts";
 import { checkToken } from "../auth.ts";
 import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { setUiConfig, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
+import { setVoiceConfirmation, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { speechModelManager, voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -219,7 +219,7 @@ export function registerVoiceRoutes(
       const writeId = lastPlacementWrite?.revision === version.revision ? lastPlacementWrite.id : undefined;
       return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version, writeId }, 409);
     }
-    const { voice } = setUiConfig({ voice: { ...current, confirmation: parsed.data.confirmation } });
+    const voice = setVoiceConfirmation(parsed.data.confirmation);
     const saved = voiceIndicatorVersion(voice);
     lastPlacementWrite = parsed.data.writeId ? { id: parsed.data.writeId, revision: saved.revision } : undefined;
     return c.json({ ok: true, ...voice, voiceIndicatorVersion: saved });

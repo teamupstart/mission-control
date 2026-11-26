@@ -77,7 +77,7 @@ const viewOf = (
   sources: TaskSourceInstance[],
   status: TaskSourcesView["status"] = [],
   writeback: TaskSourcesView["writeback"] = [],
-) => ({ sources, status, writeback, kinds: KINDS });
+) => ({ revision: "fixture", sources, status, writeback, kinds: KINDS });
 
 // The claim the whole feature rests on, and the one an operator cannot verify from the
 // controls. If this sentence ever goes, the panel is asking for consent to something it

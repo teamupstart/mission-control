@@ -28,7 +28,7 @@ export type SettingComposite = Extract<SettingsValue, object>;
  * including dashboard edits, through the same owner.
  */
 export type SettingDescriptor = Descriptor & (
-  | { access: "protected"; destination: string }
+  | { access: "protected"; destination: string; reason?: string }
   | ({ access: "read-only"; read(): SettingsValue } & Choices)
   | ({ access: "read-write"; replacement: "scalar"; schema: ZodType<SettingScalar>;
        read(): SettingScalar; write(value: SettingScalar): SettingScalar } & Choices)
@@ -38,6 +38,11 @@ export type SettingDescriptor = Descriptor & (
 
 /** Owner validation can fail after merging with the current config. */
 export class InvalidSettingValue extends Error {}
+export class ProtectedSettingValue extends Error {
+  constructor(readonly destination: string) {
+    super(`Manage this setting in ${destination}.`);
+  }
+}
 
 const tokenKey = randomBytes(32);
 function token(parts: unknown[]): string {
@@ -129,6 +134,7 @@ export function dispatchSetting(
     return writeSetting(setting, request, authorize);
   } catch (error) {
     if (error instanceof InvalidSettingValue) return settingsFailure("invalid_value");
+    if (error instanceof ProtectedSettingValue) return settingsFailure("protected", error.message);
     // Owner exceptions may include paths, input or config contents. Keep those out of tool responses and logs.
     return settingsFailure("unavailable");
   }

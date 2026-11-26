@@ -49,6 +49,11 @@ export class HarnessModelCatalogService {
     this.freshForMs = deps.freshForMs ?? HARNESS_MODEL_CATALOG_FRESH_FOR_MS;
   }
 
+  /** The same discovered choices the dashboard has seen, without starting a provider probe. */
+  cachedModelIds(agent: AgentType): string[] {
+    return this.cache.get(agent)?.choices.map(choice => choice.id) ?? [];
+  }
+
   async getCatalogs(options: { refresh?: boolean } = {}): Promise<HarnessModelCatalogs> {
     const refresh = options.refresh === true;
     const entries = await Promise.all(

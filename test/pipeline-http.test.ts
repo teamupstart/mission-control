@@ -323,6 +323,77 @@ test("both Engineer runtimes round-trip and the cheap Dispatch read reports the 
   }
 });
 
+test("saving pipeline observation consent keeps the stored Engineer runtime", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("consent-runtime");
+  const save = (body: unknown) => request("/api/pipelines/config", {
+    method: "PUT", body: JSON.stringify(body),
+  });
+  const before = { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }] };
+  assert.equal((await save({ ...before, launchRuntime: "terminal" })).status, 200);
+  const saved = await save({ ...before, enabled: false });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as PipelinesView).config.launchRuntime, "terminal");
+  assert.equal(getPipelinesConfig().launchRuntime, "terminal");
+  assert.equal(getPipelinesConfig().enabled, false);
+});
+
+test("an Engineer runtime patch preserves current observation and Foreman consent", async () => {
+  const { request } = fixture();
+  const repoRoot = gitRepo("runtime-patch-consent");
+  setPipelinesConfig({
+    launchRuntime: "agent-sdk", enabled: true, foremanMechanicalTriage: true,
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+  });
+  const revoked = await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: false, foremanMechanicalTriage: false,
+      repos: [{ provider: "ai-conductor", repoRoot, enabled: false }],
+    }),
+  });
+  assert.equal(revoked.status, 200);
+  const consent = getPipelinesConfig();
+  const patchRuntime = (body: unknown) => request("/api/pipelines/config", {
+    method: "PATCH", body: JSON.stringify(body),
+  });
+  const response = await patchRuntime({ launchRuntime: "terminal" });
+  assert.equal(response.status, 200);
+  const saved = { ...consent, launchRuntime: "terminal" };
+  assert.deepEqual((await response.json() as PipelinesView).config, saved);
+  assert.deepEqual(getPipelinesConfig(), saved);
+
+  assert.equal((await patchRuntime({ launchRuntime: "invalid" })).status, 400);
+  assert.deepEqual(getPipelinesConfig(), saved);
+});
+
+test("an Engineer runtime PATCH rejects consent fields and preserves the saved config", async (t) => {
+  const { request } = fixture();
+  const repoRoot = gitRepo("runtime-patch-reject-consent");
+  const saved = setPipelinesConfig({
+    launchRuntime: "terminal",
+    enabled: false,
+    foremanMechanicalTriage: false,
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: false }],
+  });
+  const consentChanges = {
+    enabled: true,
+    foremanMechanicalTriage: true,
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+  };
+
+  for (const [field, value] of Object.entries(consentChanges)) {
+    await t.test(`rejects ${field} alongside a valid runtime with HTTP 400`, async () => {
+      const response = await request("/api/pipelines/config", {
+        method: "PATCH",
+        body: JSON.stringify({ launchRuntime: "agent-sdk", [field]: value }),
+      });
+      assert.equal(response.status, 400);
+      assert.deepEqual(getPipelinesConfig(), saved);
+    });
+  }
+});
+
 test("a body the schema refuses changes nothing", async () => {
   const { request } = fixture();
   const repo = gitRepo("bad-body");

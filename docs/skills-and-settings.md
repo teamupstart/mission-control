@@ -807,3 +807,13 @@ Use Settings > Foreman to change the automatic wrap-up exclusions and Settings >
 to edit the guidance given to future sessions.
 
 Contributors can follow the [setting onboarding guide](../CONTRIBUTING.md#onboard-a-setting).
+
+Specialized preferences use the same operations. Ask a session to find “Counts on Idle rail
+sections” and set `featureFlags.idle-rail-section-counts` to `true`. Open dashboards receive the
+same live update as a click in Feature flags. Use `repoIndex.directories` with a version from
+`get` to edit indexed roots, or find a task source by name to edit one of its supported fields.
+
+A protected response names the panel where the operator can act. Trust grants, credentials, the
+feature flag master switch, microphone arming and other settings that confer authority stay with
+the operator. The dashboard handles changes that shorten retention or require native confirmation.
+Build and preview gates control which settings are discoverable.

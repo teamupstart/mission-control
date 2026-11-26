@@ -239,6 +239,14 @@ planning workflows keep their artifact and approval contracts without requiring 
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 
+## Change settings from a session
+
+With **Session settings through MCP** enabled and desktop consent granted in **Settings > Trust**,
+ask a registered session to switch Mission Control to Daylight. The same `mission_settings` tool
+finds and edits installation preferences through their Settings owners. Trust grants, credentials
+and actions that require confirmation stay with the operator. Turn off access in Trust to
+revoke it for running sessions. [Skills and settings](docs/skills-and-settings.md#let-a-session-change-the-theme)
+
 ## Mission Control skills
 
 On a new installation, Mission Control enables its shipped skills for Claude Code, Codex,

@@ -185,6 +185,12 @@ operator must turn on **Allow sessions to access Mission Control settings** in *
 in the desktop app. Trust starts off when there is no saved choice and remains independent of the
 rollout flag, including after the flag retires.
 
+A permitted session can change individual flags whose registry entries allow session writes.
+For example, setting `featureFlags.idle-rail-section-counts` to `true` updates every open
+dashboard. Enable all, override resets, workstation capture flags and flags that confer
+authority require an operator. Each new feature flag declares its session policy in the
+[flag registry](../src/shared/feature-flag-registry.ts).
+
 ## Shipped flags
 
 | Id | Stage | Gates | Guide |

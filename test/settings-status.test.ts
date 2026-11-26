@@ -288,7 +288,8 @@ test("PUT /api/task-sources/config recomposes from all three stores and pushes",
   // patching, so the emitted tuple must carry it.
   setShippingConfig({ autoMerge: true });
   const { app, statuses } = setup();
-  const res = await put(app, "/api/task-sources/config", { sources: [] });
+  const { revision } = await (await app.request("/api/task-sources/config", { headers: { host: "127.0.0.1:7317" } })).json();
+  const res = await put(app, "/api/task-sources/config", { revision, sources: [] });
   assert.equal(res.status, 200);
   const last = statuses().at(-1);
   assert.ok(last, "a settings_status should have been emitted");

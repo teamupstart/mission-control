@@ -135,7 +135,10 @@ function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode
     hostNow += 10_000;
     return router.accept({ id: `capture-${++sequence}`, text, capturedAt: Date.now(), backend: "fluidaudio", words: timed(text), ...extra }, timing);
   };
-  return { router, cards, delivered, say, state, pending: () => [...cards.values()].filter(card => card.state === "pending") };
+  /** Move the host clock, which a listener's capture timing and the retry records follow. */
+  const advanceHost = (ms: number) => { hostNow += ms * 1000; return hostNow; };
+  return { router, cards, delivered, say, state, advanceHost, hostNow: () => hostNow,
+    pending: () => [...cards.values()].filter(card => card.state === "pending") };
 }
 
 test("Always-on: one capture with the separator opens two addressed cards, each with its own Cancel", async t => {
@@ -468,7 +471,7 @@ test("a retry never routes a completed part again, however much history has been
 test("a completed separated capture is remembered past the recent history, and a too-late retry is refused", async t => {
   let now = Date.now();
   t.mock.method(Date, "now", () => now);
-  const { router, cards } = harness(t);
+  const { router, cards, advanceHost } = harness(t);
   const utterance: VoiceUtterance = { id: "late", text: EXAMPLE, capturedAt: now, backend: "fluidaudio", words: timed(EXAMPLE) };
   assert.equal(await router.accept(utterance), true);
   for (const id of ["late:1", "late:2"]) assert.equal(router.cancel(id), true);
@@ -478,12 +481,32 @@ test("a completed separated capture is remembered past the recent history, and a
   }
   // Within the retry window the record answers the retry, and nothing is sent again.
   now += 4 * 60_000;
+  advanceHost(4 * 60_000);
   assert.equal(await router.accept(utterance), true);
   assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
   // Past it the record is gone, and the capture is refused instead of split again.
   now += 2 * 60_000;
+  advanceHost(2 * 60_000);
   assert.equal(await router.accept(utterance), false);
   assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
+});
+
+test("a listener's retry past the window is refused even after a separator edit stops it splitting", async t => {
+  const { router, cards, state, advanceHost, hostNow } = harness(t);
+  await fill(router, 49);
+  const onset = hostNow();
+  const timing = { startHostUs: onset, speechStartHostUs: onset };
+  const utterance: VoiceUtterance = { id: "edited", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  // Steve's message routes; Carol's is refused at capacity.
+  assert.equal(await router.accept(utterance, timing), false);
+  assert.equal(cards.get("edited:1")?.parts[0]?.text, "check the build");
+  // The record expires on the host clock, a slot opens, and the word changes so the text no longer splits.
+  advanceHost(6 * 60_000);
+  assert.equal(router.cancel("filler-0"), true);
+  state.separatorWord = "pineapple";
+  assert.equal(await router.accept(utterance, timing), false);
+  // Neither a whole-transcript card nor a second split reaches Steve or Carol.
+  assert.deepEqual([...cards.keys()].filter(id => id.startsWith("edited")), ["edited:1"]);
 });
 
 test("a retry that overlaps a capture still routing shares that attempt and routes each part once", async t => {

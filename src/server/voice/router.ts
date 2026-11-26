@@ -48,8 +48,8 @@ interface SeparatedCapture {
    * capture holds the speech still to be routed and nothing already shown in Recently heard.
    */
   routed: number;
-  /** Wall time after which the record is dropped. A retry that late is refused before splitting. */
-  expiresAt: number;
+  /** Host time (µs) after which the record is dropped. A retry that late is refused before splitting. */
+  expiresAtHostUs: number;
   /** Finished or cleared: a retry routes nothing. The parts and roster are released. */
   retired: boolean;
   /** The routing attempt still running. A retry that overlaps it shares its result. */
@@ -665,8 +665,8 @@ export class VoiceRouter {
       if (aheadUs > MAX_CAPTURE_CLOCK_SKEW_MS * 1000) return false;
     }
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
-    const now = Date.now();
-    for (const [key, record] of this.separatedCaptures) if (record.expiresAt <= now) this.separatedCaptures.delete(key);
+    const hostNowUs = this.hostNowUs();
+    for (const [key, record] of this.separatedCaptures) if (record.expiresAtHostUs <= hostNowUs) this.separatedCaptures.delete(key);
     const pendingSplit = this.separatedCaptures.get(id);
     if (pendingSplit) return this.routeSeparated(utterance, pendingSplit);
     const capture = timing.captureKey ? this.dictationCaptures.get(timing.captureKey) : undefined;
@@ -683,19 +683,25 @@ export class VoiceRouter {
     const leadMs = speechStartHostUs !== undefined && startHostUs !== undefined ? (speechStartHostUs - startHostUs) / 1000 : 0;
     const time = { openedAt: capturedAt + leadMs, openedAtHostUs: onsetUs };
     // Only automatic capture ends at the separator. A hold ends on key release, so the word is text.
+    const automatic = mode === "listening" && !heldBeforeRelease;
+    // An automatic capture this old may have been separated before, perhaps under a since-edited
+    // word, and any record of its routed parts has expired. A listener's host timing measures that
+    // age on the monotonic clock, so refuse such a capture before reading the current separator:
+    // it can neither split again nor route whole and repeat a message already routed. A capture
+    // with wall time only is refused below, when it splits.
+    const stale = automatic && (onsetUs !== undefined ? (hostNowUs - onsetUs) / 1000 : Date.now() - capturedAt) > SEPARATED_RETRY_MS;
+    if (stale && onsetUs !== undefined) return false;
     // A call sign spelled like the separator still addresses its agent as the capture's first word.
-    const separated = mode === "listening" && !heldBeforeRelease && separatorWord
+    const separated = automatic && separatorWord
       ? splitAtSeparator(utterance.text, utterance.words, separatorWord, {
         leadingAddress: roster.some(name => normalizeSeparatorWord(name.name) === normalizeSeparatorWord(separatorWord)),
       }) : null;
     if (separated) {
-      // Any record of an earlier attempt has expired by now, so this could be a retry of parts
-      // that already routed. Refuse it rather than split it again.
-      if (now - capturedAt > SEPARATED_RETRY_MS) return false;
+      if (stale) return false;
       const split: SeparatedCapture = { parts: separated, time, startHostUs, captureKey: timing.captureKey,
         roster: roster.map(target => ({ ...target })), routed: 0, retired: false,
         // Outlive the refusal window above, including a capture dated slightly ahead of this clock.
-        expiresAt: Math.max(now, capturedAt) + SEPARATED_RETRY_MS + MAX_CAPTURE_CLOCK_SKEW_MS };
+        expiresAtHostUs: hostNowUs + (SEPARATED_RETRY_MS + MAX_CAPTURE_CLOCK_SKEW_MS) * 1000 };
       this.separatedCaptures.set(id, split);
       return this.routeSeparated(utterance, split);
     }

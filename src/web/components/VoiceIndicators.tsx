@@ -29,7 +29,8 @@ const TRANSCRIPT_MIN_HEIGHT = 56;
  * gives up height and scrolls, so every countdown and control stays reachable and uncovered.
  * Nothing moves when the two do not overlap.
  */
-function useTranscriptClearsToasts(aside: RefObject<HTMLElement | null>, active: boolean) {
+/** `placement` names the transcript's style and corner: a move to the other corner keeps its size, so no resize reports it. */
+function useTranscriptClearsToasts(aside: RefObject<HTMLElement | null>, active: boolean, placement: string) {
   useLayoutEffect(() => {
     const element = aside.current;
     if (!active || !element) return;
@@ -84,7 +85,7 @@ function useTranscriptClearsToasts(aside: RefObject<HTMLElement | null>, active:
       release();
       element.style.removeProperty("--vt-lift");
     };
-  }, [aside, active]);
+  }, [aside, active, placement]);
 }
 
 export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, openSetup, children }: {
@@ -133,7 +134,7 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
   const transcript = enabled && state && voiceCaptures(state.mode) ? state.transcript : undefined;
   const phaseLabel = transcript && { ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[transcript.phase];
   const transcriptRef = useRef<HTMLElement>(null);
-  useTranscriptClearsToasts(transcriptRef, !!transcript?.text);
+  useTranscriptClearsToasts(transcriptRef, !!transcript?.text, `${transcript?.style}-${transcript?.corner}`);
   return <VoiceWindow.Provider value={value}>
     {children}
     {transcript?.text && <aside ref={transcriptRef} aria-label="Live voice transcript"

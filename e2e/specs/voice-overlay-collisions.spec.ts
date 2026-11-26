@@ -20,8 +20,16 @@ function keepSpeaking(daemon: Parameters<typeof transcriptSample>[0]) {
   let turn = 0;
   const send = () => transcriptSample(daemon, { phase: "words", onset: 1,
     text: "Will, run the release checklist" + " again".repeat(turn++) });
-  const timer = setInterval(() => void send().catch(() => {}), 700);
-  return { first: send(), stop: () => clearInterval(timer) };
+  let timer: ReturnType<typeof setInterval> | undefined;
+  // A refused refresh is reported; the overlay assertions then fail on the missing transcript.
+  const resume = () => {
+    timer = setInterval(() => void send().then(accepted => {
+      if (!accepted) console.warn("live transcript sample was not accepted");
+    }, (error: unknown) => console.error("live transcript sample failed", error)), 700);
+  };
+  resume();
+  // Paused, the words and the transcript's size hold still for up to five seconds.
+  return { first: send(), stop: () => clearInterval(timer), pause: () => clearInterval(timer), resume };
 }
 
 const pendingCards = (page: Page) => page.getByRole("status").filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
@@ -102,8 +110,20 @@ for (const placement of [
         await page.mouse.move(size.width / 2, 120);
         await captureCard(page, `transcript-${placement.style}-${placement.corner}-${size.name}`);
       }
-      // Cancelling a card lets the transcript settle back toward its corner, still clear of the rest.
       await page.setViewportSize(windows[0]);
+      if (placement.corner === "bottom-left" && placement.style === "card") {
+        // Moving the card into the toast's corner keeps its size, and it still rises clear of the cards.
+        // New words would resize it, so they pause: only the corner change can move it.
+        speaking.pause();
+        await expect(transcript).toHaveCSS("bottom", "48px");
+        expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { transcriptCorner: "bottom-right" } })).ok()).toBe(true);
+        await expect(transcript).toHaveClass(/vt-bottom-right/);
+        await expect.poll(() => collisions(page), { timeout: 2000 }).toEqual([]);
+        await expect(transcript).not.toHaveCSS("bottom", "48px");
+        speaking.resume();
+        await expectApart(page, 3);
+      }
+      // Cancelling a card lets the transcript settle back toward its corner, still clear of the rest.
       const before = await transcript.boundingBox();
       await pendingCards(page).filter({ hasText: "inspect the release notes" }).getByRole("button", { name: "Cancel", exact: true }).click();
       await expect(pendingCards(page)).toHaveCount(2);

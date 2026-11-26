@@ -666,7 +666,9 @@ export class VoiceRouter {
     }
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     const hostNowUs = this.hostNowUs();
-    for (const [key, record] of this.separatedCaptures) if (record.expiresAtHostUs <= hostNowUs) this.separatedCaptures.delete(key);
+    // A record lives through its expiry instant: a capture dated a little ahead of this clock is
+    // exactly SEPARATED_RETRY_MS old then, and not yet refused as stale.
+    for (const [key, record] of this.separatedCaptures) if (record.expiresAtHostUs < hostNowUs) this.separatedCaptures.delete(key);
     const pendingSplit = this.separatedCaptures.get(id);
     if (pendingSplit) return this.routeSeparated(utterance, pendingSplit);
     const capture = timing.captureKey ? this.dictationCaptures.get(timing.captureKey) : undefined;

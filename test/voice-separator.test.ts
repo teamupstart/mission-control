@@ -491,6 +491,23 @@ test("a completed separated capture is remembered past the recent history, and a
   assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
 });
 
+test("a capture dated ahead of the daemon keeps its record through the expiry instant", async t => {
+  const { router, cards, advanceHost, hostNow } = harness(t);
+  await fill(router, 49);
+  // Dated the full tolerated skew ahead, so it is exactly five minutes old when its record expires.
+  const onset = hostNow() + 1_000_000;
+  const timing = { startHostUs: onset, speechStartHostUs: onset };
+  const utterance: VoiceUtterance = { id: "edge", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance, timing), false);
+  assert.equal(router.cancel("filler-0"), true);
+  assert.equal(router.cancel("edge:1"), true);
+  advanceHost(5 * 60_000 + 1000);
+  // Not stale yet, and the record still says Steve's part routed: only Carol's part routes.
+  assert.equal(await router.accept(utterance, timing), true);
+  assert.equal(cards.get("edge:1")?.state, "cancelled");
+  assert.equal(cards.get("edge:2")?.state, "pending");
+});
+
 test("a listener's retry past the window is refused even after a separator edit stops it splitting", async t => {
   const { router, cards, state, advanceHost, hostNow } = harness(t);
   await fill(router, 49);

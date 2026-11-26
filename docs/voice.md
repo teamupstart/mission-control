@@ -392,7 +392,7 @@ routes from the refused part on with the original split, even if the separator w
 The daemon keeps each separated capture's record of routed parts for five minutes on its host
 clock, so a retry never sends a part twice. An automatic capture whose host timing is older than
 that is refused before the separator is read, so it can neither split again nor route as one
-message after a separator edit. A capture dated only in Unix time is refused when it splits. Turning Voice off or clearing Recently heard ends a separated capture and drops the
+message after a separator edit. A capture dated only in Unix time is refused when it splits and is older than five minutes. Turning Voice off or clearing Recently heard ends a separated capture and drops the
 speech its waiting parts kept: a later retry opens none of its parts.
 Every part is bound to the sessions on the roster when the capture arrived; if another session
 takes over a call sign before a later part is delivered, that part reports `not-running`.

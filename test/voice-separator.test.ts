@@ -98,15 +98,16 @@ test("the setting accepts one word and refuses phrases, punctuation and voice co
 const agent = (name: string): SpokenName => ({ key: `task:${name.toLowerCase()}`, name, kind: "session", sessionId: name.toLowerCase(),
   taskId: name.toLowerCase(), role: "", colorId: null, agent: "codex", state: "running" });
 
-function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions } = {}) {
+function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions;
+  cancelWindow?: boolean; onDeliver?: (name: string, text: string) => void } = {}) {
   const cards = new Map<string, VoiceCard>();
   const delivered: { name: string; text: string }[] = [];
   let hostNow = 1_000_000;
   const state = { mode: options.mode ?? "listening", separatorWord: options.separatorWord === undefined ? "bagel" : options.separatorWord,
     roster: options.roster ?? [agent("Steve"), agent("Carol")] };
   const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: state.mode, roster: state.roster, separatorWord: state.separatorWord }),
-    () => ({ enabled: true, seconds: 30 }), {
-      deliver: async (target, text) => { delivered.push({ name: target.name, text }); return "queued"; },
+    () => ({ enabled: options.cancelWindow ?? true, seconds: 30 }), {
+      deliver: async (target, text) => { delivered.push({ name: target.name, text }); options.onDeliver?.(target.name, text); return "queued"; },
     }, card => cards.set(card.id, card), undefined, () => hostNow, options.questions);
   t.after(() => router.reset());
   let sequence = 0;
@@ -251,6 +252,35 @@ test("a retry routes the original parts against the original sessions after a se
   assert.equal(await router.sendNow("kept:2"), true);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(cards.get("kept:2")?.state, "not-running");
+});
+
+test("clearing actions while a capture is routing stops its remaining parts", async t => {
+  let clear = () => {};
+  const { router, delivered, cards } = harness(t, { cancelWindow: false, onDeliver: name => { if (name === "Steve") clear(); } });
+  clear = () => router.clearActionsAndHistory();
+  const utterance: VoiceUtterance = { id: "cleared", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered.map(({ name }) => name), ["Steve"]);
+  assert.equal(cards.has("cleared:2"), false);
+  // A retry of the cleared capture routes nothing either.
+  assert.equal(await router.accept(utterance), true);
+  assert.equal(cards.has("cleared:2"), false);
+});
+
+test("a retry never routes a completed part again, however much history has been recorded since", async t => {
+  const { router, pending, cards } = harness(t);
+  await fill(router, 49);
+  const utterance: VoiceUtterance = { id: "evict", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance), false);
+  assert.equal(router.cancel("evict:1"), true);
+  // Push the completed part's ID out of the bounded recent-capture history.
+  for (let i = 0; i < 60; i++) {
+    assert.equal(await router.accept({ id: `noise-${i}`, text: "morning everyone", capturedAt: Date.now(), backend: "fluidaudio", words: [] }), true);
+  }
+  assert.equal(await router.accept(utterance), true);
+  assert.equal(cards.get("evict:1")?.state, "cancelled");
+  assert.deepEqual(pending().filter(card => card.id.startsWith("evict:")).map(card => card.id), ["evict:2"]);
 });
 
 const ONE_NAME = "Steve, check the build, bagel, then report status";

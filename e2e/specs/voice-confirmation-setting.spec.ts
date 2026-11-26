@@ -230,7 +230,7 @@ test("an older split stop receipt keeps the newer standalone countdown selected"
     };
   });
   await page.goto("about:blank");
-  await page.goto(daemon.baseURL + "/#/voice/pill");
+  await page.goto(daemon.baseURL + "/#/voice/popover");
   const card = page.getByRole("status");
   await say(daemon, "Steve, inspect the build, and Will, stop", { id: "earlier-split" });
   await card.getByRole("button", { name: /Will/ }).click();
@@ -299,12 +299,16 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     await page.clock.pauseAt(await page.evaluate(() => new Date(Date.now() + 500).toISOString()));
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 3 } } })).ok()).toBe(true);
     await say(daemon, "Steve, inspect the short window");
-    await expect(card).toContainText("inspect the short window");
+    // The pill stacks both countdowns; the popover shows the newer one.
+    const open = page.getByRole("status").filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
+    await expect(open.last()).toContainText("inspect the short window");
+    await expect(open).toHaveCount(placement === "pill" ? 2 : 1);
     await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
     await page.clock.fastForward(3500);
-    await expect(card).toContainText("inspect the long window", { timeout: 1500 });
+    await expect(open).toHaveCount(1, { timeout: 1500 });
+    await expect(open).toContainText("inspect the long window", { timeout: 1500 });
     const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/long-window/cancel"));
-    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await open.getByRole("button", { name: "Cancel", exact: true }).click();
     expect((await cancelled).ok()).toBe(true);
   });
 
@@ -320,6 +324,26 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     await say(daemon, "Steve, inspect the older message", { id: "older" });
     await expect(card).toContainText("inspect the older message");
     await say(daemon, "Steve, inspect the newer message", { id: "newer" });
+    if (placement === "pill") {
+      // The pill shows every open countdown, oldest first, so nothing needs restoring.
+      await expect(card).toHaveCount(2);
+      await expect(card.first()).toContainText("inspect the older message");
+      await expect(card.last()).toContainText("inspect the newer message");
+      await say(daemon, "Steve, inspect the third message", { id: "third" });
+      await expect(card).toHaveCount(3);
+      await expect(card.last()).toContainText("inspect the third message");
+      await card.last().getByRole("button", { name: "Cancel", exact: true }).click();
+      await card.nth(1).getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(card).toHaveCount(1);
+      await expect(card).toContainText("inspect the older message");
+      await page.mouse.move(640, 400);
+      await captureCard(card, "priority-older-" + placement);
+      const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/older/cancel"));
+      await card.getByRole("button", { name: "Cancel", exact: true }).click();
+      expect((await cancelled).ok()).toBe(true);
+      await expect(card).toContainText("Cancelled");
+      return;
+    }
     await expect(card).toContainText("inspect the newer message");
     const choose = page.getByRole("combobox", { name: "Voice message" });
     await choose.selectOption("older");

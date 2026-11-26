@@ -7,6 +7,7 @@ import type { SpokenName } from "../src/shared/voice-names.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { VoiceCardView } from "../src/web/components/VoiceCardView.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
+import type { DashboardVoiceCard } from "../src/web/lib/voice-card-clock.ts";
 
 const target: SpokenName = { name: "Steve", key: "resident:build", kind: "resident", sessionId: "s", taskId: "t", role: "Maintains CI", colorId: "cyan", agent: "claude", state: "running" };
 const actions = {
@@ -70,4 +71,36 @@ test("a held card names the outstanding call even when an earlier filed plan sti
     actions: { ...actions, sessions: [mkSession({ id: "s" })], reviews: [plan, question] } }));
   assert.match(html, /Asked: Which build\?/);
   assert.doesNotMatch(html, /Filed rollout plan|older session|predates/);
+});
+
+test("the floating pill stacks every open countdown oldest first and drops the selector", async () => {
+  const { VoiceCardHost } = await import("../src/web/components/VoiceCardHost.tsx");
+  const now = performance.now();
+  const pending = (id: string, name: string, text: string, opened: number): DashboardVoiceCard => ({
+    id, state: "pending", reason: "exact", deadline: performance.timeOrigin + opened + 30_000, windowMs: 30_000,
+    localDeadline: now + opened + 30_000, firstReceivedAt: now + opened, candidates: [], openQuestions: 0,
+    parts: [{ target: { ...target, name, key: "resident:" + name }, text }],
+  });
+  // Insertion order differs from opening order: the stack follows when each window opened.
+  const cards = new Map([
+    ["later", pending("later", "Will", "run the release checklist", 3000)],
+    ["split:2", pending("split:2", "Carol", "give me a report", 0)],
+    ["split:1", pending("split:1", "Steve", "check the build", 0)],
+    ["sent", { ...pending("sent", "Steve", "an earlier message", -9000), state: "sent" as const, deadline: null, localDeadline: undefined }],
+  ]);
+  const render = (surface?: "pill" | "popover") => renderToStaticMarkup(createElement(VoiceCardHost, {
+    cards, fadingCards: new Set<string>(), actions, surface, sound: false, notifications: false }));
+  const pill = render("pill");
+  const order = [...pill.matchAll(/aria-label="To ([^:"]+):/g)].map(match => match[1]);
+  assert.deepEqual(order, ["Steve", "Carol", "Will"]);
+  assert.equal(pill.match(/>Cancel</g)?.length, 3);
+  assert.equal(pill.match(/class="vc-ring"/g)?.length, 3);
+  assert.doesNotMatch(pill, /an earlier message/, "an outcome waits until the countdowns close");
+  assert.doesNotMatch(pill, /Voice message/);
+  assert.equal(pill.match(/This card opened with/g)?.length, 3);
+  // The popover keeps one card at a time, the newest window first, with the selector.
+  const popover = render("popover");
+  assert.equal(popover.match(/>Cancel</g)?.length, 1);
+  assert.match(popover, /run the release checklist/);
+  assert.match(popover, /Voice message/);
 });

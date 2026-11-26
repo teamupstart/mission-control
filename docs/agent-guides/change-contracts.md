@@ -1003,7 +1003,11 @@ A SessionAction is a durable side effect, not an evaluator:
   binding.sessionId, anchor.noteKey)` holds, so a binding moved any way other than a committed
   runtime transfer is never reopened only to be blocked again. On `session_upsert` the re-check
   runs BEFORE `noteSessionActionActivity`, because the update that brings the session back can
-  be the only proof of pickup and that recorder reads waiting attempts alone.
+  be the only proof of pickup and that recorder reads waiting attempts alone. The block's stored
+  detail (`SESSION_LOST_RECOVERY`) outlives the binding, so it conditions the re-check on the
+  workflow still being bound and names Reattach or Cancel for a detached one. It must stay true
+  after an orphan, when only Cancel is projected. A session that returns in another conversation
+  never reaches Retry at all: the same `session_upsert` pauses the binding.
 - The authored prompt ceiling is DERIVED (`sessionActionPromptBytes` = `sessionActionPacketBytes`
   less `sessionActionEnvelopeBytes`), never set beside it. An action packet is the operator's
   own instruction frozen into an immutable version, so it is refused when it cannot be sent

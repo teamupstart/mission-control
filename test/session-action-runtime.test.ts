@@ -1645,6 +1645,85 @@ test("a binding moved to another session without a transfer is not offered the r
   }
 });
 
+test("a lost-session block's stored detail stays true after the binding is orphaned", async () => {
+  const h = await harness("session-lost-orphaned-detail", { sessionActionSessionGraceMs: 1_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    h.registry.applyDiscovery([]);
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 2_000);
+    assert.ok(h.store.runSummary(runId)?.recovery?.operations.includes("retry"));
+
+    // The binding is orphaned after the block was written. Recovery withdraws Retry; the stored
+    // detail cannot be withdrawn, so it must not promise recovery unconditionally.
+    h.store.orphanBinding(h.store.getRun(runId)!.bindingId, "session_disappeared");
+    await h.manager.sweepSessionActions(away + 4_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "session_disappeared");
+    assert.deepEqual(h.store.runSummary(runId)?.recovery?.operations, ["cancel"]);
+    const stored = [
+      h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.blocked?.detail
+        ?? (h.store.getAttempt(attempt.id)!.output as { blocked?: { detail?: string } }).blocked?.detail,
+      h.store.getAttempt(attempt.id)!.error,
+      ...h.store.listEvents(runId)
+        .filter((event) => event.kind === "session_action_blocked")
+        .map((event) => (event.payload as { detail?: string }).detail),
+    ];
+    for (const text of stored) {
+      assert.ok(text, "a stored detail is missing");
+      assert.match(text!, /While the workflow is still bound to this session, the action is checked again automatically/);
+      assert.match(text!, /If the workflow has been detached from the session, reattach it or cancel the run\./);
+      assert.doesNotMatch(text!, /When the session is running again this action is checked again automatically/);
+    }
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a blocked action's session returning in another conversation is never offered Retry", async () => {
+  const h = await harness("session-lost-other-conversation", { sessionActionSessionGraceMs: 1_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    h.registry.applyDiscovery([]);
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 2_000);
+    assert.ok(h.store.runSummary(runId)?.recovery?.operations.includes("retry"));
+
+    // The bound session comes back running a DIFFERENT conversation. The same update that
+    // revives it pauses the binding, so no reader ever sees an active binding on a mismatched
+    // conversation: Retry is withdrawn, not refused with advice to resume the session.
+    h.registry.applyHook({
+      agent: "claude", event: "PreToolUse", sessionId: "agent-another-conversation", cwd: "/repo",
+      transcriptPath: null, env: { tmuxPane: `%${h.sessionId.length}` }, prCreated: false,
+    });
+    assert.notEqual(h.registry.getSession(h.sessionId)?.state, "exited");
+    const run = h.store.getRun(runId)!;
+    assert.equal(h.store.getBinding(run.bindingId)?.state, "paused");
+    assert.equal(run.currentPhase, "conversation_changed");
+    assert.equal(h.store.recoverableLostSessionAction(run), null);
+    assert.deepEqual(h.store.runSummary(runId)?.recovery?.operations, ["cancel"]);
+    const retried = h.manager.retry(runId, { requestId: "other-conversation" });
+    assert.equal(retried.ok, false);
+    assert.notEqual(retried.ok ? null : retried.reason, "session_unavailable", "Retry was offered and then refused");
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "error", "the attempt was reopened into another conversation");
+  } finally {
+    await h.stop();
+  }
+});
+
 test("a restart mid-flight never sends, completes, or captures twice", async () => {
   const h = await harness("restart", { downstream: true });
   try {

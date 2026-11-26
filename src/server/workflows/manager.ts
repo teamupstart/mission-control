@@ -529,6 +529,20 @@ const WORKFLOW_RESUMPTION_SETTLE_MS = 10_000;
 const WORKFLOW_SESSION_ACTION_SESSION_GRACE_MS = 10 * 60_000;
 
 /**
+ * The recovery half of a recoverable `session_lost` block's stored detail.
+ *
+ * Stored, so it outlives the state it was written in: the attempt, its error and the
+ * `session_action_blocked` event keep it after the binding is orphaned, when neither the
+ * automatic re-check nor Retry applies any more. So the promise is conditioned on the binding
+ * and names the detached path, which keeps the sentence true in both states rather than
+ * rewriting history when the binding goes.
+ */
+const SESSION_LOST_RECOVERY = "No repair round was spent. While the workflow is still bound to "
+  + "this session, the action is checked again automatically when the session is running, and "
+  + "Retry checks it again by hand. If the workflow has been detached from the session, reattach "
+  + "it or cancel the run.";
+
+/**
  * How long a repair round may sit parked, packet delivered and repository untouched, before
  * the session is reminded about it once.
  *
@@ -6273,9 +6287,7 @@ export class WorkflowManager {
     const session = this.registry.getSession(binding.sessionId);
     if (!session || session.state === "exited") {
       this.blockSessionAction(attempt.id, "session_lost",
-        "The bound session is not available to run this action. No repair round was spent. When "
-        + "the session is running again this action is checked again automatically; Retry checks "
-        + "it again by hand.", now);
+        `The bound session is not available to run this action. ${SESSION_LOST_RECOVERY}`, now);
       return;
     }
     // Preparation's half of the required-skill promise. `deliveryBlock` re-resolves it
@@ -6547,8 +6559,7 @@ export class WorkflowManager {
       if (now - since < grace) return;
       this.blockSessionAction(attempt.id, "session_lost",
         "The bound session stayed unavailable after this action was sent, so its turn could not "
-        + "be observed. No repair round was spent. When the session is running again this "
-        + "action is checked again automatically; Retry checks it again by hand.", now);
+        + `be observed. ${SESSION_LOST_RECOVERY}`, now);
       return;
     }
     if (state.sessionMissingSince != null) {

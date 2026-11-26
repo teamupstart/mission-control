@@ -79,8 +79,10 @@ export class TranscriptPreview {
       for (const id of this.onsets.keys()) {
         if (id <= sample.onset) this.onsets.delete(id);
       }
-      // Retire even an expired final without letting it change the display.
-      if (!onset || now >= onset.freshUntil) return;
+      if (!onset) return;
+      // A first decode for the current utterance can follow a long audio-only interval.
+      const firstWordsOfCurrentOnset = !superseded && onset.highestCounts.size === 0;
+      if (!firstWordsOfCurrentOnset && now >= onset.freshUntil) return;
       if (this.interimOnset === sample.onset || (words.length > 0 && this.interimOnset < sample.onset)) {
         this.interim = "";
         this.interimOnset = -1;

@@ -841,6 +841,12 @@ test("an expired latest onset's final cannot revive the live transcript", t => {
   h.advance(5000);
   send(1, "hello there", true);
   assert.equal(h.store.state().transcript, undefined);
+  assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "audio", onset: 2 }), true);
+  h.advance(6000); // A long utterance can finish before its first words are recognized.
   send(2, "new phrase", true);
   assert.equal(h.store.state().transcript?.text, "new phrase");
+  h.advance(4999);
+  assert.equal(h.store.state().transcript?.text, "new phrase");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
 });

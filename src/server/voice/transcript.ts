@@ -30,7 +30,6 @@ export class TranscriptPreview {
   private interim = "";
   private interimOnset = -1;
   private latestOnset = -1;
-  private hiddenThrough = -1;
   private finalizedThrough = -1;
   // A final decode can arrive after audio or partials for the next onset.
   private readonly partials = new Map<number, { highestCounts: Map<string, number>; visible: boolean }>();
@@ -40,7 +39,6 @@ export class TranscriptPreview {
   get text(): string { return transcriptTail(this.committed + " " + this.interim); }
 
   hide() {
-    this.hiddenThrough = this.latestOnset;
     this.expiresAt = 0;
     this.phase = undefined;
     this.committed = "";
@@ -75,9 +73,12 @@ export class TranscriptPreview {
         this.interim = "";
         this.interimOnset = -1;
       }
-      // Even an onset without a partial may return its first words after expiry.
-      // Finalize it, but leave the current display and its deadline alone.
-      if (sample.onset < this.latestOnset && sample.onset <= this.hiddenThrough && !partial?.visible) return;
+      // A superseded final can correct words still in this display window.
+      // Only the current onset can start or renew the window.
+      if (sample.onset < this.latestOnset) {
+        if (partial?.visible && words.length) this.committed = transcriptTail(this.committed + " " + sample.text);
+        return;
+      }
     }
     if (!words.length) return;
     const highestCounts = partial?.highestCounts ?? new Map<string, number>();

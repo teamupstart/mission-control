@@ -40,8 +40,9 @@ for (const style of ["capsule", "card"] as const) {
       await expect(listening).toBeVisible();
       await capture(page, style + "-expired");
       expect(await transcriptSample(daemon, extended)).toBe(true);
-      expect(await transcriptSample(daemon, { ...partial, final: true })).toBe(true);
       expect(await transcriptSample(daemon, { phase: "audio", onset: 2 })).toBe(true);
+      expect(await transcriptSample(daemon, { ...partial, text: "turn on the light", final: true })).toBe(true);
+      await expect(page.getByRole("status", { name: "Voice feedback" })).toHaveText("Audio detected");
       await expect(overlay).toHaveCount(0);
       expect(await transcriptSample(daemon, { ...partial, onset: 2, text: "fresh speech" })).toBe(true);
       await expect(overlay.locator("span")).toHaveText("fresh speech");

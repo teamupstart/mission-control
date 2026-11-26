@@ -772,7 +772,13 @@ test("delayed finals from expired onsets cannot reopen or extend the live transc
   assert.equal(h.store.state().transcript?.text, "new speech");
   h.advance(1);
   assert.equal(h.published.at(-1)?.transcript, undefined);
-  send({ phase: "words", onset: 3, text: "...", final: true });
-  send({ phase: "words", onset: 3, text: "delayed partial" });
+  send({ phase: "audio", onset: 4 });
+  send({ phase: "audio", onset: 5 });
+  send({ phase: "words", onset: 4, text: "another delayed final", final: true });
+  assert.equal(h.store.state().transcript?.text, "");
+  send({ phase: "words", onset: 5, text: "current words" });
+  h.advance(5000);
+  send({ phase: "words", onset: 5, text: "...", final: true });
+  send({ phase: "words", onset: 5, text: "delayed partial" });
   assert.equal(h.store.state().transcript, undefined);
 });

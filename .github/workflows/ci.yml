@@ -146,6 +146,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check structural conventions
+        run: npm run konsistent
+        env:
+          KONSISTENT_NO_UPDATE_CHECK: 'true'
+
       - name: Check documentation links
         run: node scripts/check-doc-links.mjs
 

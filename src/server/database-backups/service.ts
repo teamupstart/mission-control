@@ -1,19 +1,18 @@
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
-  closeSync,
-  constants,
   existsSync,
-  fsyncSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readdirSync,
-  renameSync,
   unlinkSync,
 } from "node:fs";
+import { open, unlink } from "node:fs/promises";
+import { Worker } from "node:worker_threads";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { publishDatabaseBackup, syncFile, type PublicationOptions } from "./publication.ts";
+import { availableBackupBytes, databaseImageBytes, requireBackupSpace } from "./space.ts";
 import { onlineDatabaseBackup } from "./online.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
@@ -28,6 +27,8 @@ import {
   type RecordedDatabaseBackupKind,
 } from "@shared/database-backups.ts";
 import { DATABASE_BACKUPS_DIR } from "../config.ts";
+
+export { scrubWriteOnlySecrets, WRITE_ONLY_SECRET_TABLES, validateDatabaseBackupForRestore, type DatabaseBackupValidation } from "./publication.ts";
 
 export type DatabaseBackupKind = "scheduled" | "preMigration" | "manual";
 
@@ -145,20 +146,12 @@ interface OwnedCopy {
   diskBytes: number;
 }
 
-export interface DatabaseBackupValidation {
-  integrity: "ok";
-  pageCount: number;
-  tableCount: number;
-}
-
-interface DatabaseBackupServiceOptions {
+interface DatabaseBackupServiceOptions extends PublicationOptions {
   root?: string;
   /** Fixed counts. Without it, every prune reads the stored config through `source`. */
   retention?: DatabaseBackupRetention;
   now?: () => Date;
   onlineBackup?: (source: DatabaseSync, destination: string) => Promise<void>;
-  selfContain?: (temporary: string) => void;
-  validate?: (temporary: string) => DatabaseBackupValidation;
   removeFile?: (path: string) => void;
 }
 
@@ -188,55 +181,7 @@ function copyTime(stamp: string): number {
 /** The files SQLite may leave beside a database, removed with the file they belong to. */
 const SQLITE_SIDECARS = ["-wal", "-shm", "-journal"] as const;
 
-/**
- * Tables whose values are write-only secrets (`src/server/db.ts`). Every recovery point is
- * scrubbed of them before it is published, so a backup never carries one: a restored database
- * shows those secrets as not set, and a run whose snapshot lost one refuses to start that server
- * rather than starting it without its credential.
- */
-export const WRITE_ONLY_SECRET_TABLES = ["resident_mcp_secrets", "resident_run_mcp_secrets"] as const;
-
-/**
- * Private definitions redacted in place, so their rows survive and only their content does not.
- * A global MCP server's whole definition - command and arguments included - is private, because
- * native configuration does not mark which parts are credentials; a restored run keeps the
- * server's name and refuses to start it.
- */
-const PRIVATE_DEFINITION_REDACTIONS = [
-  {
-    table: "resident_run_mcp_servers",
-    sql: `UPDATE resident_run_mcp_servers
-          SET definition_json = json_set(definition_json, '$.transport', json('{"type":"redacted"}'))
-          WHERE source = 'global'`,
-  },
-] as const;
-
-/**
- * Delete every write-only secret, and redact every private definition, in a captured copy,
- * overwriting the freed pages.
- */
-export function scrubWriteOnlySecrets(path: string): void {
-  const copy = new DatabaseSync(path);
-  try {
-    const present = new Set(
-      (copy.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)
-        .map((row) => row.name),
-    );
-    const tables = WRITE_ONLY_SECRET_TABLES.filter((table) => present.has(table));
-    const redactions = PRIVATE_DEFINITION_REDACTIONS.filter((redaction) => present.has(redaction.table));
-    if (tables.length === 0 && redactions.length === 0) return;
-    // `secure_delete` zeroes the deleted cells and the old row images an update replaces;
-    // VACUUM then rebuilds the file without the freed pages, so nothing survives in free space.
-    copy.exec("PRAGMA secure_delete = ON");
-    for (const table of tables) copy.exec(`DELETE FROM ${table}`);
-    for (const redaction of redactions) copy.exec(redaction.sql);
-    copy.exec("VACUUM");
-  } finally {
-    copy.close();
-  }
-}
-
-const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:-wal|-shm|-journal)?$/;
+const OWNED_TEMPORARY = /^\.database-backup-[a-f0-9]{32}\.tmp(?:\.vacuum)?(?:-wal|-shm|-journal)?$/;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -246,102 +191,26 @@ function timestampForFilename(date: Date): string {
   return date.toISOString().replace(/[-:.]/g, "");
 }
 
-function syncFile(path: string): void {
-  const fd = openSync(path, constants.O_RDONLY);
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
+function ignoreMissingFile(error: unknown): void {
+  if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 }
 
 function safeUnlink(path: string): void {
   try {
     unlinkSync(path);
   } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    ignoreMissingFile(error);
   }
 }
 
-/**
- * Remove a capture's temporary file and every journal file SQLite may have left beside it.
- * It runs in `finally`, so a removal failure is only logged: throwing would replace the
- * capture's own error, or fail a capture that has already been published.
- */
-function removeTemporary(temporary: string): void {
-  for (const path of [temporary, ...SQLITE_SIDECARS.map((suffix) => `${temporary}${suffix}`)]) {
-    try {
-      safeUnlink(path);
-    } catch (error) {
-      console.warn(
-        `[mission-control] database backup temporary ${basename(path)} was not removed: ${errorMessage(error)}`,
-      );
-    }
-  }
+function temporaryFiles(temporary: string): string[] {
+  return [temporary, temporary + ".vacuum"].flatMap(path =>
+    [path, ...SQLITE_SIDECARS.map(suffix => path + suffix)]);
 }
 
-/**
- * An online backup copies the source's WAL journal mode, and a read-only validation of a WAL
- * file cannot clean up its WAL index. Switching the copy to rollback mode before validation
- * makes every published copy one self-contained file that opens without creating sidecars.
- */
-function useRollbackJournal(temporary: string): void {
-  const copy = new DatabaseSync(temporary);
-  try {
-    const row = copy.prepare("PRAGMA journal_mode = DELETE").get() as { journal_mode: string };
-    if (row.journal_mode !== "delete") {
-      throw new Error(`journal mode stayed ${row.journal_mode}`);
-    }
-  } finally {
-    copy.close();
-  }
-}
-
-/**
- * Open a recovery candidate read-only and ask SQLite to validate every b-tree and page.
- * This function never opens the live database and never changes the candidate.
- */
-export function validateDatabaseBackupForRestore(path: string): DatabaseBackupValidation {
-  let candidate: DatabaseSync | undefined;
-  try {
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0) {
-      throw new TypeError("candidate is not a non-empty regular file");
-    }
-    candidate = new DatabaseSync(path, { readOnly: true });
-    const rows = candidate.prepare("PRAGMA integrity_check").all() as Array<{
-      integrity_check: string;
-    }>;
-    if (rows.length !== 1 || rows[0]?.integrity_check !== "ok") {
-      const detail = rows.map((row) => row.integrity_check).join("; ") || "no result";
-      throw new Error(`integrity check failed: ${detail}`);
-    }
-    const pageCount = Number(
-      (candidate.prepare("PRAGMA page_count").get() as { page_count: number }).page_count,
-    );
-    const tableCount = Number(
-      (
-        candidate
-          .prepare(
-            "SELECT count(*) AS count FROM sqlite_schema " +
-              "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-          )
-          .get() as { count: number }
-      ).count,
-    );
-    if (!Number.isSafeInteger(pageCount) || pageCount < 1 || !Number.isSafeInteger(tableCount)) {
-      throw new Error("database metadata is invalid");
-    }
-    return { integrity: "ok", pageCount, tableCount };
-  } catch (error) {
-    throw new Error(`Candidate is not a valid SQLite database backup: ${errorMessage(error)}`, {
-      cause: error,
-    });
-  } finally {
-    try {
-      candidate?.close();
-    } catch {}
-  }
+function reportRemovalFailure(path: string, error: unknown): void {
+  if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+  console.warn(`[mission-control] database backup temporary ${basename(path)} was not removed: ${errorMessage(error)}`);
 }
 
 /**
@@ -354,8 +223,7 @@ export class DatabaseBackupService {
   private readonly retention: DatabaseBackupRetention | undefined;
   private readonly now: () => Date;
   private readonly onlineBackup: (source: DatabaseSync, destination: string) => Promise<void>;
-  private readonly selfContain: (temporary: string) => void;
-  private readonly validate: (temporary: string) => DatabaseBackupValidation;
+  private readonly publication: PublicationOptions;
   private readonly removeFile: (path: string) => void;
   private readonly pending = new Map<RecordedDatabaseBackupKind, Promise<DatabaseBackupRecord>>();
   private queueTail: Promise<unknown> = Promise.resolve();
@@ -369,9 +237,12 @@ export class DatabaseBackupService {
     this.root = options.root ?? DATABASE_BACKUPS_DIR;
     this.retention = options.retention;
     this.now = options.now ?? (() => new Date());
-    this.onlineBackup = options.onlineBackup ?? onlineDatabaseBackup;
-    this.selfContain = options.selfContain ?? useRollbackJournal;
-    this.validate = options.validate ?? validateDatabaseBackupForRestore;
+    this.publication = {
+      selfContain: options.selfContain,
+      validate: options.validate,
+      availableBytes: options.availableBytes,
+    };
+    this.onlineBackup = options.onlineBackup ?? ((db, path) => onlineDatabaseBackup(db, path, options.availableBytes));
     this.removeFile = options.removeFile ?? safeUnlink;
     for (const [kind, count] of Object.entries(this.retention ?? {})) {
       if (!Number.isSafeInteger(count) || count < 1) {
@@ -435,18 +306,32 @@ export class DatabaseBackupService {
     }
   }
 
-  private publish(
-    capture: DatabaseBackupRecord & { temporary: string },
-  ): DatabaseBackupRecord {
-    this.selfContain(capture.temporary);
-    chmodSync(capture.temporary, 0o600);
-    scrubWriteOnlySecrets(capture.temporary);
-    syncFile(capture.temporary);
-    this.validate(capture.temporary);
-    renameSync(capture.temporary, capture.path);
-    syncFile(this.root);
-    const { temporary: _temporary, ...record } = capture;
-    return record;
+  private checkCaptureSpace(): void {
+    // Staging image, compacted output, and one image of scratch for SQLite journals
+    // and index sorting. Size the live database through SQLite to include WAL pages.
+    const available = this.publication.availableBytes ?? availableBackupBytes;
+    requireBackupSpace(available(this.root), databaseImageBytes(this.source) * 3n, "snapshot");
+  }
+
+  private async publishOnline(temporary: string, destination: string): Promise<void> {
+    // Injected step implementations run locally for fault tests. Production sends
+    // only the two owned paths, never the live connection, across the worker boundary.
+    if (this.publication.selfContain || this.publication.validate || this.publication.availableBytes) {
+      publishDatabaseBackup(temporary, destination, this.publication);
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const worker = new Worker(new URL("./publication-worker.mjs", import.meta.url), {
+        workerData: { temporary, destination }, execArgv: [],
+      });
+      let published = false;
+      worker.once("message", message => { published = message === "published"; });
+      worker.once("error", reject);
+      worker.once("exit", code => {
+        if (code === 0 && published) resolve();
+        else reject(new Error(`Backup publication worker stopped before completion (code ${code})`));
+      });
+    });
   }
 
   /**
@@ -485,7 +370,13 @@ export class DatabaseBackupService {
       const match = OWNED_BACKUP.exec(filename);
       if (!match) continue;
       const path = join(this.root, filename);
-      const stat = lstatSync(path);
+      let stat;
+      try {
+        stat = lstatSync(path);
+      } catch (error) {
+        ignoreMissingFile(error);
+        continue;
+      }
       if (stat.isSymbolicLink() || !stat.isFile()) continue;
       groups[KIND_BY_PREFIX.get(match[1]!)!].push({
         filename,
@@ -535,10 +426,11 @@ export class DatabaseBackupService {
    * age, then size, never the minimum recovery set), with any SQLite sidecar beside it.
    * Runs after every capture; the daemon also calls it at startup and when the limits are
    * saved, so a lowered limit takes effect without waiting for the next capture.
+   * A confirmed settings save supplies the filenames from its validated preview.
    */
-  prune(): void {
+  prune(confirmedRemovals?: readonly string[]): void {
     try {
-      this.pruneCopies();
+      if (this.pruneCopies(confirmedRemovals)) syncFile(this.root);
     } finally {
       this.notifyChange();
     }
@@ -564,23 +456,36 @@ export class DatabaseBackupService {
       .remove.map((copy) => copy.filename);
   }
 
-  private pruneCopies(): void {
-    if (!existsSync(this.root)) return;
-    // Startup and save prune outside a capture, so they refuse a symlinked root the same way.
+  private pruneCopies(confirmedRemovals?: readonly string[]): boolean {
+    if (!existsSync(this.root)) return false;
     this.ensureRoot();
-    // Fixed counts replace only the counts: the age and size limits are always the saved ones.
-    const limits = this.limitsFor(storedDatabaseBackupsConfig(this.source));
-    const groups = this.ownedCopies();
-    const copies = BACKUP_KINDS.flatMap((kind) => groups[kind].map(({ filename, at, bytes }) => ({ kind, filename, at, bytes })));
-    const { remove } = planBackupRetention(copies, limits, this.now().getTime());
-    for (const { filename } of remove) {
+    const names = confirmedRemovals ?? this.plannedRemovals(storedDatabaseBackupsConfig(this.source));
+    if (!names.every(filename => OWNED_BACKUP.test(filename))) {
+      throw new TypeError("Database backup prune received an invalid filename");
+    }
+    for (const filename of names) {
       const path = join(this.root, filename);
-      // Sidecars first: only the copy itself is listed, so a failure must leave it in place
-      // for the next prune to retry, never an orphaned journal no listing can find.
-      for (const suffix of SQLITE_SIDECARS) safeUnlink(`${path}${suffix}`);
+      // Sidecars first so a failure leaves the listed copy available for retry.
+      for (const suffix of SQLITE_SIDECARS) safeUnlink(path + suffix);
       safeUnlink(path);
     }
-    syncFile(this.root);
+    return names.length > 0;
+  }
+
+  private async pruneAfterOnlinePublish(): Promise<void> {
+    try {
+      // Plan and unlink in one turn so a settings save cannot retain a copy
+      // while an asynchronous deletion of that copy is still pending.
+      if (!this.pruneCopies()) return;
+      const directory = await open(this.root, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } catch (error) {
+      this.warnPruneFailure(error);
+    }
   }
 
   /** What the scheduled and manual captures last did, as persisted. */
@@ -685,16 +590,21 @@ export class DatabaseBackupService {
   private async captureOnline(kind: RecordedDatabaseBackupKind): Promise<DatabaseBackupRecord> {
     const attemptedAt = this.now().getTime();
     this.record(() => this.recordAttempt(kind, attemptedAt));
-    let temporary: string | undefined;
     try {
       // Inside the try: a backup root that cannot be prepared is a failed attempt too, so it
       // backs off like any other failure.
-      const capture = this.paths(kind);
-      temporary = capture.temporary;
-      await this.onlineBackup(this.source, capture.temporary);
-      const record = this.publish(capture);
+      const { temporary, ...record } = this.paths(kind);
+      try {
+        this.checkCaptureSpace();
+        await this.onlineBackup(this.source, temporary);
+        await this.publishOnline(temporary, record.path);
+      } finally {
+        // Release scratch space before writing the durable outcome, also on ENOSPC.
+        await Promise.all(temporaryFiles(temporary).map(path =>
+          unlink(path).catch(error => reportRemovalFailure(path, error))));
+      }
       this.record(() => this.recordSuccess(kind, this.now().getTime()));
-      this.pruneAfterPublish();
+      await this.pruneAfterOnlinePublish();
       return record;
     } catch (error) {
       const label = kind === "manual" ? "Manual" : "Scheduled";
@@ -704,7 +614,6 @@ export class DatabaseBackupService {
       this.record(() => this.recordFailure(kind, attemptedAt, error));
       throw failure;
     } finally {
-      if (temporary) removeTemporary(temporary);
       this.notifyChange();
     }
   }
@@ -752,17 +661,23 @@ export class DatabaseBackupService {
   }
 
   capturePreMigration(): DatabaseBackupRecord {
-    const capture = this.paths("preMigration");
-    let record: DatabaseBackupRecord;
+    const { temporary, ...record } = this.paths("preMigration");
     try {
-      this.source.prepare("VACUUM INTO ?").run(capture.temporary);
-      record = this.publish(capture);
+      this.checkCaptureSpace();
+      this.source.prepare("VACUUM INTO ?").run(temporary);
+      publishDatabaseBackup(temporary, record.path, this.publication);
     } catch (error) {
       throw new Error(`Pre-migration database backup failed: ${errorMessage(error)}`, {
         cause: error,
       });
     } finally {
-      removeTemporary(capture.temporary);
+      for (const path of temporaryFiles(temporary)) {
+        try {
+          unlinkSync(path);
+        } catch (error) {
+          reportRemovalFailure(path, error);
+        }
+      }
     }
     this.pruneAfterPublish();
     return record;
@@ -774,9 +689,13 @@ export class DatabaseBackupService {
    */
   private pruneAfterPublish(): void {
     try {
-      this.pruneCopies();
+      if (this.pruneCopies()) syncFile(this.root);
     } catch (error) {
-      console.warn(`[mission-control] database backup prune failed after capture: ${errorMessage(error)}`);
+      this.warnPruneFailure(error);
     }
+  }
+
+  private warnPruneFailure(error: unknown): void {
+    console.warn(`[mission-control] database backup prune failed after capture: ${errorMessage(error)}`);
   }
 }

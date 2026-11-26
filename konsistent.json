@@ -1,0 +1,178 @@
+{
+  "$schema": "./node_modules/konsistent/konsistent.schema.json",
+  "version": "v1",
+  "conventions": [
+    {
+      "name": "harness-core-modules",
+      "description": "Each harness adapter directory carries the shared adapter modules.",
+      "paths": "src/server/harness/{harness}",
+      "must": {
+        "haveFiles": [
+          "bin.ts",
+          "control.ts",
+          "detect.ts",
+          "hooks.ts",
+          "model-catalog.ts",
+          "sdk.ts",
+          "sdk-deps.ts",
+          "transcript.ts"
+        ],
+        "haveType": "directory"
+      }
+    },
+    {
+      "name": "harness-capability-modules",
+      "paths": "src/server/harness/{harness}",
+      "must": [
+        {
+          "name": "harness-usage-module",
+          "description": "Require usage.ts for adapters that track usage. Claude declares usage as null in the harness registry.",
+          "excludeFiles": ["src/server/harness/claude"],
+          "must": {
+            "haveFiles": ["usage.ts"]
+          }
+        },
+        {
+          "name": "harness-launch-module",
+          "description": "Require launch.ts for adapter launch preparation. Claude uses the dispatcher and shared harness launch-argument renderers.",
+          "excludeFiles": ["src/server/harness/claude"],
+          "must": {
+            "haveFiles": ["launch.ts"]
+          }
+        },
+        {
+          "name": "harness-meta-module",
+          "description": "Require meta.ts for passive transcript metadata. Codex owns this in rollout.ts.",
+          "excludeFiles": ["src/server/harness/codex"],
+          "must": {
+            "haveFiles": ["meta.ts"]
+          }
+        },
+        {
+          "name": "harness-tui-module",
+          "description": "Require tui.ts for pane parsers. Pi declares tui as null in the harness registry.",
+          "excludeFiles": ["src/server/harness/pi"],
+          "must": {
+            "haveFiles": ["tui.ts"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "web-hook-export",
+      "description": "Each web hook module exports the hook named by its filename.",
+      "paths": "src/web/use{hook}.ts",
+      "must": {
+        "exportValues": ["use${hook}"]
+      }
+    },
+    {
+      "name": "component-named-export",
+      "description": "Prefer a filename-matching export for PascalCase React modules. Grouped components and historical entry-point names make this advisory. Lowercase helper modules are outside this convention.",
+      "severity": "warning",
+      "paths": "src/web/components/**/{component:matches(^[A-Z])}.tsx",
+      "must": {
+        "exportValues": ["${component}"]
+      }
+    },
+    {
+      "name": "skill-document",
+      "description": "Each shipped skill directory has a SKILL.md entry point.",
+      "paths": "skills/{skill}",
+      "must": {
+        "haveFiles": ["SKILL.md"],
+        "haveType": "directory"
+      }
+    },
+    {
+      "name": "terminal-backend-factory",
+      "description": "Backend modules export a factory named after the file and backend kind. The registry, launch target helpers, and system default resolver consume backend types.",
+      "paths": "src/server/terminal/{backend}.ts",
+      "excludeFiles": ["src/server/terminal/{registry,targets,system-default}.ts"],
+      "must": [
+        {
+          "if": {
+            "hasTypeImport": {
+              "name": "Multiplexer",
+              "from": "./types.ts"
+            }
+          },
+          "must": {
+            "exportFunctions": [{"name": "${backend.toCamelCase()}Multiplexer", "returnValueOfType": "Multiplexer"}]
+          }
+        },
+        {
+          "if": {
+            "hasTypeImport": {
+              "name": "TerminalEmulator",
+              "from": "./types.ts"
+            }
+          },
+          "must": {
+            "exportFunctions": [{"name": "${backend.toCamelCase()}Emulator", "returnValueOfType": "TerminalEmulator"}]
+          }
+        }
+      ]
+    },
+    {
+      "name": "task-source-adapter-export",
+      "description": "TaskSourceImpl modules export the camelCase name of the file. The index adapts implementations for registry use.",
+      "paths": "src/server/task-sources/{source}.ts",
+      "excludeFiles": ["src/server/task-sources/index.ts"],
+      "must": [
+        {
+          "if": {
+            "hasTypeImport": {
+              "name": "TaskSourceImpl",
+              "from": "@shared/task-source.ts"
+            }
+          },
+          "must": {
+            "exportConstants": [{"name": "${source.toCamelCase()}"}]
+          }
+        }
+      ]
+    },
+    {
+      "name": "persona-operator-documents",
+      "description": "Require the operator briefs and guide in personas/ even if the directory is removed. Keep this list aligned with NON_PERSONA_DOCUMENTS in scripts/builtin-personas.ts, which excludes the same files from the generated catalog.",
+      "paths": ".",
+      "must": {
+        "haveFiles": ["personas/FOREMAN.md", "personas/INSPECTOR.md", "personas/README.md"]
+      }
+    },
+    {
+      "name": "persona-markdown-location",
+      "description": "Persona sources and briefs are Markdown files directly under personas/.",
+      "paths": ["personas/**/*", "!personas/*.md"],
+      "mustNot": {
+        "haveType": "file"
+      }
+    },
+    {
+      "name": "repository-plan-entry",
+      "description": "Each repository plan directory has a plan.md entry point. Check execution runtime is a historical phase bundle. Conversation search, Foreman review recommendation, and the persistent working indicator contain only historical mockups.",
+      "paths": "docs/plans/{plan}",
+      "excludeFiles": [
+        "docs/plans/{check-execution-runtime,conversation-search,foreman-review-recommendation,persistent-working-indicator}"
+      ],
+      "must": {
+        "haveFiles": ["plan.md"],
+        "haveType": "directory"
+      }
+    },
+    {
+      "name": "playwright-spec-location",
+      "description": "Playwright specs use the .spec.ts suffix and live under e2e/specs/ so the dashboard test runner discovers them.",
+      "paths": [
+        "**/*.spec.{ts,tsx,js,jsx,mts,cts,mjs,cjs}",
+        "!e2e/specs/**/*.spec.ts",
+        "e2e/**/*.test.{ts,tsx,js,jsx,mts,cts,mjs,cjs}"
+      ],
+      "excludeFiles": ["**/node_modules/**", "dist/**", "release/**", "playwright-report/**", "test-results/**"],
+      "mustNot": {
+        "haveType": "file"
+      }
+    }
+  ]
+}

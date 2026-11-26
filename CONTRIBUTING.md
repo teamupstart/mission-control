@@ -117,6 +117,7 @@ the FluidAudio download. Leave the `voice` preview off when working without voic
 | `npm run build` | Production web, server, Electron, MCP, and hook bundles. |
 | `npm run typecheck` | TypeScript validation. |
 | `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations, plus repository policy rules. React/hooks and accessibility findings are warnings. |
+| `npm run konsistent` | Structural conventions from [konsistent.json](konsistent.json). Component export names are advisory. |
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
@@ -134,6 +135,9 @@ allowed: CLI output, daemon diagnostics, and fixture logging are intentional, so
 
 Repository lint rules are named in [AGENTS.md](AGENTS.md). Scoped legacy exceptions are
 annotated at their use sites.
+The CI gates job also runs the structural checks. Update `konsistent.json` when a
+required file, export name, or directory convention changes. Use
+`npm run konsistent -- validate` to validate config edits.
 CI also runs `node scripts/check-doc-links.mjs` and checks pull requests for agent co-author
 trailers, changelog changes outside Release Please, and new image paths outside documentation
 and product asset locations. The image check permits `docs/images/`, top-level files in `build/`,

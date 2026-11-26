@@ -2624,7 +2624,7 @@ function createSchemaObjects(d: DatabaseSync): void {
     -- Custom server DEFINITIONS live in app_config (residents.mcpServers) and travel with
     -- settings snapshots. Their SECRET VALUES live only here: written by a save, read only by
     -- a launch's snapshot, never returned by a route, published, logged or captured by a
-    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/service.ts). Keyed by the
+    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/publication.ts). Keyed by the
     -- server's id and the field ("env:NAME", "header:Name", "query:name").
     CREATE TABLE IF NOT EXISTS resident_mcp_secrets (
       server_id   TEXT NOT NULL,

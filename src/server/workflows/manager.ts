@@ -643,6 +643,29 @@ function inspectorPrSeenOpen(
 }
 
 /**
+ * Whether the gate's own pinned pull request is retired on positive evidence that it finished.
+ *
+ * Retirement is the end of polling: the sweep reads only open rows, so a row it retired on a
+ * GitHub read that said closed or merged - or that Shipping retired after merging it itself - is
+ * never read again and no ordinary observation of it will ever arrive. A gate that entered after
+ * that retirement, or lost the signal of it to a restart, would otherwise wait for a fresh
+ * observation with no source for one.
+ *
+ * Only that exact row counts: same key and URL as the gate pinned, retired, and retired because
+ * GitHub or a Mission Control merge said it finished. A retired row whose last recorded read did
+ * not say so proves nothing and leaves the gate where it was.
+ */
+function inspectorPrRetiredClosed(
+  ledger: Pick<InspectorPr, "key" | "url" | "state" | "observedState" | "mergedAt"> | null,
+  state: Pick<WorkflowInspectorGateState, "prKey" | "prUrl">,
+): boolean {
+  return ledger !== null && state.prKey !== null && ledger.key === state.prKey
+    && (state.prUrl === null || ledger.url === state.prUrl)
+    && ledger.state === "closed"
+    && (inspectorStateSaysClosed(ledger.observedState) || ledger.mergedAt !== null);
+}
+
+/**
  * The blocked phases an externally sourced submission may resume capture from.
  *
  * Every one of them is produced by the capture path itself and leaves the round's evidence
@@ -3290,6 +3313,12 @@ export class WorkflowManager {
     });
     if (entered) {
       this.publishRun(run.id);
+      // A pull request that finished before the gate opened is a retired row the sweep never
+      // reads again, so no Inspector signal will ever wake this wait. Evaluate it now; the
+      // gate decides from the row what an observation would have told it.
+      if (waitReason === "awaiting_fresh_observation" && adopted?.state === "closed") {
+        this.scheduleGateEvaluation(run.id, null);
+      }
       if (
         waitReason === "missing_pr"
         && version.completionPolicy.missingPrAction === "prepare_pr"
@@ -3705,7 +3734,13 @@ export class WorkflowManager {
     this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback });
     const gate = this.gateState(run);
     const grant = gate?.grantObservation;
+    // A wait on a retired row is the same dead end as the closed block: only a read of GitHub
+    // can say whether the pull request is open again. The evaluation scheduled above holds it
+    // as closed first, so the read's answer reaches the block like any other.
+    const retiredWait = (run.status === "waiting_for_inspector" || run.status === "waiting_for_new_head") && !grant
+      && gate?.prKey != null && getInspectorPr(gate.prKey)?.state === "closed";
     if (gate?.prKey && ((run.status === "blocked" && run.currentPhase === "inspector_pr_closed")
+        || retiredWait
         || (run.status === "waiting_for_new_head" && grant && !grant.verifiedHeadSha))) {
       void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt);
     }
@@ -4753,6 +4788,27 @@ export class WorkflowManager {
     }
   }
 
+  /**
+   * Re-evaluate, once at startup, every gate waiting on a pull request whose row is retired.
+   *
+   * Those waits have no wakeup of their own: the sweep reads only open rows, and the signal that
+   * retired the row - if the gate was open to hear it at all - did not survive the restart that
+   * reset the gate's observation. This covers runs an earlier build left waiting that way, too.
+   * Each evaluation decides from the row exactly as `evaluateInspectorGate` would on any other
+   * wakeup, so it is safe to repeat. A granted round is left out: it must see a read made after
+   * its grant, and its own Recheck already asks GitHub for one.
+   */
+  private evaluateRetiredGateWaits(): void {
+    for (const run of this.store.listRuns()) {
+      if (run.status !== "waiting_for_inspector" && run.status !== "waiting_for_new_head") continue;
+      if (!workflowRunPhaseRecognized(run.currentPhase)) continue;
+      const state = this.gateState(run);
+      if (!state?.prKey || state.grantObservation) continue;
+      if (getInspectorPr(state.prKey)?.state !== "closed") continue;
+      this.scheduleGateEvaluation(run.id, null);
+    }
+  }
+
   private scheduleInspectionUpdate(event: InspectionUpdated): void {
     for (const run of this.store.listRuns()) {
       if (runIsTerminal(run)) continue;
@@ -5274,6 +5330,35 @@ export class WorkflowManager {
       state = observed;
     }
     if (state.lastObservedAt === null || state.lastObservedAt < state.enteredAt || !state.observedHeadSha) {
+      // No fresh observation can come from a row the sweep retired as finished, so waiting for
+      // one would wait forever. Hold the run in the same conservative closed-PR block a fresh
+      // closed or merged read produces: it never passes the gate, waives a review or clears a
+      // finding, and it lifts only when the pull request is seen open again - which a Recheck
+      // asks GitHub about directly. The current row is read here rather than a queued signal's
+      // snapshot, so a row a re-read has since un-retired is never treated as closed.
+      const retired = getInspectorPr(state.prKey!);
+      if (retired && inspectorPrRetiredClosed(retired, state)) {
+        // When the finish was recorded: GitHub's closed or merged read, else Shipping's merge.
+        const closedAt = inspectorStateSaysClosed(retired.observedState) ? retired.observedAt : retired.mergedAt;
+        this.transitionInspectorGate(
+          run,
+          state,
+          { ...state, waitReason: "pr_closed" },
+          "blocked",
+          "inspector_pr_closed",
+          "inspector_pr_closed",
+          {
+            prKey: state.prKey,
+            source: "retired_ledger",
+            observedState: retired.observedState,
+            observedHeadSha: retired.observedHeadSha,
+            closedAt,
+            closedBeforeGateEntry: closedAt !== null && closedAt < state.enteredAt,
+          },
+          now,
+        );
+        return;
+      }
       // A run waiting on the session's repair push keeps waiting for it in its own status.
       // Restart recovery deliberately leaves it in `waiting_for_new_head` with no observation;
       // demoting it here on a signal that observed nothing would route the repair push it is
@@ -8863,6 +8948,7 @@ export class WorkflowManager {
     // it here, or by a build that blocked on the first sample - is re-checked now that
     // discovery knows which sessions are back.
     this.recheckLostSessionActions();
+    this.evaluateRetiredGateWaits();
     this.lastRecoveryAt = Date.now();
     workflowLog("info", { event: "recovery_complete", at: this.lastRecoveryAt });
     void this.sweepRetention();

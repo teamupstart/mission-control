@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SessionGoal, Task } from "@shared/types.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import { isImplementationTaskKind } from "@shared/task.ts";
 import type { WorkflowBinding, WorkflowStagedEvidenceList } from "@shared/workflow.ts";
 import { hasOperatorHandoffHold, resolvedSessionIntent } from "@shared/goal.ts";
 import { sampleCheckoutBoundary } from "./repository-artifact/seal.ts";
@@ -18,7 +19,7 @@ export function evidenceContract(
   root: string | null,
 ): string | null {
   if (!task || !isActiveTask(task.status) || task.sessionId !== binding.sessionId ||
-      (task.kind !== "ship" && task.kind !== "bugfix") || task.extraRepos.length ||
+      !isImplementationTaskKind(task.kind) || task.extraRepos.length ||
       !root || !binding.sessionCwd || canonicalWorktreePath(binding.sessionCwd) !== root ||
       !goal?.openingPrompt || !resolvedSessionIntent(goal) || goal.pendingPrompts.length ||
       hasOperatorHandoffHold(goal.objective) || explicitHandoffRestriction(goal.objective)) return null;

@@ -210,7 +210,8 @@ for (const task of [true, false]) test(`all old pins, repository siblings and ev
   const f = transferFixture(t, { task, workflows: 2 });
   const db = openDb();
   const note = f.source.agentSessionId!;
-  db.prepare("INSERT INTO workflow_evidence_owners VALUES (?, 7, 3, 1)").run(note);
+  db.prepare(`INSERT INTO workflow_evidence_owners (note_key, generation, all_generation, updated_at)
+    VALUES (?, 7, 3, 1)`).run(note);
   db.prepare(`INSERT INTO workflow_evidence_staging (id,note_key,client_item_id,source_kind,evidence_kind,source_root,source_locator,
     inline_content,command_exit_code,display_name,caption,repository_scope,mime_type,bytes,sha256,generation,state,created_at,updated_at)
     VALUES (?,?,'focused','command','text',?,'node focused','passed',0,'focused','proof','repo-01','text/plain',6,?,7,'staged',1,1)`)

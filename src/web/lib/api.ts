@@ -1359,6 +1359,11 @@ const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
 
+function voiceSpeechRequestOptions(cancel?: AbortSignal): { signal: AbortSignal } {
+  const deadline = AbortSignal.timeout(5000);
+  return { signal: cancel ? AbortSignal.any([cancel, deadline]) : deadline };
+}
+
 // ---- Recurring Missions ----
 //
 // Typed helpers over the schedule routes, everything Phase 4 needs to preview, save,
@@ -2590,7 +2595,12 @@ export const api = {
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
-  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, { signal: AbortSignal.timeout(5000) }),
+  auditionVoiceSpeech: (cancel: AbortSignal) =>
+    post<ActionResult & { id?: string; reason?: string }>("/api/voice/speech/audition", undefined, voiceSpeechRequestOptions(cancel)),
+  startVoiceSpeechDownload: () =>
+    post<ActionResult & { reason?: string }>("/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  cancelVoiceSpeechDownload: () => request("DELETE", "/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, voiceSpeechRequestOptions()),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
   saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
     put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },

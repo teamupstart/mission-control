@@ -48,6 +48,7 @@ import {
 } from "../lib/voice-roster.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { useVoiceDecisionKey, useVoiceDevices, type VoiceConfigState, type VoiceDecisionKeyState } from "../useVoiceConfig.ts";
+import { SpokenReplies } from "./SpokenReplies.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** The lengths the cancel window offers. A stored length outside the list is offered as well. */
@@ -666,6 +667,8 @@ export function VoiceSettingsPanel({
             </div>
           </div>
         </div>
+
+        <SpokenReplies state={state} voice={voice} />
 
         <div className="kb-row" data-anchor="voice/plan-forms">
           <div className="kb-row-text">

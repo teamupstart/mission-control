@@ -59,6 +59,7 @@ follow the dashboard's feature and build gates.
 | `voice-end-of-speech` | 3 | Read/write | `voice.endOfSpeechMs` updates automatic capture timing. |
 | `voice-cancel-window` | 3 | Read/write | `voice.cancelWindow.enabled` and `voice.cancelWindow.seconds` update delivery timing. |
 | `voice-when-unsure` | 3 | Read/write | `voice.whenUnsure` selects routing behavior when confidence is low. |
+| `voice-spoken-replies` | 3 | Read/write and actions | `voice.speech.voice` stores the choice. Sample playback and the model download are operator actions. |
 | `voice-plan-forms` | 3 | Read/write | `voice.planFormsByVoice` controls form filling. Submission still requires a separate operator gesture. |
 | `grill-first-defaults` | 2 | Read/write | `skills.grillFirstKinds`, a versioned replacement of the task-kind list |
 | `worktree-policy` | 2 | Read/write | `worktrees.enabled`, `worktrees.taskRetentionDays` and `worktrees.maxSlots`. Existing repository records expose their enabled and slot-cap leaves under a stable hashed repository key. |

@@ -276,8 +276,8 @@ export interface VoiceCapability {
   available: boolean;
   /** Why it is not available, when it is not; null when it is. */
   reason: string | null;
-  /** Set by the daemon when the listener misses a speech stop confirmation. */
-  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED;
+  /** Daemon-owned reason for a specific recovery action. The reason text is for display. */
+  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED | "speech_playback_unsupported" | "speech_voice_unavailable";
 }
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */

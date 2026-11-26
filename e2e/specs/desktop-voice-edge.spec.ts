@@ -33,8 +33,12 @@ test("native window clicks on the edge microphone mute and unmute", async ({ dae
     await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
     await expect(page.locator("button.vi-status-line")).toHaveCount(0);
     const win = await app.browserWindow(page);
-    await win.evaluate(win => { win.show(); win.focus(); });
+    await win.evaluate(win => win.show());
     for (const mode of ["muted", "listening"]) {
+      await expect.poll(() => win.evaluate(win => {
+        win.focus();
+        return win.isFocused();
+      }), { message: "AppKit needs a focused window for native edge-microphone clicks. Unlock the Mac desktop.", timeout: 5000 }).toBe(true);
       const rect = (await edge.boundingBox())!;
       const hit = await win.evaluate((win, { addon, rect }) => {
         const binding = { exports: {} };

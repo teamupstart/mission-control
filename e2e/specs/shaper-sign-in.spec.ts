@@ -615,3 +615,94 @@ test("a desktop bridge failure that lands after another window cancelled the sig
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
 });
+
+test("a sign-in refusal that lands after the flag went off and on again is not shown", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // The Sign in is held in flight, and will be refused when it is let go.
+  let release!: () => void;
+  const held = new Promise<void>((done) => { release = done; });
+  let seen!: () => void;
+  const arrived = new Promise<void>((done) => { seen = done; });
+  await page.route("**/api/shaping/sign-in", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    seen();
+    await held;
+    await route.fulfill({ status: 409, contentType: "application/json",
+      body: JSON.stringify({ error: "registration_limit", reason: "Refused for this test: from an earlier activation." }) });
+  });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await arrived;
+
+  // Another window switches the feature off and on again while the request is in flight.
+  await setFlag(daemon, "shaper-sign-in", false);
+  await expect(signIn(page)).toContainText("Sign-in is switched off");
+  await setFlag(daemon, "shaper-sign-in", true);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // The refusal lands now. It answers controls from before the flag changed, so the row shows no alert.
+  release();
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await page.unroute("**/api/shaping/sign-in");
+});
+
+test("a sign-out refusal that lands after another window changed the shaper's scope is not shown on its new connection", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  const started = await fetch(`${daemon.baseURL}/api/shaping/sign-in`, { method: "POST", headers: json, body: JSON.stringify({ shaper: "signed-guidance" }) });
+  expect(started.status).toBe(200);
+  const { authorizationUrl } = await started.json() as { authorizationUrl: string };
+  expect((await fetch(authorizationUrl)).status).toBe(200);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
+
+  // This window's Sign out is held in flight, and will be refused when it is let go.
+  let release!: () => void;
+  const held = new Promise<void>((done) => { release = done; });
+  let seen!: () => void;
+  const arrived = new Promise<void>((done) => { seen = done; });
+  await page.route("**/api/shaping/sign-out", async (route) => {
+    seen();
+    await held;
+    await route.fulfill({ status: 404, contentType: "application/json",
+      body: JSON.stringify({ error: "unknown_connection", reason: "Refused for this test: about the old connection." }) });
+  });
+  await page.getByRole("button", { name: "Sign out Signed guidance" }).click();
+  await arrived;
+
+  // Another window changes the shaper's scope: the row now names a new connection, not signed in,
+  // and the old sign-in is listed as one no shaper uses.
+  const rescoped = await fetch(`${daemon.baseURL}/api/shaping`, {
+    method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+      id: "signed-guidance", label: "Signed guidance", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope: "mcp:other" } } },
+    } }),
+  });
+  expect(rescoped.status).toBe(200);
+  await expect(row(page)).toContainText("Signs in: OAuth, scope mcp:other");
+  await expect(signIn(page)).toContainText("Not signed in.");
+  const unused = panel(page).getByRole("group", { name: "Sign-ins no shaper uses" });
+  await expect(unused).toContainText("Scope mcp:context");
+
+  // The refusal lands now. It was about the old connection, so the row on its new one shows no
+  // alert, and neither does the old sign-in's entry, which no control there asked about.
+  // The old connection's entry waits on the same request, so its Sign out comes free only once
+  // the refusal has been handled.
+  const oldSignOut = unused.getByRole("button", { name: `Sign out ${fake.resourceUrl} (mcp:context)` });
+  await expect(oldSignOut).toBeDisabled();
+  release();
+  await expect(oldSignOut).toBeEnabled();
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await expect(unused.getByRole("alert")).toHaveCount(0);
+  await page.unroute("**/api/shaping/sign-out");
+});

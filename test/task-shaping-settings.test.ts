@@ -55,6 +55,7 @@ import {
   signInMovedSince,
   signInMovesAfter,
   signInMovesSince,
+  signInRefusalApplies,
   signInRefusalsAfter,
   signInStateIn,
   type SignInMoves,
@@ -1313,4 +1314,28 @@ test("a Cancel or Sign out in flight on a connection makes every row and entry o
   const unusedId = "e".repeat(32);
   const unused = renderSignIn([signInEntry({ id: unusedId, state: "signed_in", shapers: [] })], { busy: [signInConnectionKey(unusedId)] });
   assert.match(unused, /aria-label="Sign out https:\/\/tools\.acme\.example\/mcp \(mcp:context\)" disabled=""/);
+});
+
+test("a refusal applies only while its row still names the connection the request targeted, unchanged", () => {
+  const key = signInRowKey("signed-mcp");
+  const signedIn = [signInEntry({ state: "signed_in" })];
+  const sent = movesThrough([signedIn]);
+  // Nothing happened while the request was in flight: the refusal describes the row.
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: sent, signIns: signedIn, key }), true);
+  // Another window changed the shaper's scope: the row now names another connection, which may
+  // even be unchanged since it is new, so the refusal about the old one does not apply.
+  const otherId = "d".repeat(32);
+  const rescoped = [signInEntry({ state: "signed_in", shapers: [] }), signInEntry({ id: otherId, state: "signed_out" })];
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: sent, signIns: rescoped, key }), false);
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: sent, signIns: [signInEntry({ shapers: [] })], key }), false,
+    "a row that names no connection now does not take the old one's refusal");
+  // The targeted connection changed state meanwhile: the refusal is about a moment that has passed.
+  const moved = movesThrough([signedIn, [signInEntry({ state: "signed_out" })]]);
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: moved, signIns: [signInEntry({ state: "signed_out" })], key }), false);
+  // A Sign in sent from a row that named no connection is judged by the row's connection now.
+  assert.equal(signInRefusalApplies({ sent: {}, target: null }, { moves: {}, signIns: [], key }), true);
+  assert.equal(signInRefusalApplies({ sent: {}, target: null }, { moves: movesThrough([[signInEntry()]]), signIns: [signInEntry()], key }), false);
+  // An unused entry's key always names its own connection.
+  const unusedKey = signInConnectionKey(otherId);
+  assert.equal(signInRefusalApplies({ sent, target: otherId }, { moves: sent, signIns: rescoped, key: unusedKey }), true);
 });

@@ -849,6 +849,22 @@ export function signInControlSubject(signIns: readonly ShapingSignInView[], key:
   return signInSubject(connection, signInStateIn(signIns, connection));
 }
 
+/**
+ * Whether a refusal that just landed still describes its row. `target` is the connection the
+ * request acted on as it was sent: a Sign out's connection, or the connection a row named when
+ * its Sign in went out, null when it named none. The refusal no longer applies once the row names
+ * another connection than the one targeted, such as after another window changed the shaper's
+ * scope, or once that connection changed state while the request was in flight.
+ */
+export function signInRefusalApplies(
+  request: { sent: SignInMoves; target: string | null },
+  now: { moves: SignInMoves; signIns: readonly ShapingSignInView[]; key: string },
+): boolean {
+  const current = signInControlConnection(now.signIns, now.key);
+  if (request.target !== null && current !== request.target) return false;
+  return !signInMovedSince(request.sent, now.moves, request.target ?? current);
+}
+
 /** A sign-in control's refusal, with the subject it was shown against. */
 export interface ShaperSignInRefusal {
   text: string;

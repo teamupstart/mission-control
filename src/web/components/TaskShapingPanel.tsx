@@ -18,6 +18,7 @@ import {
   signInMovedSince,
   signInMovesAfter,
   signInMovesSince,
+  signInRefusalApplies,
   signInRefusalsAfter,
   signInSubject,
   signInUrlOpenable,
@@ -39,6 +40,13 @@ export const SIGN_IN_URL_REFUSED = "The daemon's sign-in link is not https or th
 
 /** What a row says when the sign-in page could not be opened: a blocked tab, or a desktop bridge that failed. */
 export const SIGN_IN_TAB_NOT_OPENED = "The sign-in page did not open. Use Open the sign-in page to try again, or Copy link to open it in another browser.";
+
+/** What a control's request recorded as it went out: the counts, the flag's activation and its target connection. */
+interface SignInRequest {
+  sent: SignInMoves;
+  sentIn: number;
+  target: string | null;
+}
 
 /** A refusal's sentence: the daemon's fixed reason, or what the request met when it had none. */
 function refusalText(reply: { reason?: string; error?: string }, what: string): string {
@@ -165,19 +173,25 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
   const refuse = useCallback((key: string, text: string, subject: string): void => {
     setRefusals((current) => ({ ...current, [key]: { text, subject } }));
   }, []);
+  /** What a control's request recorded as it went out, for its reply to compare with. */
+  const requestState = useCallback((target: string | null): SignInRequest => ({
+    sent: moves.current.moves, sentIn: activation.current.count, target,
+  }), []);
   /**
-   * Ends a control's request, sent when the counts were `sent`. A refusal is shown against the
-   * connection's state now, or against `subject` when the refusal expects a state the list has
-   * yet to show. A refusal whose connection changed state while the request was in flight, such
-   * as a sign-out another window made meanwhile, no longer describes the row and is not shown.
+   * Ends a control's request: its busy key is released whatever the reply says. A refusal is
+   * shown against the connection's state now, or against `subject` when it expects a state the
+   * list has yet to show. It is not shown at all when it no longer describes the row: the flag
+   * changed while the request was in flight, the row now names another connection than the one
+   * the request targeted, or that connection changed state meanwhile, such as a sign-out another
+   * window made.
    */
-  const settle = useCallback((busyKey: string, key: string, error: string | null, sent: SignInMoves, subject?: string): void => {
+  const settle = useCallback((busyKey: string, key: string, error: string | null, request: SignInRequest, subject?: string): void => {
     setBusy((current) => { const next = new Set(current); next.delete(busyKey); return next; });
-    if (error === null) return;
-    if (subject === undefined && signInMovedSince(sent, moves.current.moves, signInControlConnection(latest.current, key))) return;
+    if (error === null || !stillActive(request.sentIn)) return;
+    if (subject === undefined && !signInRefusalApplies(request, { moves: moves.current.moves, signIns: latest.current, key })) return;
     const refusal: ShaperSignInRefusal = { text: error, subject: subject ?? signInControlSubject(latest.current, key) };
     setRefusals((current) => ({ ...current, [key]: refusal }));
-  }, []);
+  }, [stillActive]);
   /**
    * Opens a held sign-in link. One that did not open leaves a refusal on the row, shown while
    * that sign-in is pending, pointing at the two controls that offer the link again.
@@ -195,19 +209,19 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
   }, [refuse, stillActive]);
   const onSignIn = useCallback((shaper: string, key: string): void => {
     begin(key, key);
-    // The counts as the request went out, so the reply can tell whether the sign-in moved on,
-    // and perhaps back, while it was in flight.
-    const sent = moves.current.moves;
-    const sentIn = activation.current.count;
+    // The counts and the row's connection as the request went out, so the reply can tell
+    // whether the sign-in moved on, and perhaps back, while it was in flight.
+    const request = requestState(signInControlConnection(latest.current, key));
+    const { sent } = request;
     void api.signInShaper(shaper).then((reply) => {
-      if (!reply.ok || !reply.authorizationUrl || !reply.connection) {
-        settle(key, key, refusalText(reply, "sign-in"), sent);
+      if (!stillActive(request.sentIn)) {
+        // The flag changed while the request was in flight: the row's controls are not the ones
+        // that sent it, so there is no refusal to show, no link to hold and no page to open.
+        settle(key, key, null, request);
         return;
       }
-      if (!stillActive(sentIn)) {
-        // The flag went off while the request was in flight: the row offers no sign-in now, so
-        // there is no link to hold and no page to open.
-        settle(key, key, null, sent);
+      if (!reply.ok || !reply.authorizationUrl || !reply.connection) {
+        settle(key, key, refusalText(reply, "sign-in"), request);
         return;
       }
       const { authorizationUrl, connection } = reply;
@@ -216,24 +230,26 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
         // The daemon did start this sign-in, so the refusal stands while it is pending and goes
         // once it lapses or is cancelled, whichever of its event and this reply came first. One
         // already over when the reply lands has nothing left to refuse.
-        settle(key, key, link ? SIGN_IN_URL_REFUSED : null, sent, signInSubject(connection, "pending"));
+        settle(key, key, link ? SIGN_IN_URL_REFUSED : null, request, signInSubject(connection, "pending"));
         return;
       }
       setHeld((current) => signInLinkHeld(current, connection, link));
-      settle(key, key, null, sent);
+      settle(key, key, null, request);
       // A sign-in that is already over has no page worth opening.
       if (link) open(connection, authorizationUrl, key);
     });
-  }, [begin, settle, open, stillActive]);
+  }, [begin, settle, open, stillActive, requestState]);
   const onSignOut = useCallback((connection: string, key: string): void => {
     const busyKey = signInConnectionKey(connection);
     begin(busyKey, key);
-    const sent = moves.current.moves;
+    // The request targets this connection: a refusal that lands once the row names another is
+    // about a connection the row no longer shows.
+    const request = requestState(connection);
     void api.signOutShaper(connection).then((reply) => {
       if (reply.ok) setHeld((current) => { const next = { ...current }; delete next[connection]; return next; });
-      settle(busyKey, key, reply.ok ? null : refusalText(reply, "sign-out"), sent);
+      settle(busyKey, key, reply.ok ? null : refusalText(reply, "sign-out"), request);
     });
-  }, [begin, settle]);
+  }, [begin, settle, requestState]);
   const onOpen = useCallback((connection: string, url: string, key: string): void => {
     setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
     if (signInUrlOpenable(url)) open(connection, url, key);

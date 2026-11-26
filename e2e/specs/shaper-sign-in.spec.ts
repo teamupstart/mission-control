@@ -844,6 +844,53 @@ test("a desktop bridge failure that lands after another window cancelled the sig
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
 });
 
+test("a desktop bridge failure that lands after another window replaced the pending sign-in is not shown, and the replaced link is not offered", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // A desktop bridge whose call stays open until the test fails it.
+  await page.evaluate(() => {
+    const probe = window as unknown as { failBridge?: () => Promise<void>; bridgeCalls?: number };
+    probe.bridgeCalls = 0;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<void>((_, reject) => { fail = reject; });
+    probe.failBridge = async () => {
+      fail(new Error("no registered handler"));
+      // Let the dashboard's handler for the rejection run before the test looks.
+      await new Promise((done) => setTimeout(done, 50));
+    };
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: { isDesktop: true, openExternal: () => { probe.bridgeCalls! += 1; return pending; } },
+    });
+  });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await expect(signIn(page)).toContainText("Waiting for the browser.");
+  await expect(signIn(page)).not.toContainText("Started in another window");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { bridgeCalls?: number }).bridgeCalls)).toBe(1);
+
+  // Another window starts a sign-in on the same shaper while the bridge call is still open,
+  // which replaces this window's pending attempt: the row stays pending, under a new attempt.
+  const replaced = await fetch(`${daemon.baseURL}/api/shaping/sign-in`, { method: "POST", headers: json, body: JSON.stringify({ shaper: "signed-guidance" }) });
+  expect(replaced.status).toBe(200);
+  await expect(signIn(page)).toContainText("Waiting for the browser. Started in another window, or before this page was reloaded.");
+  await expect(page.getByRole("button", { name: "Open the sign-in page for Signed guidance" })).toHaveCount(0);
+
+  // Only now does the bridge fail. Its refusal was about the attempt that is gone, so it is not shown.
+  await page.evaluate(() => (window as unknown as { failBridge: () => Promise<void> }).failBridge());
+  await expect(signIn(page)).toContainText("Waiting for the browser. Started in another window, or before this page was reloaded.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open the sign-in page for Signed guidance" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Cancel sign-in for Signed guidance" })).toBeEnabled();
+  expect(await page.evaluate(() => (window as unknown as { bridgeCalls?: number }).bridgeCalls)).toBe(1);
+});
+
 test("a sign-in refusal that lands after the flag went off and on again is not shown", async ({ dashboard: page, daemon }) => {
   test.setTimeout(90_000);
   await setFlag(daemon, "task-shaping", true);

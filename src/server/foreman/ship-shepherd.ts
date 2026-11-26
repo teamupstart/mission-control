@@ -27,6 +27,8 @@ export interface ShipShepherdInput {
   humanOwnsSession: boolean;
   workflowOwnsSession: boolean;
   workflowEvidenceEligible: boolean;
+  /** Advisory context for a held delivery. Never arms recovery or changes its budget. */
+  earlierContinuationEvidence?: boolean;
   hasTaskOwnedOpenPr: boolean;
   /**
    * A plan task whose `foreman_complete` workflow is started only by Foreman's claim
@@ -262,7 +264,8 @@ function decideShipRecovery(
     episodeKey: input.episodeKey,
     attempt,
     marker,
-    payload: structuralPayload(cause, input.workflowEvidenceEligible, task.kind === "plan"),
+    payload: structuralPayload(cause, input.workflowEvidenceEligible, task.kind === "plan",
+      input.earlierContinuationEvidence && cause.decision?.episodeKey === input.episodeKey),
     needsReview: cause.reason === "idle_ambiguous",
     decision: cause.decision,
   };
@@ -299,6 +302,7 @@ function structuralPayload(
   cause: RecoveryCause,
   workflowEvidenceEligible: boolean,
   planning: boolean,
+  earlierContinuationEvidence?: boolean,
 ): string | null {
   switch (cause.reason) {
     case "held_gaps": {
@@ -319,7 +323,12 @@ function structuralPayload(
         : planning
           ? "Foreman's completion review held this plan's handoff, so its bound workflow has not started. It found:"
           : "Foreman's completion review found blocking work that still belongs in this implementation turn:";
-      const evidence = workflowEvidenceRequirement(workflowEvidenceEligible);
+      const registration = workflowEvidenceRequirement(workflowEvidenceEligible);
+      const evidence = workflowEvidenceEligible && earlierContinuationEvidence
+        ? registration + " Evidence was registered before the continuation. Inspect the original packet and current checkout. "
+          + "If current-contract proof is still required, register verified items and criterion links under their existing ids. "
+          + "Address every outstanding verification and standards finding."
+        : registration;
       // A plan keeps its own handoff rules: it commits and pushes the artifacts its phase tasks
       // reference, and its workflow - not this turn - owns the pull request and the verdict.
       return planning

@@ -15,6 +15,7 @@ import { checkBlockedReason, workflowCapturedLocalInspector, workflowRequiresRep
 import type { WorkflowRepositoryArtifactCandidate } from "./repository-artifact/service.ts";
 import type { WorkflowRawCaptureRead, RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
+import { checkoutDigest, continuationDigest, evidenceContract, packetDigest } from "./continuation-evidence.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
@@ -23,7 +24,7 @@ import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
 import { samePlanPublicationContext, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
-import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { continuationSource, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import { agentActive, hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
@@ -262,6 +263,7 @@ import {
   inheritSubmissionEvidence,
   reconcileWorkflowEvidenceFiles,
   stageAgentWorkflowEvidence,
+  continuationFileStatus,
   stageUploadedWorkflowEvidenceSync,
   stageRetainedWorkflowEvidence,
   WorkflowImageEvidenceError,
@@ -1848,7 +1850,11 @@ export class WorkflowManager {
       baseSha: null,
       extraRepos: [],
     };
+    const goal = this.registry.getGoal(session.id);
+    const root = activeTask?.worktreePath ?? session.cwd;
     return stageAgentWorkflowEvidence({
+      continuationContract: this.store.latestRunForBinding(binding.id) ? null
+        : evidenceContract(activeTask, binding, goal, root && canonicalWorktreePath(root)),
       store: this.store,
       noteKey: binding.noteKey,
       task,
@@ -1934,6 +1940,46 @@ export class WorkflowManager {
         registrationEligible: this.agentEvidenceBinding(sessionId) !== null,
       }
       : null;
+  }
+
+  /** Synchronous identity checks also run at the claim's transaction boundary. */
+  private continuationCandidate(sessionId: string, registered: WorkflowSessionEvidenceList | null) {
+    if (!registered?.registrationEligible) return null;
+    const goal = this.registry.getGoal(sessionId);
+    const source = continuationSource(goal);
+    if (!source || !goal) return null;
+    const items = [...registered.images, ...registered.artifacts];
+    if (!items.length || items.some(item => item.episodeKey !== source)) return null;
+    const binding = this.agentEvidenceBinding(sessionId);
+    const session = this.registry.getSession(sessionId);
+    if (!session || !binding || this.store.latestRunForBinding(binding.id)) return null;
+    const task = this.registry.taskForSession(sessionId, session.cwd);
+    const checkout = task?.worktreePath ?? session.cwd;
+    if (!checkout) return null;
+    const root = canonicalWorktreePath(checkout);
+    const contract = evidenceContract(task, binding, goal, root);
+    const receipt = this.store.continuationReceipt(binding.noteKey, source, root);
+    if (!contract || !receipt || packetDigest(contract, root, registered) !== receipt.packet) return null;
+    const note = this.registry.getGoalSteering(sessionId, goal.promptRevision).at(-1);
+    if (note?.revision !== goal.promptRevision || note.instruction !== "continue" || note.rationale !== goal.rationale) return null;
+    const episodeKey = resolvedSessionIntent(goal)!.episodeKey;
+    return { sourceEpisode: source, episodeKey, root, checkout: receipt.checkout,
+      packet: continuationDigest([receipt.packet, receipt.checkout, episodeKey]) };
+  }
+
+  async completionEvidence(sessionId: string): Promise<WorkflowSessionEvidenceList | null> {
+    const registered = this.stagedEvidenceForSession(sessionId, "registered");
+    const candidate = this.continuationCandidate(sessionId, registered);
+    if (!candidate || !registered) return registered;
+    const { root, sourceEpisode, episodeKey, packet } = candidate;
+    const checkout = await checkoutDigest(root);
+    const status = checkout === null ? "unavailable" : checkout !== candidate.checkout ? "stale"
+      : await continuationFileStatus(root, registered);
+    const fresh = this.stagedEvidenceForSession(sessionId, "registered");
+    if (fresh && this.continuationCandidate(sessionId, fresh)?.packet === packet) {
+      fresh.continuation = { sourceEpisode, episodeKey, packet, status };
+    }
+    return fresh;
   }
 
   removeStagedEvidence(
@@ -4073,6 +4119,12 @@ export class WorkflowManager {
     return session;
   }
 
+  private async validatedContinuation(sessionId: string, claim: WorkflowCompletionClaim): Promise<string | undefined> {
+    const assessment = (await this.completionEvidence(sessionId))?.continuation;
+    return assessment?.status === "revalidated" && assessment.episodeKey === claim.expectedIntent?.episodeKey
+      ? assessment.packet : undefined;
+  }
+
   async claimCompletion(
     sessionId: string,
     claim: WorkflowCompletionClaim,
@@ -4087,6 +4139,7 @@ export class WorkflowManager {
     // conversation answers `no_binding` so that completion has exactly one owner and two
     // PR-producing paths can never race on the same branch.
     const anchor = this.store.activeBindingForNote(noteKeyFor(session));
+    if (claim.expectedContinuationPacket && !anchor) throw new Error("Continuation evidence binding changed");
     if (!anchor) {
       // Foreman judged the work complete on a task with no workflow (D16). The after-work prompt
       // is held until Foreman's wrap-up is answered, so the wrap-up reaches the session first.
@@ -4094,6 +4147,11 @@ export class WorkflowManager {
       return { claimed: false, reason: "no_binding" };
     }
     if (anchor.triggerMode !== "foreman_complete") {
+      if (claim.expectedContinuationPacket) {
+        const validated = await this.validatedContinuation(sessionId, claim);
+        this.currentCompletionSession(sessionId, claim);
+        if (validated !== claim.expectedContinuationPacket) throw new Error("Continuation evidence changed before handoff");
+      }
       return { claimed: false, reason: "manual_trigger" };
     }
     // One settled turn, one run per repository it changed. `repoRunTargets` returns
@@ -4110,7 +4168,9 @@ export class WorkflowManager {
     // evidence capture can legitimately take seconds on an unchanged repository.
     const remainingVerificationMs = Math.max(0, deadline - performance.now());
     const comparisons = probes.length ? await Promise.all(probes) : [];
-    if (probes.length) {
+    const validatedPacket = claim.expectedContinuationPacket
+      ? await this.validatedContinuation(sessionId, claim) : undefined;
+    if (probes.length || claim.expectedContinuationPacket) {
       session = this.currentCompletionSession(sessionId, claim);
       if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
         throw new Error("Foreman completion session is no longer idle for handoff");
@@ -4130,6 +4190,10 @@ export class WorkflowManager {
     const inputs: ForemanCompletionStoreInput[] = targets.map((binding, index) => ({
       binding,
       ...(probes.length ? { expectedLatestRunId: latestRuns[index]?.id ?? null } : {}),
+      ...(claim.expectedContinuationPacket ? { continuationStillMatches: () =>
+        validatedPacket === claim.expectedContinuationPacket &&
+        this.continuationCandidate(sessionId, this.stagedEvidenceForSession(sessionId, "registered"))?.packet === validatedPacket,
+      } : {}),
       publicationComparison: comparisons.find(comparison => comparison.bindingId === binding.id),
       completionKind: claim.completionKind,
       marker: claim.marker,

@@ -3280,12 +3280,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return workflowImageFailure(c, error, "Remove criterion links before removing evidence");
     }
   });
-  app.get("/api/sessions/:id/workflow-evidence", (c) => {
+  app.get("/api/sessions/:id/workflow-evidence", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const staged = manager.stagedEvidenceForSession(
-      c.req.param("id"), c.req.query("view") === "registered" ? "registered" : "staged",
-    );
+    const view = c.req.query("view") === "registered" ? "registered" : "staged";
+    const id = c.req.param("id");
+    const staged = view === "registered" && c.req.query("continuation") === "check"
+      ? await manager.completionEvidence(id)
+      : manager.stagedEvidenceForSession(id, view);
     return staged ? c.json(staged) : c.json({ error: "no such live workflow session" }, 404);
   });
   app.post(

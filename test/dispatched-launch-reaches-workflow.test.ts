@@ -1,10 +1,13 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { BUG_FIX_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { appendFileSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Session, Task } from "../src/shared/types.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // The whole reported failure, end to end, at the seams a person actually feels it:
 // a dispatched ship session is launched, the composed prompt comes back through
@@ -213,7 +216,7 @@ interface Dispatched {
  * its native id (which moves the marker), and only then is the operator's own request
  * captured as prompt revision one under that native key.
  */
-function dispatch(slug: string, taskOverrides: Partial<Task> = {}, seedGoal = true): Dispatched {
+function dispatch(slug: string, taskOverrides: Partial<Task> = {}, seedGoal = true, triggerMode: "foreman_complete" | "manual" = "foreman_complete"): Dispatched {
   const db = openDb();
   const registry = new Registry();
   const queues = new QueueManager(registry);
@@ -240,10 +243,10 @@ function dispatch(slug: string, taskOverrides: Partial<Task> = {}, seedGoal = tr
     id: registrationId,
     agent: "claude",
     name: slug,
-    cwd: "/repo",
+    cwd: task.worktreePath!,
     gitBranch: "feature",
-    gitRoot: "/repo",
-    repoRoot: "/repo",
+    gitRoot: task.worktreePath,
+    repoRoot: task.repoRoot,
   });
   registry.bindLaunchedAgentSession(registrationId, "claude", noteKey);
   registry.captureAcceptedPrompt(registrationId, task.intent, noteKey, 2);
@@ -266,14 +269,15 @@ function dispatch(slug: string, taskOverrides: Partial<Task> = {}, seedGoal = tr
 
   const bindingId = workflows.store.insertBinding({
     id: `binding-${slug}`,
-    workflowVersionId: "v",
+    workflowVersionId: task.workflowId === BUG_FIX_REVIEW_WORKFLOW_ID
+      ? workflows.store.getWorkflow(task.workflowId)!.currentVersionId! : "v",
     noteKey,
     sessionId: registrationId,
     sessionAgent: "claude",
     sessionName: slug,
-    sessionCwd: "/repo",
-    sessionRepoRoot: "/repo",
-    triggerMode: "foreman_complete",
+    sessionCwd: task.worktreePath,
+    sessionRepoRoot: task.repoRoot,
+    triggerMode,
     deliveryMode: "preview",
     maxRepairRounds: 2,
     now: 1,
@@ -1082,5 +1086,287 @@ for (const scenario of [
       assert.equal(runs().length, 1);
       assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.generation, revision);
     }
+  });
+}
+
+for (const boundary of [
+  "standards hold", "unverified hold", "manual", "clean handoff", "claim race",
+  "historical packet", "reserved packet", "stale proof", "unreadable proof", "split registration",
+] as const) {
+  test(`registered 18-item packet at the 1:3 to 1:4 continuation: ${boundary}`, async (t) => {
+    const repo = mkdtempSync(join(home, "packet-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args]);
+    git("init", "-q");
+    writeFileSync(join(repo, ".gitignore"), "*.png\n*.log\n");
+    git("add", ".gitignore");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
+    git("update-index", "--assume-unchanged", ".gitignore");
+    writeFileSync(join(repo, "change.ts"), "export const repaired = true;\n");
+    const d = dispatch(`evidence-continuation-${boundary.replaceAll(" ", "-")}`, {
+      kind: "bugfix", workflowId: BUG_FIX_REVIEW_WORKFLOW_ID, repoRoot: repo, worktreePath: repo,
+      intent: "Implement the repair and pass the full suite",
+    }, true, boundary === "manual" ? "manual" : "foreman_complete");
+    const now = Date.now() - 45_000;
+    const prompts: string[] = [];
+    t.after(configureClaudeRunnerTransport(() => "sdk", {
+      executable: async () => "/fake/bin/claude", env: () => ({ PATH: "/usr/bin" }),
+      query: async ({ prompt }) => {
+        assert.equal(typeof prompt, "string");
+        const refining = String(prompt).includes("## The specific unresolved instruction to classify now");
+        if (!refining) prompts.push(String(prompt));
+        const reply = refining
+          ? { relationship: "steer", objective: "Implement the repair and pass the full suite",
+              goal: "Implement the repair", focus: "Continue", reason: "The objective and acceptance criteria are unchanged." }
+          : boundary === "unverified hold" ? { complete: true, confidence: 1, summary: "Full verification is still missing.", resolved: [],
+              gaps: [{ id: "full-verification", kind: "unverified", severity: "blocking", path: "", detail: "Full suite unconfirmed", fix: "Verify the full suite." }] }
+          : boundary !== "standards hold" ? { complete: true, confidence: 1, summary: "The requested work passed.", resolved: [], gaps: [] }
+          : { complete: false, confidence: 1, summary: "The required full suite has unresolved failures.", resolved: [],
+              gaps: [{ id: "full-suite", kind: "standards", severity: "blocking", path: "", detail: "55 full-suite failures remain", fix: "Repair and verify." }] };
+        return { async *[Symbol.asyncIterator]() {
+          yield { type: "result", subtype: "success", is_error: false, result: JSON.stringify(reply), structured_output: reply };
+        } };
+      },
+    }));
+    const transcript = join(home, "packet-transcript.jsonl");
+    writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "opening", message: { role: "user", content: "Implement the repair" } }) + "\n");
+    const hook = (event: "UserPromptSubmit" | "Stop" | "PreToolUse", ts: number, prompt?: string, source?: string) =>
+      d.registry.applyHook({ agent: "claude", sessionId: d.noteKey, cwd: repo, env: {}, transcriptPath: transcript,
+        event, ts, prompt, source, ...(event === "PreToolUse" ? { toolName: "Edit" } : {}) });
+    const stop = startGoalRefiner(d.registry);
+    t.after(stop);
+    async function waitForRevision(n: number) {
+      const deadline = Date.now() + 5000;
+      while (d.registry.getGoal(d.sessionId)?.resolvedPromptRevision !== n && Date.now() < deadline) await delay(10);
+      assert.equal(d.registry.getGoal(d.sessionId)?.resolvedPromptRevision, n);
+    }
+    for (const revision of [2, 3]) {
+      hook("UserPromptSubmit", now + revision, "continue");
+      await waitForRevision(revision);
+    }
+    for (let i = 0; i < 7; i++) {
+      hook("PreToolUse", now + 10 + 2 * i);
+      hook("Stop", now + 11 + 2 * i);
+    }
+    const repositoryScope = "repo-01" as const;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    const images = Array.from({ length: 8 }, (_, i) => {
+      const path = `image-${i}.png`;
+      writeFileSync(join(repo, path), png);
+      return { kind: "agent" as const, path, clientItemId: `image-${i}`, caption: "Fixture rendering", repositoryScope };
+    });
+    writeFileSync(join(repo, "verification.log"), "Focused tests passed\n");
+    const commandOutputs = Array.from({ length: 9 }, (_, i) => ({
+      kind: "command" as const, clientItemId: `check-${i}`, command: "verify", exitCode: 0,
+      output: "focused verification passed", caption: "Focused verification", repositoryScope,
+    }));
+    const packet = {
+      images, commandOutputs,
+      artifacts: [{ kind: "text", path: "verification.log", clientItemId: "test-log", caption: "Test log", repositoryScope }],
+      coverage: Array.from({ length: 5 }, (_, i) => ({ clientCriterionId: `criterion-${i}`, criterion: `Focused criterion ${i}`,
+        proofClass: "focused_execution" as const, repositoryScope, links: [{ clientItemId: `check-${i}`, role: "execution" as const }] })),
+    } satisfies Parameters<typeof d.workflows.stageAgentEvidence>[1];
+    const register = (input = packet) => d.workflows.stageAgentEvidence(d.sessionId, input);
+    let registered;
+    if (boundary === "split registration") {
+      const first = await register({
+        images: images.slice(0, 4), commandOutputs: commandOutputs.slice(0, 2),
+        artifacts: [], coverage: packet.coverage.slice(0, 2),
+      });
+      assert.equal(first.images.length, 4);
+      assert.equal(first.artifacts.length, 2);
+      assert.equal(first.coverage?.length, 2);
+      assert.ok(d.workflows.store.continuationReceipt(d.noteKey, "intent:1:3", realpathSync(repo)),
+        "the initial registration has a receipt covering its own packet");
+      registered = await register({
+        images: images.slice(4), commandOutputs: commandOutputs.slice(2),
+        // Supply all claims so only the missing first-call items can refuse a new receipt.
+        artifacts: packet.artifacts, coverage: packet.coverage,
+      });
+      assert.ok(registered.generation > first.generation, "the second registration expands the staged packet");
+    } else {
+      registered = await register();
+    }
+    assert.equal(registered.artifacts.length, 10);
+    assert.equal(registered.images.length, 8);
+    assert.equal(registered.coverage?.length, 5);
+    assert.ok([...registered.artifacts, ...registered.images].every(item => item.episodeKey === "intent:1:3"));
+    if (boundary === "historical packet") {
+      openDb().prepare("UPDATE workflow_evidence_owners SET continuation_checkout = NULL, continuation_packet = NULL WHERE note_key = ?").run(d.noteKey);
+    }
+    // The resident's raw row carries these native fields. The prompt hook, rather than
+    // the metadata-filtered transcript reader, feeds the accepted instruction to the refiner.
+    const scheduled = boundary !== "manual";
+    appendFileSync(transcript, JSON.stringify({ type: "user", uuid: "followup", isMeta: scheduled,
+      promptSource: scheduled ? "system" : "sdk", turnOrigin: scheduled ? "scheduled" : "sdk",
+      ...(scheduled ? { wakeupSource: "loop_wakeup" } : {}), message: { role: "user", content: "continue" } }) + "\n");
+    hook("UserPromptSubmit", now + 40, "continue", scheduled ? "loop_wakeup" : "sdk");
+    assert.equal(resolvedSessionIntent(d.registry.getGoal(d.sessionId)), null);
+    hook("Stop", now + 42);
+    await waitForRevision(4);
+    const logPath = join(repo, "verification.log");
+    if (boundary === "stale proof") writeFileSync(logPath, "Focused tests failed\n");
+    // The Git-ignored path remains in the packet, but the file cannot be reopened.
+    if (boundary === "unreadable proof") unlinkSync(logPath);
+    let reservedSubmissionId: string | undefined;
+    if (boundary === "reserved packet") {
+      const store = d.workflows.store;
+      const root = realpathSync(repo);
+      assert.ok(store.continuationReceipt(d.noteKey, "intent:1:3", root));
+      // A sibling can reserve this conversation's proof without creating a run on
+      // Foreman's binding. That isolates the receipt guard from the existing-run guard.
+      const sibling = store.insertBinding({
+        ...store.getBinding(d.bindingId)!,
+        id: "continuation-reserving-binding", sessionId: d.sessionId, repoRoot: repo,
+        triggerMode: "manual", now: now + 43,
+      });
+      const triggerKey = "continuation-reservation-fixture";
+      const { submission } = store.createInitialSubmission({
+        id: "continuation-reserving-run", binding: sibling, intent: FIXTURE_RUN_INTENT,
+        triggerSource: "manual", triggerKey, now: now + 44,
+      }, {
+        id: "continuation-reserved-submission", triggerSource: "manual", triggerKey,
+        context: {}, evidence: {}, now: now + 44,
+      });
+      reservedSubmissionId = submission.id;
+      store.archiveBindingAndCancel(sibling.id, now + 45);
+      assert.equal(store.activeBindingForNote(d.noteKey)?.id, d.bindingId);
+      assert.equal(store.latestRunForBinding(d.bindingId), null);
+      assert.equal(store.listReservedWorkflowEvidence(submission.id).length, 18);
+      assert.equal(store.listSubmissionCoverage(submission.id).length, 5);
+      assert.equal(store.continuationReceipt(d.noteKey, "intent:1:3", root), null);
+    }
+    const client = new ForemanClient();
+    let capturedClaim: Request | undefined;
+    t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
+      const request = new Request(input, init);
+      request.headers.set("host", "127.0.0.1:7317");
+      if (request.url.endsWith("/workflow-completion")) {
+        capturedClaim = request.clone();
+        if (boundary === "claim race") writeFileSync(join(repo, images[0]!.path), Buffer.concat([png, Buffer.from([1])]));
+      }
+      return d.app.request(request);
+    });
+    t.mock.method(client, "diff", async () => ({ ok: true, headSha: git("rev-parse", "HEAD").toString().trim(),
+      filesChanged: 1, insertions: 1, deletions: 0, truncated: false, patch: "diff --git a/change.ts b/change.ts\n+export const repaired = true;" }));
+    t.mock.method(client, "transcriptSize", async () => 1);
+    t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
+    t.mock.method(client, "instructions", async () => "");
+    const cfg = ForemanConfigSchema.parse({ enabled: true, mode: "dry-run", wrapup: "pr", wrapupTriggers: ["prompted"] });
+    const tick = () => {
+      const session = d.registry.getSession(d.sessionId)!;
+      return processPromptedWrapup(client, cfg, session, [session], d.registry.getQueue(session.id), new Set());
+    };
+    assert.equal(await tick(), boundary !== "claim race");
+    if (boundary === "historical packet" || boundary === "reserved packet" ||
+        boundary === "stale proof" || boundary === "unreadable proof" || boundary === "split registration") {
+      assert.equal(prompts.length, 1);
+      const prompt = prompts[0]!;
+      assert.match(prompt, /18 registered items belong to another or unknown intent episode and are excluded/);
+      assert.doesNotMatch(prompt, /No evidence is registered for this work|Fixture rendering|Test log/);
+      const stale = /The checkout or evidence files no longer match the registration/;
+      const unavailable = /Mission Control could not verify the checkout or read the registered files/;
+      assert.equal(stale.test(prompt), boundary === "stale proof", "stale requires an observed mismatch");
+      assert.equal(unavailable.test(prompt), boundary === "unreadable proof", "an unreadable source has its own status");
+      const decision = d.registry.getQueue(d.sessionId)?.promptedDecision;
+      assert.equal(decision?.generation, 8);
+      assert.equal(decision.episodeKey, "intent:1:4");
+      assert.equal(decision.outcome, "held", "the clean verifier answer cannot supply current-contract proof");
+      assert.equal(decision.gaps[0]?.id, "workflow-evidence-current-contract");
+      assert.equal(capturedClaim, undefined);
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      if (reservedSubmissionId) {
+        assert.equal(d.workflows.store.listReservedWorkflowEvidence(reservedSubmissionId).length, 18);
+        return;
+      }
+      assert.deepEqual(d.workflows.stagedEvidence(d.bindingId), registered);
+      if (boundary !== "historical packet") return;
+      assert.equal(await tick(), false, "the held generation stays consumed");
+      // A normal, newly verified registration on a later work cycle is the recovery
+      // available to historical packets that never recorded their registration-time HEAD.
+      hook("PreToolUse", now + 45);
+      const fresh = await register();
+      assert.equal(fresh.generation, registered.generation);
+      assert.ok([...fresh.images, ...fresh.artifacts].every(item => item.episodeKey === "intent:1:4"));
+      hook("Stop", now + 46);
+      assert.equal(await tick(), true);
+      assert.ok(d.workflows.store.latestRunForBinding(d.bindingId));
+      return;
+    }
+    assert.match(prompts.join("\n"), /18 evidence items are registered for this work/);
+    if (boundary === "claim race") {
+      assert.ok(capturedClaim);
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedConsumedGeneration, null);
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      return;
+    }
+    if (boundary === "unverified hold") {
+      assert.equal(capturedClaim, undefined, "the preceding packet cannot unlock the same-episode verification fallback");
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "held");
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      return;
+    }
+    if (boundary === "clean handoff") {
+      const run = d.workflows.store.latestRunForBinding(d.bindingId);
+      assert.ok(run);
+      assert.ok(capturedClaim);
+      assert.equal(await tick(), false);
+      assert.equal((await d.workflows.completionEvidence(d.sessionId))?.continuation, undefined);
+      const replay = await d.app.request(capturedClaim);
+      const body = await replay.json();
+      assert.equal(body.state, "already_claimed", JSON.stringify(body));
+      assert.equal(body.runId, run.id);
+      return;
+    }
+    if (boundary === "manual") {
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "asked");
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      return;
+    }
+    const decision = d.registry.getQueue(d.sessionId)?.promptedDecision;
+    assert.equal(decision?.generation, 8);
+    assert.equal(decision.episodeKey, "intent:1:4");
+    assert.equal(decision.outcome, "held");
+    assert.equal(decision.gaps[0]?.kind, "standards");
+    assert.equal(await tick(), false);
+    assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+    assert.deepEqual(d.workflows.stagedEvidence(d.bindingId), registered);
+    const assessment = () => d.workflows.completionEvidence(d.sessionId).then(result => result?.continuation?.status);
+    assert.equal(await assessment(), "revalidated");
+    const restarted = new Registry();
+    restarted.registerSdkSession({ id: d.sessionId, agent: "claude", name: "restarted", cwd: repo,
+      gitBranch: "feature", gitRoot: repo, repoRoot: repo });
+    restarted.bindLaunchedAgentSession(d.sessionId, "claude", d.noteKey);
+    const reader = mkWorkflows(restarted, new PersonaManager(restarted), new QueueManager(restarted));
+    assert.equal((await reader.completionEvidence(d.sessionId))?.continuation?.status, "revalidated");
+    assert.deepEqual(restarted.getQueue(d.sessionId)?.promptedDecision, decision);
+    writeFileSync(join(repo, "verification.log"), "Focused tests FAILED\n");
+    assert.equal(await assessment(), "stale");
+    writeFileSync(join(repo, "verification.log"), "Focused tests passed\n");
+    writeFileSync(join(repo, "change.ts"), "export const repaired = false;\n");
+    assert.equal(await assessment(), "stale");
+    writeFileSync(join(repo, "change.ts"), "export const repaired = true;\n");
+    assert.equal(await assessment(), "revalidated");
+    writeFileSync(join(repo, ".gitignore"), "*.png\n*.log\n# raw bytes changed\n");
+    assert.equal(await assessment(), "stale", "even a tracked file hidden from git status must match");
+    writeFileSync(join(repo, ".gitignore"), "*.png\n*.log\n");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "different HEAD");
+    assert.equal(await assessment(), "stale");
+    const settled = d.registry.getGoal(d.sessionId)!;
+    for (const changed of [
+      { relationship: "amend" as const }, { relationship: "replace" as const },
+      { relationship: "unclear" as const }, { objectiveVersion: settled.objectiveVersion + 1 },
+      { objective: settled.objective + " and add another requirement" },
+      { objective: settled.objective + "\nAutomatic handoff: operator only" },
+      { prompt: "continue and release the handoff" }, { handoffReleasedAt: now },
+    ]) {
+      d.registry.upsertGoal(d.sessionId, changed);
+      assert.equal(await assessment(), undefined, JSON.stringify(changed));
+      // A release stamp is monotonic. Exercise that case last.
+      if ("handoffReleasedAt" in changed) break;
+      d.registry.upsertGoal(d.sessionId, settled);
+    }
+    hook("UserPromptSubmit", now + 50, "continue and add another feature");
+    await waitForRevision(5);
+    assert.equal(await assessment(), undefined);
   });
 }

@@ -36,6 +36,7 @@ import {
 } from "@shared/workflow.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
+import { checkoutDigest } from "./continuation-evidence.ts";
 import { STATE_DIR } from "../config.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { resolveCheckoutFile, resolveRoots, isIgnored } from "../archives/checkout.ts";
@@ -326,10 +327,14 @@ export async function stageAgentWorkflowEvidence(input: {
   commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
   coverage?: readonly WorkflowEvidenceCoverageClaim[];
   withdrawClientCriterionIds?: readonly string[];
+  continuationContract?: string | null;
   now?: number;
   episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
+  const root = roots.length === 1 ? roots[0]?.realRoot : null;
+  const before = input.continuationContract && root && (input.images.length || input.commandOutputs?.length || input.artifacts?.length)
+    ? await checkoutDigest(root) : null;
   const citedClaims = (input.coverage ?? []).filter((claim) => claim.criterionId);
   if (citedClaims.length > 0) {
     const criteriaByRun = input.store.activeBindingsForNote(input.noteKey).flatMap((binding) => {
@@ -503,6 +508,9 @@ export async function stageAgentWorkflowEvidence(input: {
       sourceRoot: selected.realRoot,
     });
   }
+  // Only a self-contained, single-checkout registration can witness an entire packet.
+  const checkout = before && root
+    ? await checkoutDigest(root) : null;
   return input.store.stageWorkflowEvidence(
     input.noteKey,
     writes,
@@ -510,7 +518,28 @@ export async function stageAgentWorkflowEvidence(input: {
     input.episodeKey ?? null,
     coverageWrites,
     input.withdrawClientCriterionIds,
+    checkout && checkout === before && input.continuationContract && root
+      ? { contract: input.continuationContract, root, checkout } : undefined,
   );
+}
+
+/** Commands were digest-checked while decoding staging rows. Reopen path sources with
+ * the same checkout containment and byte validators as registration and capture.
+ */
+export async function continuationFileStatus(root: string, tray: WorkflowStagedEvidenceList): Promise<"stale" | "unavailable" | "revalidated"> {
+  try {
+    for (const item of [...tray.images, ...tray.artifacts]) {
+      if (item.sourceKind === "command") continue;
+      if (item.sourceKind !== "agent" || !await isIgnored(root, item.sourceLocator)) return "stale";
+      const file = item.mimeType === "text/plain"
+        ? await inspectCheckoutTextArtifact(root, item.sourceLocator)
+        : await inspectCheckoutImage(root, item.sourceLocator);
+      if (file.bytes !== item.bytes || file.sha256 !== item.sha256 || file.mimeType !== item.mimeType) return "stale";
+    }
+    return "revalidated";
+  } catch {
+    return "unavailable";
+  }
 }
 
 export async function stageUploadedWorkflowEvidence(input: {

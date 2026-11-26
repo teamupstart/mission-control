@@ -173,7 +173,9 @@ function useShaperSignIn(
   useEffect(() => { setHeld((current) => signInLinksAfter(current, shown)); }, [shown]);
   // A refusal describes its connection as it was: once another window, a refresh or an expiry
   // moves that connection on, the row shows the new state without the old refusal beside it.
-  useEffect(() => { setRefusals((current) => signInRefusalsAfter(current, shown)); }, [shown]);
+  // A row's refusal is about what its shaper signed in to, so a change to that from another
+  // window ends it too, whether or not the list names either connection.
+  useEffect(() => { setRefusals((current) => signInRefusalsAfter(current, shown, targets)); }, [shown, targets]);
   /**
    * Starts a control's request. `busyKey` is what the request holds: a row's Sign in holds its
    * row, while Cancel sign-in and Sign out hold the connection, so every row and entry on that
@@ -184,9 +186,15 @@ function useShaperSignIn(
     setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
   }, []);
   /** Shows a refusal under `key` against `subject`, outside any request. */
-  const refuse = useCallback((key: string, text: string, subject: string): void => {
-    setRefusals((current) => ({ ...current, [key]: { text, subject } }));
+  /** The refusal for `key`, recording what a row's shaper signs in to now. */
+  const refusalFor = useCallback((key: string, text: string, subject: string): ShaperSignInRefusal => {
+    const shaper = signInRowShaper(key);
+    if (shaper === null) return { text, subject };
+    return { text, subject, target: Object.hasOwn(targetsNow.current, shaper) ? targetsNow.current[shaper]! : null };
   }, []);
+  const refuse = useCallback((key: string, text: string, subject: string): void => {
+    setRefusals((current) => ({ ...current, [key]: refusalFor(key, text, subject) }));
+  }, [refusalFor]);
   /** What a control's request recorded as it went out, for its reply to compare with. */
   const requestState = useCallback((target: string | null): SignInRequest => ({
     sent: moves.current.moves, sentIn: activation.current.count, target, targets: targetsNow.current,
@@ -208,9 +216,9 @@ function useShaperSignIn(
     setBusy((current) => { const next = new Set(current); next.delete(busyKey); return next; });
     if (error === null || !stillActive(request.sentIn) || !sameTarget(request, key)) return;
     if (subject === undefined && !signInRefusalApplies(request, { moves: moves.current.moves, signIns: latest.current, key })) return;
-    const refusal: ShaperSignInRefusal = { text: error, subject: subject ?? signInControlSubject(latest.current, key) };
+    const refusal = refusalFor(key, error, subject ?? signInControlSubject(latest.current, key));
     setRefusals((current) => ({ ...current, [key]: refusal }));
-  }, [stillActive, sameTarget]);
+  }, [stillActive, sameTarget, refusalFor]);
   /**
    * Opens a held sign-in link. One that did not open leaves a refusal on the row, shown while
    * that sign-in is pending, pointing at the two controls that offer the link again.

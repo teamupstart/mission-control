@@ -1364,3 +1364,24 @@ test("each row's sign-in target is read from its definition, so a scope change s
   const folder = folderShaper("signed-mcp", "shadowed", { shaper: ShaperSchema.parse({ ...rescoped, label: "Folder copy" }) });
   assert.equal(signInTargetsByShaper(shapingList(view({ shapers: [signedMcp] }), [folder as never]))["signed-mcp"], before["signed-mcp"]);
 });
+
+test("a row's refusal goes once its shaper signs in to another target, even with no sign-in entry at either time", () => {
+  const key = signInRowKey("signed-mcp");
+  const rescoped = { ...signedMcp, transport: { ...signedMcp.transport, server: { ...signedMcp.transport.server, auth: { type: "oauth", scope: "mcp:other" } } } };
+  const before = signInTargetsByShaper(shapingList(view({ shapers: [signedMcp] })));
+  const after = signInTargetsByShaper(shapingList(view({ shapers: [rescoped] })));
+  // Refused before the list had any entry: the subject is the row with no connection.
+  const refused = { [key]: { text: "Refused.", subject: signInControlSubject([], key), target: before["signed-mcp"]! } };
+  assert.equal(refused[key]!.subject, signInSubject(null, "absent"));
+  // The list still has no entry, so the list alone would keep it; the changed target ends it.
+  assert.equal(signInRefusalsAfter(refused, []), refused, "without targets, the list alone cannot see the change");
+  assert.equal(signInRefusalsAfter(refused, [], before), refused, "unchanged target, kept as the same object");
+  assert.deepEqual(signInRefusalsAfter(refused, [], after), {});
+  // A shaper removed meanwhile signs in to nothing: its refusal goes too.
+  assert.deepEqual(signInRefusalsAfter(refused, [], {}), {});
+  // An unused entry's refusal names its connection itself and is judged by the list alone.
+  const unusedKey = signInConnectionKey("e".repeat(32));
+  const unusedList = [signInEntry({ id: "e".repeat(32), state: "signed_in", shapers: [] })];
+  const unused = { [unusedKey]: { text: "Refused.", subject: signInControlSubject(unusedList, unusedKey) } };
+  assert.equal(signInRefusalsAfter(unused, unusedList, after), unused);
+});

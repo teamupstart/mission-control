@@ -834,3 +834,34 @@ test("a desktop bridge failure that lands after another window changed the shape
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
 });
+
+test("a refusal shown on a row goes once another window changes what the shaper signs in to", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // The daemon refuses this window's Sign in, and the row shows why.
+  await page.route("**/api/shaping/sign-in", (route) => route.request().method() !== "POST" ? route.fallback()
+    : route.fulfill({ status: 409, contentType: "application/json",
+      body: JSON.stringify({ error: "registration_limit", reason: "Refused for this test: about mcp:context." }) }));
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await expect(signIn(page).getByRole("alert")).toHaveText("Refused for this test: about mcp:context.");
+  await page.unroute("**/api/shaping/sign-in");
+
+  // Another window changes the shaper's scope. The row now signs in to mcp:other, and the refusal
+  // about mcp:context is gone from it, with no click here.
+  const rescoped = await fetch(`${daemon.baseURL}/api/shaping`, {
+    method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+      id: "signed-guidance", label: "Signed guidance", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope: "mcp:other" } } },
+    } }),
+  });
+  expect(rescoped.status).toBe(200);
+  await expect(row(page)).toContainText("Signs in: OAuth, scope mcp:other");
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+});

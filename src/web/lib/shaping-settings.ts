@@ -904,22 +904,33 @@ export interface ShaperSignInRefusal {
   text: string;
   /** `signInControlSubject` while the refusal still applies. */
   subject: string;
+  /**
+   * For a row's refusal, what the shaper signed in to when it was shown, from
+   * `signInTargetsByShaper`. Absent for an unused entry's, which names its connection itself.
+   */
+  target?: string | null;
 }
 
 /**
- * The refusals a window keeps after the list changes. A refusal answers one moment of its
- * control's connection: once the list shows that connection in another state, or the row's
- * shaper on another connection, such as another window signing it in or out, the refusal no
- * longer describes the row and is dropped. Returns `current` itself when nothing changed.
+ * The refusals a window keeps after the list or the shaper definitions change. A refusal answers
+ * one moment of its control's connection: once the list shows that connection in another state,
+ * or the row's shaper on another connection, such as another window signing it in or out, the
+ * refusal no longer describes the row and is dropped. A row's refusal is dropped too once its
+ * shaper signs in to another URL, scope or issuer, which `targets` shows even when the list names
+ * no connection for the row at either time. Returns `current` itself when nothing changed.
  */
 export function signInRefusalsAfter(
   current: Readonly<Record<string, ShaperSignInRefusal>>,
   signIns: readonly ShapingSignInView[],
+  targets?: Readonly<Record<string, string | null>>,
 ): Readonly<Record<string, ShaperSignInRefusal>> {
   let changed = false;
   const next: Record<string, ShaperSignInRefusal> = {};
   for (const [key, refusal] of Object.entries(current)) {
-    if (signInControlSubject(signIns, key) === refusal.subject) next[key] = refusal;
+    const shaper = signInRowShaper(key);
+    const retargeted = targets !== undefined && shaper !== null && refusal.target !== undefined
+      && !signInTargetUnchanged({ [shaper]: refusal.target }, targets, shaper);
+    if (!retargeted && signInControlSubject(signIns, key) === refusal.subject) next[key] = refusal;
     else changed = true;
   }
   return changed ? next : current;

@@ -153,7 +153,7 @@ test("dictation replaces the selection and keeps addressed speech in the focused
     await expect(title).toHaveValue("cancel");
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
-    const session = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first();
+    const session = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.task!.callSign! }).first();
     await session.click();
     const reply = page.getByPlaceholder(/^Reply to this session/);
     if (!await reply.evaluate(field => field === document.activeElement)) {
@@ -217,7 +217,7 @@ test("contenteditable file editor replaces interim dictation with the final addr
     const file = "build-notes.md";
     const path = join(steve.cwd!, file);
     writeFileSync(path, "Message for\n\n.\nKeep this line");
-    await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
+    await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.task!.callSign! }).first().click();
     await page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }).click();
     await page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: file }).click();
     await page.getByRole("group", { name: "File view mode" }).getByRole("button", { name: "Editor" }).click();
@@ -260,7 +260,7 @@ test("addressed speech stays in the file comment until the operator sends it", a
     const steve = await runningAgent(page, daemon, "Steve");
     const file = "build-notes.md";
     writeFileSync(join(steve.cwd!, file), "# Build notes\n\nCheck the compiler output.\n");
-    await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
+    await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.task!.callSign! }).first().click();
     await page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }).click();
     await page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: file }).click();
     const preview = page.getByLabel("Preview of " + file);
@@ -404,7 +404,7 @@ test("addressed speech reaches its session when the editor's blur report is dela
   const release = Promise.withResolvers<void>();
   try {
     const steve = await runningAgent(page, daemon, "Steve");
-    const session = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first();
+    const session = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.task!.callSign! }).first();
     await session.click();
     await session.focus();
     const reply = page.getByPlaceholder(/^Reply to this session/);

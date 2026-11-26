@@ -212,7 +212,8 @@ A call sign is not the title and changes nothing the launch provisions. It is an
 priority: an update may set or clear it while the agent runs (a resident's task takes none; see
 [Call signs](voice.md#call-signs)), and with the
 [inbox](attention-and-alerts.md) naming rule and voice both on it is the name the inbox, the review
-modal, question cards and alerts print for the session.
+modal, question cards and alerts print for the session. [Call signs](voice.md#call-signs) covers
+when it also titles the session's card.
 
 A task in the backlog answers to its call sign only once it launches. From then on it is listed
 while it runs and while it is hibernated, however long it sleeps. Once it stops it stays listed

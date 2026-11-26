@@ -117,6 +117,16 @@ export function withCurrentReferenceNames(
 }
 
 /**
+ * The call sign a session answers to, or null. A resident's task never takes one
+ * (`taskKindTakesCallSign`), so a stray one on it names nothing.
+ */
+export function sessionCallSign(
+  session: { task?: Pick<NonNullable<Session["task"]>, "kind" | "callSign"> | null },
+): string | null {
+  return session.task && taskKindTakesCallSign(session.task.kind) ? present(session.task.callSign) : null;
+}
+
+/**
  * The resolver's input for a live session, joined to its resident run through the session's
  * task the way the board joins it (`residentMarksBySession`).
  *
@@ -135,7 +145,7 @@ export function sessionDisplayNameInput(
   const taskId = session.task?.id;
   const run = taskId ? runs.find((candidate) => candidate.taskId === taskId) : undefined;
   return {
-    callSign: spokenNames && session.task && taskKindTakesCallSign(session.task.kind) ? session.task.callSign ?? null : null,
+    callSign: spokenNames ? sessionCallSign(session) : null,
     resident: run
       ? {
           referenceName: spokenNames ? run.settings.identity.referenceName ?? null : null,

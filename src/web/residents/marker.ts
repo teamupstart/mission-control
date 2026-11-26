@@ -61,10 +61,25 @@ export function residentCardProfileName(mark: ResidentSessionMark | null | undef
   return normalizeSpokenName(quotedReferenceName(name)) === normalizeSpokenName(mark.listeningTitle) ? null : name;
 }
 
-/** Spoken names that collide need the ordinary name on controls that open a conversation. */
-export function residentActionName(mark: ResidentSessionMark | null | undefined, ordinaryName: string): string {
-  if (!mark?.listeningTitle) return ordinaryName;
-  return mark.sharedListeningTitle ? `${mark.listeningTitle} (${ordinaryName})` : mark.listeningTitle;
+/**
+ * The one name precedence for a card, its Open control and its rail row: a resident's listening
+ * title, then a session's call sign, then the ordinary name.
+ */
+export function residentCardTitle(
+  mark: ResidentSessionMark | null | undefined, ordinaryName: string, callSign?: string,
+): string {
+  return mark?.listeningTitle || callSign || ordinaryName;
+}
+
+/**
+ * `residentCardTitle` for controls that open a conversation: residents sharing a listening title add
+ * their ordinary name, which the card's own title leaves out.
+ */
+export function residentActionName(
+  mark: ResidentSessionMark | null | undefined, ordinaryName: string, callSign?: string,
+): string {
+  const title = residentCardTitle(mark, ordinaryName, callSign);
+  return mark?.listeningTitle && mark.sharedListeningTitle ? `${title} (${ordinaryName})` : title;
 }
 
 /**

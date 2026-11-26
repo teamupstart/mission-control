@@ -13,10 +13,12 @@ import { join } from "node:path";
 import { fixtureSplitAnswer } from "./voice-split-answer.ts";
 
 import {
+  VOICE_FLAG,
   VOICE_LISTENER_PROTOCOL_VERSION,
   VOICE_LISTENER_ID_HEADER,
   type VoiceListenerDirective,
   type VoiceListenerHello,
+  type VoiceState,
 } from "../../src/shared/voice.ts";
 import type { VoiceModelManifest } from "../../src/shared/voice-models.ts";
 
@@ -48,6 +50,89 @@ export const LISTENER_HELLO: VoiceListenerHello = {
 
 export function voiceToken(daemon: VoiceDaemon): string {
   return readFileSync(join(daemon.home, "token"), "utf8").trim();
+}
+
+/**
+ * Report the desktop shortcut's current state to the daemon without a native keyboard. `keyAt`
+ * dates the key event; a repeat that keeps it is the same hold or release, not a new one.
+ */
+export async function reportVoiceHold(
+  daemon: VoiceDaemon, state: VoiceState, held: boolean, keyAt = voiceHostTimeUs(),
+): Promise<void> {
+  const response = await fetch(daemon.baseURL + "/voice/shell-report", {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+    body: JSON.stringify({
+      registeredHotkey: state.configuredHotkey, pushToTalkSession: state.pushToTalkSession,
+      capabilities: { hotkey: { available: true } }, reportedAtHostUs: Math.max(keyAt, voiceHostTimeUs()), pushToTalk: held,
+      ...(held ? { pushToTalkPressedAtHostUs: keyAt } : { pushToTalkReleasedAtHostUs: keyAt }),
+    }),
+  });
+  if (!response.ok) throw new VoiceShortcutReportError(response.status, await response.text());
+  await response.body?.cancel();
+}
+
+class VoiceShortcutReportError extends Error {
+  constructor(readonly status: number, readonly reply: string) {
+    super(`Voice shortcut report failed: ${status} ${reply}`);
+  }
+}
+
+/** The `voice` flag's refusal (`requireFeature`): the daemon takes no report until it is back on. */
+function refusedWhileVoiceOff(error: unknown): boolean {
+  if (!(error instanceof VoiceShortcutReportError) || error.status !== 404) return false;
+  try {
+    return (JSON.parse(error.reply) as { feature?: unknown }).feature === VOICE_FLAG;
+  } catch {
+    return false;
+  }
+}
+
+export interface VoiceShortcut {
+  /** Press (`true`) or release the shortcut, optionally under a newer Push-to-talk session. */
+  set(held: boolean, state?: VoiceState): Promise<void>;
+  /** Stop reporting. The daemon reads the shortcut as unconfirmed once the last report lapses. */
+  stop(): void;
+}
+
+/**
+ * Be the desktop shortcut: report it released now, then repeat the latest key state inside the
+ * shell report's lapse until stopped, as the desktop does, so a spec can hold a mode for longer
+ * than `VOICE_SHELL_REPORT_LAPSE_MS`. Stop it in the test's teardown.
+ */
+export async function beVoiceShortcut(daemon: VoiceDaemon, state: VoiceState): Promise<VoiceShortcut> {
+  let current = { state, held: false, keyAt: voiceHostTimeUs() };
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (stopped) return;
+    const { state, held, keyAt } = current;
+    void reportVoiceHold(daemon, state, held, keyAt).catch((error: unknown) => {
+      // Two refusals are expected: a spec may switch the `voice` flag off while the shortcut
+      // stands, and a report still in flight at `stop()` can meet the daemon's teardown.
+      if (stopped || refusedWhileVoiceOff(error)) return;
+      stopped = true;
+      clearInterval(timer);
+      // Left unhandled: Playwright fails the running test with it, so the cause is reported
+      // rather than the mode lapse the daemon reads once the last report expires.
+      throw new Error("A repeated Voice shortcut report failed", { cause: error });
+    });
+  }, 5000);
+  const shortcut: VoiceShortcut = {
+    async set(held, next = current.state) {
+      current = { state: next, held, keyAt: voiceHostTimeUs() };
+      await reportVoiceHold(daemon, next, held, current.keyAt);
+    },
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
+  try {
+    await shortcut.set(false);
+  } catch (error) {
+    shortcut.stop();
+    throw error;
+  }
+  return shortcut;
 }
 
 /** Send one hello. Resolves to the daemon's HTTP status. */

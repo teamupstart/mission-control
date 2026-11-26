@@ -56,7 +56,7 @@ for (const end of ["silence", "release", "overflow"]) test(end === "overflow"
   await setupCards(page, daemon, 15);
   expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { endOfSpeechMs: 3000, listeningMode: "always-on" } })).ok()).toBe(true);
   const session = await runningAgent(page, daemon, "Steve");
-  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.task!.callSign! }).first().click();
   const native = execute("swift", ["test", "-c", "release", "--package-path", "native/voice-listener", "--filter", "ContinuousSpeechTests.testContinuousDesktopCapture"], {
     env: { ...process.env, MISSION_LONG_VOICE_HELD: end === "release" ? "1" : "0", MISSION_LONG_VOICE_WAV: wav, MISSION_VOICE_MODEL_DIR: models, MISSION_VOICE_LISTENER_INSTANCE: "desktop-cpu",
       ...(end === "overflow" && { MISSION_LONG_VOICE_PENDING_WAV: resolve("test/fixtures/voice/steve-check-the-build.wav") }),

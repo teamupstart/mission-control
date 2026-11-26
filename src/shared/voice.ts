@@ -239,6 +239,18 @@ export function voiceCaptures(mode: VoiceMode): boolean {
   return mode === "listening" || mode === "push-to-talk";
 }
 
+/**
+ * Whether cards title agents by the names a person says to them: while Always-on listens, and in
+ * Push-to-talk between holds as well as during one, since the next hold may address any of them.
+ * A hold during an Always-on call auto-mute also reads `push-to-talk`, but only the dedicated mode
+ * carries a `pushToTalkSession`: muted, auto-muted (even while that hold is down), unavailable and
+ * off keep the ordinary names.
+ */
+export function voiceCardsShowSpokenNames(state: Pick<VoiceState, "mode" | "pushToTalkSession"> | null | undefined): boolean {
+  return state?.mode === "listening" || state?.mode === "waiting-for-key" ||
+    (state?.mode === "push-to-talk" && !!state.pushToTalkSession);
+}
+
 export const VoiceListenerDirectiveSchema = z.object({
   speak: SpeakDirectiveSchema.nullable().default(null),
   capture: z.boolean(),

@@ -1047,7 +1047,7 @@ export function ConductorPanel({
                         checked={on}
                         disabled={!config || setupBusy}
                         onChange={() => {
-                          if (config) void save({ ...config, launchRuntime: runtime });
+                          if (config) void save({ launchRuntime: runtime });
                         }}
                       />
                       <span>{choice.label}</span>

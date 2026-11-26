@@ -952,8 +952,36 @@ export const SIGN_IN_REASONS = Object.freeze({
   signedOut: "This shaper is not signed in to its server, so it was not called. Sign in at Settings > Task shaping.",
   renewing: "This shaper's sign-in is being renewed, so it was not called. If it does not recover, sign in again at Settings > Task shaping.",
   refused: "This shaper's server refused its sign-in, so its reply was not used. The sign-in is being renewed; if it does not recover, sign in again at Settings > Task shaping.",
+  memoryOnly: "This sign-in could not be saved, so it is kept in memory only and a restart will need a new sign-in at Settings > Task shaping.",
+  signInAgain: "The authorization server ended this sign-in, so this shaper is not called until you sign in again at Settings > Task shaping.",
 } as const);
 export type SignInReason = keyof typeof SIGN_IN_REASONS;
+
+/** The most client registrations `app_config` key `shaping.signIn` keeps. */
+export const SHAPING_SIGN_IN_CLIENTS = 16;
+
+/**
+ * One dynamic registration Mission Control made with an authorization server: a public client,
+ * reused only by a sign-in with the same issuer, redirect URI and scope. Not a secret.
+ */
+export const ShapingSignInClientSchema = z.strictObject({
+  issuer: z.string().min(1).max(2048),
+  clientId: z.string().min(1).max(1024),
+  redirectUri: z.string().min(1).max(2048),
+  scope: z.string().min(1).max(256),
+  registeredAt: z.number().nonnegative(),
+});
+export type ShapingSignInClient = z.output<typeof ShapingSignInClientSchema>;
+
+/**
+ * `app_config.shaping.signIn`: the client registrations the sign-in service keeps, at most
+ * `SHAPING_SIGN_IN_CLIENTS`. Its own key, because `ShapingConfigSchema` drops unknown keys and
+ * an older build would delete it on its next write. It holds no token.
+ */
+export const ShapingSignInConfigSchema = z.object({
+  clients: z.array(ShapingSignInClientSchema).max(SHAPING_SIGN_IN_CLIENTS).default([]),
+}).prefault({});
+export type ShapingSignInConfig = z.output<typeof ShapingSignInConfigSchema>;
 
 /**
  * A manifest in the shapers folder: the strict definition plus whether it starts switched on.
@@ -1359,6 +1387,12 @@ export interface ShapingReply {
 /** A stored shaper's revision, as `shapingConfigView` reports it: 16 lowercase hex digits. */
 const ShapingRevisionSchema = z.string().regex(/^[0-9a-f]{16}$/, { message: "A revision is 16 hexadecimal digits." });
 
+export const ShapingSettingsIntentSchema = z.object({
+  kind: z.literal("settings"),
+  caller: partialPatch(ShapingCallerObjectSchema).optional(),
+  limits: partialPatch(ShapingLimitsObjectSchema).optional(),
+});
+
 export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /** Create or replace a registered shaper. Only a definition this build understands. */
   z.object({ kind: z.literal("upsert"), shaper: ShaperSchema }),
@@ -1396,11 +1430,7 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
     kind: z.literal("place"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
     expect: ShapingRevisionSchema,
   }),
-  z.object({
-    kind: z.literal("settings"),
-    caller: partialPatch(ShapingCallerObjectSchema).optional(),
-    limits: partialPatch(ShapingLimitsObjectSchema).optional(),
-  }),
+  ShapingSettingsIntentSchema,
 ]);
 export type ShapingIntent = z.infer<typeof ShapingIntentSchema>;
 
@@ -2440,6 +2470,35 @@ export const ShapingTestRequestSchema = z.object({
   agent: z.enum(AGENT_TYPES).optional(),
 });
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
+
+/** `POST /api/shaping/sign-in`: start a sign-in for the shaper with this id. */
+export const ShaperSignInRequestSchema = z.strictObject({ shaper: ShaperIdSchema });
+export type ShaperSignInRequest = z.infer<typeof ShaperSignInRequestSchema>;
+
+/** A connection id, as `ShapingSignInView.id` carries it: 32 lower-case hex digits. */
+export const ShapingSignInIdSchema = z.string().regex(/^[0-9a-f]{32}$/, { message: "A connection id is 32 lower-case hex digits." });
+
+/** `POST /api/shaping/sign-out`: end the sign-in of this connection, pending or held. */
+export const ShaperSignOutRequestSchema = z.strictObject({ connection: ShapingSignInIdSchema });
+export type ShaperSignOutRequest = z.infer<typeof ShaperSignOutRequestSchema>;
+
+/**
+ * What `POST /api/shaping/sign-in` answers. `authorizationUrl` carries the client id, the
+ * `state` and the PKCE challenge for the browser to present, and appears in this reply only:
+ * never in the sign-in list, the event or the snapshot.
+ */
+export interface ShaperSignInReply {
+  authorizationUrl: string;
+  /** Epoch milliseconds when the pending sign-in lapses. */
+  expiresAt: number;
+  /** The connection id the sign-in is for. */
+  connection: string;
+}
+
+/** What `POST /api/shaping/sign-out` answers: the sign-in list after it. */
+export interface ShaperSignOutReply {
+  signIns: ShapingSignInView[];
+}
 
 /**
  * The header a dashboard tab sends with each shaping write: `<window> <sequence> <controls> [<instance>]`.

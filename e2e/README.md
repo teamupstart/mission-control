@@ -2267,10 +2267,13 @@ depend on running before the spec that dispatches a second.
 Playwright drives web contents. Native Electron shell behaviour such as drag regions,
 traffic lights and vibrancy needs a native fixture or a manual check.
 
-On macOS, `desktop-voice-edge.spec.ts` posts clicks through AppKit and checks the native
-hit target below the edge microphone. Where macOS permits desktop input, it drags the
-title bar and checks that the window moves. To exercise movement manually on a Mac
-without that permission, run the focused spec and drag the green dot when it appears.
+Run `desktop-voice-edge.spec.ts` with the Mac desktop unlocked. AppKit can find
+the view under the edge microphone while the screen is locked, but the fixture
+window needs focus to receive the native clicks. The spec checks mute and
+unmute, then hit-tests the blank title bar below the microphone. Where macOS
+permits desktop input, it also drags the title bar and checks that the window
+moves. To check movement manually on a Mac without that permission, run the
+focused spec and drag the green dot when it appears.
 
 ```sh
 MC_E2E_MANUAL_WINDOW_DRAG=1 npm run test:e2e -- desktop-voice-edge.spec.ts

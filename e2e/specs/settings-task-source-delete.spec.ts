@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 
 for (const kind of ["jira", "github-issues"] as const) {
   test(`${kind} has a red Delete source footer button that removes only the selected source`, async ({
@@ -11,6 +12,7 @@ for (const kind of ["jira", "github-issues"] as const) {
     const label = kind === "jira" ? "Jira triage" : "GitHub bugs";
     const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
       data: {
+        revision: await taskSourcesRevision(page, daemon),
         sources: [
           { id: "delete-me", kind, label, repoRoot: daemon.repo },
           { id: "keep-me", kind, label: "Keep this source", repoRoot: daemon.repo },

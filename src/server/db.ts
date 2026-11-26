@@ -17448,10 +17448,11 @@ export function setSkillsAck(noteKey: string, generation: number, now = Date.now
 }
 
 const appConfigRevisions = new Map<string, number>();
+const appConfigRevisionSource = randomUUID();
 
 /** A daemon-local generation for conditional setting replacement. */
 export function appConfigRevision(entry: AppConfigEntry): string {
-  return String(appConfigRevisions.get(entry.key) ?? 0);
+  return `${appConfigRevisionSource}:${appConfigRevisions.get(entry.key) ?? 0}`;
 }
 
 function bumpAppConfigRevision(entry: AppConfigEntry): void {

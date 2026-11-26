@@ -65,10 +65,10 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
   const phaseLabel = transcript && { ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[transcript.phase];
   return <VoiceWindow.Provider value={value}>
     {children}
-    {transcript && <aside aria-label="Live voice transcript"
+    {transcript?.text && <aside aria-label="Live voice transcript"
       className={`voice-transcript vt-${transcript.style} vt-${transcript.corner} vt-${transcript.phase}`}>
       <strong>{phaseLabel}</strong>
-      {transcript.text && <VoiceTranscriptText as="span" className="vt-text" text={transcript.text} />}
+      <VoiceTranscriptText as="span" className="vt-text" text={transcript.text} />
     </aside>}
     {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status" aria-label="Voice feedback">
       {pendingMute === null ? phaseLabel : (pendingMute ? "Muting voice…" : "Unmuting voice…")}

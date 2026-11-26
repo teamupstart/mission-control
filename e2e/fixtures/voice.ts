@@ -106,7 +106,7 @@ async function postUtterance(daemon: VoiceDaemon, utterance: VoiceUtterance): Pr
 }
 
 /** End detection and transcription may finish after the countdown on any card surface. */
-export async function startSpokenCancel(daemon: VoiceDaemon) {
+export async function startSpeech(daemon: VoiceDaemon) {
   const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
   const directive = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
   const { revision } = await directive.json() as VoiceListenerDirective;
@@ -117,10 +117,23 @@ export async function startSpokenCancel(daemon: VoiceDaemon) {
     method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "start" }),
   });
   if (!(await start.json()).accepted) throw new Error("Listener speech onset refused");
-  return () => fetch(daemon.baseURL + "/voice/utterances" + query, { method: "POST",
-    headers: { ...headers, "x-voice-capture-start-host-us": String(speechStartUs),
-      "x-voice-speech-start-host-us": String(speechStartUs), "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000)) },
-    body: JSON.stringify({ id: crypto.randomUUID(), text: "Cancel.", capturedAt, backend: LISTENER_HELLO.backend }) });
+  return {
+    limit: () => fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+      method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "capture-limit" }),
+    }),
+    preview: (text: string) => fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+      method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "preview", text }),
+    }),
+    finish: (text: string, id = crypto.randomUUID(), endHostMs = Math.ceil(voiceHostTimeUs() / 1000)) => fetch(daemon.baseURL + "/voice/utterances" + query, { method: "POST",
+      headers: { ...headers, "x-voice-capture-start-host-us": String(speechStartUs),
+        "x-voice-speech-start-host-us": String(speechStartUs), "x-voice-capture-end-host-ms": String(endHostMs) },
+      body: JSON.stringify({ id, text, capturedAt, backend: LISTENER_HELLO.backend }) }),
+  };
+}
+
+export async function startSpokenCancel(daemon: VoiceDaemon) {
+  const speech = await startSpeech(daemon);
+  return () => speech.finish("Cancel.");
 }
 
 const lastCapturePost = new Map<string, Promise<Response>>();
@@ -338,7 +351,7 @@ export async function enableVoice(daemon: VoiceDaemon): Promise<void> {
 }
 
 /** A supervised player that follows the same long poll as a real listener. */
-export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boolean; holdPlayback?: boolean; ignoreStop?: boolean } = {}) {
+export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boolean; holdPlayback?: boolean; ignoreStop?: boolean; audio?: boolean; systemVoices?: NonNullable<VoiceListenerHello["speech"]>["systemVoices"] } = {}) {
   const supervisor = fixtureVoiceSupervisor("dev");
   const { instance } = supervisor;
   const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon),
@@ -354,8 +367,8 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
     method: "POST", headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon), ...supervisor.headers(state) },
     body: JSON.stringify({ instance, state }), signal: AbortSignal.timeout(5000),
   }));
-  const hello = () => accepted(post("/voice/listener/hello", { ...LISTENER_HELLO, speech: { audio: true,
-    systemVoices: [{ id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" }] } }, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)])));
+  const hello = () => accepted(post("/voice/listener/hello", { ...LISTENER_HELLO, speech: { audio: options.audio ?? true,
+    systemVoices: options.systemVoices ?? [{ id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" }] } }, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)])));
   try {
     if (!await supervise("started")) throw new Error("Fixture supervisor could not announce the listener.");
     if (!await hello()) throw new Error("Fixture listener hello was refused.");
@@ -375,7 +388,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
   let current: string | null = null;
   let playing = false;
   let capturing = false;
-  const event = async (type: "started" | "ended", outcome?: "finished" | "stopped") => {
+  const event = async (type: "started" | "ended", outcome?: "finished" | "stopped" | "failed") => {
     if (!current) throw new Error("Fixture has no speech job.");
     const id = current;
     const response = await post("/voice/speech/jobs/" + id + "/events", { type, outcome });
@@ -392,7 +405,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
     if (accepted) playing = true;
     return accepted;
   };
-  const end = async (outcome: "finished" | "stopped" = "finished") => {
+  const end = async (outcome: "finished" | "stopped" | "failed" = "finished") => {
     playing = false;
     await event("ended", outcome);
     current = null;

@@ -2,7 +2,7 @@
 // input devices Voice settings offers.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { voiceModelProgressText } from "../src/web/components/SetupPanel.tsx";
+import { voiceModelProgressText } from "../src/web/components/VoiceModelProgress.tsx";
 import { voiceInputChoices } from "../src/web/components/VoiceSettingsPanel.tsx";
 
 const MiB = 1024 * 1024;

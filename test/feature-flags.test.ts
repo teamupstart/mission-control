@@ -96,6 +96,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Headless mode",
     description: "Dispatch work to Mission Control from a Claude Code terminal session.",
     stage: "preview",
+    sessionSetting: "Enables terminal dispatch authority.",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   });
   // Session control requests ships off until the operator opts in.
@@ -110,6 +111,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Shaper sign-in",
     description: "Sign a remote shaper in to an OAuth-protected server from Settings > Task shaping.",
     stage: "preview",
+    sessionSetting: "Enables credential enrollment for remote shapers.",
     keywords: ["shaping", "shaper", "oauth", "sign-in", "login", "token"],
   });
   assert.equal(registry.SHAPER_SIGN_IN_FLAG_ID, "shaper-sign-in");

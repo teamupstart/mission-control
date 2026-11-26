@@ -190,6 +190,7 @@ import type {
   PipelineRepoRegistrationResponse,
   PipelineReposView,
   PipelineRunDetail,
+  PipelineLaunchRuntime,
   PipelinesView,
 } from "@shared/pipeline.ts";
 import type { Attachment } from "@shared/attachments.ts";
@@ -568,20 +569,21 @@ export const fetchPipelines = (refresh = false) =>
   fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
 
 /**
- * Replace observation consent and keep the returned pipeline status array intact.
+ * Save pipeline config and keep the returned repository status array intact.
  *
  * This cannot use the generic mutation helper: that helper adds the HTTP `status` number to
  * every answer, while `PipelinesView.status` is the repository health array. Flattening both
  * shapes would replace the array with `200` precisely when a consent write succeeds.
  */
-export async function setPipelinesConfig(
-  config: PipelinesConfigPatch,
+async function writePipelinesConfig(
+  request: { method: "PUT"; config: PipelinesConfigPatch }
+    | { method: "PATCH"; config: { launchRuntime: PipelineLaunchRuntime } },
 ): Promise<{ ok: true; view: PipelinesView } | { ok: false; error: string }> {
   try {
     const res = await actionFetch("/api/pipelines/config", {
-      method: "PUT",
+      method: request.method,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(config),
+      body: JSON.stringify(request.config),
     });
     const data = (await res.json().catch(() => ({}))) as Partial<PipelinesView> & {
       error?: string;
@@ -596,6 +598,10 @@ export async function setPipelinesConfig(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export function setPipelinesConfig(config: PipelinesConfigPatch) {
+  return writePipelinesConfig({ method: "PUT", config });
 }
 // ---- Repository standing instructions ----
 //
@@ -1352,6 +1358,11 @@ const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown
   request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
+
+function voiceSpeechRequestOptions(cancel?: AbortSignal): { signal: AbortSignal } {
+  const deadline = AbortSignal.timeout(5000);
+  return { signal: cancel ? AbortSignal.any([cancel, deadline]) : deadline };
+}
 
 // ---- Recurring Missions ----
 //
@@ -2584,7 +2595,12 @@ export const api = {
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
-  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, { signal: AbortSignal.timeout(5000) }),
+  auditionVoiceSpeech: (cancel: AbortSignal) =>
+    post<ActionResult & { id?: string; reason?: string }>("/api/voice/speech/audition", undefined, voiceSpeechRequestOptions(cancel)),
+  startVoiceSpeechDownload: () =>
+    post<ActionResult & { reason?: string }>("/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  cancelVoiceSpeechDownload: () => request("DELETE", "/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, voiceSpeechRequestOptions()),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
   saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
     put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },
@@ -2640,8 +2656,8 @@ export const api = {
   // drops reads sent before the save, and clears the announced identity so this window takes
   // its new index before its own announcement arrives. A rescan keeps the list - same
   // directories, and a list that is a few seconds old beats none.
-  setRepoIndex: async (cfg: RepoIndexConfigPatch) => {
-    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+  setRepoIndex: async (cfg: RepoIndexConfigPatch, revision: string) => {
+    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, { ...cfg, revision });
     if (saved.ok) forgetCachedRepos();
     return saved;
   },
@@ -2649,6 +2665,8 @@ export const api = {
 
   // --- Pipelines (observing an external SDLC engine) ---
   setPipelines: setPipelinesConfig,
+  setPipelineRuntime: (launchRuntime: PipelineLaunchRuntime) =>
+    writePipelinesConfig({ method: "PATCH", config: { launchRuntime } }),
   registerPipelineRepo: (provider: PipelineProviderId, repoRoot: string) =>
     post<ActionResult & PipelineRepoRegistrationResponse>(`/api/pipelines/register`, {
       provider,
@@ -2656,7 +2674,8 @@ export const api = {
     }),
 
   // --- Task sources (pulling work into the backlog) ---
-  setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),
+  setTaskSources: (cfg: TaskSourcesConfigPatch, revision: string) =>
+    put<ActionResult & Pick<TaskSourcesView, "revision">>(`/api/task-sources/config`, { ...cfg, revision }),
   /** Sweep one source now. The report says what it filed, skipped and dropped. */
   sweepTaskSource: (id: string) =>
     post<ActionResult & SweepReport>(`/api/task-sources/${encodeURIComponent(id)}/sweep`),

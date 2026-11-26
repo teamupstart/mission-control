@@ -43738,6 +43738,20 @@ button.vi { cursor: pointer; }
 .voice-hardware-settings .kb-capture { min-width: 66px; }
 .voice-hardware-settings .kb-row-desc:empty { display: none; }
 
+.voice-spoken-replies .kb-row, .voice-spoken-replies .kb-row-controls { flex-wrap: wrap; }
+.voice-spoken-replies .kb-row-controls { min-width: 0; max-width: 100%; }
+.voice-picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
+}
+.voice-picker-row > label { align-self: start; padding-top: 5px; }
+.voice-spoken-replies .kb-row-text { flex: 1 1 220px; }
+.voice-picker-row [role="status"] { grid-column: 2; margin: 0; }
+.voice-spoken-replies .settings-select { max-width: 100%; min-width: 0; }
+.voice-spoken-replies .voice-model-progress { flex: 1 1 180px; }
+.voice-spoken-replies .settings-hint { margin: 4px 10px 8px; }
+
 .voice-settings { container-type: inline-size; }
 @container (max-width: 460px) {
   .voice-hardware-settings { grid-template-columns: 1fr; }

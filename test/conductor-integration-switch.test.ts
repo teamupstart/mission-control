@@ -296,6 +296,7 @@ test("the pipeline routes answer 'nothing observed' to pollers and 404 to everyt
 
   for (const [method, path] of [
     ["GET", "/api/pipelines/config"],
+    ["PATCH", "/api/pipelines/config"],
     ["GET", "/api/pipelines/installers?provider=ai-conductor"],
     ["POST", "/api/pipelines/register"],
     ["POST", "/api/pipelines/install"],

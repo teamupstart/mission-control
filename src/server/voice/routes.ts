@@ -28,6 +28,7 @@ import {
   VOICE_CAPTURE_END_HEADER,
   VOICE_CAPTURE_START_HEADER,
   VOICE_DRAINING_REVISIONS_HEADER,
+  VOICE_FOCUS_UNCONFIRMED_HEADER,
   VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
@@ -49,7 +50,7 @@ import { getTask } from "../db.ts";
 import { checkToken } from "../auth.ts";
 import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { setUiConfig, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
+import { setVoiceConfirmation, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { speechModelManager, voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -218,7 +219,7 @@ export function registerVoiceRoutes(
       const writeId = lastPlacementWrite?.revision === version.revision ? lastPlacementWrite.id : undefined;
       return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version, writeId }, 409);
     }
-    const { voice } = setUiConfig({ voice: { ...current, confirmation: parsed.data.confirmation } });
+    const voice = setVoiceConfirmation(parsed.data.confirmation);
     const saved = voiceIndicatorVersion(voice);
     lastPlacementWrite = parsed.data.writeId ? { id: parsed.data.writeId, revision: saved.revision } : undefined;
     return c.json({ ok: true, ...voice, voiceIndicatorVersion: saved });
@@ -524,6 +525,13 @@ export function registerVoiceUtteranceRoutes(
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.put("/api/voice/open-cards", gate, limitBody, async c => {
+    if (c.req.query("dictation") === "1") {
+      const parsed = await parseBody(c, z.object({ windowId: z.string(), sequence: z.number().int().positive(), target: z.string().uuid().optional() }), { strict: true });
+      if (!parsed.ok) return parsed.res;
+      const { windowId, sequence, target } = parsed.data;
+      const ok = router.openCards.acknowledgeDictation(windowId, sequence, target);
+      return c.json({ ok }, ok ? 200 : 409);
+    }
     const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     const stamp = c.req.header(VOICE_FOCUS_TIME_HEADER);
@@ -561,22 +569,47 @@ export function registerVoiceUtteranceRoutes(
   });
   app.post("/voice/listener/speech", gate, limitBody, async c => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
-    const parsed = await parseBody(c, z.object({ speechStartUs: z.number().int().nonnegative(), phase: z.enum(["start", "finish"]) }), { strict: true });
+    const onset = z.number().int().nonnegative();
+    const parsed = await parseBody(c, z.discriminatedUnion("phase", [
+      z.object({ speechStartUs: onset, phase: z.enum(["start", "focus", "finish", "capture-limit"]) }).strict(),
+      z.object({ speechStartUs: onset, phase: z.literal("preview"), text: VoiceUtteranceSchema.shape.text }).strict(),
+    ]), { strict: true });
     if (!parsed.ok) return parsed.res;
     const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     const revision = c.req.query("revision");
     const key = speechCaptureKey(owner, revision, parsed.data.speechStartUs);
-    if (parsed.data.phase === "finish") router.speechFinished(key);
-    else {
+    const { phase, speechStartUs } = parsed.data;
+    const authorized = () => {
+      if (!voiceStateStore.ownsCapture(owner) || !featureEnabled(VOICE_FLAG)) return false;
       const directive = voiceStateStore.directive();
-      if (!featureEnabled(VOICE_FLAG)) return c.json({ accepted: false });
-      if (!directive.capture || voiceStateStore.resolveCaptureRevision(revision, directive) !== directive.revision) {
-        const release = revision && voiceStateStore.releasedCapture(revision);
-        if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
-      }
+      if (directive.capture && voiceStateStore.resolveCaptureRevision(revision, directive) === directive.revision) return true;
+      const release = (phase === "start" || phase === "capture-limit") && revision && voiceStateStore.releasedCapture(revision);
+      return !!release && withinReleasedHold(speechStartUs, release);
+    };
+    if (phase === "capture-limit") {
+      const accepted = authorized();
+      if (accepted) router.captureLimit(key);
+      router.speechFinished(key);
+      return c.json({ accepted });
+    }
+    if (phase === "preview" || phase === "focus") {
+      const claimed = await router.probeDictationCapture(key, authorized, parsed.data.phase === "preview" ? parsed.data.text : undefined);
+      if (claimed) c.header("x-voice-dictation", "1");
+      return c.json({ accepted: claimed });
+    }
+    if (phase === "finish") router.speechFinished(key);
+    else {
+      if (!authorized()) return c.json({ accepted: false });
+      // Reserve a possible spoken cancel at receipt, before the focus round trip.
       router.speechStarted(key, parsed.data.speechStartUs);
-      voiceStateStore.reportTranscript(owner, revision, { phase: "audio", onset: parsed.data.speechStartUs });
+      // Sherpa reports quiet and audio in order through its transcript endpoint.
+      if (voiceStateStore.routingState().backend !== "sherpa-onnx") {
+        voiceStateStore.reportTranscript(owner, revision, { phase: "audio", onset: parsed.data.speechStartUs });
+      }
+      const claimed = await router.probeDictationCapture(key, authorized);
+      if (!authorized()) return c.json({ accepted: false });
+      if (claimed) c.header("x-voice-dictation", "1");
     }
     return c.json({ accepted: true });
   });
@@ -589,9 +622,9 @@ export function registerVoiceUtteranceRoutes(
     if (disabled) return disabled;
     const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+    const submitted = c.req.query("revision");
     const state = voiceStateStore.state();
     let directive = voiceStateStore.directive(state);
-    const submitted = c.req.query("revision");
     const revision = voiceStateStore.resolveCaptureRevision(submitted, directive);
     const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt, voiceStateStore.captureGrantTime(revision));
     if (conflict === "stale") return c.json({ accepted: false });
@@ -640,7 +673,19 @@ export function registerVoiceUtteranceRoutes(
     // Match the revision the listener used for this segment's onset, even after a timing edit.
     const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, submitted, onsetUs);
     try {
-      return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs, captureKey }) });
+      const dictation = await router.resolveDictation();
+      const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+      if (disabled) return disabled;
+      if (c.req.raw.signal.aborted || !voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+      if (dictation === false) {
+        c.header(VOICE_FOCUS_UNCONFIRMED_HEADER, "1");
+        return c.json({ accepted: false });
+      }
+      const current = voiceStateStore.directive();
+      const authorized = heldBeforeRelease ? voiceStateStore.releasedCapture(release.revision)?.at === release.at
+        : current.capture && voiceStateStore.resolveCaptureRevision(submitted, current) === current.revision;
+      if (!authorized) return c.json({ accepted: false });
+      return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs, captureKey, dictation: dictation ?? null }) });
     } finally {
       if (captureKey) router.speechFinished(captureKey);
     }

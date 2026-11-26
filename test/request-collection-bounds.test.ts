@@ -105,6 +105,7 @@ const ROUTE_FILES = [
   "src/server/report-routes.ts",
   "src/server/residents/routes.ts",
   "src/server/shaping/routes.ts",
+  "src/server/shaping/sign-in/routes.ts",
   "src/server/workflows/mcp.ts",
   "src/server/telemetry/primary-actions.ts",
   "src/server/telemetry/workflow-actions.ts",

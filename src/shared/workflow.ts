@@ -3500,6 +3500,12 @@ export interface WorkflowRetentionConfig {
   maxCompletedRuns: number;
 }
 
+/** A decrease can remove content during the next retention sweep. */
+export function retentionShortens(next: Partial<WorkflowRetentionConfig>, current: WorkflowRetentionConfig): boolean {
+  return (Object.keys(current) as (keyof WorkflowRetentionConfig)[])
+    .some(key => (next[key] ?? current[key]) < current[key]);
+}
+
 export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   skipPassedJudges: true,
   // Authorised, and gated on `repoAllowlist` being non-empty. See the field's docstring: an

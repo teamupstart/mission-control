@@ -646,14 +646,17 @@ export class VoiceModelManager {
  * for the end-to-end suite, which serves small fixture files whose digests the real manifest
  * cannot name; it is held to the same schema, so its URLs are pinned to commits too.
  */
-export function voiceModelManifestsFromEnv(path: string | undefined = envVar("VOICE_MODEL_MANIFEST")): VoiceModelManifests {
-  if (!path) return VOICE_MODELS;
+export function voiceModelManifestsFromEnv(
+  path: string | undefined = envVar("VOICE_MODEL_MANIFEST"),
+  defaults: VoiceModelManifests = VOICE_MODELS,
+): VoiceModelManifests {
+  if (!path) return defaults;
   try {
     const override = VoiceModelManifestsSchema.parse(JSON.parse(readFileSync(path, "utf8")));
-    return Object.freeze({ ...VOICE_MODELS, ...override }) as VoiceModelManifests;
+    return Object.freeze({ ...defaults, ...override }) as VoiceModelManifests;
   } catch (error) {
-    console.warn(`[voice] MISSION_VOICE_MODEL_MANIFEST (${path}) could not be read; using the pinned models:`, errorText(error));
-    return VOICE_MODELS;
+    console.warn(`[voice] model manifest (${path}) could not be read; using the pinned models:`, errorText(error));
+    return defaults;
   }
 }
 
@@ -687,9 +690,19 @@ export function speechModelManifests(platform: string, arch: string): VoiceModel
   return { fluidaudio: null, "sherpa-onnx": supportsSherpaHelpers(platform, arch) ? VOICE_SPEECH_MODELS["supertonic-3"] : null };
 }
 
+const speechDefaults = speechModelManifests(process.platform, process.arch);
+let speechManifests: VoiceModelManifests | undefined;
+function selectedSpeechManifests(): VoiceModelManifests {
+  if (speechManifests) return speechManifests;
+  // The loopback fixture supplies pinned test files independently of the recognition model.
+  const path = envVar("VOICE_SPEECH_MODEL_MANIFEST");
+  speechManifests = path && speechDefaults["sherpa-onnx"] ? voiceModelManifestsFromEnv(path, speechDefaults) : speechDefaults;
+  return speechManifests;
+}
+
 export const speechModelManager = new VoiceModelManager({
   ...productionDeps,
   namespace: "speech",
   backend: () => "sherpa-onnx",
-  manifests: () => speechModelManifests(process.platform, process.arch),
+  manifests: selectedSpeechManifests,
 });

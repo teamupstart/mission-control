@@ -24,7 +24,9 @@ struct Recognizer {
         // Vocabulary rescoring can emit transcript fragments at debug level.
         AppLogger.minimumLevel = .fault
         AppLogger.mirrorsToConsole = false
-        asr = AsrManager()
+        // FluidAudio owns overlapping windows, token merging and global timestamps.
+        // A single worker keeps long-form inference within one encoder workspace.
+        asr = AsrManager(config: ASRConfig(parallelChunkConcurrency: 1))
         // ANE model compilation can wait indefinitely in the confined process. Use the
         // same installed models on the CPU without granting access to shared writable caches.
         let confined = ProcessInfo.processInfo.environment["MISSION_VOICE_LISTENER_INSTANCE"] != nil
@@ -124,7 +126,11 @@ struct Recognizer {
         let result = try await asr.transcribe(segment.samples, decoderState: &decoder)
         try Task.checkCancellation()
         let tokens = result.tokenTimings ?? []
-        let boosted = await boosting?.rescore(text: result.text, tokenTimings: tokens, audioSamples: segment.samples)
+        // Only the opening address is eligible for vocabulary correction.
+        // Bound the CTC pass independently of the length of the message.
+        let addressSamples = ASRConstants.maxModelSamples
+        let boosted = await boosting?.rescore(text: result.text, tokenTimings: tokens.filter { $0.endTime <= ASRConstants.maxDurationSeconds },
+                                              audioSamples: Array(segment.samples.prefix(addressSamples)))
         var text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         var words = buildWordTimings(from: tokens).map {

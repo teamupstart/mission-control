@@ -4191,6 +4191,7 @@ export type TerminalsConfigPatch = z.infer<typeof TerminalsConfigPatchSchema>;
  * quietly on a background tick nobody is watching.
  */
 export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
+export const TaskSourcesUpdateSchema = TaskSourcesConfigSchema.extend({ revision: z.string().max(80) });
 export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
 
 /**
@@ -4220,9 +4221,17 @@ export type TaskSourceWritebackRetry = z.infer<typeof TaskSourceWritebackRetrySc
  * and bounded by its schema. The master switch rides the same write because a panel that
  * could save one without the other would let a browser hold a picture in which the master
  * is off and a repository is on, which is not a state the daemon can be in.
+ * Existing callers may include an explicit Engineer runtime in a full replacement.
  */
-export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
+export const PipelinesConfigPatchSchema = PipelinesConfigSchema.extend({
+  launchRuntime: PipelinesConfigSchema.shape.launchRuntime.unwrap().optional(),
+});
 export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
+
+/** A runtime-only edit has no authority over observation or Foreman consent. */
+export const PipelineRuntimePatchSchema = z.strictObject({
+  launchRuntime: PipelinesConfigSchema.shape.launchRuntime.unwrap(),
+});
 
 /** Register one canonical repository with its provider. Observation consent is a later write. */
 export const PipelineRepoRegistrationSchema = z.object({
@@ -8059,6 +8068,21 @@ export const WorkflowPolicyPatchSchema = partialPatch(WorkflowPolicySchema).stri
   retention: partialPatch(WorkflowPolicySchema.shape.retention.unwrap()).strict().optional(),
 }).refine(patch => Object.keys(patch).length > 0, { message: "Supply at least one Workflow policy field" });
 export type WorkflowPolicyPatch = z.output<typeof WorkflowPolicyPatchSchema>;
+
+const WorkflowRetentionLimitsSchema = z.strictObject({
+  rawEvidenceDays: WorkflowPolicySchema.shape.retention.unwrap().shape.rawEvidenceDays.unwrap(),
+  completedRunDays: WorkflowPolicySchema.shape.retention.unwrap().shape.completedRunDays.unwrap(),
+  maxCompletedRuns: WorkflowPolicySchema.shape.retention.unwrap().shape.maxCompletedRuns.unwrap(),
+});
+export const WorkflowSettingsPatchSchema = WorkflowPolicyPatchSchema.safeExtend({
+  retentionConfirmation: z.strictObject({
+    current: WorkflowRetentionLimitsSchema,
+    proposed: WorkflowRetentionLimitsSchema,
+  }).optional(),
+}).refine(patch => !patch.retentionConfirmation || patch.retention !== undefined, {
+  message: "Retention confirmation requires proposed limits",
+});
+export type WorkflowSettingsPatch = z.output<typeof WorkflowSettingsPatchSchema>;
 
 /**
  * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.

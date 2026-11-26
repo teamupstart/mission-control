@@ -107,7 +107,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       if (req.method === "POST" && url.pathname === "/voice/listener/speech") {
         const report = JSON.parse(body);
         speechReports.push({ ...report, revision: url.searchParams.get("revision") });
-        if (report.phase === "start" && (["dropped-segment", "unfinished-segment"].includes(inputDevice) ||
+        if (report.phase === "start" && (["dropped-segment", "capture-limit", "unfinished-segment"].includes(inputDevice) ||
             (inputDevice === "stalled-onset" && report.speechStartUs === 625))) await startAck;
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
@@ -271,7 +271,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     ]);
   });
 
-  for (const inputDevice of ["dropped-segment", "unfinished-segment"]) {
+  for (const inputDevice of ["dropped-segment", "capture-limit", "unfinished-segment"]) {
     it(inputDevice + " waits for start acknowledgment before releasing its original onset", async t => {
       const { speechReports, posted, nextPoll, apply, acknowledgeStart, events } = await launch(t, { inputDevice });
       const start = { phase: "start", speechStartUs: 123_456, revision: "first" };
@@ -284,7 +284,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       assert.deepEqual(speechReports, [start]);
       acknowledgeStart();
       await until(() => speechReports.length === 2, "finish for the original onset");
-      assert.deepEqual(speechReports, [start, { ...start, phase: "finish" }]);
+      assert.deepEqual(speechReports, [start, { ...start, phase: inputDevice === "capture-limit" ? "capture-limit" : "finish" }]);
       assert.deepEqual(posted, []);
     });
   }

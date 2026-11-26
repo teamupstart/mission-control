@@ -118,6 +118,9 @@ export async function startSpeech(daemon: VoiceDaemon) {
   });
   if (!(await start.json()).accepted) throw new Error("Listener speech onset refused");
   return {
+    limit: () => fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+      method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "capture-limit" }),
+    }),
     preview: (text: string) => fetch(daemon.baseURL + "/voice/listener/speech" + query, {
       method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "preview", text }),
     }),

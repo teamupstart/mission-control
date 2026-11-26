@@ -41,7 +41,7 @@ final class Segment {
     private let source: AsyncStream<Segment>.Continuation
 
     init(selection: String, held: Bool, endOfSpeechMs: Int, onSpeechStart: @escaping (Int64) -> Void,
-         onSegmentDropped: @escaping (Int64) -> Void, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
+         onSegmentDropped: @escaping SegmentDropped, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         exclusive = selection == "exclusive"
         if exclusive, Self.exclusiveOwner?.isRunning == true {
             observe("overlapping microphones")
@@ -98,9 +98,9 @@ final class Segment {
                 onSpeechStart(segment.speechStartHostUs)
                 source.yield(segment)
             }
-        } else if selection == "dropped-segment" {
+        } else if selection == "dropped-segment" || selection == "capture-limit" {
             onSpeechStart(123_456)
-            onSegmentDropped(123_456)
+            onSegmentDropped(123_456, selection == "capture-limit" ? .captureLimit : .interrupted)
         } else if selection == "unfinished-segment" {
             onSpeechStart(123_456)
         } else if selection == "two-segments" {

@@ -104,7 +104,9 @@ struct SpeechGate {
     static let activityFloor: Float = 0.004
     private(set) var endOfSpeechMs: Int
     private var silenceSamples: Int { endOfSpeechMs * 16 }
-    private static let maxSegmentSamples = 16_000 * 30
+    // Budget from the first voiced sample to the last active frame. Retain
+    // the bounded lead-in and the configured closing silence independently.
+    static let maxSegmentSamples = 16_000 * 60
     private static let maxLeadSamples = 2400
     private var lead: [Float] = []
     private var samples: [Float] = []
@@ -115,10 +117,10 @@ struct SpeechGate {
     private var discarding = false
     private let held: Bool
     private var overflowPrefix: Segment?
-    private let onSegmentDropped: (Int64) -> Void
+    private let onSegmentDropped: SegmentDropped
 
     init(held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs,
-         onSegmentDropped: @escaping (Int64) -> Void = { _ in }) {
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in }) {
         self.held = held
         self.onSegmentDropped = onSegmentDropped
         self.endOfSpeechMs = endOfSpeechMs
@@ -149,8 +151,10 @@ struct SpeechGate {
 
     mutating func interrupt(unfinished: Bool = false) {
         let interruptedSpeech = unfinished || discarding || !samples.isEmpty
-        if !samples.isEmpty { onSegmentDropped(segment(samples).speechStartHostUs) }
-        if let prefix = overflowPrefix { onSegmentDropped(prefix.speechStartHostUs) }
+        if !samples.isEmpty { onSegmentDropped(segment(samples).speechStartHostUs, .interrupted) }
+        if let prefix = overflowPrefix {
+            onSegmentDropped(prefix.speechStartHostUs, .captureLimit)
+        }
         self = SpeechGate(held: held, endOfSpeechMs: endOfSpeechMs, onSegmentDropped: onSegmentDropped)
         discarding = interruptedSpeech
     }
@@ -165,21 +169,23 @@ struct SpeechGate {
         defer { self = SpeechGate(held: held, endOfSpeechMs: endOfSpeechMs, onSegmentDropped: onSegmentDropped) }
         // The callback that filled the buffer may already contain audio recorded
         // after key-up. Only an explicit release inside this prefix can recover it.
-        if let prefix = overflowPrefix,
-           release <= (prefix.startNs + Int64(prefix.samples.count) * Segment.sampleNs) / 1_000_000 {
-            return prefix.through(release)
+        if let prefix = overflowPrefix {
+            let firstExcessEnd = prefix.startNs + Int64(prefix.samples.count + 1) * Segment.sampleNs
+            if release < (firstExcessEnd + 999_999) / 1_000_000 {
+                return prefix.through(release)
+            }
+            onSegmentDropped(prefix.speechStartHostUs, .captureLimit)
         }
         guard !discarding, !samples.isEmpty else { return nil }
-        guard let clipped = segment(samples).through(release), clipped.samples.count <= Self.maxSegmentSamples else { return nil }
-        return clipped
+        return segment(samples).through(release)
     }
 
     mutating func feed(_ frame: [Float], active: Bool, endNs: Int64,
                        toUnixMs: (Int64) -> Int64 = { CaptureClock().unixMs($0) },
                        onSpeechStart: (Int64) -> Void = { _ in }) -> Segment? {
         guard !frame.isEmpty else { return nil }
-        if let prefix = overflowPrefix, endNs > prefix.startNs + Int64(Self.maxSegmentSamples) * Segment.sampleNs + 2_000_000_000 {
-            onSegmentDropped(prefix.speechStartHostUs)
+        if let prefix = overflowPrefix, endNs > prefix.startNs + Int64(prefix.samples.count) * Segment.sampleNs + 2_000_000_000 {
+            onSegmentDropped(prefix.speechStartHostUs, .captureLimit)
             overflowPrefix = nil
         }
         // Keep the latest quiet samples, including a soft onset after a boundary moved by a live edit.
@@ -194,7 +200,7 @@ struct SpeechGate {
             samples = lead
         }
         if active { lead.removeAll(keepingCapacity: true) }
-        // A quiet frame may straddle both the silence boundary and the buffer limit.
+        // Keep only enough trailing quiet to reach the configured silence boundary.
         let count = active ? frame.count : min(frame.count, silenceSamples - quiet)
         quiet = active ? 0 : quiet + count
         let ended = quiet == silenceSamples
@@ -203,21 +209,22 @@ struct SpeechGate {
             lead = Array(lead.suffix(frame.count - count))
         }
 
-        if !discarding && count <= Self.maxSegmentSamples - samples.count {
+        let remaining = max(0, Self.maxSegmentSamples + firstVoicedSample - samples.count)
+        if !discarding && (!active || count <= remaining) {
             samples.append(contentsOf: frame.prefix(count))
             if ended {
                 defer { samples.removeAll() }
                 return segment(samples)
             }
-            if samples.count < Self.maxSegmentSamples { return nil }
+            return nil
         }
         // Drop the entire unfinished instruction. Its tail must never start another segment.
         if !discarding {
             if held {
-                samples.append(contentsOf: frame.prefix(Self.maxSegmentSamples - samples.count))
+                samples.append(contentsOf: frame.prefix(remaining))
                 overflowPrefix = segment(samples)
             } else {
-                onSegmentDropped(segment(samples).speechStartHostUs)
+                onSegmentDropped(segment(samples).speechStartHostUs, .captureLimit)
             }
         }
         samples.removeAll()
@@ -236,7 +243,7 @@ final class SpeechSegmenter {
     private var gate: SpeechGate
 
     init(held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs,
-         onSegmentDropped: @escaping (Int64) -> Void = { _ in }) throws {
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in }) throws {
         gate = SpeechGate(held: held, endOfSpeechMs: endOfSpeechMs, onSegmentDropped: onSegmentDropped)
         guard let detector = fvad_new() else { throw CaptureError.format }
         guard fvad_set_sample_rate(detector, 16_000) == 0, fvad_set_mode(detector, 2) == 0 else {
@@ -318,7 +325,7 @@ final class InputSegmenter {
     var preview: Segment? { segmenter.preview }
     private var segmenter: SpeechSegmenter
     private let held: Bool
-    private let onSegmentDropped: (Int64) -> Void
+    private let onSegmentDropped: SegmentDropped
     func updateEndOfSpeechMs(_ duration: Int) -> Segment? { segmenter.updateEndOfSpeechMs(duration) }
 
     // Each held interruption starts a discard through 800 ms of silence. At most three
@@ -375,7 +382,7 @@ final class InputSegmenter {
     }
 
     init(source: AVAudioFormat, held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs,
-         onSegmentDropped: @escaping (Int64) -> Void = { _ in }) throws {
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in }) throws {
         self.held = held
         self.onSegmentDropped = onSegmentDropped
         guard source.sampleRate > 0, source.channelCount > 0,
@@ -513,7 +520,7 @@ final class Microphone {
     private var segmenter: InputSegmenter?
     private var heldSpeech: HeldSpeech?
     private let onSpeechStart: (Int64) -> Void
-    private let onSegmentDropped: (Int64) -> Void
+    private let onSegmentDropped: SegmentDropped
     private let onQueueFull: () -> Void
     private var queueFullReported = false
     private var cutoff: Int64?
@@ -535,7 +542,7 @@ final class Microphone {
     init(selection: String, held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs,
          devices: [Device] = Device.inputs(), engine: AVAudioEngine = AVAudioEngine(),
          onSpeechStart: @escaping (Int64) -> Void = { _ in },
-         onSegmentDropped: @escaping (Int64) -> Void = { _ in },
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in },
          onQueueFull: @escaping () -> Void = {
              DispatchQueue.global(qos: .utility).async {
                  fputs("Voice listener queue full. New speech dropped while earlier phrases await delivery.\n", stderr)
@@ -584,7 +591,7 @@ final class Microphone {
         if heldSpeech != nil {
             heldSpeech?.append(segment)
         } else if case .dropped(let dropped) = continuation.yield(segment) {
-            onSegmentDropped(dropped.speechStartHostUs)
+            onSegmentDropped(dropped.speechStartHostUs, .queueFull)
             if !queueFullReported { onQueueFull() }
             queueFullReported = true
         } else {

@@ -3,7 +3,7 @@ import XCTest
 @testable import VoiceListener
 
 // The test drives tap callbacks explicitly so it can release between two buffers.
-private final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
+final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
     private var started = false
     override var isRunning: Bool { started }
     override func start() throws { started = true }
@@ -398,7 +398,10 @@ final class ListenerTests: XCTestCase {
 
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
         var dropped: [Int64] = []
-        var gate = SpeechGate(endOfSpeechMs: 800, onSegmentDropped: { dropped.append($0) })
+        var gate = SpeechGate(endOfSpeechMs: 800, onSegmentDropped: { onset, reason in
+            XCTAssertEqual(reason, .captureLimit)
+            dropped.append(onset)
+        })
         let speech = Array(repeating: Float(0.1), count: 320)
         let quiet = Array(repeating: Float(0), count: 320)
         var now: Int64 = 0
@@ -406,7 +409,7 @@ final class ListenerTests: XCTestCase {
             now += 20
             return gate.feed(frame, active: frame[0] != 0, endNs: now * 1_000_000)
         }
-        for _ in 0..<1500 { XCTAssertTrue(feed(speech) == nil) } // 30 seconds
+        for _ in 0..<3001 { XCTAssertTrue(feed(speech) == nil) } // First frame beyond 60 seconds
         XCTAssertEqual(dropped, [0])
         for _ in 0..<39 { XCTAssertTrue(feed(quiet) == nil) } // 780 ms is still inside the utterance.
         for _ in 0..<1510 { XCTAssertTrue(feed(speech) == nil) }
@@ -422,47 +425,59 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(dropped, [0])
     }
 
-    func testSilenceMustCompleteWithinTheSegmentLimit() {
-        let limit = 16_000 * 30
-        let silence = Array(repeating: Float(0), count: 12_801)
-        for extra in [0, 1] {
-            var gate = SpeechGate(endOfSpeechMs: 800)
-            XCTAssertTrue(gate.feed(Array(repeating: 0.1, count: limit - 12_800 + extra), active: true, endNs: 29_200 * 1_000_000) == nil)
-            let segment = gate.feed(silence, active: false, endNs: 30_000 * 1_000_000)
-            XCTAssertEqual(segment?.samples.count, extra == 0 ? limit : nil)
-            XCTAssertTrue(gate.feed([0.2], active: true, endNs: 31_000 * 1_000_000) == nil)
-            XCTAssertNotNil(gate.feed(silence, active: false, endNs: 31_800 * 1_000_000), "This frame already supplied a full silence boundary")
-        }
+    func testSixtySecondsOfSpeechRetainsTheFullClosingDelay() throws {
+        let limit = SpeechGate.maxSegmentSamples
+        let quiet = Array(repeating: Float.zero, count: 5_000 * 16)
+        let voiced = Array(repeating: Float(0.2), count: limit)
+        var gate = SpeechGate(endOfSpeechMs: 5000)
+        XCTAssertNil(gate.feed(voiced, active: true, endNs: 60_000_000_000))
+        let result = try XCTUnwrap(gate.feed(quiet, active: false, endNs: 65_000_000_000))
+        XCTAssertEqual(result.samples, voiced + quiet)
     }
 
     func testDelayedKeyUpCanRecoverOnlyThePreReleasePartOfAnOverflowedHold() throws {
-        let limit = 30 * 16_000
+        let limit = SpeechGate.maxSegmentSamples
         let start: Int64 = 1_000_000_000
         let samples = Array(repeating: Float(0.3), count: limit - 160)
         let crossing = Array(repeating: Float(0.8), count: 320)
         var dropped: [Int64] = []
         func overflow() -> SpeechGate {
-            var gate = SpeechGate(held: true, onSegmentDropped: { dropped.append($0) })
+            var gate = SpeechGate(held: true, onSegmentDropped: { onset, reason in
+                XCTAssertEqual(reason, .captureLimit)
+                dropped.append(onset)
+            })
             XCTAssertNil(gate.feed(samples, active: true, endNs: start + Int64(samples.count) * Segment.sampleNs))
-            XCTAssertNil(gate.feed(crossing, active: true, endNs: 31_010_000_000))
+            XCTAssertNil(gate.feed(crossing, active: true, endNs: 61_010_000_000))
             return gate
         }
         // The final callback crossed the cap by 10 ms. Key-up was 5 ms before the cap.
         var gate = overflow()
-        let recovered = try XCTUnwrap(gate.finish(at: 30_995))
+        let recovered = try XCTUnwrap(gate.finish(at: 60_995))
         XCTAssertEqual(recovered.samples.count, limit - 80)
         XCTAssertEqual(recovered.samples.suffix(80), crossing.prefix(80))
-        XCTAssertEqual(recovered.endedAt, 30_995)
+        XCTAssertEqual(recovered.endedAt, 60_995)
         XCTAssertTrue(dropped.isEmpty)
         gate = overflow()
-        XCTAssertNil(gate.finish(at: 31_001))
+        XCTAssertNil(gate.finish(at: 61_001))
+        XCTAssertEqual(dropped, [start / 1000])
+        dropped.removeAll()
         gate = overflow()
         let quiet = Array(repeating: Float(0), count: 320)
         for i in 1...100 {
-            XCTAssertNil(gate.feed(quiet, active: false, endNs: 31_010_000_000 + Int64(i) * 20_000_000))
+            XCTAssertNil(gate.feed(quiet, active: false, endNs: 61_010_000_000 + Int64(i) * 20_000_000))
         }
         XCTAssertEqual(dropped, [start / 1000])
-        XCTAssertNil(gate.finish(at: 30_995))
+        XCTAssertNil(gate.finish(at: 60_995))
+    }
+
+    func testLateReleaseIncludesTheLastCompleteSampleAtAFractionalCap() throws {
+        // The last permitted sample ends just before the millisecond key-up.
+        let start: Int64 = 999_990_000
+        let count = SpeechGate.maxSegmentSamples
+        var gate = SpeechGate(held: true, onSegmentDropped: { _, _ in XCTFail("Key-up preceded the first excess sample") })
+        XCTAssertNil(gate.feed(Array(repeating: 0.2, count: count + 1), active: true,
+                               endNs: start + Int64(count + 1) * Segment.sampleNs))
+        XCTAssertEqual(gate.finish(at: 61_000)?.samples.count, count)
     }
 
     private func fixtureDirectories() throws -> (models: URL, corpus: URL) {
@@ -533,8 +548,8 @@ final class ListenerTests: XCTestCase {
         let frame = Array(repeating: Float(0.5), count: 320)
         XCTAssertNil(gate.feed(frame, active: true, endNs: 1020 * 1_000_000))
         XCTAssertEqual(gate.finish(at: 1010)?.samples, Array(frame.prefix(160)))
-        XCTAssertNil(gate.feed(Array(repeating: 0.5, count: 30 * 16_000), active: true, endNs: 31_000 * 1_000_000))
-        XCTAssertNil(gate.finish(at: 31_000))
+        XCTAssertNil(gate.feed(Array(repeating: 0.5, count: SpeechGate.maxSegmentSamples + 1), active: true, endNs: 61_001 * 1_000_000))
+        XCTAssertNil(gate.finish(at: 61_001))
     }
 
     func testKeyUpClassifiesOnlyRecordedSamplesOfTheFinalPartialFrame() throws {
@@ -793,7 +808,7 @@ final class ListenerTests: XCTestCase {
         XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
         engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
         let input = try Microphone(selection: "system-default", held: held, endOfSpeechMs: 800, devices: [], engine: engine,
-                                   onSpeechStart: onSpeechStart, onSegmentDropped: onSegmentDropped, onQueueFull: onQueueFull)
+                                   onSpeechStart: onSpeechStart, onSegmentDropped: { onset, _ in onSegmentDropped(onset) }, onQueueFull: onQueueFull)
         let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
         frame.frameLength = frame.frameCapacity
         frame.floatChannelData![0].update(from: pcm, count: pcm.count)
@@ -873,7 +888,7 @@ final class ListenerTests: XCTestCase {
     func testOpenMicrophoneReportsEachOverlongSegmentAsDropped() async throws {
         var onsets: [Int64] = []
         var dropped: [Int64] = []
-        let tone = (0..<(31 * 16_000)).map { 0.2 * sin(Float($0) * .pi / 20) }
+        let tone = (0..<(SpeechGate.maxSegmentSamples + 16_000)).map { 0.2 * sin(Float($0) * .pi / 20) }
         let (input, _) = try captureFourPhrases(held: false, speech: tone, onSpeechStart: { onsets.append($0) },
                                               onSegmentDropped: { dropped.append($0) }) { XCTFail("Overlong segments reached the decoder queue") }
         XCTAssertEqual(onsets.count, 4)

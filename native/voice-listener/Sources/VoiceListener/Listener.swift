@@ -4,6 +4,9 @@ import Security
 
 enum CaptureError: Error { case device, format, listenerInUse }
 
+enum SpeechDrop { case interrupted, queueFull, captureLimit }
+typealias SegmentDropped = (Int64, SpeechDrop) -> Void
+
 struct Directive: Decodable {
     static let defaultEndOfSpeechMs = 2000
     let revision: String
@@ -216,14 +219,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         }
     }
 
-    func settleSpeech(_ onset: Int64, revision: String, accepted: Bool = false) {
+    func settleSpeech(_ onset: Int64, revision: String, accepted: Bool = false, drop: SpeechDrop? = nil) {
         let key = SpeechKey(revision: revision, onset: onset)
         speechLock.withLock {
             dictating.remove(key)
             guard let start = starts.removeValue(forKey: key), !accepted else { return }
             finishes[key] = Task {
                 await start.value
-                await sendSpeech(key, phase: "finish")
+                await sendSpeech(key, phase: drop == .captureLimit ? "capture-limit" : "finish")
                 speechLock.withLock { finishes[key] = nil }
             }
         }
@@ -375,7 +378,21 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 }
 
 @MainActor final class Listener {
-    let daemon = Daemon()
+    typealias OpenInput = @MainActor (String, Bool, Int, @escaping (Int64) -> Void, @escaping SegmentDropped,
+                           @escaping @MainActor (Microphone) -> Void) throws -> Microphone
+    let daemon: Daemon
+    private let microphonePermission: () -> String
+    private let openInput: OpenInput
+
+    init(daemon: Daemon = Daemon(), microphonePermission: @escaping () -> String = permission,
+         openInput: @escaping OpenInput = { selection, held, delay, start, drop, stop in
+             try Microphone(selection: selection, held: held, endOfSpeechMs: delay, onSpeechStart: start,
+                            onSegmentDropped: drop, onStopped: stop)
+         }) {
+        self.daemon = daemon
+        self.microphonePermission = microphonePermission
+        self.openInput = openInput
+    }
     var recognizer: Recognizer?
     private var current: Capture?
     private var draining: [Capture] = []
@@ -402,7 +419,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     private func sendHello(first: Bool) async throws {
-        let status = permission()
+        let status = microphonePermission()
         if status != "granted" { close(); await daemon.drainSpeechFinishes() }
         if first && status == "not-determined" {
             fputs("Microphone access is undetermined for the launching app. Run the listener from a terminal app that already has microphone access.\n", stderr)
@@ -466,14 +483,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             if next.speak != nil && daemon.speechInstance == nil { throw URLError(.badServerResponse) }
             if next.speak != nil || playback.busy { close() }
             try await playback.apply(next.speak)
-            let capture = next.speak == nil && !playback.busy && next.capture && permission() == "granted"
+            let capture = next.speak == nil && !playback.busy && next.capture && microphonePermission() == "granted"
             if next.revision != revision || capture != (current?.mic?.isRunning == true) {
                 let releasedRevision = http.value(forHTTPHeaderField: "x-voice-release-revision")
                 var allowed = Set((http.value(forHTTPHeaderField: "x-voice-draining-revisions") ?? "")
                     .split(separator: ",").map(String.init))
                 if let releasedRevision { allowed.insert(releasedRevision) }
                 draining.removeAll { previous in
-                    if allowed.contains(previous.revision) && permission() == "granted" { return false }
+                    if allowed.contains(previous.revision) && microphonePermission() == "granted" { return false }
                     previous.cancel()
                     return true
                 }
@@ -488,7 +505,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         continue
                     }
                 }
-                if let current, permission() == "granted", releasedRevision == current.revision,
+                if let current, microphonePermission() == "granted", releasedRevision == current.revision,
                    let time = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init) {
                     current.release(at: time)
                     draining.append(current)
@@ -504,11 +521,11 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     let captureRevision = held ? next.revision : next.captureRevision ?? next.revision
                     let batch = Capture(captureRevision, daemon: daemon)
                     current = batch
-                    let microphone = try Microphone(selection: next.inputDevice, held: held, endOfSpeechMs: duration, onSpeechStart: { [daemon] onset in
+                    let microphone = try openInput(next.inputDevice, held, duration, { [daemon] onset in
                         daemon.startSpeech(onset, revision: captureRevision)
-                    }, onSegmentDropped: { [daemon] onset in
-                        daemon.settleSpeech(onset, revision: captureRevision)
-                    }, onStopped: { [weak self] stopped in
+                    }, { [daemon] onset, reason in
+                        daemon.settleSpeech(onset, revision: captureRevision, drop: reason)
+                    }, { [weak self] stopped in
                         guard let self, self.current?.mic === stopped else { return }
                         self.current?.cancel()
                         self.current = nil

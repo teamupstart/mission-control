@@ -9,6 +9,7 @@ const windows = [
   { name: "wide", width: 1440, height: 900 },
   { name: "narrow", width: 560, height: 760 },
   { name: "short", width: 900, height: 460 },
+  { name: "shorter", width: 900, height: 380 },
 ] as const;
 
 /**

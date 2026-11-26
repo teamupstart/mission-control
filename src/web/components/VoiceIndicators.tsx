@@ -58,16 +58,17 @@ function useTranscriptClearsToasts(aside: RefObject<HTMLElement | null>, active:
         const inset = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
         const cardsBottom = area.bottom - parseFloat(style.paddingBottom);
         const naturalTop = cardsBottom - (stack.scrollHeight - inset);
-        wanted = Math.max(0, bottom + TRANSCRIPT_TOAST_GAP - naturalTop);
-        const room = Math.max(0, bottom - 2 * TRANSCRIPT_TOAST_GAP - TRANSCRIPT_MIN_HEIGHT);
+        wanted = Math.ceil(Math.max(0, bottom + TRANSCRIPT_TOAST_GAP - naturalTop));
+        const room = Math.floor(Math.max(0, bottom - 2 * TRANSCRIPT_TOAST_GAP - TRANSCRIPT_MIN_HEIGHT));
         if (wanted > room) {
           wanted = room;
-          squeeze = Math.max(0, Math.floor(area.bottom - (bottom - room) - TRANSCRIPT_TOAST_GAP + parseFloat(style.paddingTop)));
+          // Scrolled cards stay visible in the stack's padding, so its border box starts below the transcript.
+          squeeze = Math.max(0, Math.floor(area.bottom - (bottom - room) - TRANSCRIPT_TOAST_GAP));
         }
       }
       if (squeeze === null) release();
       else stack!.style.setProperty("--voice-stack-max", squeeze + "px");
-      const next = Math.round(wanted);
+      const next = wanted;
       if (next === lift) return;
       lift = next;
       if (lift) element.style.setProperty("--vt-lift", lift + "px");

@@ -501,6 +501,11 @@ export interface WorkflowManagerOptions {
    */
   resumptionSettleMs?: number;
   /**
+   * How long a delivered session action tolerates its bound session being missing or `exited`
+   * before it blocks as `session_lost`. Injectable so a test need not wait out the real window.
+   */
+  sessionActionSessionGraceMs?: number;
+  /**
    * How long a parked round with a delivered packet and an untouched repository may sit
    * before the session is reminded once. Injectable so a test need not wait it out.
    */
@@ -517,6 +522,33 @@ export interface WorkflowManagerOptions {
  */
 const WORKFLOW_RESUMPTION_INTERVAL_MS = 15_000;
 const WORKFLOW_RESUMPTION_SETTLE_MS = 10_000;
+
+/**
+ * How long a delivered session action waits for its bound session to come back before it
+ * blocks as `session_lost`.
+ *
+ * A daemon restart or an update leaves the session `exited` or not yet restored for a while:
+ * SDK sessions are restored one after another, and an operator resumes a stopped one by hand.
+ * The report that set this saw the session back about two minutes after the restart, by which
+ * point the action had already blocked on its first sample. Ten minutes covers a restart and a
+ * prompt resume, and is short enough that a session that really is gone still says so while
+ * someone is watching.
+ */
+const WORKFLOW_SESSION_ACTION_SESSION_GRACE_MS = 10 * 60_000;
+
+/**
+ * The recovery half of a recoverable `session_lost` block's stored detail.
+ *
+ * Stored, so it outlives the state it was written in: the attempt, its error and the
+ * `session_action_blocked` event keep it after the binding is orphaned, when neither the
+ * automatic re-check nor Retry applies any more. So the promise is conditioned on the binding
+ * and names the detached path, which keeps the sentence true in both states rather than
+ * rewriting history when the binding goes.
+ */
+const SESSION_LOST_RECOVERY = "No repair round was spent. While the workflow is still bound to "
+  + "this session, the action is checked again automatically when the session is running, and "
+  + "Retry checks it again by hand. If the workflow has been detached from the session, reattach "
+  + "it or cancel the run.";
 
 /**
  * How long a repair round may sit parked, packet delivered and repository untouched, before
@@ -900,6 +932,10 @@ export class WorkflowManager {
         // Pickup is recorded HERE rather than on the sweep: a turn can start and finish
         // between two fifteen-second samples, and the proof would be gone by the time the
         // observer looked. See `noteSessionActionActivity`.
+        // Re-check FIRST. An action blocked because its session was away is back to `waiting`
+        // only after this, and the update that brings the session back may be the only proof
+        // that the turn was picked up - recorded below, which reads waiting attempts alone.
+        this.recheckLostSessionActions(event.session.id);
         this.noteSessionActionActivity(event.session);
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
@@ -2785,7 +2821,8 @@ export class WorkflowManager {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
     const existingEvent = this.store.listEvents(run.id).find((event) =>
-      (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry") &&
+      (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry"
+        || event.kind === "session_action_rechecked") &&
       event.payload &&
       !Array.isArray(event.payload) &&
       typeof event.payload === "object" &&
@@ -2794,6 +2831,29 @@ export class WorkflowManager {
     if (!submission) return { ok: false, reason: "not_found", message: "The run has no submission" };
     if (existingEvent) {
       return { ok: true, value: { run, submission }, idempotent: true };
+    }
+    // A session action blocked only because its session was away is re-checked in place, not
+    // retried as a new attempt: nothing failed, so there is nothing to run again and no round
+    // to spend. See `recheckLostSessionActions` for the automatic half.
+    const lost = this.store.recoverableLostSessionAction(run);
+    if (lost && (!input.nodeAttemptId || input.nodeAttemptId === lost.id)) {
+      const binding = this.store.getBinding(run.bindingId);
+      if (!binding || !this.lostSessionReturned(binding)) {
+        return {
+          ok: false,
+          reason: "session_unavailable",
+          message: "The bound session is not running yet. Resume it, then retry; the action is "
+            + "also checked again automatically when the session returns.",
+        };
+      }
+      if (!this.reopenLostSessionAction(run.id, lost.id, "operator", input.requestId, now)) {
+        return {
+          ok: false,
+          reason: "not_infrastructure_failure",
+          message: "This action is no longer blocked on its session",
+        };
+      }
+      return { ok: true, value: { run: this.store.getRun(run.id) ?? run, submission } };
     }
     const attempts = this.store.listAttempts(submission.id);
     const latestAttempts = new Map<string, WorkflowNodeAttempt>();
@@ -6286,7 +6346,7 @@ export class WorkflowManager {
     const session = this.registry.getSession(binding.sessionId);
     if (!session || session.state === "exited") {
       this.blockSessionAction(attempt.id, "session_lost",
-        "The bound session is not available to run this action.", now);
+        `The bound session is not available to run this action. ${SESSION_LOST_RECOVERY}`, now);
       return;
     }
     // Preparation's half of the required-skill promise. `deliveryBlock` re-resolves it
@@ -6545,11 +6605,25 @@ export class WorkflowManager {
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     if (!session || session.state === "exited") {
       // Deliberately NOT read as durable removal: `state === "exited"` is a linger window,
-      // and `session_remove` is what the registry uses for gone. Blocking is the honest
-      // answer either way - nothing can prove a turn finished in a pane nobody can read.
+      // and `session_remove` is what the registry uses for gone. Nothing can prove a turn
+      // finished in a pane nobody can read, so the action never advances here - but a restart
+      // or an update makes the session unavailable for a while and then brings it back, and
+      // blocking on the first sample turned that into a dead run. The action waits out a grace
+      // window first, and blocks only if the session is still away at the end of it.
+      const since = state.sessionMissingSince ?? now;
+      if (state.sessionMissingSince == null) {
+        this.store.updateSessionActionState(attempt.id, { ...state, sessionMissingSince: since }, now);
+      }
+      const grace = this.options.sessionActionSessionGraceMs ?? WORKFLOW_SESSION_ACTION_SESSION_GRACE_MS;
+      if (now - since < grace) return;
       this.blockSessionAction(attempt.id, "session_lost",
-        "The bound session exited before this action's turn could be observed.", now);
+        "The bound session stayed unavailable after this action was sent, so its turn could not "
+        + `be observed. ${SESSION_LOST_RECOVERY}`, now);
       return;
+    }
+    if (state.sessionMissingSince != null) {
+      state = { ...state, sessionMissingSince: null };
+      this.store.updateSessionActionState(attempt.id, state, now);
     }
     if (noteKeyFor(session) !== anchor.noteKey) {
       this.blockSessionAction(attempt.id, "conversation_changed",
@@ -8584,6 +8658,74 @@ export class WorkflowManager {
   }
 
   /**
+   * Observe again every action blocked only because its bound session was away, once that
+   * session is running - and end the absence clock of any action still waiting on it.
+   *
+   * Driven by the registry's session stream, so the re-check happens when the session returns
+   * rather than on the next sweep, and once on startup for blocks a previous daemon left.
+   * `session_lost` says nothing about the work: the delivery, anchor and pickup the attempt
+   * had already recorded all still hold, so the attempt resumes from them and spends no repair
+   * round. Every completion proof is still required afterwards; this only lets the observer
+   * look again. An attempt that never got its packet out is re-prepared through the ordinary
+   * recovery path, which re-asks every consent gate before typing anything.
+   */
+  private recheckLostSessionActions(sessionId?: string, now = Date.now()): void {
+    for (const binding of this.store.listBindings()) {
+      if (binding.state !== "active" || !binding.sessionId) continue;
+      if (sessionId !== undefined && binding.sessionId !== sessionId) continue;
+      const run = this.store.activeRunForBinding(binding.id);
+      if (!run || !this.lostSessionReturned(binding)) continue;
+      const attempt = this.store.recoverableLostSessionAction(run);
+      if (attempt) {
+        this.reopenLostSessionAction(run.id, attempt.id, "session_returned", null, now);
+        continue;
+      }
+      if (run.status === "waiting_for_action") this.clearSessionActionAbsence(run.id, now);
+    }
+  }
+
+  /**
+   * End the absence clock of every action still waiting on this run, because its session is
+   * live again.
+   *
+   * The observer clears the clock too, but only when one of its samples happens to land while
+   * the session is up. A session that is missed, found and missed again between two samples
+   * would otherwise carry the FIRST miss's start time into the second, so brief misses would
+   * add up to the grace window and block an action whose session kept coming back. The return
+   * is the boundary, so the return is what resets it.
+   */
+  private clearSessionActionAbsence(runId: string, now: number): void {
+    for (const attempt of this.store.listWaitingActionAttempts(runId)) {
+      const state = this.store.sessionActionState(attempt);
+      if (state?.sessionMissingSince == null) continue;
+      this.store.updateSessionActionState(attempt.id, { ...state, sessionMissingSince: null }, now);
+    }
+  }
+
+  /** The binding's session is running again, in the conversation the binding was armed for. */
+  private lostSessionReturned(binding: WorkflowBinding): boolean {
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    return Boolean(session && session.state !== "exited" && noteKeyFor(session) === binding.noteKey);
+  }
+
+  private reopenLostSessionAction(
+    runId: string,
+    attemptId: string,
+    source: "session_returned" | "operator",
+    requestId: string | null,
+    now: number,
+  ): WorkflowNodeAttempt | null {
+    const reopened = this.store.reopenLostSessionActionAttempt({ runId, attemptId, source, requestId, now });
+    if (!reopened) return null;
+    workflowLog("info", { event: "session_action_rechecked", call: attemptId });
+    this.publishRun(runId);
+    const binding = this.store.getBinding(this.store.getRun(runId)?.bindingId ?? "");
+    if (binding) this.recoverSessionActions(binding.noteKey);
+    this.scheduleSessionActionProofCheck();
+    return reopened;
+  }
+
+  /**
    * Pick one interrupted continuation back up, in the order its three durable states require.
    *
    * Seal first: a child whose evidence is durable and whose receipt is not needs its receipt,
@@ -8653,6 +8795,10 @@ export class WorkflowManager {
     this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
     this.engine.start();
     this.recoverSessionActions();
+    // A run blocked as `session_lost` before this daemon started - by the restart that brought
+    // it here, or by a build that blocked on the first sample - is re-checked now that
+    // discovery knows which sessions are back.
+    this.recheckLostSessionActions();
     this.lastRecoveryAt = Date.now();
     workflowLog("info", { event: "recovery_complete", at: this.lastRecoveryAt });
     void this.sweepRetention();

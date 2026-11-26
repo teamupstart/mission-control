@@ -719,6 +719,35 @@ history, but it does not apply criterion-mapped readiness, deliver an evidence-r
 create a Persona or Check attempt. An action with any reachable Persona or Check keeps the normal
 fresh-evidence rule.
 
+A restart or an update can leave the bound session `exited`, or not yet restored, while an
+action is waiting on its turn. A terminal session also reads `exited` for a few seconds whenever
+a discovery sweep misses its process, until the next sweep finds it again. The action does not
+block on that. While the binding stays active and names that session, the action keeps waiting
+for up to ten minutes for it to come back, and nothing advances while the session is away. Each
+return starts the ten minutes over, so separate short misses never add up to a block. If the
+session is still gone after ten minutes, the run blocks with **action did not finish**
+(`session_lost`). That block spends no repair round, and the run page says the action is checked
+again on its own rather than that the review is stopped for good.
+
+The ten minutes last only as long as the binding does. A session that is really removed, rather
+than briefly missed, ends it sooner: a terminal session left out of discovery for longer than
+its eight-second exit linger, or a session that ends for good, is evicted, and eviction orphans
+its binding. The run is blocked straight away (**session gone**), and the action then blocks as
+`session_lost` because the binding no longer names its session. Neither the automatic re-check
+nor **Check the action again** applies there, because both need an active binding. Reattach the
+workflow to a live session or cancel the run.
+
+The re-check follows the binding, not the conversation. When the session the binding names is
+running again in the same conversation, Mission Control checks the action again by itself. So
+does a terminal successor adopted through **Continue in terminal**, because the binding moves to
+it. In either case the run continues from the delivery, pickup and turn it had already recorded,
+and the instruction is never typed a second time. A conversation resumed under a new session
+any other way does not move the binding, so it does not clear the block. The run's next move is
+**Check the action again**, offered through `retry`, which spends no repair round and stays
+available even when every round is spent. It does the same re-check by hand, and refuses with a
+reason while the bound session is still away. Resubmitting for fresh evidence is offered too,
+but only while the run has a repair round left.
+
 Publishing snapshots the action exactly as it snapshots a Persona - name, description,
 instruction, required skill, completion, source id and source revision. Editing or archiving
 the source afterwards cannot reach a version already published; version history marks the

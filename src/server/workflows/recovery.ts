@@ -93,6 +93,22 @@ export interface WorkflowRecoveryContext {
   bindingHasOtherRun: boolean;
   /** The current block owns a prepared, unsent Inspector feedback packet. */
   recoverableInspectorFeedback?: boolean;
+  /**
+   * The current block is a `session_lost` session action the run can observe again.
+   *
+   * See `WorkflowStore.recoverableLostSessionAction`. Offered as `retry`, which re-checks the
+   * action in place and spends no repair round - the only move such a run had once its
+   * rounds were used up was `cancel`.
+   */
+  recoverableSessionAction?: boolean;
+}
+
+/** Whether `retry` re-checks a session action blocked only because its session was away. */
+export function sessionActionRecheckAvailable(
+  run: Pick<WorkflowRecoveryContext, "status" | "phase" | "recoverableSessionAction">,
+): boolean {
+  return run.status === "blocked" && run.phase === "session_action_blocked"
+    && run.recoverableSessionAction === true;
 }
 
 export function inspectorRecoveryCanRecheck(
@@ -170,6 +186,14 @@ export function projectWorkflowRecovery(c: WorkflowRecoveryContext): WorkflowRun
     }
   }
   if (c.status !== "blocked" && c.status !== "waiting_for_session") return recovery;
+  // Ahead of the round budget on purpose: re-observing an action whose session was briefly
+  // away is not a repair round, so a run that has spent every round must still be offered it.
+  // Resubmission stays listed beside it for the operator who wants fresh evidence instead.
+  if (active && sessionActionRecheckAvailable(c)) {
+    recovery.operations.push("retry");
+    recovery.primary = "retry";
+    recovery.triage = "retry";
+  }
   if (policy === "retry" && infrastructureRecoveryAvailable(c, c.latest, c.attempts.some((a) => a.state === "error"))) {
     recovery.operations.push("retry");
     recovery.primary = "retry";

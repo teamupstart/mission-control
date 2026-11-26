@@ -1745,6 +1745,99 @@ test("overflow reported after dated key-up cancels the message reserved during t
   assert.deepEqual(queued("Will"), []);
 });
 
+test("a hold that outlasts the decode budget keeps its reserved countdown until its transcript arrives after key-up", async t => {
+  await setupOnsetCountdown(t);
+  const id = "long-hold-target";
+  await say("Will check the build", id);
+  assert.equal(cards.at(-1)?.state, "pending");
+  t.mock.timers.tick(100);
+  const pressed = voiceStateStore.hostNowUs();
+  const reportKey = (down: boolean) => {
+    const now = voiceStateStore.hostNowUs();
+    return post("/voice/shell-report", { callActive: true, pushToTalk: down, reportedAtHostUs: now,
+      ...(down ? { pushToTalkPressedAtHostUs: pressed } : { pushToTalkReleasedAtHostUs: now }) }, token);
+  };
+  await reportKey(true);
+  const held = voiceStateStore.directive().revision;
+  t.mock.timers.tick(100);
+  // The hold's one onset falls inside the countdown and reserves it for a spoken Cancel.
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const started = await post("/voice/listener/speech?revision=" + held, { phase: "start", speechStartUs }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+  // The key stays down past the 90-second decode budget, still inside the two-minute hold.
+  for (let i = 0; i < 10; i++) {
+    t.mock.timers.tick(10_000);
+    await reportKey(true);
+  }
+  assert.equal(voiceStateStore.directive().revision, held, "the key is still held");
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id], "nothing is delivered while the key is down");
+  assert.deepEqual(queued("Will"), []);
+  t.mock.timers.tick(20);
+  await reportKey(false);
+  const releasedAt = voiceStateStore.releasedCapture(held)!.at;
+  const result = await app.request(utterancePath(held), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(releasedAt),
+  }, body: JSON.stringify(capture("Cancel.")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.equal(cards.findLast(card => card.id === id)?.state, "cancelled", "the hold's Cancel still reaches the message it reserved");
+  t.mock.timers.tick(90_000);
+  assert.deepEqual(queued("Will"), []);
+});
+
+test("a held reservation that never gets its transcript releases the message at the hold limit plus the decode budget", async t => {
+  await setupOnsetCountdown(t);
+  const id = "abandoned-hold-target";
+  await say("Will check the build", id);
+  assert.equal(cards.at(-1)?.state, "pending");
+  t.mock.timers.tick(100);
+  const pressed = voiceStateStore.hostNowUs();
+  const reportKey = (down: boolean) => {
+    const now = voiceStateStore.hostNowUs();
+    return post("/voice/shell-report", { callActive: true, pushToTalk: down, reportedAtHostUs: now,
+      ...(down ? { pushToTalkPressedAtHostUs: pressed } : { pushToTalkReleasedAtHostUs: now }) }, token);
+  };
+  await reportKey(true);
+  const held = voiceStateStore.directive().revision;
+  t.mock.timers.tick(100);
+  const started = await post("/voice/listener/speech?revision=" + held,
+    { phase: "start", speechStartUs: voiceStateStore.hostNowUs() }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+  const deadline = 120_000 + 90_000; // VOICE_MAX_HOLD_MS plus the long-capture decode budget, from the onset.
+  for (let i = 0; i < 11; i++) {
+    t.mock.timers.tick(10_000);
+    await reportKey(true);
+  }
+  t.mock.timers.tick(20);
+  await reportKey(false);
+  // No transcript and no finish ever arrive for this hold.
+  t.mock.timers.tick(deadline - 110_020 - 1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id], "the reservation holds until its combined deadline");
+  assert.deepEqual(queued("Will"), []);
+  t.mock.timers.tick(2);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards ?? [], [], "at the deadline the unanswered reservation lets the message go");
+  assert.equal(queued("Will").length, 1);
+});
+
+test("an Always-on onset still releases its reserved countdown after the 90-second decode budget", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  const id = "automatic-budget-target";
+  await say("Will check the build", id);
+  t.mock.timers.tick(100);
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const started = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+  t.mock.timers.tick(89_000);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id], "the countdown waits for the phrase's result");
+  t.mock.timers.tick(2_000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards ?? [], [], "an unanswered automatic phrase stops holding the message at the budget");
+  assert.equal(queued("Will").length, 1);
+});
+
 test("a capture-limit report for an unauthorized revision leaves the reserved card alone and publishes no recovery", async t => {
   const { revision } = await setupOnsetCountdown(t);
   const id = "still-reserved";

@@ -318,16 +318,34 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     assert.deepEqual(captureBounds.map(bound => bound.onset), ["625", "1625"]);
   });
 
-  it("key-up releases only the abandoned onset while completed held speech drains", async t => {
+  it("key-up releases only the abandoned onset while the completed hold drains as one message", async t => {
     const { speechReports, posted, nextPoll, apply } = await launch(t, { held: true, inputDevice: "partial-hold" });
     await until(() => speechReports.length === 2, "both onset reports");
     const off = await nextPoll("first");
     off.setHeader("x-voice-release-revision", "first");
     off.setHeader("x-voice-release-host-ms", "1000");
     apply(off, "released", false);
-    await until(() => speechReports.length >= 3 && posted.length === 2, "partial release and completed transcripts");
+    await until(() => speechReports.length >= 3 && posted.length === 1, "partial release and the completed transcript");
     assert.deepEqual(speechReports.filter(r => r.phase === "finish"), [{ phase: "finish", speechStartUs: 626, revision: "first" }]);
-    assert.deepEqual(posted.map(p => p.text), ["completed hold", "final phrase"]);
+    assert.deepEqual(posted.map(p => p.text), ["completed hold final phrase"]);
+  });
+
+  it("a held phrase past the capture limit reports the limit once for the hold and delivers nothing on release", async t => {
+    const { events, speechReports, posted, nextPoll, apply } = await launch(t, { held: true, inputDevice: "held-capture-limit" });
+    const start = { phase: "start", speechStartUs: 625, revision: "first" };
+    await until(() => speechReports.length === 2, "the hold's onset and its capture-limit report");
+    assert.deepEqual(speechReports, [start, { ...start, phase: "capture-limit" }]);
+    const release = await nextPoll("first");
+    release.setHeader("x-voice-release-revision", "first");
+    release.setHeader("x-voice-release-host-ms", "1000");
+    apply(release, "off", false);
+    await nextPoll("off");
+    await until(() => events.includes("stopped 1"), "release to close the hold");
+    await delay(150);
+    // Neither the first phrase nor any later one is decoded or posted, and the onset is not settled twice.
+    assert.deepEqual(posted, []);
+    assert.ok(!events.some(e => e.startsWith("decode ")));
+    assert.deepEqual(speechReports, [start, { ...start, phase: "capture-limit" }]);
   });
 
   for (const backend of ["fluidaudio", "sherpa-onnx"]) {
@@ -572,7 +590,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     assert.deepEqual(lifecycle(), ["opened 1", "stopped 1", "opened 2", "stopped 2"]);
   });
 
-  it("delivers every phrase in a hold in order only after confirmed release", async t => {
+  it("delivers every phrase of a hold in order as one message only after confirmed release", async t => {
     const { events, posted, captureBounds, nextPoll, apply } = await launch(t, { held: true });
     await until(() => events.includes("holding audio"), "held microphone");
     const release = await nextPoll("first");
@@ -580,9 +598,12 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     release.setHeader("x-voice-release-revision", "first");
     release.setHeader("x-voice-release-host-ms", "1000");
     apply(release, "off", false);
-    await until(() => posted.length === 5, "complete phrases and tail");
-    assert.deepEqual(posted, ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(text => ({ text, revision: "first" })));
-    assert.deepEqual(captureBounds, posted.map(() => ({ start: "125", onset: "625", end: "1" })));
+    await until(() => posted.length === 1, "the hold's one message");
+    // Each phrase decodes on its own; a pause inside the hold never splits the message it joins.
+    assert.deepEqual(events.filter(e => e.startsWith("decode ")),
+      ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(label => "decode " + label));
+    assert.deepEqual(posted, [{ text: "phrase 1 phrase 2 phrase 3 phrase 4 final phrase", revision: "first" }]);
+    assert.deepEqual(captureBounds, [{ start: "125", onset: "625", end: "1" }]);
     assert.ok(events.indexOf("stopped 1") < events.indexOf("decode phrase 1"));
   });
 
@@ -613,11 +634,12 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     second.setHeader("x-voice-held-revision", "second");
     second.setHeader("x-voice-draining-revisions", "first");
     apply(second, "second", true);
-    await until(() => posted.length === 2, "previous hold to finish while recording the next");
-    assert.deepEqual(posted.map(p => [p.revision, p.text]), [["first", "first hold"], ["first", "final phrase"]]);
+    await until(() => posted.length === 1, "previous hold to finish while recording the next");
+    assert.deepEqual(posted.map(p => [p.revision, p.text]), [["first", "first hold final phrase"]]);
     keyUp(await nextPoll("second"), "second", "off-again");
-    await until(() => posted.length === 7, "second hold to drain");
-    assert.deepEqual(posted.slice(2).map(p => p.revision), Array(5).fill("second"));
+    await until(() => posted.length === 2, "second hold to drain");
+    // Each hold is its own message.
+    assert.deepEqual(posted.slice(1).map(p => [p.revision, p.text]), [["second", "phrase 1 phrase 2 phrase 3 phrase 4 final phrase"]]);
   });
 
   it("rechecks a combined release and press before opening a second exclusive microphone", async t => {
@@ -636,9 +658,9 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     refresh.setHeader("x-voice-held-revision", "second");
     refresh.setHeader("x-voice-draining-revisions", "first");
     apply(refresh, "second", true);
-    await until(() => posted.length === 2, "first hold to finish during the second capture");
+    await until(() => posted.length === 1, "first hold to finish during the second capture");
     assert.ok(events.indexOf("opened 2") > events.indexOf("stopped 1"));
-    assert.deepEqual(posted.map(p => p.text), ["first hold", "final phrase"]);
+    assert.deepEqual(posted.map(p => p.text), ["first hold final phrase"]);
     assert.ok(!events.includes("overlapping microphones"));
   });
 

@@ -582,7 +582,7 @@ export function VoiceSettingsPanel({
       <div className="kb-row" data-anchor="voice/end-of-speech">
         <div className="kb-row-text">
           <label className="kb-row-label" htmlFor="voice-end-of-speech">End-of-speech delay</label>
-          <span className="kb-row-desc">{dedicated ? "Push-to-talk ends on key release." : "How long to wait for more speech before submitting an automatic capture."}</span>
+          <span className="kb-row-desc">{dedicated ? "Applies to Always-on listening. Push-to-talk ends on key release." : "How long to wait for more speech before submitting an automatic capture."}</span>
         </div>
         <div className="kb-row-controls">
           <Tooltip label="Speech that resumes within this delay stays in the same utterance.">

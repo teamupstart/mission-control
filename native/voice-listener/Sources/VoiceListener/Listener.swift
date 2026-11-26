@@ -305,9 +305,35 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 }
 
-@MainActor func runTranscriptPreview(
-    isRunning: @escaping () -> Bool, snapshot: @escaping () -> Segment?, pendingOnset: () -> Int64?,
-    decode: @escaping (Segment) async throws -> String?,
+/// What one preview pass decodes: an unfinished phrase, or a whole hold so far.
+protocol PreviewSnapshot { var onset: Int64 { get } }
+extension Segment: PreviewSnapshot { var onset: Int64 { speechStartHostUs } }
+
+/// A hold's live preview: the phrases it has completed, then the one still open, under the hold's onset.
+struct HeldPreview: PreviewSnapshot {
+    let onset: Int64
+    let completed: [Segment]
+    let open: Segment?
+}
+
+/// Decodes a hold for its live preview: each completed phrase once, and the open phrase on every
+/// pass, so the words before a pause stay on screen and in the editor until the key is released.
+@MainActor final class HeldPreviewText {
+    // A hold only appends completed phrases, so each one keeps its position.
+    private var completed: [String] = []
+
+    func text(_ hold: HeldPreview, decode: (Segment) async throws -> String?) async throws -> String? {
+        for phrase in hold.completed.dropFirst(completed.count) { completed.append(try await decode(phrase) ?? "") }
+        var parts = Array(completed.prefix(hold.completed.count))
+        if let open = hold.open { parts.append(try await decode(open) ?? "") }
+        let text = parts.filter { !$0.isEmpty }.joined(separator: " ")
+        return text.isEmpty ? nil : text
+    }
+}
+
+@MainActor func runTranscriptPreview<Snapshot: PreviewSnapshot>(
+    isRunning: @escaping () -> Bool, snapshot: @escaping () -> Snapshot?, pendingOnset: () -> Int64?,
+    decode: @escaping (Snapshot) async throws -> String?,
     report: @escaping (String, Int64?, String?) async -> Bool,
     editorFocused: @escaping (Int64) async -> Bool = { _ in false },
     updateEditor: @escaping (Int64, String) async throws -> Void = { _, _ in },
@@ -317,7 +343,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     defer { decoding?.cancel() }
     while !Task.isCancelled && isRunning() {
         if let segment = snapshot() {
-            let onset = segment.speechStartHostUs
+            let onset = segment.onset
             // Renew capture independently of recognition, even while a slow decode is in flight.
             let overlay = await report("audio", onset, nil)
             if decoding == nil, !Task.isCancelled {
@@ -325,7 +351,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     defer { decoding = nil }
                     let editor = await editorFocused(onset)
                     guard (editor || overlay), !Task.isCancelled, let words = try? await decode(segment), !Task.isCancelled, isRunning(),
-                          snapshot()?.speechStartHostUs == onset else { return }
+                          snapshot()?.onset == onset else { return }
                     if editor {
                         do {
                             try await updateEditor(onset, words)
@@ -348,12 +374,18 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 }
 
+/// A transcript that can stand for a whole capture. A hold's phrases decode separately and join into
+/// one message, in spoken order; a phrase that decoded to nothing contributes no words.
+protocol HoldTranscript: Encodable {
+    static func message(_ phrases: [(segment: Segment, transcript: Self?)]) -> Self?
+}
+
 /// The one recognizer call a capture's decode makes, so a test can observe what each decode is
 /// given. Its types are associated so this file builds without the speech model's module: the
 /// lifecycle tests compile it against a stub recognizer.
 protocol SegmentTranscriber {
     associatedtype Boosting
-    associatedtype Transcript: Encodable
+    associatedtype Transcript: HoldTranscript
     func transcribe(_ segment: Segment, boosting: Boosting?, separator: String?) async throws -> Transcript?
 }
 
@@ -584,15 +616,26 @@ protocol SegmentTranscriber {
                     })
                     batch.mic = microphone
                     batch.previewTask = Task { [daemon] in
-                        await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.preview },
-                            pendingOnset: { daemon.pendingOnset(revision: captureRevision) },
-                            decode: { try await recognizer.transcribe($0, boosting: nil)?.text },
-                            report: { phase, onset, text in
-                                await daemon.reportPreview(phase, revision: captureRevision, onset: onset, text: text)
-                            }, editorFocused: { await daemon.shouldPreview($0, revision: captureRevision) },
-                            updateEditor: { onset, words in
-                                try await daemon.preview(words, onset: onset, revision: captureRevision)
-                            })
+                        let decode = { (phrase: Segment) in try await recognizer.transcribe(phrase, boosting: nil)?.text }
+                        let report = { (phase: String, onset: Int64?, text: String?) in
+                            await daemon.reportPreview(phase, revision: captureRevision, onset: onset, text: text)
+                        }
+                        let editorFocused = { (onset: Int64) in await daemon.shouldPreview(onset, revision: captureRevision) }
+                        let updateEditor = { (onset: Int64, words: String) in
+                            try await daemon.preview(words, onset: onset, revision: captureRevision)
+                        }
+                        let pendingOnset = { daemon.pendingOnset(revision: captureRevision) }
+                        guard held else {
+                            await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.preview },
+                                pendingOnset: pendingOnset, decode: decode, report: report,
+                                editorFocused: editorFocused, updateEditor: updateEditor)
+                            return
+                        }
+                        // A pause inside a hold ends only a recognition phrase. The preview keeps the whole hold.
+                        let hold = HeldPreviewText()
+                        await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.heldPreview },
+                            pendingOnset: pendingOnset, decode: { try await hold.text($0, decode: decode) }, report: report,
+                            editorFocused: editorFocused, updateEditor: updateEditor)
                     }
                     let previous = draining.last?.decoding
                     batch.decoding = Task { [segments = microphone.segments] in
@@ -603,33 +646,52 @@ protocol SegmentTranscriber {
                         await previous?.value
                         guard !Task.isCancelled else { return }
                         let boosting = try? await recognizer.prime(next.roster)
-                        @MainActor func deliver(_ buffered: Segment) async {
+                        // Posts one message: a segment of automatic speech, or every phrase of a released hold.
+                        @MainActor func deliver(_ buffered: [Segment]) async {
+                            guard let first = buffered.first else { return }
+                            let onset = first.speechStartHostUs
                             var accepted = false
                             defer {
-                                daemon.settleSpeech(buffered.speechStartHostUs, revision: batch.revision, accepted: accepted)
+                                daemon.settleSpeech(onset, revision: batch.revision, accepted: accepted)
                             }
                             do {
-                                var segment = buffered
+                                var phrases = buffered
+                                // Clipping only shortens the tail, so a phrase keeps its position and a
+                                // clipped one ends sooner: its end time tells a stale decode apart.
+                                var decoded: [(endedAt: Int64, transcript: Recognizer.Transcript?)] = []
                                 var daemonCutoff: Int64?
                                 while !Task.isCancelled {
-                                    if let cutoff = daemonCutoff ?? batch.releasedAt, segment.endedAt > cutoff {
-                                        guard let clipped = segment.through(cutoff) else { return }
-                                        segment = clipped
+                                    if let cutoff = daemonCutoff ?? batch.releasedAt, let last = phrases.last, last.endedAt > cutoff {
+                                        phrases = phrases.compactMap { $0.through(cutoff) }
+                                        guard !phrases.isEmpty else { return }
                                     }
-                                    let words = try await batch.transcribe(segment, using: recognizer,
-                                                                           boosting: daemon.isDictating(segment.speechStartHostUs, revision: batch.revision) ? nil : boosting)
-                                    try Task.checkCancellation()
+                                    // Only the opening phrase can carry the address the roster primes.
+                                    let primed = daemon.isDictating(onset, revision: batch.revision) ? nil : boosting
+                                    var transcripts: [(segment: Segment, transcript: Recognizer.Transcript?)] = []
+                                    decoded.removeLast(max(0, decoded.count - phrases.count))
+                                    for (index, phrase) in phrases.enumerated() {
+                                        if index < decoded.count, decoded[index].endedAt == phrase.endedAt {
+                                            transcripts.append((phrase, decoded[index].transcript))
+                                            continue
+                                        }
+                                        let words = try await batch.transcribe(phrase, using: recognizer, boosting: index == 0 ? primed : nil)
+                                        try Task.checkCancellation()
+                                        decoded.removeLast(decoded.count - index)
+                                        decoded.append((phrase.endedAt, words))
+                                        transcripts.append((phrase, words))
+                                    }
+                                    guard let last = phrases.last else { return }
                                     // Key-up may have arrived during this very decode.
-                                    if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }
-                                    guard let words else { return }
+                                    if let releasedAt = batch.releasedAt, last.endedAt > releasedAt { continue }
+                                    guard let words = Recognizer.Transcript.message(transcripts) else { return }
                                     let (data, http) = try await daemon.postUtterance(revision: batch.revision,
-                                        capture: (segment.startedAtHostUs, segment.speechStartHostUs, segment.endedAt),
+                                        capture: (first.startedAtHostUs, onset, last.endedAt),
                                         body: JSONEncoder().encode(words))
                                     try Task.checkCancellation()
                                     // The POST can also beat the key-up directive back to the helper.
                                     if http.value(forHTTPHeaderField: "x-voice-release-revision") == batch.revision,
                                        let cutoff = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init),
-                                       segment.endedAt > cutoff {
+                                       last.endedAt > cutoff {
                                         daemonCutoff = cutoff
                                         continue
                                     }
@@ -646,14 +708,16 @@ protocol SegmentTranscriber {
                         }
                         for await segment in segments {
                             if Task.isCancelled { return }
-                            await deliver(segment)
+                            await deliver([segment])
                         }
                         guard !Task.isCancelled else { return }
                         let pending = batch.releasedSegments
                         batch.releasedSegments.removeAll()
+                        // Release ends a hold's one message, however many pauses it contained.
+                        if held { await deliver(pending); return }
                         for segment in pending {
                             if Task.isCancelled { return }
-                            await deliver(segment)
+                            await deliver([segment])
                         }
                     }
                 }

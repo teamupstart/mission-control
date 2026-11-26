@@ -65,7 +65,7 @@ test("the separator word is a Listening setting that persists, validates and is 
 
   await page.getByRole("combobox", { name: "Listening mode" }).selectOption("push-to-talk");
   await expect(field).toBeDisabled();
-  await expect(row).toContainText("Push-to-talk ends on key release.");
+  await expect(row).toContainText("Applies to Always-on listening. In Push-to-talk the word is ordinary speech.");
   await expect(row).not.toContainText("Say it between two messages");
   await captureCard(row, "separator-setting-push-to-talk");
 });

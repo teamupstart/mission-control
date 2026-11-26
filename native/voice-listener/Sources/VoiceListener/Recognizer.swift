@@ -16,6 +16,22 @@ struct Utterance: Encodable {
     let capturedAt: Int64
 }
 
+extension Utterance: HoldTranscript {
+    /// Word timings stay relative to the first phrase's first sample, which also dates the message.
+    static func message(_ phrases: [(segment: Segment, transcript: Utterance?)]) -> Utterance? {
+        guard let first = phrases.first?.segment else { return nil }
+        var text: [String] = []
+        var words: [TimedWord] = []
+        for (segment, transcript) in phrases {
+            guard let transcript else { continue }
+            let offsetMs = Double(segment.startNs - first.startNs) / 1_000_000
+            text.append(transcript.text)
+            words += transcript.words.map { TimedWord(text: $0.text, startMs: $0.startMs + offsetMs, endMs: $0.endMs + offsetMs) }
+        }
+        return text.isEmpty ? nil : Utterance(text: text.joined(separator: " "), words: words, capturedAt: first.capturedAt)
+    }
+}
+
 struct Recognizer {
     let asr: AsrManager
     let ctc: CtcModels?

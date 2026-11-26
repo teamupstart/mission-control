@@ -37,6 +37,33 @@ test("the separator word persists in Voice settings and refuses a voice command"
   assert.equal((await readConfig()).separatorWord, "pineapple");
 });
 
+test("a held Push-to-talk capture ignores the saved end-of-speech delay and separator, and keeps both saved", async t => {
+  const headers = { "x-harness-token": token, "x-voice-listener-id": listenerId };
+  const poll = async () => {
+    const response = await app.request("/voice/listener/directive", { headers });
+    const { capture, endOfSpeechMs, separator } = await response.json();
+    return { capture, endOfSpeechMs, separator, held: response.headers.get("x-voice-held-revision") !== null };
+  };
+  assert.equal((await config({ endOfSpeechMs: 1000, separatorWord: "pineapple" })).status, 200);
+  t.after(async () => { await config({ listeningMode: "always-on", endOfSpeechMs: 2000 }); });
+  assert.deepEqual(await poll(), { capture: true, endOfSpeechMs: 1000, separator: "pineapple", held: false });
+  assert.equal((await config({ listeningMode: "push-to-talk" })).status, 200);
+  const { pushToTalkSession, configuredHotkey } = voiceStateStore.state();
+  const report = (down: boolean, at: number) => post("/voice/shell-report", {
+    pushToTalkSession, registeredHotkey: configuredHotkey, capabilities: { hotkey: { available: true } },
+    reportedAtHostUs: at, pushToTalk: down, ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }),
+  }, token);
+  await report(true, voiceHostTimeUs());
+  // A hold ends only on key release: the listener's phrase boundary is internal and fixed, and nothing separates.
+  assert.deepEqual(await poll(), { capture: true, endOfSpeechMs: 800, separator: undefined, held: true });
+  await report(false, voiceHostTimeUs());
+  assert.equal((await poll()).capture, false);
+  const saved = await readConfig();
+  assert.deepEqual([saved.endOfSpeechMs, saved.separatorWord], [1000, "pineapple"]);
+  assert.equal((await config({ listeningMode: "always-on" })).status, 200);
+  assert.deepEqual(await poll(), { capture: true, endOfSpeechMs: 1000, separator: "pineapple", held: false });
+});
+
 test("one native Always-on capture becomes two addressed messages while the live transcript keeps every word", async () => {
   const steve = queued("Steve").length;
   const will = queued("Will").length;

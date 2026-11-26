@@ -521,7 +521,11 @@ export class VoiceRouter {
   }
 
   /** Reserve only the action that a cancel at this physical onset could address. */
-  speechStarted(key: string, onsetUs: number): void {
+  /**
+   * `held` marks an onset inside a push-to-talk hold. Its transcript is posted only after key-up,
+   * which can come a full hold after the onset, so a countdown it reserves waits that long too.
+   */
+  speechStarted(key: string, onsetUs: number, options: { held?: boolean } = {}): void {
     const ageMs = (this.hostNowUs() - onsetUs) / 1000;
     if (this.dictationCaptures.has(key) || onsetUs <= this.expiredDictationThroughUs || ageMs < -MAX_CAPTURE_CLOCK_SKEW_MS) return;
     // Keep each active phrase independently. A missing finish expires after a
@@ -546,7 +550,7 @@ export class VoiceRouter {
           this.expiredSpeechKeys.delete(this.expiredSpeechKeys.values().next().value!);
         }
         this.releaseSpeechReservation(key);
-      }, this.state().longCapture ? FLUID_SPEECH_RESULT_TIMEOUT_MS : SPEECH_RESULT_TIMEOUT_MS);
+      }, (this.state().longCapture ? FLUID_SPEECH_RESULT_TIMEOUT_MS : SPEECH_RESULT_TIMEOUT_MS) + (options.held ? VOICE_MAX_HOLD_MS : 0));
       timeout.unref();
       this.speechCaptures.set(key, { cardId: action.id, timeout });
       return;

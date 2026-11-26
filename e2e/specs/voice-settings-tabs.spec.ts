@@ -156,10 +156,10 @@ test("Push-to-talk disables the Listening controls only Always-on uses, and says
   await expect.poll(async () => (await savedConfig(daemon.baseURL)).listeningMode).toBe("push-to-talk");
   const ending = listening.getByRole("group", { name: "Ending a message" });
   await expect(ending.getByRole("combobox", { name: "End-of-speech delay" })).toBeDisabled();
-  await expect(ending.locator('[data-anchor="voice/end-of-speech"]')).toContainText("Push-to-talk ends on key release.");
+  await expect(ending.locator('[data-anchor="voice/end-of-speech"]')).toContainText("Applies to Always-on listening. Push-to-talk ends on key release.");
   await expect(ending.getByRole("combobox", { name: "Cancel window" })).toBeEnabled();
   await expect(ending.getByRole("textbox", { name: "Separator word" })).toBeDisabled();
-  await expect(ending.locator('[data-anchor="voice/separator"]')).toContainText("Push-to-talk ends on key release.");
+  await expect(ending.locator('[data-anchor="voice/separator"]')).toContainText("Applies to Always-on listening. In Push-to-talk the word is ordinary speech.");
   await expect(listening.getByRole("checkbox", { name: "Auto-mute on calls" })).toBeDisabled();
   await expect(listening.locator('[data-anchor="voice/auto-mute"]')).toContainText("Applies to Always-on listening.");
   await expect(listening.locator('[data-anchor="voice/hotkey"]')).toContainText("Push-to-talk hotkey");
@@ -191,7 +191,7 @@ test("the separator word sits beside End-of-speech delay with its default, valid
 
   await panel(page, "Listening").getByRole("combobox", { name: "Listening mode" }).selectOption("push-to-talk");
   await expect(word).toBeDisabled();
-  await expect(row).toContainText("Push-to-talk ends on key release.");
+  await expect(row).toContainText("Applies to Always-on listening. In Push-to-talk the word is ordinary speech.");
   await expect(row.getByRole("alert"), "the Always-on edit's message does not outlive the switch").toHaveCount(0);
   await capture(page, "separator-push-to-talk");
 

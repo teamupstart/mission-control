@@ -38,6 +38,8 @@ final class Segment {
     private(set) var isRunning = true
     private var disruption: DispatchSourceSignal?
     private var heldPhrases: [Segment] = []
+    /// Like the real microphone, a hold that lost speech delivers none of it at release.
+    private var heldLost = false
     private let source: AsyncStream<Segment>.Continuation
 
     init(selection: String, held: Bool, endOfSpeechMs: Int, limit: CaptureLimit, onSpeechStart: @escaping (Int64) -> Void,
@@ -67,7 +69,13 @@ final class Segment {
             source.resume()
         }
         if held {
-            if selection == "partial-hold" {
+            if selection == "held-capture-limit" {
+                // A first phrase, then a later phrase of the same hold runs past the capture limit.
+                heldPhrases = [Segment("first phrase")]
+                onSpeechStart(625)
+                heldLost = true
+                onSegmentDropped(625, .captureLimit)
+            } else if selection == "partial-hold" {
                 let complete = Segment("completed hold")
                 heldPhrases = [complete]
                 onSpeechStart(complete.speechStartHostUs)
@@ -135,6 +143,9 @@ final class Segment {
         source.resume()
     }
 
+    // The lifecycle fixture has no PCM to preview; a hold decodes only at release.
+    var heldPreview: HeldPreview? { nil }
+
     @discardableResult func stop(releasedAt: Int64? = nil) -> [Segment] {
         disruption?.cancel()
         isRunning = false
@@ -143,7 +154,7 @@ final class Segment {
         if releasedAt != nil {
             Recognizer.pendingDecode?.resume()
             Recognizer.pendingDecode = nil
-            return heldPhrases + [Segment("final phrase")]
+            return heldLost ? [] : heldPhrases + [Segment("final phrase")]
         }
         return []
     }
@@ -151,11 +162,16 @@ final class Segment {
     deinit { observe("released microphone \(opening)") }
 }
 
-struct FixtureUtterance: Encodable {
+struct FixtureUtterance: HoldTranscript {
     let id = UUID().uuidString
     let backend = "fluidaudio"
     let capturedAt = Int64(Date().timeIntervalSince1970 * 1000)
     let text: String
+
+    static func message(_ phrases: [(segment: Segment, transcript: FixtureUtterance?)]) -> FixtureUtterance? {
+        let text = phrases.compactMap { $0.transcript?.text }
+        return text.isEmpty ? nil : FixtureUtterance(text: text.joined(separator: " "))
+    }
 }
 
 @MainActor struct Recognizer: SegmentTranscriber {

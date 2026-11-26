@@ -15,6 +15,7 @@ function render(voice = voiceStateOff(), selected: VoiceSpeechVoice | null = nul
 test("both voice catalogs use the listener's names and quality tiers", () => {
   const voice = voiceStateOff();
   voice.speech.voice = { engine: "system", id: "p" };
+  voice.capabilities["speech-output"] = { available: true, reason: null };
   voice.speech.catalog.system = ["premium", "enhanced", "default"].map(detail => ({ id: detail[0]!, name: detail.toUpperCase(), detail }));
   const html = render(voice);
   assert.match(html, /Automatic: PREMIUM/);
@@ -32,10 +33,15 @@ test("unavailable reasons and stored choices survive rendering with an empty cat
     assert.ok(html.includes(reason));
     assert.doesNotMatch(html, /optgroup label="This Mac/);
   }
-  voice.speech.reason = "The selected voice is unavailable.";
+  const reason = "The requested voice is absent from the catalog.";
+  voice.capabilities["speech-output"] = { available: false, code: "speech_voice_unavailable", reason };
+  voice.speech.catalog.system = [{ id: "other", name: "Other", detail: "default" }];
   voice.speech.model.revision = "fixture";
-  assert.match(render(voice, { engine: "system", id: "old" }), /old, not available/);
+  const missingSystem = render(voice, { engine: "system", id: "old" });
+  assert.match(missingSystem, /old, not available/);
+  assert.match(missingSystem, /absent from the catalog\. Install it in System Settings/);
   const html = render(voice, { engine: "neural", id: "supertonic-3/F4" });
+  assert.match(html, /Automatic: Other/);
   assert.match(html, /F4, not available/);
   assert.match(html, /Download the Mission Control voices to enable speech/);
 });
@@ -43,13 +49,13 @@ test("unavailable reasons and stored choices survive rendering with an empty cat
 test("a verified download never enables a sample on the shipping capture-only listener", () => {
   const voice = voiceStateOff();
   voice.speech.model.status = "ready";
-  const reason = "This listener cannot play speech.";
+  const reason = "Playback is disabled in this listener.";
   voice.speech.reason = reason;
-  voice.capabilities["speech-output"] = { available: false, reason };
+  voice.capabilities["speech-output"] = { available: false, reason, code: "speech_playback_unsupported" };
   for (const choice of [null, { engine: "neural", id: "supertonic-3/F4" } as const]) {
     const html = render(voice, choice);
     assert.match(html, /<button[^>]*disabled=""[^>]*>Play sample<\/button>/);
-    assert.match(html, /Questions appear on screen/);
+    assert.match(html, /Playback is disabled in this listener\. Questions appear on screen/);
     assert.doesNotMatch(html, /will speak\.|This Mac&#x27;s voices/);
   }
 });

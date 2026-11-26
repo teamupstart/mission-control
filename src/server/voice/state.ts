@@ -28,6 +28,7 @@ import {
   voiceStateOff,
   voiceUnavailableReasons,
   type VoiceBackend,
+  type VoiceCapability,
   type VoiceCapabilities,
   transcriptTail, type TranscriptSample,
   type VoiceConfig,
@@ -64,6 +65,15 @@ export interface VoiceStateDeps {
 export type VoiceHelloResult =
   | { ok: true; protocol: string; captureOffset?: number }
   | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id" | "backend_not_selected" | "listener_exited" | "launch_unavailable"; reason: string; protocol: string };
+
+function speechListenerBlock(hello: VoiceListenerHello | null, supervised: boolean, hasSystemVoice: boolean): VoiceCapability | null {
+  if (!hello) return { available: false, reason: "No listener is running." };
+  if (hello.speech && !supervised) return { available: false, reason: "this listener was not started by a supervisor" };
+  if (!hello.speech?.audio && !hasSystemVoice) {
+    return { available: false, code: "speech_playback_unsupported", reason: "This listener cannot play speech." };
+  }
+  return null;
+}
 
 /**
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
@@ -434,11 +444,11 @@ export class VoiceStateStore {
       system: (output?.systemVoices ?? []).filter(v => /^en(?:[-_]|$)/iu.test(v.language))
         .map(({ id, name, quality }) => ({ id, name, detail: quality })),
     };
-    const unavailable = failure?.reason ?? (!hello ? "No listener is running." : !output ? "This listener cannot play speech."
-      : !listener?.speechInstance || !manager.announced.has(listener.speechInstance) ? "this listener was not started by a supervisor"
-      : !output.audio && !catalog.system.length ? "This listener cannot play speech." : null);
-    const resolved = unavailable ? { reason: unavailable, voice: null } : resolveSpeechVoice(config, catalog);
-    capabilities["speech-output"] = { available: !!resolved.voice, reason: resolved.reason };
+    const supervised = !!listener?.speechInstance && manager.announced.has(listener.speechInstance);
+    const blocked = failure ?? speechListenerBlock(hello, supervised, catalog.system.length > 0);
+    const resolved = blocked ? { voice: null, reason: blocked.reason } : resolveSpeechVoice(config, catalog);
+    capabilities["speech-output"] = blocked ?? (resolved.voice ? { available: true, reason: null }
+      : { available: false, code: "speech_voice_unavailable", reason: resolved.reason });
     const live = manager.live;
     const job = live ? { id: live.id, purpose: live.purpose, state: live.state, cardId: live.cardId } : null;
     const dedicated = config.listeningMode === "push-to-talk";

@@ -87,7 +87,7 @@ test("an uninterrupted download makes the chosen voice ready without another cli
   } finally { await speaker.exit(); }
 });
 
-test("Automatic downloads only on request and a system sample follows the playing listener", async ({ dashboard: page, daemon, models }) => {
+test("Automatic downloads only on request and the listener plays Willow when Automatic would choose Fixture", async ({ dashboard: page, daemon, models }) => {
   await enableVoice(daemon);
   await page.goto(daemon.baseURL + "/#/settings/voice");
   const group = page.getByRole("region", { name: "Spoken replies" });
@@ -95,14 +95,18 @@ test("Automatic downloads only on request and a system sample follows the playin
   const play = group.getByRole("button", { name: "Play sample" });
   await expect(play).toBeDisabled();
   await expect(play).toHaveAccessibleDescription(/No listener is running/);
-  const speaker = await beSpeaker(daemon, { holdPlayback: true });
+  const speaker = await beSpeaker(daemon, { holdPlayback: true, systemVoices: [
+    { id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" },
+    { id: "willow", name: "Willow", language: "en-US", quality: "default" },
+  ] });
   try {
-    await select.selectOption({ label: "Fixture (Enhanced)" });
+    await expect(select.locator("option:checked")).toHaveText("Automatic: Fixture");
+    await select.selectOption({ label: "Willow (Standard)" });
     for (const stop of [false, true]) {
       await play.click();
       await expect.poll(() => speaker.playing).toBe(true);
       await expect(group.getByRole("button", { name: "Stop" })).toBeVisible();
-      expect((await speaker.poll()).capture).toBe(false);
+      expect(await speaker.poll()).toMatchObject({ capture: false, speak: { kind: "system", voiceId: "willow" } });
       if (stop) await group.getByRole("button", { name: "Stop" }).click();
       else {
         await capture(group, "speaking");
@@ -253,6 +257,52 @@ test("a refused audition leaves Play sample available; a refused stop keeps the 
     await expect(play).toBeEnabled();
     await expect(group.getByRole("alert")).toHaveCount(0);
     expect(speaker.playing).toBe(false);
+  } finally { await speaker.exit(); }
+});
+
+test("Stop interrupts a playing sample while the audition response is stalled", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const speaker = await beSpeaker(daemon, { holdPlayback: true });
+  try {
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const group = page.getByRole("region", { name: "Spoken replies" });
+    const accepted = Promise.withResolvers<string>();
+    await page.route("**/api/voice/speech/audition", async route => {
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      accepted.resolve((await response.json()).id);
+      // The daemon has accepted the audition, but the dashboard never receives its reply.
+    }, { times: 1 });
+    await group.getByRole("button", { name: "Play sample" }).click();
+    const id = await accepted.promise;
+    await expect.poll(() => speaker.playing).toBe(true);
+    const stop = group.getByRole("button", { name: "Stop" });
+    await expect(stop).toBeEnabled({ timeout: 1500 });
+    await expect(group.getByRole("combobox")).toBeDisabled();
+    await capture(group, "stop-pending-audition");
+    const stopped = page.waitForRequest(request => request.url().endsWith("/api/voice/speech/stop"));
+    await stop.click();
+    expect((await stopped).postDataJSON()).toEqual({ id });
+    await expect.poll(() => speaker.playing).toBe(false);
+    await expect(group.getByRole("button", { name: "Play sample" })).toBeEnabled();
+    await expect(group.getByRole("alert")).toHaveCount(0);
+  } finally { await speaker.exit(); }
+});
+
+test("a stalled download request releases the picker and can be retried", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const speaker = await beSpeaker(daemon);
+  try {
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const group = page.getByRole("region", { name: "Spoken replies" });
+    const download = group.getByRole("button", { name: /^Download/ });
+    await page.route("**/api/voice/speech/model/download", () => {}, { times: 1 });
+    await download.click();
+    await expect(group.getByRole("combobox")).toBeDisabled();
+    await expect(download).toBeEnabled({ timeout: 9000 });
+    await expect(group.getByRole("alert")).toBeVisible();
+    await download.click();
+    await expect(group.getByRole("status")).toHaveText("Mission Control voice F4 will speak.");
   } finally { await speaker.exit(); }
 });
 

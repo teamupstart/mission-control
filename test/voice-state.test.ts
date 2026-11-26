@@ -421,7 +421,8 @@ test("a dated key-down can authorize capture only for the lease remaining since 
 test("a shell report's capabilities and hotkey error are copied, and lapse with it", () => {
   const h = harness();
   h.store.acceptHello(listenerId, HELLO);
-  assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null }, "speech-output": { available: false, reason: "This listener cannot play speech." } });
+  assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null },
+    "speech-output": { available: false, code: "speech_playback_unsupported", reason: "This listener cannot play speech." } });
   assert.equal(h.store.state().registeredHotkey, null);
   assert.equal(h.store.state().hotkeyError, null);
   h.store.acceptShellReport({
@@ -590,12 +591,16 @@ test("speech output belongs to the daemon and needs a supervised, capable listen
   assert.match(capability()?.reason ?? "", /No listener/);
   h.store.acceptHello(listenerId, HELLO);
   assert.match(capability()?.reason ?? "", /cannot play/);
+  assert.equal(capability()?.code, "speech_playback_unsupported");
   h.store.acceptHello(listenerId, { ...HELLO, speech }, instance);
   assert.match(capability()?.reason ?? "", /not started by a supervisor/);
   h.store.speech.supervised(instance, "started", proof("started"));
   assert.deepEqual(capability(), { available: true, reason: null });
   h.store.acceptHello(listenerId, { ...HELLO, speech: { ...speech, systemVoices: [] } }, instance);
   assert.match(capability()?.reason ?? "", /No voice is ready/);
+  assert.equal(capability()?.code, "speech_voice_unavailable");
+  h.store.acceptHello(listenerId, { ...HELLO, speech: { audio: false, systemVoices: [] } }, instance);
+  assert.equal(capability()?.code, "speech_playback_unsupported");
   assert.equal(JSON.stringify(h.published).includes(instance), false);
 });
 

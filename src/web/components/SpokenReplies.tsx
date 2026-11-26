@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { VOICE_CONFIG_DEFAULTS, type VoiceState } from "@shared/voice.ts";
 import { VOICE_SPEECH_MODELS, VOICE_SPEECH_NEURAL_VOICES } from "@shared/voice-models.ts";
 import { resolveSpeechVoice, type VoiceSpeechCatalog, type VoiceSpeechVoice } from "@shared/voice-speech.ts";
@@ -17,22 +17,21 @@ function voiceName(choice: VoiceSpeechVoice, catalog: VoiceSpeechCatalog): strin
   return choice.engine === "neural" ? `Mission Control voice ${name}` : name;
 }
 
-function speechStatus(voice: VoiceState | null, choice: VoiceSpeechVoice | null, catalogReason?: string | null): string {
+function speechStatus(voice: VoiceState | null, choice: VoiceSpeechVoice | null): string {
   if (!voice) return "Checking which voice can speak…";
   const { speech } = voice;
   if (speech.voice) return `${voiceName(speech.voice, speech.catalog)} will speak.`;
-  const reason = voice.capabilities["speech-output"]?.reason ?? speech.reason ?? "No voice is ready.";
-  if (reason === catalogReason && choice?.engine === "system") {
-    return `${reason} Install it in ${appleSettings}, or choose another voice.`;
-  }
-  if (reason === catalogReason) {
+  const output = voice.capabilities["speech-output"];
+  const reason = output?.reason ?? speech.reason ?? "No voice is ready.";
+  if (output?.code === "speech_voice_unavailable") {
+    if (choice?.engine === "system") return `${reason} Install it in ${appleSettings}, or choose another voice.`;
     if ((!choice || neural.some(v => v.id === choice.id)) && speech.model.revision && speech.model.status !== "ready") {
       if (speech.model.status === "downloading" || speech.model.status === "verifying") return `${reason} Waiting for the download to finish.`;
       return `${reason} ${speech.model.status === "failed" ? "Retry the download" : "Download the Mission Control voices"} to enable speech.`;
     }
     return `${reason} Choose an available voice or connect a listener that can play audio.`;
   }
-  if (reason === "This listener cannot play speech.") return `${reason} Questions appear on screen. Connect a listener that supports playback to hear them.`;
+  if (output?.code === "speech_playback_unsupported") return `${reason} Questions appear on screen. Connect a listener that supports playback to hear them.`;
   return `${reason.replace(/[.]$/u, "")}. Open Voice Setup and check the listener.`;
 }
 
@@ -41,7 +40,10 @@ function optionValue(choice: VoiceSpeechVoice | null): string {
 }
 
 export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, "config" | "update">; voice: VoiceState | null }): React.JSX.Element {
-  const [busy, setBusy] = useState(false);
+  const [pickerPending, setPickerPending] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const busy = pickerPending || stopPending;
+  const auditionRequest = useRef<AbortController | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sampleId, setSampleId] = useState<string>();
   const { config, update } = state;
@@ -57,20 +59,21 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
   // The config write is optimistic. Wait for its matching speech state before offering a sample.
   const resolved = config && speech ? resolveSpeechVoice(config, speech.catalog) : null;
   const pendingVoice = !!speech?.voice && optionValue(resolved?.voice ?? null) !== optionValue(speech.voice);
-  const status = pendingVoice ? "Checking the selected voice…" : speechStatus(voice, choice, resolved?.reason);
-  const canPlay = voice?.capabilities["speech-output"]?.available === true;
+  const status = pendingVoice ? "Checking the selected voice…" : speechStatus(voice, choice);
+  const output = voice?.capabilities["speech-output"];
+  const canPlay = output?.available === true;
   const sampleReason = pendingVoice || !canPlay ? status : speech?.job?.purpose === "ask" ? "Wait for the spoken question to finish." : undefined;
-  const listenerCanSpeak = speech && (speech.voice !== null || speech.reason === resolved?.reason);
-  const automatic = listenerCanSpeak ? resolveSpeechVoice(VOICE_CONFIG_DEFAULTS, speech.catalog).voice : null;
+  const automatic = speech && (canPlay || output?.code === "speech_voice_unavailable")
+    ? resolveSpeechVoice(VOICE_CONFIG_DEFAULTS, speech.catalog).voice : null;
   const downloadSize = model?.totalBytes ? `${Number((model.totalBytes / 1_000_000).toFixed(1))} MB` : "";
   const last = speech?.lastAudition;
   const sampleFailed = last && last.id === sampleId && (last.state === "failed" || last.state === "timed-out");
 
-  async function perform(action: () => Promise<void>): Promise<void> {
-    setBusy(true);
+  async function perform(action: () => Promise<void>, setPending = setPickerPending): Promise<void> {
+    setPending(true);
     setError(null);
     try { await action(); }
-    finally { setBusy(false); }
+    finally { setPending(false); }
   }
   async function download(): Promise<void> {
     const result = await api.startVoiceSpeechDownload();
@@ -83,10 +86,17 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
   }
   async function sample(): Promise<void> {
     if (liveSample) {
+      // The live job identifies the sample even if its start response never arrived.
+      auditionRequest.current?.abort();
+      setSampleId(liveSample.id);
       const result = await api.stopVoiceSpeech(liveSample.id);
       if (!result.ok) setError(result.error ?? "Could not stop playback.");
     } else {
-      const result = await api.auditionVoiceSpeech();
+      const request = new AbortController();
+      auditionRequest.current = request;
+      const result = await api.auditionVoiceSpeech(request.signal);
+      auditionRequest.current = null;
+      if (request.signal.aborted) return;
       if (!result.ok) setError(result.reason ?? result.error ?? "Could not play the sample.");
       setSampleId(result.id);
     }
@@ -111,8 +121,8 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
             </select>
           </Tooltip>
           <Tooltip label={liveSample ? "Stop the current voice sample" : sampleReason ?? "Hear a sample in the selected voice"}>
-            <button className="btn btn-ghost" type="button" disabled={busy || (liveSample ? liveSample.state === "stopping" : !!sampleReason)}
-              onClick={() => void perform(sample)}>{liveSample ? "Stop" : "Play sample"}</button>
+            <button className="btn btn-ghost" type="button" disabled={liveSample ? stopPending || liveSample.state === "stopping" : busy || !!sampleReason}
+              onClick={() => void perform(sample, liveSample ? setStopPending : setPickerPending)}>{liveSample ? "Stop" : "Play sample"}</button>
           </Tooltip>
         </div>
         <p className="kb-row-desc" id="spoken-voice-status" role="status">{status}</p>

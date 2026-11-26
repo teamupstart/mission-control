@@ -915,7 +915,8 @@ selection. Press **Download** to start again, or **Retry** after an error.
 A saved voice that is missing stays selected and silent. Install a missing Apple
 voice in System Settings > Accessibility > Read & Speak, or choose another voice.
 **Play sample** uses the same listener and capture pause as a spoken question.
-Press **Stop** to end the sample early.
+As soon as the daemon reports a live sample, **Stop** can end it, even while
+the picker is waiting for the reply to its play request.
 
 ### Signed Mac playback checklist
 
@@ -1128,6 +1129,10 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
 absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
+Its `speech_playback_unsupported` code keeps questions on screen. The
+`speech_voice_unavailable` code means the listener supports playback but voice
+selection found no match. The picker uses the choice and download state to
+offer the appropriate remedy.
 A missed speech stop confirmation makes the listener unavailable even while its hello is live.
 The daemon sets `capabilities.listener.code` to `speech_stop_unconfirmed`, which tells the shell
 to replace the helper. The accompanying `reason` supplies the display text.

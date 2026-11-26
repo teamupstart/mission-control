@@ -189,7 +189,11 @@ closed. Run the development command from a terminal app that already has microph
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
 prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
 
-On startup and every ten seconds, the helper posts protocol 4.1 to `/voice/listener/hello`.
+On startup and every ten seconds, the helper posts protocol 4.2 to `/voice/listener/hello`.
+The response carries the daemon's protocol version. With 4.2 on both sides, FluidAudio
+can capture a minute and report overflow. Against a 4.0 or 4.1 daemon, the helper keeps
+the 30-second total buffer limit, including closing silence, and settles a dropped
+phrase with the legacy `finish` report.
 Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
 Standalone listeners generate a UUID per process. The desktop supervisor generates its own
 UUID and passes it to each managed helper after the previous child exits. This lets its
@@ -405,7 +409,9 @@ the daemon cancels the reserved message and displays the retry notice. Other rec
 speech releases the message for delivery.
 For other dropped or interrupted segments, the listener promptly reports completion
 so the daemon can release the reservation.
-If no completion arrives, the reservation expires after 90 seconds for FluidAudio or 35 seconds for Sherpa. Send now still claims the message immediately.
+If no completion arrives, the reservation expires after 90 seconds for negotiated
+long capture or 35 seconds for older FluidAudio listeners and Sherpa. Send now still
+claims the message immediately.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

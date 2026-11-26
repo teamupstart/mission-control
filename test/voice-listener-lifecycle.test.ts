@@ -17,7 +17,7 @@ import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { setVoiceConfig } from "../src/server/voice/config.ts";
 import { serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
 import { registerVoiceRoutes } from "../src/server/voice/routes.ts";
-import { VOICE_REQUIRED_FLAGS, voiceStateOff } from "../src/shared/voice.ts";
+import { VOICE_LISTENER_PROTOCOL_VERSION, VOICE_REQUIRED_FLAGS, voiceStateOff } from "../src/shared/voice.ts";
 
 async function until(condition: () => boolean, description: string, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -38,7 +38,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { sherpa = false, initialCapture = true, roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, holdEndReports = false, holdAudioFetch = false, speechInstance = "", slowLoad = false, held = false, microphone = "granted" } = {}) {
+  async function launch(t: TestContext, { sherpa = false, initialCapture = true, roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, holdEndReports = false, holdAudioFetch = false, speechInstance = "", slowLoad = false, held = false, microphone = "granted", daemonProtocol = VOICE_LISTENER_PROTOCOL_VERSION } = {}) {
     const events: string[] = [];
     const diagnostics: string[] = [];
     const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
@@ -103,6 +103,8 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
           await delay(200);
         }
         hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version, microphone: hello.microphone });
+        res.end(JSON.stringify({ accepted: true, protocol: daemonProtocol }));
+        return;
       }
       if (req.method === "POST" && url.pathname === "/voice/listener/speech") {
         const report = JSON.parse(body);
@@ -289,6 +291,17 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     });
   }
 
+  it("uses the 30-second microphone guard and ordinary finish with a 4.1 daemon", async t => {
+    const { events, speechReports, posted, acknowledgeStart } = await launch(t, { inputDevice: "capture-limit", daemonProtocol: "4.1" });
+    const start = { phase: "start", speechStartUs: 123_456, revision: "first" };
+    await until(() => speechReports.length === 1, "legacy capture onset");
+    assert.ok(events.includes("capture limit 30 s"));
+    acknowledgeStart();
+    await until(() => speechReports.length === 2, "legacy overflow settlement");
+    assert.deepEqual(speechReports, [start, { ...start, phase: "finish" }]);
+    assert.deepEqual(posted, []);
+  });
+
   it("a stalled onset acknowledgment lets the decoded cancel and queued utterance post in spoken order", async t => {
     const inputDevice = "stalled-onset";
     const { speechReports, posted, captureBounds, events, nextPoll } = await launch(t, { inputDevice, initialCapture: false });
@@ -339,7 +352,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       await until(() => posted.length > 0, "fixture transcription to reach the daemon");
       assert.ok(events.includes('prime ["Steve"]'));
       assert.deepEqual(posted[0], { text: "first", revision: "resumed" });
-      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === "4.1"));
+      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === VOICE_LISTENER_PROTOCOL_VERSION));
       assert.equal(instanceIds.size, 1);
       assert.ok([...instanceIds][0]);
     });
@@ -465,11 +478,11 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     assert.equal(diagnostics.filter(line => line.includes("terminal app that already has microphone access")).length, 1);
   });
 
-  it("finishes the outstanding loading heartbeat before publishing protocol 4.1 readiness", async (t) => {
+  it("finishes the outstanding loading heartbeat before publishing listener readiness", async (t) => {
     const { hellos } = await launch(t, { slowLoad: true });
     await until(() => hellos.length >= 3, "ready hello and delayed heartbeat");
     assert.deepEqual(hellos.map(h => h.modelLoaded), [false, false, true]);
-    assert.ok(hellos.every(h => h.version === "4.1"));
+    assert.ok(hellos.every(h => h.version === VOICE_LISTENER_PROTOCOL_VERSION));
   });
 
   it("a stopped engine refreshes the directive and reopens the same selection with fresh audio", async (t) => {

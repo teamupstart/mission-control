@@ -45,36 +45,61 @@ final class ContinuousSpeechTests: XCTestCase {
         if pushToTalk { try await reportKey(down: true) }
         var feed: Task<Void, Error>?
         let listener = Listener(daemon: daemon, microphonePermission: { "granted" }) {
-            _, held, delay, start, drop, stop in
+            _, held, delay, limit, start, drop, stop in
             XCTAssertEqual(held, pushToTalk)
+            XCTAssertEqual(limit, .oneMinute)
             let engine = TapFixtureEngine()
             try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
             XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
             engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
-            let mic = try Microphone(selection: "system-default", held: held, endOfSpeechMs: delay,
+            let mic = try Microphone(selection: "system-default", held: held, endOfSpeechMs: delay, limit: limit,
                                      devices: [], engine: engine, onSpeechStart: start,
                                      onSegmentDropped: drop, onStopped: stop)
             guard feed == nil else { return mic }
             feed = Task {
                 let clock = ContinuousClock.now
                 let origin = AVAudioTime.seconds(forHostTime: mach_absolute_time())
-                // The pause lets the recorded address reach its 15-second confirmation
-                // before the follow-up starts, while keeping one continuous tap timeline.
-                let prelude = pendingMessage.map { $0 + Array(repeating: Float.zero, count: 10 * 16_000) } ?? []
-                let audio = prelude + pcm + Array(repeating: 0, count: (delay + 100) * 16)
-                for offset in stride(from: 0, to: audio.count, by: 1024) {
-                    if held, offset < pcm.count, offset % (1024 * 64) == 0 { try await reportKey(down: true) }
-                    if held, offset >= pcm.count, offset - 1024 < pcm.count { try await reportKey(down: false) }
-                    let count = min(1024, audio.count - offset)
-                    try await Task.sleep(until: clock + .microseconds((offset + count) * 1_000_000 / 16_000), clock: .continuous)
-                    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)))
-                    buffer.frameLength = buffer.frameCapacity
-                    audio.withUnsafeBufferPointer { source in
-                        buffer.floatChannelData![0].update(from: source.baseAddress! + offset, count: count)
+                var position = 0
+                func play(_ audio: [Float]) async throws {
+                    for offset in stride(from: 0, to: audio.count, by: 1024) {
+                        if held, offset < pcm.count, offset % (1024 * 64) == 0 { try await reportKey(down: true) }
+                        if held, offset >= pcm.count, offset - 1024 < pcm.count { try await reportKey(down: false) }
+                        let count = min(1024, audio.count - offset)
+                        try await Task.sleep(until: clock + .microseconds((position + count) * 1_000_000 / 16_000), clock: .continuous)
+                        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)))
+                        buffer.frameLength = buffer.frameCapacity
+                        audio.withUnsafeBufferPointer { source in
+                            buffer.floatChannelData![0].update(from: source.baseAddress! + offset, count: count)
+                        }
+                        mic.consume(buffer, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: origin + Double(position) / 16_000),
+                                                            sampleTime: Int64(position), atRate: 16_000))
+                        position += count
                     }
-                    mic.consume(buffer, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: origin + Double(offset) / 16_000),
-                                                        sampleTime: Int64(offset), atRate: 16_000))
                 }
+                if let pendingMessage {
+                    struct History: Decodable {
+                        struct Entry: Decodable { let matchedName: String?; let outcome: String }
+                        let entries: [Entry]
+                    }
+                    try await play(pendingMessage)
+                    let quiet = Array(repeating: Float.zero, count: 4096)
+                    var polling = true
+                    let confirmation = Task {
+                        defer { polling = false }
+                        let deadline = ContinuousClock.now + .seconds(30)
+                        while ContinuousClock.now < deadline {
+                            let response = try await daemon.request("api/voice/heard")
+                            let history = try JSONDecoder().decode(History.self, from: response.data)
+                            if history.entries.contains(where: { $0.matchedName == "Steve" && $0.outcome == "pending" }) { return }
+                            try await Task.sleep(for: .milliseconds(150))
+                        }
+                        throw URLError(.timedOut)
+                    }
+                    defer { confirmation.cancel() }
+                    while polling { try await play(quiet) }
+                    try await confirmation.value
+                }
+                try await play(pcm + Array(repeating: 0, count: (delay + 100) * 16))
             }
             return mic
         }

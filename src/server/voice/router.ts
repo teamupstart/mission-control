@@ -336,7 +336,7 @@ export class VoiceRouter {
   private readonly resolutions = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null; reportsSpeechOnset?: boolean },
+    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null; reportsSpeechOnset?: boolean; longCapture?: boolean },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly emitCard: (card: VoiceCard) => void,
@@ -505,7 +505,7 @@ export class VoiceRouter {
           this.expiredSpeechKeys.delete(this.expiredSpeechKeys.values().next().value!);
         }
         this.releaseSpeechReservation(key);
-      }, this.state().backend === "fluidaudio" ? FLUID_SPEECH_RESULT_TIMEOUT_MS : SPEECH_RESULT_TIMEOUT_MS);
+      }, this.state().longCapture ? FLUID_SPEECH_RESULT_TIMEOUT_MS : SPEECH_RESULT_TIMEOUT_MS);
       timeout.unref();
       this.speechCaptures.set(key, { cardId: action.id, timeout });
       return;

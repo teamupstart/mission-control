@@ -40,7 +40,7 @@ final class Segment {
     private var heldPhrases: [Segment] = []
     private let source: AsyncStream<Segment>.Continuation
 
-    init(selection: String, held: Bool, endOfSpeechMs: Int, onSpeechStart: @escaping (Int64) -> Void,
+    init(selection: String, held: Bool, endOfSpeechMs: Int, limit: CaptureLimit, onSpeechStart: @escaping (Int64) -> Void,
          onSegmentDropped: @escaping SegmentDropped, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         exclusive = selection == "exclusive"
         if exclusive, Self.exclusiveOwner?.isRunning == true {
@@ -53,6 +53,7 @@ final class Segment {
         (segments, source) = AsyncStream.makeStream()
         if exclusive { Self.exclusiveOwner = self }
         observe("silence interval \(endOfSpeechMs) ms")
+        observe("capture limit \(limit.rawValue) s")
         observe("opened \(opening)")
         if ["reconfigured", "unplugged"].contains(selection) && opening == 1 {
             signal(SIGUSR1, SIG_IGN)

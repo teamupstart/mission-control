@@ -788,7 +788,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     const reset = () => !active || activation !== own;
     if (reset()) return refusal("flag_off");
     const found = await deps.flow.discover(target, flowOptions());
-    if (!found.ok) return { ok: false, code: found.code, reason: found.reason };
+    // A reset while discovery ran outranks its failure: the caller learns the sign-in was switched off.
+    if (!found.ok) return reset() ? refusal("flag_off") : { ok: false, code: found.code, reason: found.reason };
     if (reset()) return refusal("flag_off");
     const discovery = found.discovery;
     const conn = ensure(connectionId(target), target);
@@ -821,7 +822,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         deps.registrations.write([...kept, { ...result.client }]);
       }
     }
-    if (!result.ok) return { ok: false, code: result.code, reason: result.reason };
+    if (!result.ok) return reset() ? refusal("flag_off") : { ok: false, code: result.code, reason: result.reason };
     if (abandoned()) return refusal("timeout");
     // Either branch, reused client or new: a flag reset while the flow ran leaves nothing pending.
     if (reset()) return refusal("flag_off");

@@ -1458,6 +1458,76 @@ test("a begin requested before a flag reset is refused when its turn comes, even
   assert.equal((await h.svc.begin(queuedTarget)).ok, true);
 });
 
+test("a begin whose discovery or flow fails after a flag reset answers flag_off, and keeps its own error without one", async (t) => {
+  // Each step can be held, then made to fail, with or without a reset while it was held.
+  let gate: Promise<void> | null = null;
+  let entered!: () => void;
+  let failDiscover = false;
+  let failBegin = false;
+  const failure = { ok: false as const, code: "failed" as const, reason: "fake: the server refused this step." };
+  const held: SignInFlow = {
+    ...realFlow,
+    async discover(...args) {
+      if (gate) { entered(); await gate; }
+      return failDiscover ? failure : realFlow.discover(...args);
+    },
+    async begin(...args) {
+      if (gate) { entered(); await gate; }
+      return failBegin ? failure : realFlow.begin(...args);
+    },
+  };
+  const flags = flagSwitch(true);
+  const h = await harness(t, { flow: held, flags });
+  // A first sign-in registers the mcp:context client, so the shape connection below reuses it.
+  await signIn(h, target(h.fake));
+  const hold = (step: "discover" | "begin") => {
+    failDiscover = step === "discover";
+    failBegin = step === "begin";
+    let release!: () => void;
+    const own: Promise<void> = new Promise<void>((done) => {
+      // Clears the gate only while it is still this one, so releasing discovery keeps the flow's begin held.
+      release = () => { if (gate === own) gate = null; done(); };
+    });
+    gate = own;
+    const reached = new Promise<void>((done) => { entered = done; });
+    return { release, reached };
+  };
+  const run = async (signInTarget: SignInTarget, step: "discover" | "begin", reset: boolean) => {
+    const { release, reached } = hold(step);
+    const answer = h.svc.begin(signInTarget);
+    if (step === "begin") {
+      // Discovery passes through the gate first; let it, then hold the flow's begin.
+      await reached;
+      const next = hold(step);
+      release();
+      await next.reached;
+      if (reset) { flags.set(false); flags.set(true); }
+      next.release();
+    } else {
+      await reached;
+      if (reset) { flags.set(false); flags.set(true); }
+      release();
+    }
+    const result = await answer;
+    failDiscover = false;
+    failBegin = false;
+    return result;
+  };
+  const reused = target(h.fake, { url: h.fake.shapeUrl });
+  const fresh = target(h.fake, { url: h.fake.shapeUrl, scope: "mcp:other" });
+  h.svc.setInUse([use(reused), use(fresh)]);
+  const flagOff = { ok: false, code: "flag_off", reason: SIGN_IN_BEGIN_REFUSALS.flag_off };
+  assert.deepEqual(await run(fresh, "discover", true), flagOff, "a reset during a discovery that fails");
+  assert.deepEqual(await run(reused, "begin", true), flagOff, "a reset during a reused-client flow begin that fails");
+  assert.deepEqual(await run(fresh, "begin", true), flagOff, "a reset during a new-client flow begin that fails");
+  // Without a reset the step's own error is returned unchanged.
+  assert.deepEqual(await run(fresh, "discover", false), failure, "a discovery failure with no reset");
+  assert.deepEqual(await run(reused, "begin", false), failure, "a flow begin failure with no reset");
+  await settle(h);
+  assert.equal(viewOf(h, connectionId(reused))?.state, "signed_out");
+  assert.equal(viewOf(h, connectionId(fresh))?.state, "signed_out");
+});
+
 test("every row of the accessToken table", async (t) => {
   const flags = flagSwitch(true);
   const h = await harness(t, { flags });

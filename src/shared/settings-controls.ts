@@ -688,6 +688,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("voice"),
   },
   {
+    id: "voice-spoken-replies",
+    label: "Spoken replies",
+    description: "Choose a voice and play a sample of an ask.",
+    category: "voice",
+    anchor: "voice/spoken-replies",
+    keywords: ["voice picker", "automatic", "play sample", "Apple", "system voice", "download", "Supertonic", "OpenRAIL-M"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
     id: "voice-plan-forms",
     label: "Plan forms by voice",
     description: "Let speech fill a plan-decision form, which still waits for submit.",

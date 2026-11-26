@@ -2274,7 +2274,7 @@ instead.
 
 ## Voice in the dashboard
 
-With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice lets you record a system-wide mute hotkey and enable Auto-mute on calls. If macOS refuses a shortcut, the warning names the previous shortcut that still works. If no shortcut was registered, the warning reads “No hotkey is in force.” Hold the shortcut during call auto-mute to talk. The panel also offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
+With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice lets you record a system-wide mute hotkey and enable Auto-mute on calls. If macOS refuses a shortcut, the warning names the previous shortcut that still works. If no shortcut was registered, the warning reads “No hotkey is in force.” Hold the shortcut during call auto-mute to talk. Under **Spoken replies**, the Voice picker names the voice that will speak or explains how to enable playback. Play sample auditions that voice. Selecting a Mission Control voice or pressing Download fetches the shared voice model. The panel also offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
 
 ### Voice confirmation cards
 

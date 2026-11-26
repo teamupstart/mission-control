@@ -54,6 +54,7 @@ describes snapshot behavior independently of session access.
 | `voice-end-of-speech` | 3 | Pending | Voice config `endOfSpeechMs`, listener timing in automatic modes |
 | `voice-cancel-window` | 3 | Pending | Voice config `cancelWindow` fields and delivery timing |
 | `voice-when-unsure` | 3 | Pending | Voice config `whenUnsure`, routing policy |
+| `voice-spoken-replies` | 3 | Pending | Voice config `speech.voice`, listener playback capability, sample and model download actions |
 | `voice-plan-forms` | 3 | Pending | Voice config `planFormsByVoice`, review consent policy |
 | `grill-first-defaults` | 2 | Read/write | `skills.grillFirstKinds`, a versioned replacement of the task-kind list |
 | `worktree-policy` | 2 | Read/write | `worktrees.enabled`, `worktrees.taskRetentionDays` and `worktrees.maxSlots`. Existing repository records expose their enabled and slot-cap leaves under a stable hashed repository key. |

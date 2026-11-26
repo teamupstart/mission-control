@@ -860,6 +860,52 @@ from Supertone and carry the BigScience OpenRAIL-M licence, including the
 use restrictions in Attachment A. [Original model and licence](https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE)
 and [pinned sherpa-onnx conversion](https://huggingface.co/csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/tree/cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4).
 
+In **Settings > Voice > Spoken replies**, Automatic uses F4 once downloaded on a
+listener that can play it. Until then it uses the best installed English voice
+the Mac listener offers, preferring Premium, then Enhanced, then standard.
+Without a playable voice, Mission Control shows the question on screen.
+The shipping Mac listener advertises no audio playback and no system voices.
+You can still save a voice choice or download the model while on Automatic.
+With this helper, questions appear on screen and both Play sample and Ask
+aloud stay disabled.
+
+Choose any Mission Control voice to save the choice and start the shared
+download, or stay on Automatic and press **Download**. Cancel keeps your
+selection. Press **Download** to start again, or **Retry** after an error.
+A saved voice that is missing stays selected and silent. Install a missing Apple
+voice in System Settings > Accessibility > Read & Speak, or choose another voice.
+**Play sample** uses the same listener and capture pause as a spoken question.
+Press **Stop** to end the sample early.
+
+### Signed Mac playback checklist
+
+**Signed-helper capability check, November 25, 2026.** The probe ran
+`codesign --verify` on the installed Mission Control 2.3.0 listener and the
+checkout’s release helper (`dist/native/voice-listener`). It started each helper
+against a disposable loopback server and recorded its first hello.
+The recorded command `python3 /tmp/f35-voice-hello.py` exited 0 and printed
+this line for both helpers.
+
+```text
+Protocol 4.1 backend fluidaudio speech {"audio": false, "systemVoices": []}
+```
+
+Round 5 of the voice picker review retains `installed-2-3-0-listener-check-command-output.txt`
+as artifact `txt_29c249b88495350346cb3e03d75a3340`. For the speaker, microphone and on-screen
+fallback results, see the [November 25 quiet-room trial](#november-25-2026-quiet-room-trial).
+
+**Pending on hardware.** These picker checks require a signed listener that
+has passed the speaker and microphone check and advertises playback. On that
+build, select Always-on and Ask aloud with two named agents. Run each check
+with downloaded F4 and an installed Apple voice.
+
+- Play a picker sample, listen for the chosen voice, then use Stop during a
+  second sample. Check Recently heard for any words captured from playback.
+- Say something either agent could own. Listen for exactly one question and
+  answer by name. Confirm that the selected agent receives the message.
+- Tap the mute hotkey during a spoken question. Confirm speech stops and manual
+  mute stays off. Mute before another question and confirm it stays silent.
+
 With the Voice preview enabled, POST to `/api/voice/speech/model/download` to
 start or resume. DELETE cancels an in-progress download. Each file must match
 its pinned size and SHA-256, including after a daemon restart. The verified
@@ -1280,6 +1326,8 @@ two of three Samantha playbacks and in all three matching silent controls. The
 word can occur with no playback. Its source in the original trials remains unknown,
 and the default setting missed too many controls to establish silence. Mac playback
 therefore remains unavailable.
+
+<a id="november-25-2026-quiet-room-trial"></a>
 
 In a quiet-room repeat on November 25, an isolated test sent the release helper the
 actual question “Steve or Will?” with the same 250 ms playback delay and 500 ms

@@ -338,7 +338,7 @@ export async function enableVoice(daemon: VoiceDaemon): Promise<void> {
 }
 
 /** A supervised player that follows the same long poll as a real listener. */
-export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boolean; holdPlayback?: boolean; ignoreStop?: boolean } = {}) {
+export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boolean; holdPlayback?: boolean; ignoreStop?: boolean; audio?: boolean; systemVoices?: NonNullable<VoiceListenerHello["speech"]>["systemVoices"] } = {}) {
   const supervisor = fixtureVoiceSupervisor("dev");
   const { instance } = supervisor;
   const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon),
@@ -354,8 +354,8 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
     method: "POST", headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon), ...supervisor.headers(state) },
     body: JSON.stringify({ instance, state }), signal: AbortSignal.timeout(5000),
   }));
-  const hello = () => accepted(post("/voice/listener/hello", { ...LISTENER_HELLO, speech: { audio: true,
-    systemVoices: [{ id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" }] } }, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)])));
+  const hello = () => accepted(post("/voice/listener/hello", { ...LISTENER_HELLO, speech: { audio: options.audio ?? true,
+    systemVoices: options.systemVoices ?? [{ id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" }] } }, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)])));
   try {
     if (!await supervise("started")) throw new Error("Fixture supervisor could not announce the listener.");
     if (!await hello()) throw new Error("Fixture listener hello was refused.");
@@ -375,7 +375,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
   let current: string | null = null;
   let playing = false;
   let capturing = false;
-  const event = async (type: "started" | "ended", outcome?: "finished" | "stopped") => {
+  const event = async (type: "started" | "ended", outcome?: "finished" | "stopped" | "failed") => {
     if (!current) throw new Error("Fixture has no speech job.");
     const id = current;
     const response = await post("/voice/speech/jobs/" + id + "/events", { type, outcome });
@@ -392,7 +392,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
     if (accepted) playing = true;
     return accepted;
   };
-  const end = async (outcome: "finished" | "stopped" = "finished") => {
+  const end = async (outcome: "finished" | "stopped" | "failed" = "finished") => {
     playing = false;
     await event("ended", outcome);
     current = null;

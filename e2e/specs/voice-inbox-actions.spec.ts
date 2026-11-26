@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page, Route } from "@playwright/test";
 import type { ReportItem, ReportMute } from "../../src/shared/reports.ts";
+import type { HeardEntry } from "../../src/shared/voice-routing.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 import { VOICE_CALIBRATING_HEADER, type OpenCardsReport } from "../../src/shared/voice-answers.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -72,7 +73,17 @@ test("Steve's Nudge runs from Report focus, Open report runs from Stuck focus, a
   const stuckFocused = focusReported(steve.id);
   await row.getByRole("textbox", { name: "Message Steve" }).focus();
   await stuckFocused;
-  await say(daemon, "Steve, open report");
+  const openReportId = crypto.randomUUID();
+  const response = await say(daemon, "Steve, open report", { id: openReportId });
+  expect(response.ok, `Open report utterance returned HTTP ${response.status}`).toBe(true);
+  expect(await response.json()).toMatchObject({ accepted: true });
+  // If the reader never opens, distinguish a routing or action refusal from a missing dialog.
+  await expect.poll(async () => {
+    const heard = await page.request.get(daemon.baseURL + "/api/voice/heard");
+    const { entries }: { entries: HeardEntry[] } = await heard.json();
+    return entries.find(entry => entry.id === openReportId);
+  }, { message: "The daemon should record the dashboard invoking Steve’s Open report action" })
+    .toMatchObject({ rule: "inbox-action", outcome: "sent" });
   const reader = page.getByRole("dialog", { name: "Report document: Build failure diagnosed" });
   await expectContentClearsBorder(reader);
   await reader.getByRole("button", { name: "Close" }).click();

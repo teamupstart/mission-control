@@ -112,6 +112,8 @@ const agent = (name: string): SpokenName => ({ key: `task:${name.toLowerCase()}`
 function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions; cancelWindow?: boolean;
   /** Delays one delivery until the returned promise settles, to observe what waits behind it. */
   holdDelivery?: (text: string, command?: string) => Promise<void> | undefined;
+  /** Runs inside a delivery, before it settles. */
+  onDeliver?: (name: string, text: string) => void;
   decider?: VoiceDecider } = {}) {
   const cards = new Map<string, VoiceCard>();
   const delivered: { name: string; text: string; command?: string }[] = [];
@@ -122,6 +124,7 @@ function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode
     () => ({ enabled: options.cancelWindow ?? true, seconds: 30 }), {
       deliver: async (target, text, _id, command) => {
         delivered.push({ name: target.name, text, ...(command && { command }) });
+        options.onDeliver?.(target.name, text);
         await options.holdDelivery?.(text, command);
         return "queued";
       },
@@ -132,7 +135,10 @@ function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode
     hostNow += 10_000;
     return router.accept({ id: `capture-${++sequence}`, text, capturedAt: Date.now(), backend: "fluidaudio", words: timed(text), ...extra }, timing);
   };
-  return { router, cards, delivered, say, state, pending: () => [...cards.values()].filter(card => card.state === "pending") };
+  /** Move the host clock, which a listener's capture timing and the retry records follow. */
+  const advanceHost = (ms: number) => { hostNow += ms * 1000; return hostNow; };
+  return { router, cards, delivered, say, state, advanceHost, hostNow: () => hostNow,
+    pending: () => [...cards.values()].filter(card => card.state === "pending") };
 }
 
 test("Always-on: one capture with the separator opens two addressed cards, each with its own Cancel", async t => {
@@ -331,7 +337,9 @@ test("a refused capture's retry cache keeps only unrouted speech, and clearing h
   await fill(router, 49);
   const utterance: VoiceUtterance = { id: "split", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
   assert.equal(await router.accept(utterance), false);
-  const cache = (router as unknown as { separatedCaptures: Map<string, { routed: number; parts: { text: string; words: unknown[]; offsetMs: number | null }[] }> }).separatedCaptures;
+  const cache = (router as unknown as { separatedCaptures: Map<string, { routed: number; retired: boolean; roster: unknown[];
+    parts: { text: string; words: unknown[]; offsetMs: number | null }[] }> }).separatedCaptures;
+  const speechless = (id: string) => [cache.get(id)?.retired, cache.get(id)?.parts.length, cache.get(id)?.roster.length];
   const kept = cache.get("split");
   assert.equal(kept?.routed, 1);
   // The routed part is in Recently heard; the cache keeps only where it started.
@@ -343,7 +351,8 @@ test("a refused capture's retry cache keeps only unrouted speech, and clearing h
   assert.deepEqual(pending().filter(card => card.id.startsWith("split:")).map(card => [card.id, card.parts[0]?.text]), [
     ["split:1", "check the build"], ["split:2", "give me a report on the status of some project"],
   ]);
-  assert.equal(cache.has("split"), false);
+  // The finished capture keeps a retired record for later retries, holding no speech.
+  assert.deepEqual(speechless("split"), [true, 0, 0]);
 
   // Clearing Recently heard also drops a capture still waiting to retry.
   const second: VoiceUtterance = { id: "split-2", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
@@ -353,13 +362,18 @@ test("a refused capture's retry cache keeps only unrouted speech, and clearing h
   assert.equal(cache.has("split-2"), true);
   router.clearHistory();
   assert.deepEqual(router.heard.list(), []);
-  assert.equal(cache.size, 0, "no cached speech outlives a cleared history");
+  assert.deepEqual(speechless("split-2"), [true, 0, 0], "no cached speech outlives a cleared history");
+  // The cleared capture's waiting message is gone: a retry routes nothing.
+  assert.equal(router.cancel("filler-2"), true);
+  assert.equal(await router.accept(second), true);
+  assert.equal(pending().some(card => card.id === "split-2:2"), false);
 });
 
 test("turning Voice off between parts stops a separated capture and keeps none of its speech", async t => {
   const { router, cards, say } = harness(t);
   // End the lifetime the way switching Voice off does, after the first part has routed.
-  const internals = router as unknown as { route: (...args: unknown[]) => Promise<boolean>; separatedCaptures: Map<string, unknown> };
+  const internals = router as unknown as { route: (...args: unknown[]) => Promise<boolean>;
+    separatedCaptures: Map<string, { retired: boolean; parts: unknown[]; roster: unknown[] }> };
   const route = internals.route.bind(router);
   let routed = 0;
   internals.route = async (...args) => {
@@ -367,21 +381,22 @@ test("turning Voice off between parts stops a separated capture and keeps none o
     if (++routed === 1) router.clearActionsAndHistory();
     return result;
   };
-  assert.equal(await say(EXAMPLE), false);
+  // The capture is finished as far as a retry is concerned: it ended with the lifetime.
+  assert.equal(await say(EXAMPLE), true);
   assert.equal(routed, 1, "the second part is never routed on the new lifetime");
   assert.equal([...cards.values()].some(card => card.parts[0]?.target?.name === "Carol"), false);
-  assert.equal(internals.separatedCaptures.size, 0);
+  assert.equal([...internals.separatedCaptures.values()].every(record => record.retired && !record.parts.length && !record.roster.length), true);
   assert.deepEqual(router.heard.list(), []);
 });
 
 test("clearing actions and history when Voice turns off releases a refused capture's cached speech", async t => {
   const { router } = harness(t);
   await fill(router, 49);
-  const cache = (router as unknown as { separatedCaptures: Map<string, unknown> }).separatedCaptures;
+  const cache = (router as unknown as { separatedCaptures: Map<string, { retired: boolean; parts: unknown[]; roster: unknown[] }> }).separatedCaptures;
   assert.equal(await router.accept({ id: "split", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) }), false);
-  assert.equal(cache.has("split"), true);
+  assert.equal(cache.get("split")?.retired, false);
   router.clearActionsAndHistory();
-  assert.equal(cache.size, 0);
+  assert.deepEqual([cache.get("split")?.retired, cache.get("split")?.parts.length, cache.get("split")?.roster.length], [true, 0, 0]);
 });
 
 async function fill(router: VoiceRouter, count: number) {
@@ -436,6 +451,115 @@ test("a retry routes the original parts against the original sessions after a se
   assert.equal(await router.sendNow("kept:2"), true);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(cards.get("kept:2")?.state, "not-running");
+});
+
+test("a retry never routes a completed part again, however much history has been recorded since", async t => {
+  const { router, pending, cards } = harness(t);
+  await fill(router, 49);
+  const utterance: VoiceUtterance = { id: "evict", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance), false);
+  assert.equal(router.cancel("evict:1"), true);
+  // Push the completed part's ID out of the bounded recent-capture history.
+  for (let i = 0; i < 60; i++) {
+    assert.equal(await router.accept({ id: `noise-${i}`, text: "morning everyone", capturedAt: Date.now(), backend: "fluidaudio", words: [] }), true);
+  }
+  assert.equal(await router.accept(utterance), true);
+  assert.equal(cards.get("evict:1")?.state, "cancelled");
+  assert.deepEqual(pending().filter(card => card.id.startsWith("evict:")).map(card => card.id), ["evict:2"]);
+});
+
+test("a completed separated capture is remembered past the recent history, and a too-late retry is refused", async t => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const { router, cards, advanceHost } = harness(t);
+  const utterance: VoiceUtterance = { id: "late", text: EXAMPLE, capturedAt: now, backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance), true);
+  for (const id of ["late:1", "late:2"]) assert.equal(router.cancel(id), true);
+  // Push the capture and its parts out of the bounded recent history.
+  for (let i = 0; i < 60; i++) {
+    assert.equal(await router.accept({ id: `noise-${i}`, text: "morning everyone", capturedAt: now, backend: "fluidaudio", words: [] }), true);
+  }
+  // Within the retry window the record answers the retry, and nothing is sent again.
+  now += 4 * 60_000;
+  advanceHost(4 * 60_000);
+  assert.equal(await router.accept(utterance), true);
+  assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
+  // Past it the record is gone, and the capture is refused instead of split again.
+  now += 2 * 60_000;
+  advanceHost(2 * 60_000);
+  assert.equal(await router.accept(utterance), false);
+  assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
+});
+
+test("a capture dated ahead of the daemon keeps its record through the expiry instant", async t => {
+  const { router, cards, advanceHost, hostNow } = harness(t);
+  await fill(router, 49);
+  // Dated the full tolerated skew ahead, so it is exactly five minutes old when its record expires.
+  const onset = hostNow() + 1_000_000;
+  const timing = { startHostUs: onset, speechStartHostUs: onset };
+  const utterance: VoiceUtterance = { id: "edge", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance, timing), false);
+  assert.equal(router.cancel("filler-0"), true);
+  assert.equal(router.cancel("edge:1"), true);
+  advanceHost(5 * 60_000 + 1000);
+  // Not stale yet, and the record still says Steve's part routed: only Carol's part routes.
+  assert.equal(await router.accept(utterance, timing), true);
+  assert.equal(cards.get("edge:1")?.state, "cancelled");
+  assert.equal(cards.get("edge:2")?.state, "pending");
+});
+
+test("a listener's retry past the window is refused even after a separator edit stops it splitting", async t => {
+  const { router, cards, state, advanceHost, hostNow } = harness(t);
+  await fill(router, 49);
+  const onset = hostNow();
+  const timing = { startHostUs: onset, speechStartHostUs: onset };
+  const utterance: VoiceUtterance = { id: "edited", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  // Steve's message routes; Carol's is refused at capacity.
+  assert.equal(await router.accept(utterance, timing), false);
+  assert.equal(cards.get("edited:1")?.parts[0]?.text, "check the build");
+  // The record expires on the host clock, a slot opens, and the word changes so the text no longer splits.
+  advanceHost(6 * 60_000);
+  assert.equal(router.cancel("filler-0"), true);
+  state.separatorWord = "pineapple";
+  assert.equal(await router.accept(utterance, timing), false);
+  // Neither a whole-transcript card nor a second split reaches Steve or Carol.
+  assert.deepEqual([...cards.keys()].filter(id => id.startsWith("edited")), ["edited:1"]);
+});
+
+test("a retry that overlaps a capture still routing shares that attempt and routes each part once", async t => {
+  const { router, cards } = harness(t);
+  // Hold the first part's routing open, the way an inbox action can, while the retry arrives.
+  const internals = router as unknown as { route: (utterance: VoiceUtterance, ...rest: unknown[]) => Promise<boolean> };
+  const route = internals.route.bind(router);
+  const routedIds: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  internals.route = async (utterance, ...rest) => {
+    routedIds.push(utterance.id);
+    if (utterance.id === "overlap:1") await held;
+    return route(utterance, ...rest);
+  };
+  const utterance: VoiceUtterance = { id: "overlap", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  const first = router.accept(utterance);
+  const retry = router.accept(utterance);
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  assert.deepEqual(await Promise.all([first, retry]), [true, true]);
+  assert.deepEqual(routedIds, ["overlap:1", "overlap:2"]);
+  assert.deepEqual([...cards.keys()].filter(id => id.startsWith("overlap:")), ["overlap:1", "overlap:2"]);
+});
+
+test("a clear while a part is refused retires the capture instead of keeping it for a retry", async t => {
+  const { router, cards } = harness(t);
+  await fill(router, 50);
+  const utterance: VoiceUtterance = { id: "raced", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  // Steve's part is refused at capacity; the clear runs before routing resumes.
+  const first = router.accept(utterance);
+  router.clearActionsAndHistory();
+  assert.equal(await first, true);
+  // The slots are free again, but the cleared capture opens nothing on retry.
+  assert.equal(await router.accept(utterance), true);
+  assert.equal([...cards.keys()].some(id => id.startsWith("raced:")), false);
 });
 
 const ONE_NAME = "Steve, check the build, bagel, then report status";

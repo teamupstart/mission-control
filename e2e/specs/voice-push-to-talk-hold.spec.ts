@@ -76,7 +76,9 @@ type Hold = { heldMs: number; samples: number; heardAtPress: number; cardsAtPres
  *
  * The counters take several requests to read, so the mode is read before and after them. Only a
  * sample with the key down at both reads proves the counters were taken during the hold. A sample
- * that straddles a press or a release proves nothing either way and is skipped.
+ * that straddles a press or a release proves nothing either way: it is skipped and ends the hold
+ * being tracked. A release and the next press cannot both fall between two samples, because the
+ * native harness plays 900 ms of trailing audio after key-up and waits for recognition first.
  */
 function watchHolds(page: Page, daemon: DaemonHandle) {
   const holds: Hold[] = [];
@@ -95,6 +97,8 @@ function watchHolds(page: Page, daemon: DaemonHandle) {
         const delivered = receipts(daemon).length;
         const after = await held();
         if (before !== after) {
+          // A press or release happened during this sample: the next held sample starts a new hold.
+          since = undefined;
           await sleep(100);
           continue;
         }

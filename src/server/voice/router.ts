@@ -1375,8 +1375,10 @@ export class VoiceRouter {
       // A separated capture is still routing. Nothing it opens may act yet - an immediate Stop
       // or, with the Cancel window Off, an immediate send: a Cancel later in the capture must
       // reach its card first. The capture releases its held cards in spoken order when done.
+      // Once the capture holds an action, every later card waits behind it too: a message's
+      // countdown must not run out before a Stop spoken ahead of it has been released.
       const actsNow = !window.enabled || !!item.commands?.includes("stop");
-      if (actsNow && item.heldSends && this.activeHolds.has(item.heldSends)) {
+      if (item.heldSends && this.activeHolds.has(item.heldSends) && (actsNow || item.heldSends.size > 0)) {
         item.heldSends.add(card.id);
         this.publish(card);
         return;

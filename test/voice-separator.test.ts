@@ -228,6 +228,33 @@ test("with the Cancel window on, a separated Stop waits until the message before
   assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop", "stop"]);
 });
 
+test("with the Cancel window on, a message after a held Stop cannot overtake it and stays cancellable", async t => {
+  const { router, say, delivered, pending } = harness(t);
+  const settle = () => new Promise(resolve => setTimeout(resolve, 200));
+  const card = (text: string) => pending().find(c => c.parts[0]?.text === text);
+  assert.equal(await say("Steve, run the tests, bagel, Steve, stop, bagel, Steve, start the build"), true);
+  await settle();
+  // The build waits behind the held Stop, with no countdown of its own yet.
+  assert.equal(card("start the build")?.deadline, null);
+  assert.notEqual(card("run the tests")?.deadline, null);
+  assert.deepEqual(delivered, []);
+  assert.equal(await router.sendNow(card("run the tests")!.id), true);
+  await settle();
+  // Stop goes right after the message before it; only then does the build start its countdown.
+  assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop"]);
+  assert.notEqual(card("start the build")?.deadline, null);
+  assert.equal(router.cancel(card("start the build")!.id), true);
+
+  // A held later message can be cancelled while it waits, and is then never sent.
+  assert.equal(await say("Steve, run the checks, bagel, Steve, stop, bagel, Steve, deploy"), true);
+  await settle();
+  assert.equal(router.cancel(card("deploy")!.id), true);
+  assert.equal(await router.sendNow(card("run the checks")!.id), true);
+  await settle();
+  assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop", "run the checks", "stop"]);
+  assert.equal(pending().length, 0);
+});
+
 test("with the Cancel window on, a separated Stop followed by Cancel never interrupts the agent", async t => {
   const { say, cards, delivered, pending } = harness(t);
   assert.equal(await say("Steve, stop, bagel, cancel"), true);

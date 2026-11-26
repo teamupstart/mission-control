@@ -73,6 +73,10 @@ type Hold = { heldMs: number; samples: number; heardAtPress: number; cardsAtPres
  * Samples the daemon's voice mode, Recently heard, the pending cards and the session receipts
  * every 100 ms. While a key is held, any new entry, card or delivery is a submission before
  * release, which the spec reports with the time into the hold at which it was seen.
+ *
+ * The counters take several requests to read, so the mode is read before and after them. Only a
+ * sample with the key down at both reads proves the counters were taken during the hold. A sample
+ * that straddles a press or a release proves nothing either way and is skipped.
  */
 function watchHolds(page: Page, daemon: DaemonHandle) {
   const holds: Hold[] = [];
@@ -83,12 +87,18 @@ function watchHolds(page: Page, daemon: DaemonHandle) {
     let since: number | undefined;
     // A failed spec tears the daemon down while this loop may still be sampling; it then just ends.
     try {
+      const held = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json()).state.mode === "push-to-talk";
       while (running) {
-        const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+        const before = await held();
         const entries = (await heard(page, daemon)).length;
         const cards = await pendingCards(page).count();
         const delivered = receipts(daemon).length;
-        if (state.mode === "push-to-talk") {
+        const after = await held();
+        if (before !== after) {
+          await sleep(100);
+          continue;
+        }
+        if (after) {
           if (since === undefined) {
             since = Date.now();
             holds.push({ heldMs: 0, samples: 0, heardAtPress: entries, cardsAtPress: cards, receiptsAtPress: delivered });

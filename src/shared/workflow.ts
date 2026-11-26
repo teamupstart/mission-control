@@ -826,6 +826,13 @@ export interface WorkflowStagedEvidenceList {
 export interface WorkflowSessionEvidenceList extends WorkflowStagedEvidenceList {
   /** Resolved from the current active binding's pinned Persona graph, never task selection. */
   registrationEligible: boolean;
+  /** Read-only Foreman assessment of the entire staged packet, bound to both intent revisions. */
+  continuation?: {
+    episodeKey: string;
+    sourceEpisode: string;
+    status: "revalidated" | "stale" | "unavailable";
+    packet: string;
+  };
 }
 
 export interface WorkflowAgentEvidenceLocator {
@@ -4016,6 +4023,7 @@ export interface WorkflowCompletionClaim {
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;
+  expectedContinuationPacket?: string;
   /** Comparison guard for verified plan ownership; never selects or creates a binding. */
   expectedPlanPublication?: PlanPublicationContext;
 }

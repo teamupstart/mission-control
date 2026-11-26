@@ -74,7 +74,7 @@ import type { ReviewContext, Verdict } from "./verdict.ts";
 import { cheapActionOf, classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
-import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { continuationSource, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
@@ -1376,7 +1376,9 @@ async function resolveShipRecoveryCandidate(
   const diff = await client.diff(session.id).catch(() => null);
   if (!diff?.ok) return null;
 
+  const previous = continuationSource(goal);
   const input = {
+    earlierContinuationEvidence: Boolean(previous && [...evidence.images, ...evidence.artifacts].some(item => item.episodeKey === previous)),
     session,
     queue,
     episodeKey: resolvedSessionIntent(goal)?.episodeKey ?? null,
@@ -2132,20 +2134,27 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
   };
 }
 
+function revalidatedPacket(staged: WorkflowSessionEvidenceList, episodeKey: string) {
+  const result = staged.continuation;
+  return result?.status === "revalidated" && result.episodeKey === episodeKey ? result : null;
+}
+
 /** Compare the admitted registration, including identity and bytes, across a verifier call.
  * Ignore capture timestamps: reserving the same proof does not change what was judged.
  * Other episodes and coverage-only edits are not inputs to this completion verifier.
  */
 function promptedEvidenceSnapshot(evidence: WorkflowSessionEvidenceList, episodeKey: string): string {
+  const packet = revalidatedPacket(evidence, episodeKey);
   const items = [...evidence.images, ...evidence.artifacts]
-    .filter(item => item.episodeKey === episodeKey)
+    .filter(item => item.episodeKey === episodeKey || (packet && item.episodeKey === packet.sourceEpisode))
     .sort((a, b) => a.id.localeCompare(b.id))
     .map(({ updatedAt: _updatedAt, ...item }) => item);
-  return JSON.stringify(items);
+  const excludedCount = items.length === 0 ? evidence.images.length + evidence.artifacts.length : 0;
+  return JSON.stringify([evidence.continuation, excludedCount, items]);
 }
 
 /**
- * Admit only evidence registered under the intent episode being verified.
+ * Admit current-episode evidence and an explicitly revalidated continuation packet.
  *
  * A missing stamp is a legacy row, not proof of current work. The split between metadata and
  * content mirrors the prompt's trust fence: only the former may render above it.
@@ -2154,9 +2163,12 @@ function promptedRegisteredEvidence(
   staged: WorkflowSessionEvidenceList,
   episodeKey: string,
 ): RegisteredEvidenceInput {
+  const packet = revalidatedPacket(staged, episodeKey);
+  const admitted = (item: { episodeKey: string | null }) => item.episodeKey === episodeKey ||
+    (packet && item.episodeKey === packet.sourceEpisode);
   const items: Array<{ id: string; item: RegisteredEvidenceItem }> = [
     ...staged.images
-      .filter((item) => item.episodeKey === episodeKey)
+      .filter(admitted)
       .map((item) => ({
         id: item.id,
         item: {
@@ -2174,7 +2186,7 @@ function promptedRegisteredEvidence(
         },
       })),
     ...staged.artifacts
-      .filter((item) => item.episodeKey === episodeKey)
+      .filter(admitted)
       .map((item) => ({
         id: item.id,
         item: {
@@ -2194,6 +2206,8 @@ function promptedRegisteredEvidence(
   ].sort((a, b) => a.item.metadata.createdAt - b.item.metadata.createdAt || a.id.localeCompare(b.id));
   return {
     registrationEligible: staged.registrationEligible,
+    excludedCount: staged.images.length + staged.artifacts.length - items.length,
+    continuationStatus: staged.continuation?.episodeKey === episodeKey ? staged.continuation.status : undefined,
     items: items.map(({ item }) => item), totalCount: items.length, truncated: false,
   };
 }
@@ -2338,7 +2352,7 @@ export async function processPromptedWrapup(
       () => ({ ok: false as const, value: null }),
     ),
     completionContract
-      ? client.workflowEvidence(session.id).then(
+      ? client.workflowEvidence(session.id, true).then(
         (value) => ({ ok: true as const, value }),
         () => ({ ok: false as const, value: null }),
       )
@@ -2520,7 +2534,7 @@ export async function processPromptedWrapup(
   // A workflow can be attached or removed while the verifier runs. Do not consume a verdict
   // judged against an evidence obligation that no longer applies (or has just become due).
   if (registeredEvidence) {
-    const freshEvidence = await client.workflowEvidence(current.session.id).catch(() => null);
+    const freshEvidence = await client.workflowEvidence(current.session.id, true).catch(() => null);
     if (!freshEvidence || freshEvidence.registrationEligible !== registeredEvidence.registrationEligible) {
       log(`${session.name}: prompted wrap-up held - workflow evidence eligibility changed or is unavailable`);
       return false;
@@ -2532,6 +2546,15 @@ export async function processPromptedWrapup(
     }
   }
 
+  // A clean model answer cannot turn excluded registrations into completion proof.
+  if (registeredEvidence?.registrationEligible && registeredEvidence.excludedCount &&
+      registeredEvidence.totalCount === 0 && !result.verdict.gaps.some(gap => gap.severity === "blocking")) {
+    result.verdict.complete = false;
+    result.verdict.summary = "Earlier registrations require verified evidence for the current completion contract.";
+    result.verdict.gaps.push({ id: "workflow-evidence-current-contract", severity: "blocking", kind: "unverified",
+      path: "", detail: "Registered evidence could not be validated for the current contract.",
+      fix: "Check the current checkout and register the verified packet through submit_workflow_evidence." });
+  }
   const blockingGaps = result.verdict.gaps.filter((gap) => gap.severity === "blocking");
   const trackedDecisionGaps = reconcileGaps(
     verificationHistory.priorGaps,
@@ -2543,6 +2566,9 @@ export async function processPromptedWrapup(
     && registeredEvidence
     && registeredEvidence.registrationEligible
     && registeredEvidence.totalCount > 0
+    // A revalidated prior packet can support an ordinary clean verdict. Only registration
+    // in this episode authorizes the separate fallback for still-unverified work.
+    && registeredEvidence.continuationStatus !== "revalidated"
     && blockingGaps.length > 0
     && blockingGaps.every((gap) => gap.kind === "unverified"),
   );
@@ -2563,6 +2589,8 @@ export async function processPromptedWrapup(
         headSha: diff.headSha,
         transcriptAnchor,
         summary: claimSummary,
+        ...(evidenceRead.value?.continuation?.status === "revalidated"
+          ? { expectedContinuationPacket: evidenceRead.value.continuation.packet } : {}),
         ...(planPublication ? { expectedPlanPublication: planPublication } : {}),
       }),
     );
@@ -2585,6 +2613,10 @@ export async function processPromptedWrapup(
       }));
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
+    }
+    if (registeredEvidence?.continuationStatus === "revalidated" && claim.result.reason === "no_binding") {
+      log(`${session.name}: prompted wrap-up held - the workflow owning the revalidated evidence could not claim it`);
+      return false;
     }
     if (planPublication?.owner === "workflow" && claim.result.reason === "no_binding") {
       log(`${session.name}: prompted wrap-up held - the plan workflow was removed before its claim`);

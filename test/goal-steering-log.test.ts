@@ -333,7 +333,7 @@ test("Registry prunes stranded steering after an empty session sweep, never befo
 });
 
 test("daemon echoes never reach steering, while a later human retype does", async () => {
-  for (const [index, instruction] of ["skip the E2E for now", "Foreman packet " + "very long payload ".repeat(400)].entries()) {
+  for (const [index, instruction] of ["continue", "skip the E2E for now", "Foreman packet " + "very long payload ".repeat(400)].entries()) {
     const id = `daemon-echo-${index}`;
     const registry = session(id);
     const submit = () => registry.applyHook({

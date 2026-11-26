@@ -8271,6 +8271,7 @@ export const WorkflowCompletionClaimSchema = z.object({
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
   expectedIntent: SessionIntentGuardSchema.nullable().optional().default(null),
+  expectedContinuationPacket: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   expectedPlanPublication: PlanPublicationContextSchema.optional(),
 }).superRefine((claim, ctx) => {
   if (claim.completionKind === "prompted" && !claim.expectedWorkCycle) {

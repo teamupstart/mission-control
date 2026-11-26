@@ -1235,8 +1235,8 @@ export class ForemanClient implements ForemanActions {
   }
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
-  async workflowEvidence(id: string): Promise<WorkflowSessionEvidenceList | null> {
-    const path = `/api/sessions/${enc(id)}/workflow-evidence?view=registered`;
+  async workflowEvidence(id: string, completion = false): Promise<WorkflowSessionEvidenceList | null> {
+    const path = `/api/sessions/${enc(id)}/workflow-evidence?view=registered${completion ? "&continuation=check" : ""}`;
     const res = await fetch(BASE_URL + path);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);

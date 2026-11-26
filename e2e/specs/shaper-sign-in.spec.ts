@@ -59,7 +59,6 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
 
-  // Phase file step 1.
   await panel(page).getByRole("button", { name: "Import manifest…" }).click();
   const dialog = page.getByRole("dialog", { name: "Import a shaper" });
   await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify({
@@ -150,21 +149,19 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await page.context().unroute(`${authorizeUrl}?**`);
   expect(fake.requests.some((request) => request.path === "/authorize")).toBe(false);
 
-  // Phase file step 3.
   const signInTab = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
   const tab = await signInTab;
   await expect(tab.getByRole("heading", { name: "Signed in. You can close this tab and go back to Mission Control." })).toBeVisible();
   expect(tab.url().startsWith(`${daemon.baseURL}/api/shaping/sign-in/callback?`)).toBe(true);
 
-  // Phase file step 4: no reload.
+  // No reload here: the row must follow the sign-in list event that the callback caused.
   await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
   await expect(page.getByRole("button", { name: "Sign out Signed guidance" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toHaveCount(0);
   await capture(page, "3-signed-in");
   await tab.close();
 
-  // Phase file step 5.
   const signedRun = await dryRun(page, daemon);
   await expect(signedRun.result).toContainText("OK", { timeout: 45_000 });
   await expect(signedRun.result.getByRole("article", { name: "Guide" })).toContainText("guidance for");
@@ -172,7 +169,6 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await expect(signedRun.dialog).toHaveCount(0);
   expect(fake.requests.some((request) => request.path === "/mcp" && String(request.headers.authorization ?? "").startsWith("Bearer "))).toBe(true);
 
-  // Phase file step 6.
   await page.getByRole("button", { name: "Sign out Signed guidance" }).click();
   await expect(signIn(page)).toContainText("Not signed in.");
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeVisible();
@@ -182,7 +178,6 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await signedOutRun.dialog.getByRole("button", { name: "Close" }).click();
   await expect(signedOutRun.dialog).toHaveCount(0);
 
-  // Phase file step 7.
   await setFlag(daemon, "shaper-sign-in", false);
   await expect(signIn(page)).toContainText("Sign-in is switched off");
   await expect(signIn(page)).toContainText("(shaper-sign-in)");

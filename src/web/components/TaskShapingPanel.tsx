@@ -185,13 +185,13 @@ function useShaperSignIn(
     setBusy((current) => new Set(current).add(busyKey));
     setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
   }, []);
-  /** Shows a refusal under `key` against `subject`, outside any request. */
   /** The refusal for `key`, recording what a row's shaper signs in to now. */
   const refusalFor = useCallback((key: string, text: string, subject: string): ShaperSignInRefusal => {
     const shaper = signInRowShaper(key);
     if (shaper === null) return { text, subject };
     return { text, subject, target: Object.hasOwn(targetsNow.current, shaper) ? targetsNow.current[shaper]! : null };
   }, []);
+  /** Shows a refusal under `key` against `subject`, outside any request. */
   const refuse = useCallback((key: string, text: string, subject: string): void => {
     setRefusals((current) => ({ ...current, [key]: refusalFor(key, text, subject) }));
   }, [refusalFor]);

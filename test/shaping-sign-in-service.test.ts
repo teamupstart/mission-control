@@ -303,6 +303,11 @@ async function signIn(h: Harness, signInTarget: SignInTarget): Promise<{ id: str
   return { id: answer.connection, back, authorizationUrl: answer.authorizationUrl };
 }
 
+/** A server's refusal of the token the connection holds now, read from the store, which every write keeps in step with memory. */
+const refuse = async (h: Harness, signInTarget: SignInTarget) => {
+  const record = await h.store.records.read(connectionId(signInTarget));
+  h.svc.noteRefused(signInTarget, record?.accessToken ?? "fake-access-none");
+};
 const viewOf = (h: Harness, id: string) => h.svc.view().find((entry) => entry.id === id);
 const tokenOf = (h: Harness, signInTarget: SignInTarget) => {
   const answer = h.svc.accessToken(signInTarget);
@@ -1323,6 +1328,50 @@ test("a begin queued across a flag reset waits for the new load, so it never dro
   assert.deepEqual(regs.read(), keyBefore, "no registration a stored sign-in names was dropped");
 });
 
+test("a late refusal of a token already replaced is ignored, and a refusal of the current token is not", async (t) => {
+  const h = await harness(t);
+  const a = target(h.fake);
+  h.svc.setInUse([use(a, "one"), use(a, "two")]);
+  const { id } = await signIn(h, a);
+  const tokenA = tokenOf(h, a)!;
+  // A call goes out with A; the 75% refresh rotates to B before the server's 401 for A arrives.
+  await h.clock.advance(46 * MINUTE);
+  const tokenB = tokenOf(h, a)!;
+  assert.notEqual(tokenB, tokenA);
+  const from = h.fake.requests.length;
+  h.svc.noteRefused(a, tokenA);
+  await settle(h);
+  assert.equal(tokenOf(h, a), tokenB, "B is still handed out");
+  assert.equal(viewOf(h, id)?.state, "signed_in");
+  assert.equal(viewOf(h, id)?.reason, null);
+  assert.equal(refreshesSeen(h.fake, from).length, 0, "and no refresh is forced");
+
+  // A refusal of B itself is acted on.
+  h.svc.noteRefused(a, tokenB);
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "renewing" });
+  await settle(h);
+  assert.equal(refreshesSeen(h.fake, from).length, 1);
+  assert.equal(viewOf(h, id)?.state, "signed_in");
+});
+
+test("a late refusal never removes a replacement that has no refresh token", async (t) => {
+  const h = await harness(t);
+  const a = target(h.fake);
+  await signIn(h, a);
+  const tokenA = tokenOf(h, a)!;
+  // A new sign-in, from a server that issues no refresh token, replaces A before A's 401 arrives.
+  h.fake.setMode({ tokens: "no-refresh" });
+  const { id } = await signIn(h, a);
+  const tokenB = tokenOf(h, a)!;
+  h.svc.noteRefused(a, tokenA);
+  await settle(h);
+  assert.equal(tokenOf(h, a), tokenB);
+  assert.ok(await h.store.records.read(id), "the replacement is kept");
+  h.svc.noteRefused(a, tokenB);
+  await settle(h);
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" }, "refusing B itself still ends a sign-in with no refresh token");
+});
+
 test("every row of the accessToken table", async (t) => {
   const flags = flagSwitch(true);
   const h = await harness(t, { flags });
@@ -1342,7 +1391,7 @@ test("every row of the accessToken table", async (t) => {
 
   // Refused: renewing until a refresh replaces the token.
   const release = h.fake.hold("/token");
-  h.svc.noteRefused(a);
+  await refuse(h, a);
   assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "renewing" });
   await new Promise((done) => setImmediate(done));
   assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "renewing" });
@@ -1403,8 +1452,8 @@ test("refresh at 75%: five triggers make one request, the rotated pair is stored
   h.clock.jump(2 * HOUR);
   h.svc.accessToken(a);
   h.svc.accessToken(a);
-  h.svc.noteRefused(a);
-  h.svc.noteRefused(a);
+  await refuse(h, a);
+  await refuse(h, a);
   const triggered = h.clock.advance(0);
   await new Promise((done) => setTimeout(done, 50));
   release();
@@ -1516,8 +1565,8 @@ test("a token endpoint that is down: calls made before the next try add no reque
   await settle(h);
   assert.equal(refreshesSeen(h.fake, from).length, 1);
   for (let n = 0; n < 3; n++) h.svc.accessToken(a);
-  h.svc.noteRefused(a);
-  h.svc.noteRefused(a);
+  await refuse(h, a);
+  await refuse(h, a);
   await settle(h);
   await h.clock.advance(MINUTE - 1);
   assert.equal(refreshesSeen(h.fake, from).length, 1);
@@ -1534,12 +1583,12 @@ test("a server that refuses every token costs one refresh per wait, and a 75% re
   const refreshAt: number[] = [];
   const count = () => refreshesSeen(h.fake, from).length;
 
-  h.svc.noteRefused(a);
+  await refuse(h, a);
   await settle(h);
   assert.equal(count(), 1, "the first refusal's refresh runs at once");
   refreshAt.push(h.clock.t);
   for (const wait of [1, 2, 4, 8, 15, 15]) {
-    h.svc.noteRefused(a);
+    await refuse(h, a);
     await settle(h);
     assert.equal(viewOf(h, id)?.state, "renewing");
     assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.refused);
@@ -1547,7 +1596,7 @@ test("a server that refuses every token costs one refresh per wait, and a 75% re
     const before = count();
     // Refusals in between add nothing.
     await h.clock.advance(wait * MINUTE / 2);
-    h.svc.noteRefused(a);
+    await refuse(h, a);
     await settle(h);
     assert.equal(count(), before);
     await h.clock.advance(wait * MINUTE / 2);
@@ -1561,7 +1610,7 @@ test("a server that refuses every token costs one refresh per wait, and a 75% re
   await h.clock.advance(45 * MINUTE);
   const afterDue = count();
   assert.equal(afterDue, refreshAt.length + 1);
-  h.svc.noteRefused(a);
+  await refuse(h, a);
   await settle(h);
   assert.equal(count(), afterDue + 1);
 });
@@ -1694,7 +1743,7 @@ test("with either flag off: no store, no request, no timer, and flagOff", async 
   const a = target(h.fake);
   h.svc.setInUse([use(a)]);
   assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "flagOff" });
-  h.svc.noteRefused(a);
+  await refuse(h, a);
   assert.deepEqual(await h.svc.begin(a), { ok: false, code: "flag_off", reason: SIGN_IN_BEGIN_REFUSALS.flag_off });
   assert.equal((await h.svc.complete({ state: "fake-state", code: "fake-code", error: null, iss: null })).ok, false);
   assert.equal(await h.svc.signOut(connectionId(a)), false);

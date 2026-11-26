@@ -140,8 +140,12 @@ export interface ShaperSignInService {
   stop(): Promise<void>;
   /** Synchronous, from memory only. Never waits on the network or the store. */
   accessToken(target: SignInTarget): AccessTokenAnswer;
-  /** A server refused the current token. */
-  noteRefused(target: SignInTarget): void;
+  /**
+   * A server refused `accessToken`. Ignored unless it is the token the connection holds now, so
+   * a late refusal of a token a refresh or a new sign-in already replaced does not withhold or
+   * remove the new one.
+   */
+  noteRefused(target: SignInTarget, accessToken: string): void;
   begin(target: SignInTarget): Promise<BeginAnswer>;
   complete(callback: SignInCallback): Promise<CompleteAnswer>;
   /** Drops a pending sign-in, removes the record and revokes it. False for an unknown id or with a flag off. */
@@ -215,8 +219,8 @@ function refreshDue(record: StoredSignIn): number | null {
   return record.obtainedAt + REFRESH_AT * (record.expiresAt - record.obtainedAt);
 }
 
-/** Two `state` values compared in constant time, whatever their lengths. */
-function sameState(a: string, b: string): boolean {
+/** Two secrets, a `state` or a token, compared in constant time whatever their lengths. */
+function sameSecret(a: string, b: string): boolean {
   const digest = (value: string) => createHash("sha256").update(value).digest();
   return timingSafeEqual(digest(a), digest(b));
 }
@@ -860,7 +864,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     let conn: Connection | null = null;
     // Every pending `state` is compared, so the time taken does not say which one matched.
     for (const candidate of connections.values()) {
-      if (candidate.pending && sameState(candidate.pending.state, state) && state !== "") conn = candidate;
+      if (candidate.pending && sameSecret(candidate.pending.state, state) && state !== "") conn = candidate;
     }
     const pending = conn?.pending ?? null;
     // Removed before anything else, so a `state` works once.
@@ -929,12 +933,14 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     return { ok: false, reason: "signedOut" };
   };
 
-  const noteRefused = (target: SignInTarget): void => {
+  const noteRefused = (target: SignInTarget, refusedToken: string): void => {
     if (!active) return;
     const id = connectionId(target);
     asked.add(id);
     const conn = connections.get(id);
     if (!conn?.record) return;
+    // A refusal of a token already replaced says nothing about the one held now.
+    if (!sameSecret(refusedToken, conn.record.accessToken)) return;
     if (conn.record.refreshToken === null) {
       remove(conn, "signInAgain");
       return;

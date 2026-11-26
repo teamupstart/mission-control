@@ -23,6 +23,15 @@
 //                  | "broader" (the path-aware document names the origin root, not the resource)
 //                  | "root-only" (only the root document is published, naming the resource itself)
 //   shape          "ok" | "echo" | "error" | "unauthorized"
+//   mcp            "ok" | "echo" (every header and `params._meta` the call saw, as the guidance
+//                  fixture's `echo`) | "echo-token" (a reply repeating the authorization header)
+//                  | "error" (a tool error repeating it) | "http-error" (a 500 whose body repeats it)
+//                  | "unauthorized" (every request answers the 401 challenge)
+//                  | "unauthorized-call" (only a `tools/call` does)
+//                  | "unauthorized-stream" (only the shared GET stream does; a `tools/call` is
+//                  answered once that 401 has been sent, so it is seen first)
+//                  | "unauthorized-stream-late" (only the shared GET stream does, half a second
+//                  after it arrives, so the call has already been answered)
 //   stall          a path that never answers
 //   oversize       a path that answers 100 KiB
 //   redirect       a path that answers 307 to elsewhereUrl
@@ -39,7 +48,7 @@ import { createGuidanceServer } from "./fake-guidance-mcp.mjs";
 const SCOPES_ADVERTISED = ["mcp:context", "mcp:other", "mcp", "offline_access"];
 
 const DEFAULT_MODES = {
-  refresh: "ok", registration: "ok", metadata: "ok", resourceMetadata: "ok", shape: "ok",
+  refresh: "ok", registration: "ok", metadata: "ok", resourceMetadata: "ok", shape: "ok", mcp: "ok",
   stall: null, oversize: null, redirect: null, redirectWithin: null, status: null, iss: false, tokens: "full", revoke: "ok",
 };
 
@@ -77,6 +86,9 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
   const refreshTokens = new Map();
   const counters = { client: 0, code: 0, token: 0 };
   const sockets = new Set();
+  // Settled once the shared stream's GET has been refused, in `unauthorized-stream` mode.
+  let streamRefused;
+  const streamRefusal = new Promise((done) => { streamRefused = done; });
 
   const elsewhere = await listen(async (req, res) => {
     requests.push({ server: "elsewhere", method: req.method, path: req.url, query: "", headers: { ...req.headers }, body: await readBody(req) });
@@ -270,13 +282,36 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
     }
 
     if (isResource && path === "/mcp") {
-      if (!bearerFor(req, urls.resourceUrl)) return challenge(res, "/mcp");
+      if (modes.mcp === "unauthorized" || !bearerFor(req, urls.resourceUrl)) return challenge(res, "/mcp");
+      if (modes.mcp === "unauthorized-stream-late" && req.method === "GET") {
+        await new Promise((done) => setTimeout(done, 500));
+        return challenge(res, "/mcp");
+      }
+      if (modes.mcp === "unauthorized-stream" && req.method === "GET") {
+        challenge(res, "/mcp");
+        streamRefused();
+        return;
+      }
       if (req.method !== "POST") { res.writeHead(405).end(); return; }
-      const server = createGuidanceServer("ok");
+      const message = JSON.parse(body);
+      if (modes.mcp === "unauthorized-call" && message?.method === "tools/call") return challenge(res, "/mcp");
+      if (modes.mcp === "unauthorized-stream" && message?.method === "tools/call") {
+        // The call's reply follows the stream's refusal, with a margin for the client to read it.
+        await Promise.race([streamRefusal, new Promise((done) => setTimeout(done, 5_000))]);
+        await new Promise((done) => setTimeout(done, 100));
+      }
+      if (modes.mcp === "http-error") {
+        res.writeHead(500, { "content-type": "text/plain" }).end(`refused ${req.headers.authorization}`);
+        return;
+      }
+      const server = modes.mcp === "echo" ? createGuidanceServer("echo")
+        : modes.mcp === "echo-token" ? createGuidanceServer("echo-header", ["authorization"])
+          : modes.mcp === "error" ? createGuidanceServer("error-header", ["authorization"])
+            : createGuidanceServer("ok");
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on("close", () => { void transport.close(); void server.close(); });
       await server.connect(transport);
-      await transport.handleRequest(req, res, JSON.parse(body));
+      await transport.handleRequest(req, res, message);
       return;
     }
 

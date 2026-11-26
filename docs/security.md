@@ -782,10 +782,12 @@ close finishes, so a stalled close cannot make descriptors pile up.
 
 ### Where a shaper sign-in is kept
 
-**Not in use yet.** The store described here is built, but nothing in the daemon calls it:
-shaper sign-in itself arrives in a later change, and until then no sign-in is kept, no
-Keychain item is written and the switch below has no effect. What follows is the contract
-that sign-in will keep.
+**Not in use yet.** The store and the daemon's sign-in service are built, and a shaper that
+carries the sign-in marker asks the service for its access token on every call, from memory.
+An operator cannot make a sign-in yet: the sign-in routes and the Settings control arrive in
+later changes. Until then no sign-in is kept, no Keychain item is written, a marked shaper is
+`unavailable` without a request, and the switch below has no effect. What follows is the
+contract that sign-in will keep.
 
 A remote shaper that needs an OAuth sign-in will have its tokens kept by the daemon, one record
 per connection. A connection is one server URL, scope and authorization server. The record holds

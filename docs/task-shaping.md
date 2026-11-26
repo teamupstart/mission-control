@@ -1052,13 +1052,44 @@ shaper calls: the import review and the shaper's row show **Signs in** with the 
 authorization server's origin, and "What it is sent" names the access token and that it goes
 only to the server's origin.
 
-The sign-in itself arrives in later releases. Until then a marked shaper is a known shaper
-that is listed but never called: it is `unavailable` before any header is resolved or any
-request is made. While the **Shaper sign-in** preview (`shaper-sign-in`, see
-[Feature flags](feature-flags.md#shipped-flags)) is off its reason says the flag is off, and
-while it is on its reason says the shaper is not signed in. Both point to Settings > Task
-shaping. The schema accepts the marker whatever the flag says. A shaper with no marker sends
-exactly the requests it sent before, with the flag on or off.
+A marked shaper asks Mission Control's sign-in service for its token on every call. The
+answer is read from the daemon's memory, so a call never waits on the network or the
+Keychain for it, and the call never starts a sign-in. What the call does, for every state of
+its connection. Dispatch continues in every row:
+
+| The shaper's connection | Requests made | Outcome |
+| --- | --- | --- |
+| No marker | Today's, with today's headers | As before, a `401` included |
+| Marker, `task-shaping` or `shaper-sign-in` off | None | `unavailable`: the flag is off |
+| Marker, signed out, or a sign-in pending | None | `unavailable`: not signed in |
+| Marker, the sign-in being renewed | None | `unavailable`: being renewed |
+| Marker, signed in | The call's, each with `Authorization: Bearer <token>`, to the server's origin only | By the reply |
+| Marker, signed in, the server answers `401` | The ones made before the `401` | `unavailable`: the server refused the sign-in |
+
+- Each reason is a fixed sentence that points to Settings > Task shaping, and the flag-off
+  reason names the flag.
+- The token rides every request of the call, for an `mcp` shaper the handshake and the
+  `tools/call` included. It is sent only to the server's origin: a redirect to another origin
+  is refused, as it is for a configured header, and that origin receives nothing.
+- The token joins the call's redaction set under the name `sign-in token`. A reply, a tool
+  error or an HTTP error body that repeats it reads `[sign-in token redacted]` and is marked
+  redacted, as an echoed header value is.
+- A `401` to any request of a signed-in call, during an `mcp` handshake or the call itself,
+  ends that call. The service is told which token was refused, once, when the `401` arrives,
+  and runs at most one background refresh, at the time its own rules allow. The call is not
+  retried, and later calls answer "being renewed" until the refresh lands.
+- An `mcp` connection's shared event stream can be refused between calls. The service is told
+  then too, and the connection is closed, so no later call of the run sends the refused token.
+- The trace context and work unit id are sent as they are for any shaper: `traceparent`,
+  `tracestate` and `x-work-unit-id` on every request, and `params._meta` on `tools/call`.
+- One `mcp` connection is shared per run by the calls that send the same headers, so a token
+  that changes during a run opens a second connection for later calls. Both close when the run
+  ends.
+
+A dry run takes the same path, so a dry run of a marked shaper that is not signed in is
+`unavailable` and sends nothing, and a dry run of a signed-in one returns the server's
+guidance with the token scrubbed from the entries, the section and the summary. The schema
+accepts the marker whatever the flag says.
 
 An older build that reads a marked shaper does not know `auth`, so it lists the shaper as
 unsupported, keeps it on every write and never calls it.

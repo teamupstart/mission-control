@@ -2,7 +2,7 @@
 // the 256 KiB body cap, the deadline, header references, redaction, and the trace context and
 // work unit id every call carries. No real service, no credential.
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
+import { after, before, test, type TestContext } from "node:test";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ShaperSchema, SIGN_IN_REASONS, type ShapingRequest } from "../src/shared/shaping.ts";
@@ -13,6 +13,12 @@ import { shapeTask } from "../src/server/shaping/engine.ts";
 import { SHAPING_CONFIG_DEFAULTS } from "../src/shared/shaping.ts";
 import { REMOTE_REPLY_BYTES } from "../src/server/shaping/transports/remote.ts";
 import type { ShaperOf, TransportContext, TransportReply } from "../src/server/shaping/transports/types.ts";
+import { shaperSignIns } from "../src/server/shaping/sign-in/index.ts";
+import type { FakeOAuthServer } from "./fixtures/fake-oauth-server.mjs";
+import { beginSignIn, signIn, signInFixture } from "./helpers/shaper-sign-in.ts";
+
+// The sign-in service keeps its records in memory: chosen when it first switches on, after this.
+process.env.MISSION_SHAPER_SIGN_IN_STORE = "memory";
 
 const KEY_ENV = "SHAPING_HTTP_FIXTURE_KEY";
 /** A run of spaces, and a tab that a JSON error body echoes as the two characters `\t`. */
@@ -429,31 +435,155 @@ test("an echoed caller value resolved into a header comes back redacted and mark
 });
 
 // ---------------------------------------------------------------------------------------------
-// Shaper sign-in, phase 3: a marked shaper is never called, and an unmarked one is unchanged.
+// Shaper sign-in: a marked shaper is called with the sign-in service's token against the Phase 1
+// fixture's protected `/shape`, or not at all, and an unmarked one is unchanged. The daemon's
+// own service, on the memory store, signed in through the fixture.
 
 function setSignIn(enabled: boolean): void {
   assert.equal(applyFeatureFlagIntent({ kind: "flag", id: SHAPER_SIGN_IN_FLAG_ID, enabled }).ok, true);
 }
 
-function markedShaper(path: string, headers: Record<string, string> = {}): ShaperOf<"http"> {
+function markedShaper(url: string, headers: Record<string, string> = {}, scope = "mcp:context"): ShaperOf<"http"> {
   return ShaperSchema.parse({
     id: "signed", label: "Signed", stage: "select",
-    transport: { type: "http", url: `${base}${path}`, headers, auth: { type: "oauth", scope: "mcp:context" } },
+    transport: { type: "http", url, headers, auth: { type: "oauth", scope } },
   }) as ShaperOf<"http">;
 }
 
-test("a shaper that signs in answers unavailable with the flag off and on, and its server receives nothing", async () => {
+/** A fresh fixture and a sign-in to its `/shape`. */
+async function signedInShape(t: TestContext, scope = "mcp:context") {
+  const { fake, made } = await signInFixture(t);
+  const target = { url: fake.shapeUrl, scope, issuer: null };
+  const held = await signIn(target);
+  made.push(held.id);
+  return { fake, made, target, held, shaper: markedShaper(fake.shapeUrl, {}, scope) };
+}
+
+const toShape = (fake: FakeOAuthServer, from = 0) => fake.requests.slice(from).filter((entry) => entry.server === "resource" && entry.path === "/shape");
+const toElsewhere = (fake: FakeOAuthServer) => fake.requests.filter((entry) => entry.server === "elsewhere");
+/** Every request the fixture saw that carried `token`, wherever it went. */
+const carrying = (fake: FakeOAuthServer, token: string) => fake.requests.filter((entry) => JSON.stringify(entry).includes(token));
+/** The refresh requests the fixture's token endpoint received, held or answered. */
+const refreshesSince = (fake: FakeOAuthServer, from = 0) => fake.requests.slice(from)
+  .filter((entry) => entry.path === "/token" && new URLSearchParams(entry.body).get("grant_type") === "refresh_token");
+/** Waits for the service's background refresh to reach the token endpoint, then for anything that follows it. */
+async function oneRefresh(fake: FakeOAuthServer, from: number): Promise<void> {
+  for (let tries = 0; tries < 200 && refreshesSince(fake, from).length === 0; tries++) await new Promise((done) => setTimeout(done, 10));
+  await new Promise((done) => setTimeout(done, 100));
+  assert.equal(refreshesSince(fake, from).length, 1, "one background refresh reached the token endpoint");
+}
+
+before(() => { shaperSignIns.start(); });
+after(() => shaperSignIns.stop());
+
+test("a signed-in shaper sends the token on its one POST, to the server's origin only, with the carriers, and reads the guidance", async (t) => {
+  const { fake, held, shaper: marked } = await signedInShape(t);
+  const from = fake.requests.length;
+  const reply = await callHttp(request(), marked, ctx({ trace: TRACE, workUnitId: "wu_1" }));
+  assert.deepEqual(data(reply).guidance, [{ id: "fake/guide", title: "Guide", body: "guidance for the task" }]);
+  assert.equal(reply.redacted, undefined, "nothing to scrub");
+  const posts = toShape(fake, from);
+  assert.equal(posts.length, 1, "one POST, no retry");
+  assert.equal(posts[0]!.method, "POST");
+  assert.equal(posts[0]!.headers.authorization, `Bearer ${held.token}`);
+  // The carriers an unmarked call carries, with the same values.
   const count = seen.length;
-  // An unset reference proves the guard runs before any header is resolved.
-  const marked = markedShaper("/ok", { "x-api-key": "{env:SHAPING_HTTP_UNSET_KEY}" });
+  data(await callHttp(request(), shaper("/ok"), ctx({ trace: TRACE, workUnitId: "wu_1" })));
+  assert.equal(seen.length, count + 1);
+  for (const name of ["traceparent", "tracestate", "x-work-unit-id", "content-type", "accept"]) {
+    assert.equal(posts[0]!.headers[name], last().headers[name], `${name} as an unmarked call sends it`);
+  }
+  assert.deepEqual(carrying(fake, held.token).map((entry) => [entry.server, entry.path]), [["resource", "/shape"]],
+    "the token reached the shaper's server, on its one request, and nothing else");
+});
+
+test("a redirect off the origin is refused for a signed-in shaper, and the other origin receives nothing", async (t) => {
+  const { fake, held, shaper: marked } = await signedInShape(t);
+  fake.setMode({ redirect: "/shape" });
+  const reply = await callHttp(request(), marked, ctx());
+  assert.equal(reply.kind, "failed", JSON.stringify(reply));
+  assert.equal(JSON.stringify(reply).includes(held.token), false);
+  assert.deepEqual(toElsewhere(fake), [], "the other origin received nothing");
+});
+
+test("a signed-in reply or HTTP error body that repeats the token comes back redacted and marked", async (t) => {
+  const { fake, held, shaper: marked } = await signedInShape(t);
+  fake.setMode({ shape: "echo" });
+  const echoed = await callHttp(request(), marked, ctx());
+  assert.equal(echoed.redacted, true);
+  assert.equal(data(echoed).guidance[0].body, "the server received Bearer [sign-in token redacted]");
+  assert.equal(JSON.stringify(echoed).includes(held.token), false);
+  fake.setMode({ shape: "error" });
+  const refusedBody = await callHttp(request(), marked, ctx());
+  assert.deepEqual(refusedBody, {
+    kind: "failed", reason: "The shaper answered HTTP 500: refused Bearer [sign-in token redacted]", redacted: true,
+  });
+});
+
+test("a marked shaper that cannot use a token is unavailable with the service's reason, and its server receives nothing", async (t) => {
+  const { fake, made, target, held } = await signedInShape(t);
+  // An unset reference proves the service is asked before any header is resolved.
+  const unset = { "x-api-key": "{env:SHAPING_HTTP_UNSET_KEY}" };
+  const from = fake.requests.length;
+  const expect = async (marked: ShaperOf<"http">, reason: string, what: string) => {
+    assert.deepEqual(await callHttp(request(), marked, ctx({ trace: TRACE, workUnitId: "wu_1" })), { kind: "unavailable", reason }, what);
+  };
+  // Signed out: a connection no sign-in was made for. Pending: one begun and not completed.
+  await expect(markedShaper(fake.shapeUrl, unset, "mcp:other"), SIGN_IN_REASONS.signedOut, "signed out");
+  made.push(await beginSignIn({ url: fake.shapeUrl, scope: "mcp", issuer: null }));
+  const begun = fake.requests.length;
+  await expect(markedShaper(fake.shapeUrl, unset, "mcp"), SIGN_IN_REASONS.signedOut, "pending");
+  // Renewing: a refusal of the held token, while the refresh it asks for is held at /token.
+  const release = fake.hold("/token");
   try {
-    for (const [enabled, reason] of [[false, SIGN_IN_REASONS.flagOff], [true, SIGN_IN_REASONS.signedOut]] as const) {
-      setSignIn(enabled);
-      const reply = await callHttp(request(), marked, ctx({ trace: TRACE, workUnitId: "wu_1" }));
-      assert.deepEqual(reply, { kind: "unavailable", reason }, `flag ${enabled ? "on" : "off"}`);
+    shaperSignIns.noteRefused(target, held.token);
+    await expect(markedShaper(fake.shapeUrl, unset), SIGN_IN_REASONS.renewing, "renewing");
+  } finally { release(); }
+  await shaperSignIns.idle();
+  // Either flag off.
+  for (const flag of ["task-shaping", SHAPER_SIGN_IN_FLAG_ID]) {
+    assert.equal(applyFeatureFlagIntent({ kind: "flag", id: flag, enabled: false }).ok, true);
+    try { await expect(markedShaper(fake.shapeUrl, unset), SIGN_IN_REASONS.flagOff, `${flag} off`); } finally {
+      assert.equal(applyFeatureFlagIntent({ kind: "flag", id: flag, enabled: true }).ok, true);
+      await shaperSignIns.idle();
     }
-  } finally { setSignIn(false); }
-  assert.equal(seen.length, count, "no request at all");
+  }
+  assert.deepEqual(toShape(fake, from), [], "no request to the shaper's server in any of these states");
+  assert.ok(fake.requests.slice(from, begun).every((entry) => entry.path !== "/shape"), "beginning a sign-in never calls the shaper");
+});
+
+test("a signed-in call answered 401 is unavailable, tells the service once with its token, and is not retried", async (t) => {
+  const { fake, target, held, shaper: marked } = await signedInShape(t);
+  const noted = t.mock.method(shaperSignIns, "noteRefused");
+  // The refresh the refusal asks for waits at /token, so nothing changes under the test.
+  const release = fake.hold("/token");
+  try {
+    fake.setMode({ shape: "unauthorized" });
+    const from = fake.requests.length;
+    assert.deepEqual(await callHttp(request(), marked, ctx()), { kind: "unavailable", reason: SIGN_IN_REASONS.refused });
+    assert.equal(noted.mock.callCount(), 1);
+    assert.deepEqual(noted.mock.calls[0]!.arguments, [target, held.token]);
+    assert.equal(toShape(fake, from).length, 1, "one request, no second attempt");
+    // The refusal starts one background refresh, which reaches the token endpoint and waits there.
+    await oneRefresh(fake, from);
+    // The next call is not made while the sign-in is renewed, and asks for no second refresh.
+    assert.deepEqual(await callHttp(request(), marked, ctx()), { kind: "unavailable", reason: SIGN_IN_REASONS.renewing });
+    assert.equal(toShape(fake, from).length, 1);
+    assert.equal(noted.mock.callCount(), 1);
+    assert.equal(refreshesSince(fake, from).length, 1, "still one refresh");
+  } finally { release(); }
+});
+
+test("an unmarked shaper whose server answers 401 fails with the reason it always had, and the service is not told", async (t) => {
+  const { fake } = await signInFixture(t);
+  const noted = t.mock.method(shaperSignIns, "noteRefused");
+  const asked = t.mock.method(shaperSignIns, "accessToken");
+  const reply = await callHttp(request(), shaper("", {}, fake.shapeUrl), ctx());
+  assert.deepEqual(reply, { kind: "failed", reason: 'The shaper answered HTTP 401: {"error":"invalid_token"}' });
+  assert.equal(toShape(fake).length, 1);
+  assert.equal(toShape(fake)[0]!.headers.authorization, undefined);
+  assert.equal(noted.mock.callCount(), 0);
+  assert.equal(asked.mock.callCount(), 0, "the service is not asked about a shaper with no marker");
 });
 
 test("an unmarked shaper sends the same request with the flag off and on, and no authorization header", async () => {

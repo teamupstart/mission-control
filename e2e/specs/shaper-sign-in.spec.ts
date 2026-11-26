@@ -333,6 +333,113 @@ test("an older sign-in reply that lands after a newer attempt on the same connec
   await expect(signIn(page)).toContainText("Not signed in.");
 });
 
+test("two sign-in replies on one connection that land before either list frame, the older last, leave the newer attempt's link", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  for (const [id, label] of [["signed-guidance", "Signed guidance"], ["signed-twin", "Signed twin"]]) {
+    const put = await fetch(`${daemon.baseURL}/api/shaping`, {
+      method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+        id, label, stage: "select",
+        transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope: "mcp:context" } } },
+      } }),
+    });
+    expect(put.status).toBe(200);
+  }
+  const authorizeUrl = `${new URL(fake.issuer).origin}/authorize`;
+  await page.context().route(`${authorizeUrl}?**`, (route) => route.fulfill({
+    status: 200, contentType: "text/html", body: "<!doctype html><title>Held</title><p>Held by the test.</p>",
+  }));
+  // The page's own event stream, with its sign-in list frames held on request and released in
+  // the order the daemon sent them. Every other frame passes straight through.
+  await page.addInitScript(() => {
+    type Hold = { holding: boolean; queue: MessageEvent[]; release: () => void };
+    const hold: Hold = { holding: false, queue: [], release: () => {} };
+    (window as unknown as { signInFrames: Hold }).signInFrames = hold;
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) !== "/events") return;
+        let handler: ((event: MessageEvent) => void) | null = null;
+        const deliver = (event: MessageEvent) => handler?.call(this, event);
+        hold.release = () => { hold.holding = false; for (const event of hold.queue.splice(0)) deliver(event); };
+        super.onmessage = (event: MessageEvent) => {
+          let type: unknown = null;
+          try { type = (JSON.parse(String(event.data)) as { type?: unknown }).type; } catch { /* not JSON */ }
+          if (hold.holding && type === "shaping_sign_ins") hold.queue.push(event);
+          else deliver(event);
+        };
+        Object.defineProperty(this, "onmessage", {
+          configurable: true,
+          get: () => handler,
+          set: (value: ((event: MessageEvent) => void) | null) => { handler = value; },
+        });
+      }
+    };
+  });
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await page.reload();
+  const twin = panel(page).getByRole("group", { name: "Sign-in for Signed twin" });
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(twin).toContainText("Not signed in.");
+  await page.evaluate(() => { (window as unknown as { signInFrames: { holding: boolean } }).signInFrames.holding = true; });
+  const held = () => page.evaluate(() => (window as unknown as { signInFrames: { queue: unknown[] } }).signInFrames.queue.length);
+
+  // Row A's sign-in begins first at the daemon; its reply is held before it reaches this window.
+  let release!: () => void;
+  const replyHeld = new Promise<void>((done) => { release = done; });
+  let answered!: () => void;
+  const daemonAnswered = new Promise<void>((done) => { answered = done; });
+  let first = true;
+  await page.route("**/api/shaping/sign-in", async (route) => {
+    if (route.request().method() !== "POST" || !first) return route.fallback();
+    first = false;
+    const response = await route.fetch();
+    answered();
+    await replyHeld;
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await daemonAnswered;
+  await expect.poll(held).toBe(1);
+
+  // Row B's sign-in replaces A's at the daemon, and its reply lands first. The list frames are
+  // still held, so both rows still read signed out.
+  const tab = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Sign in Signed twin" }).click();
+  const opened = await tab;
+  await opened.waitForURL(`${authorizeUrl}?**`);
+  await expect.poll(held).toBe(2);
+  await expect(twin).toContainText("Not signed in.");
+
+  // A's older reply lands next, still before either frame.
+  const delivered = page.waitForResponse((response) => response.url().endsWith("/api/shaping/sign-in"));
+  release();
+  expect((await delivered).status()).toBe(200);
+  await page.unroute("**/api/shaping/sign-in");
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // The daemon's frames arrive in the order it sent them: A's attempt pending, then B's.
+  await page.evaluate(() => { (window as unknown as { signInFrames: { release: () => void } }).signInFrames.release(); });
+  for (const label of ["Signed guidance", "Signed twin"]) {
+    const rowSignIn = panel(page).getByRole("group", { name: `Sign-in for ${label}` });
+    await expect(rowSignIn).toContainText("Waiting for the browser.");
+    await expect(rowSignIn).not.toContainText("Started in another window");
+    await expect(page.getByRole("button", { name: `Open the sign-in page for ${label}` })).toBeVisible();
+    await expect(page.getByRole("button", { name: `Copy the sign-in link for ${label}` })).toBeVisible();
+  }
+  // The link offered is B's, the attempt pending now.
+  await page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" }).click();
+  await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveText("Copied");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(opened.url());
+
+  await page.getByRole("button", { name: "Cancel sign-in for Signed twin" }).click();
+  await expect(twin).toContainText("Not signed in.");
+});
+
 test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show in the row, open nothing, and leave the row usable", async ({ dashboard: page, daemon }) => {
   test.setTimeout(90_000);
   await setFlag(daemon, "task-shaping", true);

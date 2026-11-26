@@ -780,6 +780,8 @@ export function signInMovedSince(sent: SignInMoves, now: SignInMoves, connection
  * - the list shows this attempt pending: its event came first, and the link is seen pending;
  * - no change: the reply came first, and the link waits for its event, as long as the list keeps
  *   showing what it shows now; on a row already pending that is the attempt this one replaces;
+ * - the list shows an older attempt pending: whatever moved, this attempt's own event is still
+ *   to come, since a daemon lists its attempts in the order it begins them, and the link waits;
  * - anything else: the sign-in moved on before the reply landed. It finished, was cancelled or
  *   was replaced elsewhere, even back to the state it started in. There is no link to keep or
  *   open, so a later pending sign-in is never offered a link it did not start.
@@ -793,23 +795,40 @@ export function signInLinkFor(
   const now = signInPositionIn(signIns, connection);
   const { url, attempt } = reply;
   if (now.state === "pending" && now.attempt === attempt) return { url, attempt, seenPending: true, waitingIn: null };
-  return moves === 0 ? { url, attempt, seenPending: false, waitingIn: now } : null;
+  return moves === 0 || olderAttempt(now, attempt) ? { url, attempt, seenPending: false, waitingIn: now } : null;
 }
 
 /**
- * The links a window keeps once a reply hands it `link` for `connection`. A link replaces any
- * earlier one on that connection. A reply with no link, one whose attempt moved on before it
- * landed, keeps what is held: two rows that share a connection can each send Sign in, and the
- * older reply landing last must not take away the newer attempt's link. Whatever is held still
- * ends through `signInLinksAfter` once the list stops showing its own attempt pending. Returns
- * `current` itself when there is no link.
+ * Whether `position` shows an attempt pending that began before `attempt`. One daemon numbers its
+ * attempts in the order it begins them, and lists them in that order, so while the list shows an
+ * older attempt, `attempt`'s own event has yet to arrive.
+ */
+function olderAttempt(position: SignInPosition, attempt: number): boolean {
+  return position.state === "pending" && position.attempt !== null && position.attempt < attempt;
+}
+
+/**
+ * The links a window keeps once a reply hands it `link` for `connection`. A link replaces an
+ * earlier attempt's on that connection, never a later one's: two rows that share a connection can
+ * each send Sign in, the later attempt replaces the earlier at the daemon, and the earlier reply
+ * may land last, with no link or with one still waiting for its event. Either way the later
+ * attempt's link stays. Whatever is held still ends through `signInLinksAfter` once the list can
+ * no longer show its own attempt pending. Returns `current` itself when nothing is kept.
+ *
+ * Attempt order holds within one daemon. A link left waiting for its event when the daemon
+ * restarted can outrank the new daemon's numbers, which start at a random point. It is never
+ * offered, as no list shows its attempt again, but until the list leaves pending it keeps the new
+ * daemon's link from being held, and the row reads as pending elsewhere and offers Sign in.
  */
 export function signInLinkHeld(
   current: Readonly<Record<string, ShaperSignInLink>>,
   connection: string,
   link: ShaperSignInLink | null,
 ): Readonly<Record<string, ShaperSignInLink>> {
-  return link ? { ...current, [connection]: link } : current;
+  if (!link) return current;
+  const held = Object.hasOwn(current, connection) ? current[connection]! : null;
+  if (held && held.attempt > link.attempt) return current;
+  return { ...current, [connection]: link };
 }
 
 const SIGN_IN_ROW_PREFIX = "row:";
@@ -848,6 +867,11 @@ export function signInControlConnection(signIns: readonly ShapingSignInView[], k
     : key.startsWith(SIGN_IN_CONNECTION_PREFIX) ? key.slice(SIGN_IN_CONNECTION_PREFIX.length) : null;
 }
 
+/** Whether a link not yet seen pending may still see its attempt pending at `position`. */
+function stillWaiting(position: SignInPosition, link: ShaperSignInLink): boolean {
+  return (link.waitingIn !== null && samePosition(position, link.waitingIn)) || olderAttempt(position, link.attempt);
+}
+
 /** Whether `signIns` shows the attempt `link` started as the one pending on its connection. */
 function linkPending(signIns: readonly ShapingSignInView[], connection: string, link: ShaperSignInLink): boolean {
   // Only a pending entry names an attempt, so a match is that attempt pending.
@@ -857,10 +881,11 @@ function linkPending(signIns: readonly ShapingSignInView[], connection: string, 
 /**
  * The links a window keeps for its pending sign-ins after the list changes. A link lives while
  * the list shows its own attempt pending on its connection. One not yet seen pending is kept while
- * the list still shows the position it was stored in, so a reply that lands before the event does
- * not lose it, and dropped at the first other position that is not its attempt. Once seen pending,
- * any other position ends it: another state, none, or another attempt pending, as when another
- * window's sign-in replaced it. Returns `current` itself when nothing changed.
+ * the list still shows the position it was stored in, or an attempt pending that began before its
+ * own, so a reply that lands before its event, or before the events of the attempts ahead of it,
+ * does not lose it. It is dropped at the first other position that is not its attempt. Once seen
+ * pending, any other position ends it: another state, none, or another attempt pending, as when
+ * another window's sign-in replaced it. Returns `current` itself when nothing changed.
  */
 export function signInLinksAfter(
   current: Readonly<Record<string, ShaperSignInLink>>,
@@ -872,7 +897,7 @@ export function signInLinksAfter(
     if (linkPending(signIns, connection, link)) {
       if (link.seenPending) next[connection] = link;
       else { next[connection] = { ...link, seenPending: true, waitingIn: null }; changed = true; }
-    } else if (!link.seenPending && link.waitingIn && samePosition(signInPositionIn(signIns, connection), link.waitingIn)) {
+    } else if (!link.seenPending && stillWaiting(signInPositionIn(signIns, connection), link)) {
       next[connection] = link;
     } else {
       changed = true;

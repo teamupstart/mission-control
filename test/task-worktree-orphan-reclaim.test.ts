@@ -1071,3 +1071,12 @@ test("an archive deleted during removal waits for the removal, and one deleted b
   assert.equal(called, false, "the removal never ran");
   assert.equal(readFileSync(join(other.path, "notes.md"), "utf8"), "keep me\n");
 });
+
+test("report-only names the base commit when the only difference from it is a deleted tracked file", async (t) => {
+  setPreview(t, "report-only");
+  const w = world(t, { prepare: (path) => rmSync(join(path, "keep.txt")) });
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, {});
+  assert.equal(w.row()?.lastError, "report only: orphaned checkout matches its base commit and would be removed");
+  assert.ok(existsSync(w.path));
+});

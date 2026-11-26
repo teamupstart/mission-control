@@ -7181,7 +7181,9 @@ export class TaskManager {
     if (evidence.kind !== "orphaned") return null;
     return evidence.localOnly.length > 0
       ? `report only: orphaned checkout would be removed after archiving ${evidence.localOnly.length} local-only file(s)`
-      : `report only: orphaned checkout matches its ${evidence.proof === "base" ? "base commit" : "merged pull request head"} and would be removed`;
+      // Only a merged-head proof names the pull request. `local-only` with no files is a base
+      // comparison whose only differences are deleted tracked files, which the base still holds.
+      : `report only: orphaned checkout matches its ${evidence.proof === "merged-pr" ? "merged pull request head" : "base commit"} and would be removed`;
   }
 
   /**

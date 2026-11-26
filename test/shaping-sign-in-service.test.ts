@@ -500,6 +500,33 @@ test("at the registration limit: refused while every one is named, and room made
   assert.deepEqual(regs.read(), keyNow);
 });
 
+test("one stored sign-in that cannot be read refuses at the limit with store_unread, and drops no registration it may name", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  // Sixteen registrations, each named by a stored record.
+  const seeded = await seed(fake, SHAPING_SIGN_IN_CLIENTS, records);
+  const regs = memoryRegistrations(seeded.clients);
+  // Every read succeeds but one: its record, and so the registration it names, stays unknown.
+  const store = controlledStore("memory", records);
+  const unread = seeded.ids[0]!;
+  const readRecord = store.store.read.bind(store.store);
+  store.store.read = async (id) => {
+    if (id === unread) throw new SignInStoreError("read", -25308);
+    return readRecord(id);
+  };
+  const h = await harness(t, { fake, store, regs });
+  assert.equal(h.svc.view().length, SHAPING_SIGN_IN_CLIENTS - 1, "the fifteen readable sign-ins are loaded");
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be read")));
+
+  const keyBefore = regs.read();
+  const refused = await h.svc.begin(target(fake, { scope: "mcp:fresh" }));
+  assert.deepEqual(refused, { ok: false, code: "store_unread", reason: SIGN_IN_BEGIN_REFUSALS.store_unread });
+  assert.equal(registrationsSeen(fake).length, 0, "no registration request");
+  assert.deepEqual(regs.read(), keyBefore, "the registration the unread record names is kept");
+  assert.ok(await records.read(unread), "and its stored sign-in is untouched");
+});
+
 test("a store that could not be read refuses at the limit with store_unread, and a store that reads makes room", async (t) => {
   const records = createMemorySignInStore();
   const fake = await startFakeOAuthServer();
@@ -1277,7 +1304,7 @@ test("a load whose activation ended publishes nothing, so its late failure canno
   assert.equal(registrationsSeen(fake).length, 1);
 });
 
-test("a begin queued across a flag reset waits for the new load, so it never drops a registration an unread record names", async (t) => {
+test("a begin queued across a flag reset is refused, and never drops a registration an unread record names", async (t) => {
   const records = createMemorySignInStore();
   const fake = await startFakeOAuthServer();
   t.after(() => fake.close());
@@ -1323,7 +1350,7 @@ test("a begin queued across a flag reset waits for the new load, so it never dro
     releaseFirst();
     releaseSecond();
   }
-  assert.equal((await answer as { code: string }).code, "registration_limit", "every registration is named once the load has read them");
+  assert.equal((await answer as { code: string }).code, "flag_off", "requested before the reset, it is refused when its turn comes");
   assert.equal(registrationsSeen(fake).length, 0);
   assert.deepEqual(regs.read(), keyBefore, "no registration a stored sign-in names was dropped");
 });
@@ -1370,6 +1397,62 @@ test("a late refusal never removes a replacement that has no refresh token", asy
   h.svc.noteRefused(a, tokenB);
   await settle(h);
   assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" }, "refusing B itself still ends a sign-in with no refresh token");
+});
+
+test("a begin that reuses a client and is still running when the flags reset leaves nothing pending", async (t) => {
+  let gate: Promise<void> | null = null;
+  let entered!: () => void;
+  const flowEntered = new Promise<void>((done) => { entered = done; });
+  const held: SignInFlow = {
+    ...realFlow,
+    async begin(...args) {
+      if (gate) { entered(); await gate; }
+      return realFlow.begin(...args);
+    },
+  };
+  const flags = flagSwitch(true);
+  const h = await harness(t, { flow: held, flags });
+  // The first sign-in registers the mcp:context client; a second connection with that scope reuses it.
+  await signIn(h, target(h.fake));
+  const other = target(h.fake, { url: h.fake.shapeUrl });
+  h.svc.setInUse([use(other)]);
+  let release!: () => void;
+  gate = new Promise<void>((done) => { release = done; });
+  const answer = h.svc.begin(other);
+  await flowEntered;
+  // Off and on again while the flow's begin is still running.
+  flags.set(false);
+  flags.set(true);
+  release();
+  assert.deepEqual(await answer, { ok: false, code: "flag_off", reason: SIGN_IN_BEGIN_REFUSALS.flag_off });
+  await settle(h);
+  assert.equal(registrationsSeen(h.fake).length, 1, "the client was reused, not registered again");
+  assert.equal(viewOf(h, connectionId(other))?.state, "signed_out", "nothing is pending");
+});
+
+test("a begin requested before a flag reset is refused when its turn comes, even though the flags are back on", async (t) => {
+  const flags = flagSwitch(true);
+  const h = await harness(t, { flags });
+  const queuedTarget = target(h.fake, { url: h.fake.shapeUrl });
+  h.svc.setInUse([use(queuedTarget)]);
+  // An earlier begin holds the queue in discovery; a second is requested behind it.
+  const release = h.fake.hold("/.well-known/oauth-authorization-server");
+  const earlier = h.svc.begin(target(h.fake));
+  while (!h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server")) {
+    await new Promise((done) => setTimeout(done, 5));
+  }
+  const queued = h.svc.begin(queuedTarget);
+  // Off and on again while the second waits its turn; the queue is then released.
+  flags.set(false);
+  flags.set(true);
+  release();
+  assert.equal((await earlier as { code: string }).code, "flag_off");
+  assert.deepEqual(await queued, { ok: false, code: "flag_off", reason: SIGN_IN_BEGIN_REFUSALS.flag_off });
+  await settle(h);
+  assert.equal(registrationsSeen(h.fake).length, 0, "neither begin registered a client");
+  assert.equal(viewOf(h, connectionId(queuedTarget))?.state, "signed_out", "nothing from the earlier activation is pending");
+  // A begin requested after the reset works.
+  assert.equal((await h.svc.begin(queuedTarget)).ok, true);
 });
 
 test("every row of the accessToken table", async (t) => {

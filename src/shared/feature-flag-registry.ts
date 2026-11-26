@@ -35,6 +35,7 @@ export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as 
 
 export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 
+export const LOCAL_INSPECTOR_FLAG_ID = "local-inspector" as const;
 export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 
 /**
@@ -53,6 +54,14 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "Desktop Trust consent and the rollout switch govern access to this tool.",
     keywords: ["settings", "access", "mcp", "mission_settings"],
+  },
+  {
+    id: LOCAL_INSPECTOR_FLAG_ID,
+    label: "Local Inspector",
+    description: "Review the submitted checkout in a workflow before opening a pull request.",
+    stage: "preview",
+    sessionSetting: "Controls whether the workflow can review the submitted checkout before publication.",
+    keywords: ["workflow", "inspector", "review", "repository"],
   },
   {
     id: BUG_FIX_INSPECTOR_FLAG_ID,

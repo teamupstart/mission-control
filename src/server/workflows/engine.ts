@@ -1,3 +1,8 @@
+import { LOCAL_INSPECTOR_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { LocalInspectorReviewSchema, type LocalInspectorReview } from "@shared/inspector-review.ts";
+import { getInspectorConfig, inspectorExecution } from "../inspector/config.ts";
+import { resolveReviewComparison } from "./review-comparison.ts";
+import type { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 import { RepositoryReview } from "./repository-review.ts";
 import type { PersonaWorkloadExecutor } from "./persona-workload/contracts.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
@@ -127,6 +132,7 @@ import type { WorkflowBinding } from "@shared/workflow.ts";
 
 export interface WorkflowEngineOptions {
   repositoryExecutor?: PersonaWorkloadExecutor;
+  commandArtifacts?: WorkflowCommandArtifactService;
   /**
    * Stacked pull requests: the verified base a stacked task's review compares against, for
    * the CodeRabbit merge base. Null for every other binding. Throws when the base could not
@@ -391,6 +397,7 @@ function checkVerdict(
     });
   }
   const coderabbit = outcome.slot === "coderabbit";
+  const inspector = outcome.slot === "inspector";
   const fit = { slot: outcome.slot, command: outcome.command, commandSource: outcome.commandSource, runId };
   // A Command the repository does not provide is a configuration repair, never a code one.
   // `runCheck` classified it against the argv that ran and its complete output, so a nested
@@ -400,7 +407,7 @@ function checkVerdict(
   const misfit = signal ? misfitCommandRepair({ ...fit, signal }) : null;
   const tail = tailBounded(
     outcome.output,
-    misfit ? WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput / 2 : WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput,
+    inspector ? 3000 : misfit ? WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput / 2 : WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput,
   );
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
   const dropped = tail.droppedBytes + outcome.truncatedBytes;
@@ -415,6 +422,7 @@ function checkVerdict(
     : quote) + (reader ? `\n\nRetained output:\n${reader}` : "");
   const rationale = coderabbit
     ? `${output}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.`
+    : inspector ? `${output}\nVerify the retained findings, repair the blocking issues locally and submit a fresh round through the workflow.`
     : misfit
     ? `${misfit.guidance}\n\nCommand output:\n${output}`
     : outcome.commandSource === "default"
@@ -426,6 +434,7 @@ function checkVerdict(
     requestedChanges: [{
       title: coderabbit
         ? "Verify all retained CodeRabbit findings and repair valid issues"
+        : inspector ? "Repair the blocking Local Inspector findings"
         : misfit?.title ?? `Fix the failing ${outcome.slot} check`,
       rationale,
       evidence: [{ kind: "check", path: attemptId, quote }],
@@ -482,6 +491,7 @@ export class WorkflowEngine {
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
   private readonly stackDiffBase: NonNullable<WorkflowEngineOptions["stackDiffBase"]>;
   private readonly repositoryReview: RepositoryReview;
+  private readonly commandArtifacts?: WorkflowCommandArtifactService;
   private stopped = true;
   private checkShutdown = new AbortController();
   private pumping = false;
@@ -502,7 +512,7 @@ export class WorkflowEngine {
     private readonly onRunChanged: (runId: string) => void = () => {},
     options: WorkflowEngineOptions = {},
   ) {
-    this.repositoryReview = new RepositoryReview(store, options.repositoryExecutor);
+    this.commandArtifacts = options.commandArtifacts;
     this.limit = options.schedule
       ?? createReviewScheduler(options.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
     this.now = options.now ?? Date.now;
@@ -518,6 +528,7 @@ export class WorkflowEngine {
     this.checkDeps = options.checkDeps ?? (() => ({}));
     this.unresolvedCheckLease = options.unresolvedCheckLease ?? (() => false);
     this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
+    this.repositoryReview = new RepositoryReview(store, options.repositoryExecutor, this.workflowPolicy);
     this.workflowCommand = options.workflowCommand
       ?? ((slot) => this.store.getWorkflowCommand(slot));
     this.stackDiffBase = options.stackDiffBase ?? (async () => null);
@@ -1637,10 +1648,33 @@ export class WorkflowEngine {
       },
     } : baseDeps;
 
+    const inspector = node.slot === "inspector" ? getInspectorConfig() : null;
+    const reviewHead = reviewedCommit(submission.prHeadSha, context.data.evidence);
     let result: Awaited<ReturnType<typeof runCheck>>;
     try {
       result = await runCheck({
         slot: node.slot,
+        localInspector: inspector ? {
+          preview: featureEnabled(LOCAL_INSPECTOR_FLAG_ID),
+          enabled: inspector.enabled,
+          localReview: inspector.localReview,
+          captured: context.data.evidence.localInspectorEnabled,
+          hasArtifact: () => this.store.hasActiveRepositoryClaim(submission.id),
+          goal: context.data.primaryGoal.openingAsk ?? context.data.primaryGoal.refined ?? context.data.primaryGoal.rawPrompt,
+          round: submission.round,
+          previous: () => this.previousLocalInspectorReview(run.id, node.id, claimed.id),
+          compare: async () => this.store.getLocalInspectorComparison(submission.id)
+            ?? this.store.freezeLocalInspectorComparison(submission.id, await resolveReviewComparison({
+              repoRoot: binding.sessionRepoRoot ?? "", headSha: reviewHead,
+              stackBase: () => this.stackDiffBase(binding),
+            })),
+          review: (prompt, timeoutMs, offDiffFindings) => this.limit(() => this.reviewLocally(
+            claimed, submission, run, inspector, prompt, timeoutMs, offDiffFindings, AbortSignal.any([signal, shutdown]),
+          )),
+          retain: findings => findings.length && this.commandArtifacts ? [this.commandArtifacts.retainFindings(
+            { runId: run.id, submissionId: submission.id, attemptId: claimed.id }, Buffer.from(JSON.stringify(findings, null, 2)),
+          )] : [],
+        } : undefined,
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
           dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
@@ -1687,7 +1721,7 @@ export class WorkflowEngine {
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
-        publicationTreeOid: context.data.evidence.publication
+        publicationTreeOid: inspector || context.data.evidence.publication
           ? workflowPublicationTree(context.data.evidence) : null,
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
         // supervisor's durable identity by attempt id, and `claimed.id` is that id.
@@ -1759,6 +1793,57 @@ export class WorkflowEngine {
     }, this.now());
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
+  }
+
+  private previousLocalInspectorReview(runId: string, nodeId: string, currentAttemptId: string) {
+    let incomplete = false;
+    for (const attempt of this.store.listCheckAttemptsWithExecutionClaim(runId, nodeId, "inspector")) {
+      if (attempt.id === currentAttemptId) continue;
+      if (attempt.state === "error" || attempt.state === "cancelled") incomplete = true;
+      if (attempt.state !== "completed") continue;
+      const outcome = WorkflowCheckOutcomeSchema.safeParse(attempt.output);
+      const review = outcome.data?.localInspector;
+      if (!review || (review.status !== "passed" && review.status !== "failed")) continue;
+      if (review.findingCount === 0) return { findings: [], incomplete };
+      const artifact = outcome.data?.artifacts.find(a => a.kind === "findings");
+      if (!artifact || !this.commandArtifacts) throw new Error("Earlier Local Inspector findings are unavailable");
+      const findings = this.commandArtifacts.readLocalInspectorFindings(runId, attempt.id, artifact.id);
+      if (findings.length !== review.findingCount) throw new Error("Earlier Local Inspector findings are incomplete");
+      return { findings, incomplete };
+    }
+    return { findings: [], incomplete };
+  }
+
+  private async reviewLocally(
+    attempt: WorkflowNodeAttempt, submission: WorkflowSubmission, run: WorkflowRun,
+    config: ReturnType<typeof getInspectorConfig>, prompt: string, timeoutMs: number,
+    offDiffFindings: ReadonlyMap<string, string>, signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    await this.repositoryReview.confirmCancellations(run.id, attempt.nodeId);
+    const execution = inspectorExecution(config);
+    if (execution.runner.unknown) throw new Error("The configured Inspector provider is unavailable. Check Settings > Models.");
+    const callId = randomUUID();
+    const purpose = "inspector_review";
+    this.store.insertLlmCall({
+      id: callId, runId: run.id, submissionId: submission.id, nodeAttemptId: attempt.id, purpose,
+      runner: execution.runner.id, model: execution.model.id, effort: execution.effort,
+      attempt: 1, state: "running", startedAt: this.now(), finishedAt: null, durationMs: null,
+      inputBytes: Buffer.byteLength(prompt), outputBytes: 0, costUsd: null, errorCode: null,
+    });
+    try {
+      const raw = await this.repositoryReview.run({
+        attemptId: attempt.id, submissionId: submission.id, prompt, offDiffFindings,
+        accounting: { runId: run.id, purpose, attempt: 1, callId },
+        execution: { provider: execution.runner.id, model: execution.model.id, effort: execution.effort },
+        images: [], deadline: Date.now() + timeoutMs,
+      }, signal);
+      this.store.finishLlmCall(callId, "succeeded", Buffer.byteLength(raw), null, this.now());
+      return raw;
+    } catch (error) {
+      this.store.finishLlmCall(callId, "failed", 0, "inspector_review_unavailable", this.now());
+      throw error;
+    }
   }
 
   private blockTokenExhaustion(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
@@ -1949,7 +2034,7 @@ export class WorkflowEngine {
     attempt: WorkflowNodeAttempt,
     runId: string,
     reason: string,
-    details?: { setup?: boolean; review?: import("@shared/workflow.ts").CodeRabbitReviewSummary; artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[] },
+    details?: { localInspector?: LocalInspectorReview; setup?: boolean; review?: import("@shared/workflow.ts").CodeRabbitReviewSummary; artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[] },
   ): void {
     const run = this.store.getRun(runId);
     const submission = this.store.getSubmission(attempt.submissionId);
@@ -1960,6 +2045,7 @@ export class WorkflowEngine {
     }
     this.store.finishAttempt(attempt.id, { state: "error", error: reason, output: details ? jsonValue({
       ...(details.setup ? { setup: true } : {}),
+      ...(details.localInspector ? { localInspector: LocalInspectorReviewSchema.parse(details.localInspector) } : {}),
       ...(details.review ? { review: details.review } : {}),
       ...(details.artifacts ? { artifacts: details.artifacts } : {}),
     }) : undefined }, this.now());

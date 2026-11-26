@@ -1,3 +1,4 @@
+import { workflowCommandName } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { ENSEMBLE_STRATEGY_IDS, type EnsembleStrategyId } from "@shared/ensemble.ts";
 import { creatableStrategies } from "@shared/ensemble-strategies.ts";
@@ -281,11 +282,12 @@ export function actionCards(actions: readonly SessionAction[]): LibraryCard[] {
 export function commandCards(
   views: readonly WorkflowCommandView[],
   hasSnapshot: boolean,
+  slots: readonly WorkflowCommandView["slot"][] = WORKFLOW_CHECK_SLOTS.filter(slot => slot !== "inspector"),
 ): LibraryCard[] {
   const bySlot = new Map(views.map((view) => [view.slot, view]));
-  return WORKFLOW_CHECK_SLOTS.map((slot) => ({
+  return slots.map((slot) => ({
     id: slot,
-    name: slot,
+    name: workflowCommandName(slot),
     description: WORKFLOW_COMMAND_PURPOSE[slot],
     tags: [{ label: "built-in", tone: "builtin" as const }],
     // Durable configuration, never run status. `Not configured` is not toned as a warning:

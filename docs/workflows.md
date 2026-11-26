@@ -3121,6 +3121,41 @@ focus returns after dialogs, and reduced-motion preferences disable canvas and p
 At narrow widths the canvas stays primary and Library and Properties become mutually exclusive
 drawers.
 
+## Local Inspector Command (preview)
+
+Enable **Local Inspector** in Settings > Feature flags, then turn on **Review in the workflow
+before the pull request opens** in Settings > GitHub Inspector. Add **Command · Local Inspector**
+to a custom or duplicated workflow before its **Pull Request** action, then publish and bind the
+new version. The Inspector must be on, and Workflow Commands must be enabled for the repository
+through Trust.
+
+Local Inspector uses the Inspector's provider and model. On both Codex and Claude it has read
+access to the exact submitted checkout through the [read-only repository workload](repository-review-workloads.md),
+including staged, unstaged and nonignored untracked files within the repository policy. The review
+prompt directs the Inspector to read the repository brief and applicable standards from that
+checkout, skip optional guidance confirmed absent, and review the changes against the workflow
+goal. Before accepting a verdict, the stage requires a successful repository query that returns
+at least one item.
+The run records the publication tree, base ref, merge base, threshold and outcome. Open findings
+carry forward on the next submission and are available under **Load findings**. Closing a
+finding outside the new diff requires an audited read of its file or confirmation that its
+exact path is absent from the submitted worktree.
+
+The defaults in **Library > Commands > Local Inspector** are **Major and above**, **10 executions
+per run**, a **10-minute timeout** and **Block for operator action** on exhaustion. Lower-severity
+findings are advisory. Blocking findings return a repair packet to the session. The session can
+repair and resubmit before the workflow opens a pull request or runs CI. The workflow's repair
+limit applies to those rounds. A returned repository review spends an execution even if its
+findings cannot be retained. If the allowance runs out with blocking findings still open or
+a review result that could not be processed, the stage pauses for operator action even when
+its exhaustion policy is **Skip**.
+
+Submission capture records whether local review is enabled. When the preview, Inspector or
+local review is off, the stage skips with a note. An enabled stage blocks for operator action
+if the repository lacks Commands permission, the submitted worktree is unavailable, the
+provider fails, the diff is oversized, or findings cannot be retained. GitHub Inspector
+continues reviewing after the Pull Request action.
+
 ## Local CodeRabbit Command
 
 The `coderabbit` Library Command works in any custom workflow evaluation stage, including

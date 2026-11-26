@@ -1,3 +1,6 @@
+import { DEFAULT_LOCAL_INSPECTOR_SEVERITY, INSPECTOR_SEVERITIES } from "@shared/inspector-review.ts";
+import { workflowCommandName } from "@shared/workflow.ts";
+import { useWorkflowCommandSlots } from "./useWorkflowCommandSlots.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   WORKFLOW_CHECK_SLOTS,
@@ -87,6 +90,7 @@ export interface CommandDraft {
    * `abc`, or `0` would need three refusal sentences for a value with twenty legal answers.
    */
   maxRuns: number;
+  inspectorSeverity?: WorkflowCommandView["inspectorSeverity"];
   timeoutMs?: number | null;
   onUnavailable?: WorkflowCommandFailurePolicy;
   onBudgetExhausted?: WorkflowCommandFailurePolicy;
@@ -161,6 +165,7 @@ export function commandDraftFrom(view: WorkflowCommandView | null): CommandDraft
     // the control never shows a number the daemon would disagree with.
     maxRuns: view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
     timeoutMs: view?.timeoutMs ?? null,
+    ...(view?.inspectorSeverity === undefined ? {} : { inspectorSeverity: view.inspectorSeverity }),
     onUnavailable: view?.onUnavailable ?? "skip",
     onBudgetExhausted: view?.onBudgetExhausted ?? "skip",
   };
@@ -178,6 +183,7 @@ export function commandDraftDirty(draft: CommandDraft, view: WorkflowCommandView
   const update = commandUpdateBody(draft, view?.revision ?? 0, view?.slot);
   if (!update.ok) return true;
   if (JSON.stringify(update.body.defaultCommand) !== JSON.stringify(view?.defaultCommand ?? null)) return true;
+  if (draft.inspectorSeverity !== view?.inspectorSeverity) return true;
   if (draft.maxRuns !== (view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS)) return true;
   if ((draft.timeoutMs ?? null) !== (view?.timeoutMs ?? null)) return true;
   if ((draft.onUnavailable ?? "skip") !== (view?.onUnavailable ?? "skip")) return true;
@@ -209,6 +215,7 @@ export function commandUpdateBody(
     defaultCommand: string[] | null;
     overrides: WorkflowCommandOverride[];
     maxRuns: number;
+    inspectorSeverity?: WorkflowCommandView["inspectorSeverity"];
     timeoutMs: number | null;
     onUnavailable: WorkflowCommandFailurePolicy;
     onBudgetExhausted: WorkflowCommandFailurePolicy;
@@ -242,6 +249,7 @@ export function commandUpdateBody(
       defaultCommand,
       overrides: overrides.sort(byRepoRoot),
       maxRuns: draft.maxRuns,
+      ...(slot === "inspector" ? { inspectorSeverity: draft.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY } : {}),
       timeoutMs: draft.timeoutMs ?? null,
       onUnavailable: draft.onUnavailable ?? "skip",
       onBudgetExhausted: draft.onBudgetExhausted ?? "skip",
@@ -440,6 +448,8 @@ export function CommandLibrary({
   onDirtyChange: (dirty: boolean) => void;
   onSelectionChange?: (slot: string | null) => void;
 }): React.JSX.Element {
+  const visibleSlots = useWorkflowCommandSlots();
+  const showInspector = visibleSlots.some(slot => slot === "inspector");
   const [selectedSlot, setSelectedSlot] = useState<WorkflowCheckSlot>(
     () => (isSlot(initialSlot) ? initialSlot : WORKFLOW_CHECK_SLOTS[0]),
   );
@@ -611,6 +621,7 @@ export function CommandLibrary({
   }
 
   const isCodeRabbit = selectedSlot === "coderabbit";
+  const isInspector = selectedSlot === "inspector";
   const builtInCodeRabbitCommand = formatCheckCommand(DEFAULT_CODERABBIT_COMMAND);
   const defaultCodeRabbitCommand = draft.defaultText.trim() || builtInCodeRabbitCommand;
 
@@ -661,7 +672,7 @@ export function CommandLibrary({
   }
 
   async function save(): Promise<void> {
-    if (!baseline || saving) return;
+    if (!baseline || saving || (isInspector && !showInspector)) return;
     const body = commandUpdateBody(draft, baseline.revision, selectedSlot);
     if (!body.ok) {
       setError(body.error);
@@ -710,19 +721,19 @@ export function CommandLibrary({
         <div className="wf-command-sidebar-head">
           <div>
             <h3>Commands</h3>
-            <p>{WORKFLOW_CHECK_SLOTS.length} slots</p>
+            <p>{visibleSlots.length} slots</p>
           </div>
         </div>
         <div className="wf-command-list">
           {/* One group, not Built-in versus Yours: there is no second kind of slot and there
               never will be. The head still earns its place - it carries the count, and it is
               where `Built-in` is said ONCE for four rows instead of as a tag on each. */}
-          <LibraryRailGroup label="Built-in slots" count={WORKFLOW_CHECK_SLOTS.length}>
-            {WORKFLOW_CHECK_SLOTS.map((slot) => (
+          <LibraryRailGroup label="Built-in slots" count={visibleSlots.length}>
+            {visibleSlots.map((slot) => (
               <LibraryRailRow
                 key={slot}
                 className="wf-command-list-item"
-                name={slot}
+                name={workflowCommandName(slot)}
                 /*
                  * The durable state of the slot, through the SAME helper the shelf card and
                  * the workflow palette read. Which of the four has exceptions is the fact
@@ -748,7 +759,7 @@ export function CommandLibrary({
       </aside>
 
       <div className="wf-command-workspace">
-        <article className="wf-command-editor">
+        {isInspector && !showInspector ? <p role="status">This Command is unavailable.</p> : <article className="wf-command-editor">
           <LibraryWorkspaceHeader
             className="wf-command-editor-head"
             title={
@@ -756,7 +767,7 @@ export function CommandLibrary({
                 {/* Bare, and it stays bare: the slot IS the accessible name three Playwright
                     specs open this screen by, so the built-in tag is its sibling rather than
                     a second word inside it. */}
-                <h3>{selectedSlot}</h3>
+                <h3>{workflowCommandName(selectedSlot)}</h3>
                 <span className="lib-tag lib-tag-builtin">built-in slot</span>
               </div>
             }
@@ -829,9 +840,10 @@ export function CommandLibrary({
               it, and `docs/library-and-line.md` describes the pair. */}
           <p className="wf-command-note">
             {WORKFLOW_COMMAND_PURPOSE[selectedSlot]}{" "}
-            {isCodeRabbit ? "Saving stores optional review tuning - it runs nothing." : "Saving stores an argv - it runs nothing."} A workflow reaching the{" "}
-            <code>{selectedSlot}</code> Command runs it later, without a shell, in a
-            commit-pinned checkout of a repository granted the Workflows cell in Trust.
+            {isInspector ? " Enable local review in GitHub Inspector settings and grant the repository access to Workflow Commands in Trust."
+              : <>{isCodeRabbit ? "Saving stores optional review tuning - it runs nothing." : "Saving stores an argv - it runs nothing."} A workflow reaching the{" "}
+                <code>{selectedSlot}</code> Command runs it later, without a shell, in a
+                commit-pinned checkout of a repository granted the Workflows cell in Trust.</>}
           </p>
 
           {conflict && (
@@ -864,7 +876,8 @@ export function CommandLibrary({
               the last option genuinely means "as often as it ever did". */}
           <div className="wf-command-budget">
             <label htmlFor="workflow-command-max-runs">How often this Command may run</label>
-            <Tooltip label={isCodeRabbit
+            <Tooltip label={isInspector ? "Local Inspector allowance shared across this run's stages and repair rounds."
+              : isCodeRabbit
               ? "CodeRabbit allowance shared across all review gates and repair rounds in this run. Reported infrastructure failures return their slot."
               : "How many times a single workflow run may execute this Command, across every repair round and shared by every gate that runs it. Once the run has spent it, the gate is skipped with a note and CI is what still runs the command."}>
               <select
@@ -885,7 +898,8 @@ export function CommandLibrary({
               {workflowCommandRunsFact(draft.maxRuns)}, {isCodeRabbit
                 ? "shared by every gate that runs CodeRabbit. Reported infrastructure failures return their slot. "
                 : "counting only the times it actually executes and shared by every gate that runs this Command. "}
-              {isCodeRabbit
+              {isInspector ? "At the limit, the policy below decides whether to block or skip. "
+                : isCodeRabbit
                 ? "At the limit, CodeRabbit skips with a warning unless a review is still incomplete. An incomplete review blocks the run. Raise the allowance and submit a new round to continue. Retrying the same submission uses its original allowance. "
                 : "Once a workflow run has spent this budget, later gates and repair rounds skip with a note; CI still runs the command against the merge commit. "}
               Granting a run more repair rounds starts the count over.
@@ -929,7 +943,7 @@ export function CommandLibrary({
               </div>
               <p className="wf-command-hint">
                 The default is {WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot] / 60_000}
-                {" minutes"}. {isCodeRabbit ? "A timed-out review blocks as incomplete and requires explicit retry. Heartbeats do not extend this hard deadline." : "A timeout remains an infrastructure failure and follows the existing bounded retry path."}
+                {" minutes"}. {isInspector ? "A timed-out review blocks for operator action." : isCodeRabbit ? "A timed-out review blocks as incomplete and requires explicit retry. Heartbeats do not extend this hard deadline." : "A timeout remains an infrastructure failure and follows the existing bounded retry path."}
               </p>
             </div>
 
@@ -939,8 +953,8 @@ export function CommandLibrary({
                 <select
                   id="workflow-command-unavailable"
                   className="field-input"
-                  disabled={isCodeRabbit}
-                  value={isCodeRabbit ? "block" : draft.onUnavailable}
+                  disabled={isCodeRabbit || isInspector}
+                  value={isCodeRabbit || isInspector ? "block" : draft.onUnavailable}
                   onChange={(event) => setDraft((current) => ({
                     ...current,
                     onUnavailable: event.target.value as WorkflowCommandFailurePolicy,
@@ -976,7 +990,25 @@ export function CommandLibrary({
               to be split across two section hints that never mentioned each other - one
               calling the default repository-neutral, the other saying the longest match wins -
               so the rule connecting them had to be assembled by the reader. */}
-          {isCodeRabbit ? (
+          {isInspector ? (
+            <section className="wf-command-review-tuning" aria-label="Local Inspector tuning">
+              <label>Blocking severity
+                <Tooltip label="Choose the lowest severity that blocks the Pull Request action">
+                  <select className="field-input"
+                    value={draft.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY}
+                    onChange={event => setDraft(current => ({
+                      ...current, inspectorSeverity: event.target.value as WorkflowCommandView["inspectorSeverity"],
+                    }))}
+                  >
+                    {INSPECTOR_SEVERITIES.map(severity => (
+                      <option key={severity} value={severity}>{severity === "blocker" ? "Blocker only" : `${severity[0]!.toUpperCase()}${severity.slice(1)} and above`}</option>
+                    ))}
+                  </select>
+                </Tooltip>
+              </label>
+              <p className="wf-command-hint">Lower-severity findings appear in the run without blocking the Pull Request action.</p>
+            </section>
+          ) : isCodeRabbit ? (
             <section className="wf-command-review-tuning" aria-label="CodeRabbit tuning">
               <p className="wf-command-note">Either a root .coderabbit.yaml or .coderabbit.config.ts enables review, unless the YAML turns it off with reviews.auto_review.enabled: false.</p>
               <p className="wf-command-hint">Derived policy: unavailable or incomplete enabled reviews block with an error and Settings &gt; Setup link. Exhausted allowance always skips with a warning. Default base: observed origin/HEAD; otherwise set an explicit ref. Default severity: major.</p>
@@ -1201,10 +1233,10 @@ export function CommandLibrary({
 
           </>)}
           <p className="wf-command-hint wf-command-save-note">
-            Save replaces this slot's default, its whole override list, run budget, timeout,
-            and skip-or-block policies together, so the parts can never be stored apart.
+            {isInspector ? "Save applies the severity, run budget, timeout and exhaustion policy together."
+              : "Save replaces this slot's default, its whole override list, run budget, timeout, and skip-or-block policies together, so the parts can never be stored apart."}
           </p>
-        </article>
+        </article>}
       </div>
 
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}

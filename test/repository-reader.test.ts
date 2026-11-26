@@ -119,6 +119,7 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
   assert.equal(a.status, "ok");
   assert.equal(a.truncated, true);
   assert.equal(a.items.length, 2);
+  assert.equal(f.audit[0]!.readLayer, "worktree");
   assert.deepEqual(f.audit[0]!.handles[0]!.range, {
     kind: "line",
     startLine: 1,
@@ -130,6 +131,8 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
   });
   assert.equal(b.items[0]!.text, "three");
   assert.equal(b.truncated, false);
+  await reader.query("read", { path: "src/a.txt", layer: "index" });
+  assert.equal(f.audit.at(-1)!.readLayer, "index");
   assert.equal(
     (await reader.query("read", { path: "link", cursor: a.nextCursor })).code,
     "invalid_cursor",
@@ -155,6 +158,53 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
       ).code,
       "invalid_cursor",
     );
+});
+test("an opt-in read proves exact worktree absence without treating unreadable paths as removed", async (t) => {
+  const f = await fixture(t);
+  const reader = f.make();
+  const path = "src/removed[1].txt";
+  const absent = await reader.query("read", { path, verifyAbsence: true });
+  assert.equal(absent.status, "ok");
+  assert.deepEqual(absent.items, [{ path, metadata: { absent: true } }]);
+  assert.partialDeepStrictEqual(f.audit.at(-1), { readLayer: "worktree", absentWorktreePath: path, handles: [] });
+
+  const deletedPath = "src/staged-deletion.txt";
+  f.view.worktree = [...f.view.worktree, {
+    path: deletedPath, kind: "file", blob: null, binary: false, classifications: ["staged", "deleted"],
+  }];
+  const stagedDeletion = await f.make().query("read", { path: deletedPath, verifyAbsence: true });
+  assert.equal(stagedDeletion.status, "ok");
+  assert.deepEqual(stagedDeletion.items, [{ path: deletedPath, metadata: { absent: true } }]);
+  assert.partialDeepStrictEqual(f.audit.at(-1), { readLayer: "worktree", absentWorktreePath: deletedPath, handles: [] });
+
+  const inspector = f.make({ verifyWorktreeAbsenceByDefault: true });
+  for (const missingPath of [path, deletedPath]) {
+    const ordinaryRead = await inspector.query("read", { path: missingPath });
+    assert.deepEqual(ordinaryRead.items, [{ path: missingPath, metadata: { absent: true } }]);
+    assert.equal(f.audit.at(-1)?.absentWorktreePath, missingPath);
+  }
+  assert.equal((await inspector.query("read", { path, layer: "index" })).code, "unavailable");
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+
+  for (const input of [
+    { path },
+    { path, layer: "index", verifyAbsence: true },
+    { path: ".env", verifyAbsence: true },
+    { path: "src", verifyAbsence: true },
+    { path: "link/hidden.txt", verifyAbsence: true },
+  ]) {
+    assert.notEqual((await reader.query("read", input)).status, "ok", JSON.stringify(input));
+    assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+  }
+  const present = await reader.query("read", { path: "src/a.txt", start: 500, verifyAbsence: true });
+  assert.equal(present.status, "ok");
+  assert.deepEqual(present.items, []);
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+  f.view.worktree[0]!.blob = "f".repeat(40);
+  f.view.worktree[0]!.classifications.push("deleted");
+  const unavailable = await f.make({ verifyWorktreeAbsenceByDefault: true }).query("read", { path: "src/a.txt" });
+  assert.equal(unavailable.code, "unavailable");
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
 });
 test("case-insensitive search returns one context line on each side and audits that exact range", async (t) => {
   const f = await fixture(t, "first\nBefore\nNeedle\nAfter\nlast\n");

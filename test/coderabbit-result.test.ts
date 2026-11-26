@@ -3,10 +3,11 @@
 // No fixture invokes a real reviewer. Complete stdout and exit must agree independently.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS, type CodeRabbitChangedPaths } from "../src/server/workflows/coderabbit-result.ts";
+import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS } from "../src/server/workflows/coderabbit-result.ts";
+import type { ReviewChangedPaths } from "../src/server/workflows/review-comparison.ts";
 const finding = { type: "finding", severity: "major", fileName: "src/🙂.ts", title: "Verify this claim", comment: "Details", codegenInstructions: "Inspect before fixing", suggestions: ["untrusted snippet"], startLine: 1, endLine: 2 };
 const complete = { type: "complete", status: "review_completed", outcome: "completed", unreviewedFileCount: 0, findings: 1, gate: { threshold: "major", status: "blocked", blockingFindings: 1 } };
-function parse(events: unknown[], exit = 2, empty = false, paths: CodeRabbitChangedPaths | null = null) {
+function parse(events: unknown[], exit = 2, empty = false, paths: ReviewChangedPaths | null = null) {
   const parser = new CodeRabbitResultParser("attempt", "major", paths);
   parser.push(Buffer.from(events.map(e=>JSON.stringify(e)).join("\n")+"\n"));
   return parser.finish(exit, empty);
@@ -104,7 +105,7 @@ const reviewedFilesComplete = { type: "complete", status: "review_completed", fi
   gate: { threshold: "major", status: "passed", blockingFindings: 0 },
   reviewedFiles: ["docs/task-read.md", "internal/service/task_read.go", "openapi/openapi.yaml"],
   outcome: "completed", message: "Review completed" };
-const changed: CodeRabbitChangedPaths = { required: ["docs/task-read.md", "internal/service/task_read.go", "openapi/openapi.yaml"],
+const changed: ReviewChangedPaths = { required: ["docs/task-read.md", "internal/service/task_read.go", "openapi/openapi.yaml"],
   allowed: ["docs/task-read.md", "internal/service/task_read.go", "openapi/openapi.yaml"] };
 test("a reviewedFiles completion that covers exactly the pinned comparison passes", () => {
   const r = parse([{ type: "heartbeat", status: "reviewing" }, reviewedFilesComplete], 0, false, changed);
@@ -126,7 +127,7 @@ test("reviewedFiles that miss a changed file, or name one outside the comparison
   assert.match(outside.diagnostic, /0 of 3 changed files not reviewed, 1 reviewed files outside/);
 });
 test("deleted and renamed-away paths may be reviewed but are never required", () => {
-  const paths: CodeRabbitChangedPaths = { required: ["src/new.ts"], allowed: ["src/new.ts", "src/old.ts"] };
+  const paths: ReviewChangedPaths = { required: ["src/new.ts"], allowed: ["src/new.ts", "src/old.ts"] };
   for (const reviewedFiles of [["src/new.ts"], ["src/new.ts", "src/old.ts"]]) {
     assert.equal(parse([{ ...reviewedFilesComplete, reviewedFiles }], 0, false, paths).status, "passed");
   }

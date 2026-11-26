@@ -1,4 +1,6 @@
-import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { LocalInspectorReviewSchema } from "@shared/inspector-review.ts";
+import { workflowCommandName } from "@shared/workflow.ts";
+import { LOCAL_INSPECTOR_FLAG_ID, PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { repositoryCitationLabel } from "@shared/repository-access.ts";
 import { RepositoryQueryHistory, type RepositoryCitation } from "./RepositoryQueryHistory.tsx";
@@ -478,6 +480,17 @@ function CodeRabbitReview({ summary }: { summary: import("@shared/workflow.ts").
   </div>;
 }
 
+function LocalInspectorReviewDetails({ value }: { value: unknown }): React.JSX.Element | null {
+  const preview = useFeatureFlag(LOCAL_INSPECTOR_FLAG_ID);
+  const parsed = LocalInspectorReviewSchema.safeParse(value);
+  if (!preview || !parsed.success) return null;
+  const review = parsed.data;
+  return <div className="wf-run-review-summary">
+    {(review.status === "passed" || review.status === "failed") && <p>Reviewed the submitted worktree with read-only repository access.</p>}
+    <p>Blocking severity: {review.blockingSeverity} and above · {review.findingCount} unresolved {review.findingCount === 1 ? "finding" : "findings"}</p>
+  </div>;
+}
+
 function CheckCard({
   runId,
   attempt,
@@ -490,7 +503,7 @@ function CheckCard({
   const view = checkStatusView(outcome.status);
   const chip = checkChip(outcome);
   const parts = [
-    outcome.command ? formatCheckCommand(outcome.command) : outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
+    outcome.slot === "inspector" ? null : outcome.command ? formatCheckCommand(outcome.command) : outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
     outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
     outcome.timeoutMs === null ? null : `timeout ${outcome.timeoutMs / 60_000} min`,
     `attempt ${attempt.attempt}`,
@@ -500,16 +513,17 @@ function CheckCard({
     <article className={`wf-run-card wf-run-check is-${outcome.status}`}>
       <header className="wf-run-card-head">
         <span className={`workflow-chip workflow-${chip.tone}`}>{chip.label}</span>
-        <strong>Command · {outcome.slot}</strong>
+        <strong>Command · {workflowCommandName(outcome.slot)}</strong>
       </header>
       <p className="wf-run-summary" role={outcome.warning ? "status" : undefined}>{outcome.note}</p>
       {outcome.diagnosticError && <p role="alert" className="wf-error">Error: {outcome.diagnosticError}</p>}
       {outcome.review && <CodeRabbitReview summary={outcome.review} />}
+      {outcome.localInspector && <LocalInspectorReviewDetails value={outcome.localInspector} />}
 
-      <p className="wf-run-check-sentence">{outcome.slot === "coderabbit" && ["skipped", "budget_spent"].includes(outcome.status) ? "CodeRabbit did not complete a review. See the recorded warning and configuration." : view.sentence}</p>
+      {outcome.slot !== "inspector" && <p className="wf-run-check-sentence">{outcome.slot === "coderabbit" && ["skipped", "budget_spent"].includes(outcome.status) ? "CodeRabbit did not complete a review. See the recorded warning and configuration." : view.sentence}</p>}
       {outcome.output && (
         <div className="wf-run-card-body">
-          <h5>Command output</h5>
+          <h5>{outcome.slot === "inspector" ? "Local Inspector findings" : "Command output"}</h5>
           {/* The TAIL, which is what the runner kept: a build prints its failure last. The
               omitted count is stated rather than implied by an ellipsis, so nobody reads a
               bounded log as the whole one. */}
@@ -773,6 +787,7 @@ function AttemptCard({
       <ErrorLine raw={attempt.error} />
       {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.setup === true && <Tooltip label="Inspect CodeRabbit installation, version and stored authentication"><a href="#/settings/setup">Settings &gt; Setup</a></Tooltip>}
       {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.review && <CodeRabbitBlockedReview value={attempt.output.review} />}
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.localInspector && <LocalInspectorReviewDetails value={attempt.output.localInspector} />}
       <RetainedCommandOutput
         runId={runId}
         attemptId={attempt.id}
@@ -1029,7 +1044,8 @@ function WorklistRailRow({
           lines: [
             item.outcome.command
               ? formatCheckCommand(item.outcome.command)
-              : item.outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
+              : item.outcome.slot === "inspector" ? "Worktree review"
+                : item.outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
             ...(item.outcome.exitCode === null ? [] : [`exit ${item.outcome.exitCode}`]),
           ],
         };

@@ -26,6 +26,7 @@ const LaunchSchema = z.strictObject({
   budgets: RepositoryBudgetsSchema,
   auditPath: z.string(),
   deadline: z.number().int().positive(),
+  verifyWorktreeAbsenceByDefault: z.literal(true).optional(),
 });
 const launch = LaunchSchema.parse(
   JSON.parse(await readFile(process.env.REPOSITORY_MCP_DESCRIPTOR!, "utf8")),

@@ -1688,6 +1688,53 @@ test("an unparseable shaping.signIn that app_config also refuses to rewrite: kep
   assert.ok(h.warnings.some((warning) => warning.includes("could not be saved")), "and so is the refused rewrite");
 });
 
+test("a sign-out while overflow cleanup is in flight keeps the mark, so a record that sign-out could not list stays covered", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const stale = seededRecord(fake, 0, "fake-seeded-client-0", "mcp:seed-0");
+  await records.write(stale.id, stale.record);
+  const regs = memoryRegistrations();
+  // A full list and the mark set: the start's cleanup removes every stored record, then may clear the mark.
+  const listed = Array.from({ length: SHAPING_SIGNED_OUT_CONNECTIONS }, (_, n) => n.toString(16).padStart(32, "0"));
+  regs.raw = { clients: [], signedOut: listed, signedOutOverflow: true };
+  const store = controlledStore("memory", records);
+  const a = target(fake);
+  const idA = connectionId(a);
+  // Every removal waits until released; then A's is refused and the rest succeed.
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
+  let removing!: () => void;
+  const removalStarted = new Promise<void>((done) => { removing = done; });
+  store.store.remove = async (removeId) => {
+    store.calls.push(`remove ${removeId}`);
+    removing();
+    await gate;
+    if (removeId === idA) throw new SignInStoreError("remove", -25308);
+    return records.remove(removeId);
+  };
+  const h = await harness(t, { fake, store, regs, inUse: [use(a)], start: false });
+  h.svc.start();
+  await removalStarted;
+
+  // With the cleanup held, A signs in and out. The list is full, so A's sign-out can only rely on the mark.
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  assert.equal((await h.svc.complete(callback(back))).ok, true);
+  assert.ok(await records.read(idA), "A's record is stored");
+  const signingOut = h.svc.signOut(idA);
+  assert.equal(regs.read()?.signedOut.includes(idA), false, "A could not be listed");
+  release();
+  await signingOut;
+  await settle(h);
+  assert.equal(await records.read(stale.id), null, "the cleanup's own removals succeeded");
+  assert.ok(await records.read(idA), "A's removal was refused");
+  assert.equal(regs.read()?.signedOutOverflow, true, "a sign-out during the cleanup keeps the mark");
+
+  const second = await restarted(t, h, records, [use(a)], { failRemoves: true });
+  assert.ok(!second.store.calls.includes(`read ${idA}`));
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "so A's record never loads again");
+});
+
 test("shaping.signIn in app_config: a missing row is empty, an older value gains empty lists, and a row that does not parse is unreadable", () => {
   openDb().exec("DELETE FROM app_config");
   assert.deepEqual(appConfigSignInRegistrations.read(), { clients: [], signedOut: [], signedOutOverflow: false });

@@ -1802,7 +1802,8 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
 // author's next idle must be judged against the reviewed commit itself, across a restart.
 const INSPECTOR_REPAIR_CASES = ["unchanged", "independent later cycle", "edited after repair", "head moved after repair",
   "human instruction", "unresolvable repair commit", "checkout edited during claim", "changed sibling",
-  "repair replaced another head", "retained report unchanged", "retained report rewritten"] as const;
+  "repair replaced another head", "retained report unchanged", "retained report rewritten",
+  "checkout revision unavailable"] as const;
 for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
   test(`final idle handoff after a clean Inspector-only repair: ${next}`, async (t) => {
     const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
@@ -1818,6 +1819,7 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
     // The reviewed publication's captured head names a different commit than the one the first
     // Inspector-only round replaced. Everything else about the terminal repair stays clean.
     let otherPublishedHead = false;
+    let revisionUnavailable = false;
     // The reviewed publication retained a local report outside Git. The checkout read below
     // honors the artifacts the manager hands it, the way `captureWorktreeTree` does.
     const retainsReport = next.startsWith("retained report");
@@ -1835,6 +1837,7 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
       resolveCommit: async (_root, headSha) => FULL_COMMIT.test(headSha) ? headSha
         : h.full(otherPublishedHead && headSha === "published" ? "another-published" : headSha),
       localReport: retainsReport,
+      publicationCheckoutRevision: () => revisionUnavailable ? null : h.contentTree.oid,
       readPublishedCheckout: async (checkout, options) => {
         checkoutReads.push(checkout);
         const localArtifacts = (options?.localArtifacts ?? []).map(({ path, sha256 }) => ({ path, sha256 }));
@@ -1935,6 +1938,7 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
       if (next === "changed sibling") h.registry.recordWorktreeHeads(new Map([[sibling, h.full("changed")]]));
       editDuringRead = next === "checkout edited during claim";
       otherPublishedHead = next === "repair replaced another head";
+      revisionUnavailable = next === "checkout revision unavailable";
       if (next === "retained report rewritten") reportBytes = "report rewritten after review";
       h.runActionTurn();
       const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
@@ -1955,8 +1959,9 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
         assert.deepEqual(artifactsRead, [[{ path: reportPath, sha256: createHash("sha256").update("report").digest("hex") }]],
           "the claim must set aside exactly the reviewed publication's retained report at its recorded bytes");
       }
-      const provedFromRepository = () => assert.deepEqual(checkoutReads, next === "human instruction" ? [] : ["/repo"],
-        "only the matching intent reaches the exact-commit repository proof");
+      const provedFromRepository = () => assert.deepEqual(checkoutReads,
+        next === "human instruction" || next === "checkout revision unavailable" ? [] : ["/repo"],
+        "only a matching intent with a readable checkout revision reaches the exact-commit repository proof");
       if (!owned) {
         assert.notEqual(result.runId, runId, `${next} must earn an ordinary review`);
         provedFromRepository();

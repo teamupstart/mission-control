@@ -4205,8 +4205,10 @@ export class WorkflowManager {
     const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
     const owner = { bindingId: binding.id, runId: run.id };
     if (repair) {
+      // Without a first revision the handoff can never be reused, so skip the Git reads.
+      if (before === null) return Promise.resolve({ ...owner, stillMatches: () => false });
       return this.inspectorRepairMatches(checkout, evidence.headSha, repair, retained).then(
-        matches => ({ ...owner, stillMatches: (until: number) => before !== null && matches && revision(checkout, retained, until) === before }),
+        matches => ({ ...owner, stillMatches: (until: number) => matches && revision(checkout, retained, until) === before }),
         () => ({ ...owner, stillMatches: () => false }),
       );
     }

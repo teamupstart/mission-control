@@ -1,10 +1,44 @@
-import { useCallback, useEffect, useState } from "react";
-import { canonicalJson, type DiscoveredShaper, type ShapingFolderStatus, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
-import type { ShapingWriteOutcome } from "../lib/shaping-settings.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SHAPER_SIGN_IN_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import {
+  canonicalJson,
+  type DiscoveredShaper,
+  type ShapingFolderStatus,
+  type ShapingIntent,
+  type ShapingReferenceStatus,
+  type ShapingSignInView,
+} from "@shared/shaping.ts";
+import {
+  signInControlConnection,
+  signInControlSubject,
+  signInLinkFor,
+  signInLinkHeld,
+  signInLinksAfter,
+  signInMovedSince,
+  signInMovesAfter,
+  signInMovesSince,
+  signInRefusalsAfter,
+  signInUrlOpenable,
+  type ShaperSignInLink,
+  type ShaperSignInRefusal,
+  type SignInMoves,
+  type ShapingWriteOutcome,
+} from "../lib/shaping-settings.ts";
 import { api, fetchRepos } from "../lib/api.ts";
+import { openExternal } from "../lib/open-external.ts";
+import { NO_SHAPING_SIGN_INS } from "../lib/shaping-sign-ins.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import type { ShapingSettings } from "../useShapingSettings.ts";
 import type { ShapingTestRunner } from "./TaskShapingDialogs.tsx";
-import { TaskShapingView } from "./TaskShapingView.tsx";
+import { TaskShapingView, type ShaperSignInProps } from "./TaskShapingView.tsx";
+
+/** What a row says when the daemon's sign-in link is not one the dashboard may open. */
+export const SIGN_IN_URL_REFUSED = "The daemon's sign-in link is not https or this machine's loopback, so it was not opened. Start again, or check the shaper's server.";
+
+/** A refusal's sentence: the daemon's fixed reason, or what the request met when it had none. */
+function refusalText(reply: { reason?: string; error?: string }, what: string): string {
+  return reply.reason ?? `The ${what} did not go through: ${reply.error ?? "no answer"}.`;
+}
 
 /**
  * Settings > Task shaping. The config is the event stream's, through `useShapingSettings`, so
@@ -12,7 +46,11 @@ import { TaskShapingView } from "./TaskShapingView.tsx";
  * daemon's machine rather than the config: whether each named environment variable is set, never
  * a value, and what the shapers folder holds. It is asked again whenever the config changes.
  */
-export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.JSX.Element {
+export function TaskShapingPanel({ state, signIns = NO_SHAPING_SIGN_INS }: {
+  state?: ShapingSettings;
+  /** The daemon's sign-in list, the event stream's: empty while `shaper-sign-in` is off. */
+  signIns?: readonly ShapingSignInView[];
+}): React.JSX.Element {
   const config = state?.config ?? null;
   const ready = state?.ready ?? false;
   const [references, setReferences] = useState<ShapingReferenceStatus>({});
@@ -53,6 +91,7 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
     return reply.ok && Array.isArray(reply.discovered) ? reply.discovered.map((entry) => entry.id) : null;
   }, []);
   const onTest = useCallback<ShapingTestRunner>((request, signal) => api.testShaper(request, signal), []);
+  const signIn = useShaperSignIn(signIns);
   const repositories = useCallback(() => fetchRepos(), []);
   return (
     <TaskShapingView
@@ -73,6 +112,92 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
       readFolderIds={readFolderIds}
       discovered={discovered}
       folder={folder}
+      signIn={signIn}
     />
   );
+}
+
+/**
+ * Shaper sign-in as this window holds it. The list is the daemon's; what is this window's own is
+ * the authorization link of each sign-in it started, kept until the list shows that sign-in in
+ * another state, which a reload drops too, and each control's request in flight and refusal. The
+ * dashboard opens the link; the daemon never starts a browser.
+ */
+function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInProps {
+  const enabled = useFeatureFlag(SHAPER_SIGN_IN_FLAG_ID);
+  const [held, setHeld] = useState<Readonly<Record<string, ShaperSignInLink>>>({});
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const [refusals, setRefusals] = useState<Readonly<Record<string, ShaperSignInRefusal>>>({});
+  // A link lives only while its sign-in is pending, so each new list may end some.
+  const shown = enabled ? signIns : NO_SHAPING_SIGN_INS;
+  // The list as it is now, for a reply that lands after the event it follows.
+  const latest = useRef(shown);
+  latest.current = shown;
+  // Each connection's state changes, counted over every list this window has drawn, so a reply
+  // can tell what happened while its request was in flight. Advanced once per new list, so a
+  // second render of the same list counts nothing.
+  const moves = useRef<{ list: readonly ShapingSignInView[]; moves: SignInMoves }>({ list: shown, moves: {} });
+  if (moves.current.list !== shown) moves.current = { list: shown, moves: signInMovesAfter(moves.current.moves, moves.current.list, shown) };
+  useEffect(() => { setHeld((current) => signInLinksAfter(current, shown)); }, [shown]);
+  // A refusal describes its connection as it was: once another window, a refresh or an expiry
+  // moves that connection on, the row shows the new state without the old refusal beside it.
+  useEffect(() => { setRefusals((current) => signInRefusalsAfter(current, shown)); }, [shown]);
+  const begin = useCallback((key: string): void => {
+    setBusy((current) => new Set(current).add(key));
+    setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
+  }, []);
+  /**
+   * Ends a control's request, sent when the counts were `sent`. A refusal is shown against the
+   * connection's state now, or against `subject` when the refusal expects a state the list has
+   * yet to show. A refusal whose connection changed state while the request was in flight, such
+   * as a sign-out another window made meanwhile, no longer describes the row and is not shown.
+   */
+  const settle = useCallback((key: string, error: string | null, sent: SignInMoves, subject?: string): void => {
+    setBusy((current) => { const next = new Set(current); next.delete(key); return next; });
+    if (error === null) return;
+    if (subject === undefined && signInMovedSince(sent, moves.current.moves, signInControlConnection(latest.current, key))) return;
+    const refusal: ShaperSignInRefusal = { text: error, subject: subject ?? signInControlSubject(latest.current, key) };
+    setRefusals((current) => ({ ...current, [key]: refusal }));
+  }, []);
+  const onSignIn = useCallback((shaper: string, key: string): void => {
+    begin(key);
+    // The counts as the request went out, so the reply can tell whether the sign-in moved on,
+    // and perhaps back, while it was in flight.
+    const sent = moves.current.moves;
+    void api.signInShaper(shaper).then((reply) => {
+      if (!reply.ok || !reply.authorizationUrl || !reply.connection) {
+        settle(key, refusalText(reply, "sign-in"), sent);
+        return;
+      }
+      const { authorizationUrl, connection } = reply;
+      const link = signInLinkFor(latest.current, connection, authorizationUrl, signInMovesSince(sent, moves.current.moves, connection));
+      if (!signInUrlOpenable(authorizationUrl)) {
+        // The daemon did start this sign-in, so the refusal stands while it is pending and goes
+        // once it lapses or is cancelled, whichever of its event and this reply came first. One
+        // already over when the reply lands has nothing left to refuse.
+        settle(key, link ? SIGN_IN_URL_REFUSED : null, sent, `${connection}|pending`);
+        return;
+      }
+      setHeld((current) => signInLinkHeld(current, connection, link));
+      settle(key, null, sent);
+      // A sign-in that is already over has no page worth opening.
+      if (link) void openExternal(authorizationUrl);
+    });
+  }, [begin, settle]);
+  const onSignOut = useCallback((connection: string, key: string): void => {
+    begin(key);
+    const sent = moves.current.moves;
+    void api.signOutShaper(connection).then((reply) => {
+      if (reply.ok) setHeld((current) => { const next = { ...current }; delete next[connection]; return next; });
+      settle(key, reply.ok ? null : refusalText(reply, "sign-out"), sent);
+    });
+  }, [begin, settle]);
+  const onOpen = useCallback((url: string): void => {
+    if (signInUrlOpenable(url)) void openExternal(url);
+  }, []);
+  const links = useMemo(() => Object.fromEntries(Object.entries(held).map(([connection, link]) => [connection, link.url])), [held]);
+  const errors = useMemo(() => Object.fromEntries(Object.entries(refusals).map(([key, refusal]) => [key, refusal.text])), [refusals]);
+  return useMemo(() => ({
+    enabled, signIns: enabled ? signIns : NO_SHAPING_SIGN_INS, links, busy, errors, onSignIn, onSignOut, onOpen,
+  }), [enabled, signIns, links, busy, errors, onSignIn, onSignOut, onOpen]);
 }

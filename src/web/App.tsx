@@ -415,6 +415,7 @@ export function App(): React.JSX.Element {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    shapingSignIns,
     voice,
     voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
@@ -5506,6 +5507,7 @@ export function App(): React.JSX.Element {
               voiceConfig={voiceConfig}
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
+              shapingSignIns={shapingSignIns}
               reportMutes={reportMutes}
               voice={voice}
               sessions={sessions}

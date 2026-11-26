@@ -652,6 +652,9 @@ never cleared by the earlier save's late answer.
   dialog stops the run. A shaper just imported here can be dry-run once the daemon has answered
   for it, never on the drawing shown before that. If another window replaces or removes the shaper while the dialog is
   open, the dialog says so and will not run.
+- **Sign in.** A shaper that carries the `auth` marker shows its sign-in under its **Signs in**
+  line, with **Sign in** and **Sign out**, while `shaper-sign-in` is on.
+  [Signing in from Settings](#signing-in-from-settings) has every state.
 - **Remove** asks once more, then deletes the shaper's stored definition and its on or off
   choice. The confirmation closes if another window replaces the shaper first. When a shaper in
   the folder has the same id, the confirmation says it stays switched off.
@@ -1056,7 +1059,8 @@ shaper calls: the import review and the shaper's row show **Signs in** with the 
 authorization server's origin, and "What it is sent" names the access token and that it goes
 only to the server's origin.
 
-A sign-in is made through [the API](#signing-in-over-the-api), and a marked shaper asks
+A sign-in is made [from Settings](#signing-in-from-settings) or through
+[the API](#signing-in-over-the-api), and a marked shaper asks
 Mission Control's sign-in service for its token on every call. The answer is read from the
 daemon's memory, so a call never waits on the network or the Keychain for it, and the call
 never starts a sign-in. What the call does, for every state of
@@ -1100,6 +1104,67 @@ accepts the marker whatever the flag says.
 
 An older build that reads a marked shaper does not know `auth`, so it lists the shaper as
 unsupported, keeps it on every write and never calls it.
+
+#### Signing in from Settings
+
+While `shaper-sign-in` is on, each row in **Settings > Task shaping** whose shaper carries the
+marker shows its sign-in under the **Signs in** line, a registered shaper's and a folder
+shaper's alike. A folder shaper shadowed by a registered one of the same id has none: a sign-in
+started for that id is the registered shaper's. A row's sign-in is the connection whose
+`shapers` names it, and a marked shaper with none yet reads as signed out. Each state follows
+the [sign-in list](#signing-in-over-the-api) live, so a sign-in finished in another tab, a
+refresh that fails and an expiry show with no reload.
+
+| State | The row says | Controls |
+| --- | --- | --- |
+| Signed out | "Not signed in.", and the reason when there is one | **Sign in** |
+| Pending, started in this window | "Waiting for the browser." | **Open the sign-in page**, **Copy link**, **Cancel sign-in** |
+| Pending, started elsewhere | "Waiting for the browser. Started in another window, or before this page was reloaded." | **Sign in**, **Cancel sign-in** |
+| Signed in, kept in the Keychain | "Signed in. Kept in the macOS Keychain." | **Sign out** |
+| Signed in, kept in memory | "Signed in until Mission Control restarts. Kept in memory.", and the reason when there is one | **Sign out** |
+| Being renewed | "Renewing the sign-in.", and the reason | **Sign in**, **Sign out** |
+
+- **Sign in** asks the daemon to start a sign-in, then the dashboard opens the authorization
+  URL from the reply: in the desktop app in your default browser, in a browser in a new tab.
+  The daemon never starts a browser. The dashboard opens the URL only when it is `https:`, or
+  plain `http:` to this machine's loopback; any other is refused in the row. A refusal of the
+  start, such as the 409 when every client registration is in use, is shown in the row with
+  the daemon's reason. The authorization server sends the browser to the
+  [callback page](#signing-in-over-the-api), which says the sign-in is done, and the row turns
+  to signed in.
+- **Open the sign-in page** and **Copy link** use that same URL, to open it again or in another
+  browser. Only the window that started the sign-in has it: the sign-in list never carries the
+  authorization URL, and a reload drops it. A sign-in already open in a browser tab still
+  finishes there, and the row shows the result when it arrives.
+- **Sign in** on a pending row starts a new sign-in, which replaces the pending one, so the
+  link the earlier one opened stops working. The sign-in list does not say which attempt a
+  pending sign-in is, so a window whose sign-in another window replaced still offers its own
+  link. That link then ends on the callback's "The sign-in did not finish." page, and
+  **Sign in** starts again.
+- **Cancel sign-in** and **Sign out** end the connection's sign-in: a pending one is dropped,
+  and a held one's tokens are removed from where they are kept and revoked at the server.
+  Every shaper that shares the connection is signed out with it.
+- **Sign-ins no shaper uses**, under the shapers, lists each sign-in no known shaper names,
+  such as one whose shaper was removed or whose scope changed, with its URL and scope and a
+  **Sign out**. Such a sign-in is not renewed. The list is not drawn when there is none.
+- While `shaper-sign-in` is off a marked row has no control and says instead that sign-in is
+  switched off, naming the flag. The row follows the flag live. Switching it off deletes no
+  sign-in.
+
+What a restart costs depends on where the sign-in is kept. A sign-in **kept in the macOS
+Keychain** outlives a daemon restart, a desktop app restart and a reboot: the daemon reads it
+back when the two flags are on and refreshes it when its access token has expired. A sign-in
+**kept in memory**, which is every sign-in off macOS, every one while
+[`MISSION_SHAPER_SIGN_IN_STORE`](configuration.md#shaper-sign-in-storage) is `memory`, and one
+the Keychain refused, ends when the daemon stops, and the row reads "Not signed in." after the
+restart. [Where a shaper sign-in is kept](security.md#where-a-shaper-sign-in-is-kept) says what
+is stored and how to remove it.
+
+The redirect URI names the daemon's port, `http://127.0.0.1:PORT/api/shaping/sign-in/callback`.
+A dashboard reached through a port forward, such as `ssh -L`, signs in only when the forward
+keeps the daemon's port number on the machine with the browser, so the authorization server's
+redirect reaches the daemon. A forward to another local port leaves the browser on a callback
+that nothing answers.
 
 #### Signing in over the API
 

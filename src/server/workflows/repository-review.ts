@@ -216,12 +216,24 @@ export class RepositoryReview {
     let events: AsyncIterator<PersonaWorkloadEvent> | undefined;
     let streamFinished = false;
     let sequence = 0;
+    // The last sequence actually recorded, and whether a provider return is among them.
+    let recorded = 0;
+    let returnRecorded = false;
     let queriedRepository = false;
     const inspectedPaths = new Set<string>();
-    let stage: "new" | "accepted" | "repository_verified" | "persona_started" | "cancelled" = "new";
+    let stage: WorkloadStage = "new";
+    // The stage as of the last recorded event: where a replayed return witness must resume.
+    let recordedStage: WorkloadStage = "new";
     try {
       signal.throwIfAborted();
-      events = executor.dispatch(request, signal)[Symbol.asyncIterator]();
+      events = executor.dispatch(request, signal, {
+        // Synchronous and durable: an in-process executor's return survives this process.
+        // The store refuses an event naming another workload or attempt.
+        returned: (event, history) => {
+          const parsed = this.orderedSinkReturn(request, event, history);
+          this.store.recordRepositoryReturn(request, parsed, eventHash(parsed));
+        },
+      })[Symbol.asyncIterator]();
       while (true) {
         const next = await untilAbort(events.next(), signal);
         if (next.done) {
@@ -230,38 +242,19 @@ export class RepositoryReview {
         }
         const event = PersonaWorkloadEventSchema.parse(next.value);
         if (event.workloadId !== id || event.attemptId !== input.attemptId) throw new Error("Repository event identity mismatch");
-        const hash = createHash("sha256").update(canonicalJson(event)).digest("hex");
+        const hash = eventHash(event);
         if (event.sequence <= sequence) {
           const prior = this.store.repositoryEventHash(id, event.sequence);
           if (prior === hash) continue;
           throw new Error("Conflicting repository event");
         }
         if (terminal || event.sequence !== ++sequence) throw new Error("Repository event sequence mismatch");
-        switch (event.type) {
-          case "accepted":
-            if (stage !== "new") throw new Error("Unexpected repository acceptance");
-            stage = event.type;
-            break;
-          case "repository_verified":
-            if (stage !== "accepted") throw new Error("Unexpected repository verification");
-            stage = event.type;
-            break;
-          case "persona_started":
-            if (stage !== "repository_verified") throw new Error("Repository reviewer started before verification");
-            stage = event.type;
-            break;
-          case "repository_query":
-            if (stage !== "persona_started") throw new Error("Repository query outside provider execution");
-            break;
-          case "cancelled":
-            stage = event.type;
-            break;
-          case "terminal":
-            if (event.result.status === "completed" && stage !== "persona_started") throw new Error("No verified repository execution");
-            break;
-        }
+        stage = advanceWorkloadStage(stage, event);
         signal.throwIfAborted();
         this.store.recordRepositoryEvent(request, event, hash, () => Boolean(this.current(id)));
+        recorded = event.sequence;
+        recordedStage = stage;
+        if (event.type === "persona_returned") returnRecorded = true;
         if (event.type === "repository_query" && ["unavailable","audit_unavailable","budget_exhausted","timeout","cancelled"].includes(event.audit.code ?? ""))
           throw new Error(`Repository query failed: ${event.audit.code}`);
         if (event.type === "repository_query" && event.audit.status === "ok" && event.audit.items > 0) {
@@ -303,7 +296,13 @@ export class RepositoryReview {
       // Iterator teardown may itself wait for the provider. Request cancellation before closing it.
       if (!streamFinished || !terminal) cancel.abort();
       signal.removeEventListener("abort", stop);
-      await this.closeDispatch(streamFinished ? undefined : events, stopping);
+      try {
+        await this.closeDispatch(streamFinished ? undefined : events, stopping);
+      } finally {
+        // An abort, a rejected event or an expired grant can stop the in-order loop after the
+        // provider returned but before that return was recorded. Its execution was still spent.
+        if (!streamFinished && !returnRecorded && !terminal) await this.keepReturnWitness(executor, request, recorded, recordedStage);
+      }
       if (!this.injected) await this.finishLocal(id, service);
       else if (stopping) {
         const status = await untilAbort(executor.reconcile(id, 0), AbortSignal.timeout(cleanupTimeoutMs));
@@ -315,6 +314,66 @@ export class RepositoryReview {
     }
     if (verdictJson === undefined) throw new Error("Repository workload ownership expired before verdict acceptance");
     return verdictJson;
+  }
+
+  /**
+   * Record a provider return the supervisor stopped reading before it could record in order.
+   * Best effort against the executor's replay, which a closed local stream already holds in full.
+   * The replay resumes from the last recorded event and must pass the same identity, contiguous
+   * sequence and stage rules as the live stream, and it ends at a terminal result, so a return
+   * the supervisor would have refused (reported before the provider started, or after the
+   * terminal result) is never charged. The witness only
+   * ever spends an execution; it never accepts a verdict or evidence.
+   */
+  private async keepReturnWitness(executor: PersonaWorkloadExecutor, request: PersonaWorkloadRequest,
+    after: number, from: WorkloadStage) {
+    try {
+      const replay = await untilAbort(executor.reconcile(request.workloadId, after), AbortSignal.timeout(cleanupTimeoutMs));
+      if (replay.workloadId !== request.workloadId) return;
+      let stage = from, sequence = after;
+      for (const raw of replay.events) {
+        const event = PersonaWorkloadEventSchema.parse(raw);
+        if (event.workloadId !== request.workloadId || event.attemptId !== request.attemptId) return;
+        if (event.sequence <= sequence) continue;
+        if (event.sequence !== sequence + 1) return;
+        sequence = event.sequence;
+        // Nothing follows a terminal result, as in the live stream: a return reported after
+        // one cannot charge a provider that the terminal result already settled.
+        if (event.type === "terminal") return;
+        stage = advanceWorkloadStage(stage, event);
+        if (event.type === "persona_returned") {
+          this.store.recordRepositoryReturn(request, event, eventHash(event));
+          return;
+        }
+      }
+    } catch {
+      workflowLog("warn", { event: "repository_return_witness_unavailable", call: request.workloadId });
+    }
+  }
+
+  /**
+   * Hold a sink return to the live stream's rule before it can charge anything. The executor's
+   * history must be this workload's own contiguous events from the first, agree with every
+   * event already recorded, contain no terminal result, and leave the provider started: the
+   * same `advanceWorkloadStage` check that refuses a return before the start or after the end.
+   */
+  private orderedSinkReturn(request: PersonaWorkloadRequest, event: unknown, history: readonly unknown[] | undefined) {
+    const parsed = PersonaWorkloadEventSchema.parse(event);
+    if (parsed.type !== "persona_returned") throw new Error("Repository return sink received another event");
+    if (!Array.isArray(history)) throw new Error("Repository return sink received no event history");
+    let stage: WorkloadStage = "new";
+    for (const [index, raw] of history.entries()) {
+      const prior = PersonaWorkloadEventSchema.parse(raw);
+      if (prior.workloadId !== request.workloadId || prior.attemptId !== request.attemptId)
+        throw new Error("Repository event identity mismatch");
+      if (prior.sequence !== index + 1 || prior.type === "terminal") throw new Error("Repository event sequence mismatch");
+      const recorded = this.store.repositoryEventHash(request.workloadId, prior.sequence);
+      if (recorded !== undefined && recorded !== eventHash(prior)) throw new Error("Conflicting repository event");
+      stage = advanceWorkloadStage(stage, prior);
+    }
+    if (parsed.sequence !== history.length + 1) throw new Error("Repository event sequence mismatch");
+    advanceWorkloadStage(stage, parsed);
+    return parsed;
   }
 
   private async closeDispatch(events: AsyncIterator<PersonaWorkloadEvent> | undefined, stopping: Promise<void> | undefined) {
@@ -336,6 +395,40 @@ export class RepositoryReview {
       this.store.markRepositoryCancellationPending(id, 1);
       throw error;
     }
+  }
+}
+
+function eventHash(event: PersonaWorkloadEvent) {
+  return createHash("sha256").update(canonicalJson(event)).digest("hex");
+}
+
+type WorkloadStage = "new" | "accepted" | "repository_verified" | "persona_started" | "persona_returned" | "cancelled";
+
+/** The one ordering rule for workload events, applied to the live stream and to replay alike. */
+function advanceWorkloadStage(stage: WorkloadStage, event: PersonaWorkloadEvent): WorkloadStage {
+  switch (event.type) {
+    case "accepted":
+      if (stage !== "new") throw new Error("Unexpected repository acceptance");
+      return event.type;
+    case "repository_verified":
+      if (stage !== "accepted") throw new Error("Unexpected repository verification");
+      return event.type;
+    case "persona_started":
+      if (stage !== "repository_verified") throw new Error("Repository reviewer started before verification");
+      return event.type;
+    case "persona_returned":
+      if (stage !== "persona_started") throw new Error("Repository reviewer returned before it started");
+      return event.type;
+    case "repository_query":
+      // The audit journal drains its last records after the provider returns.
+      if (stage !== "persona_started" && stage !== "persona_returned") throw new Error("Repository query outside provider execution");
+      return stage;
+    case "cancelled":
+      return event.type;
+    case "terminal":
+      // A completed verdict without a recorded return could never be charged.
+      if (event.result.status === "completed" && stage !== "persona_returned") throw new Error("No verified repository execution");
+      return stage;
   }
 }
 

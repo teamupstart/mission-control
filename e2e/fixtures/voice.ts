@@ -71,7 +71,6 @@ export async function reportVoiceHold(
   await response.body?.cancel();
 }
 
-/** A shortcut report the daemon refused, with its status and reply. */
 class VoiceShortcutReportError extends Error {
   constructor(readonly status: number, readonly reply: string) {
     super(`Voice shortcut report failed: ${status} ${reply}`);

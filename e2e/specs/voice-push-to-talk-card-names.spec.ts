@@ -11,11 +11,6 @@ import type { Session } from "../../src/shared/types.ts";
 import type { VoiceState } from "../../src/shared/voice.ts";
 
 /**
- * Spoken names on cards while voice can hear: a resident is titled by its quoted reference name
- * and a session by its call sign, in Always-on while it listens and in Push-to-talk both between
- * holds and during one, since the next hold may address any agent. Muted Always-on, voice off and
- * an agent with no spoken name keep the ordinary titles.
- *
  * No model tokens are spent: the agent binaries are faked (`e2e/fixtures/fake-agents.ts`), the
  * listener is the hello-only stand-in, and the desktop shortcut is a shell report.
  */
@@ -68,7 +63,6 @@ async function voiceState(daemon: DaemonHandle): Promise<VoiceState> {
   return (await request<{ state: VoiceState }>(daemon, "/api/voice/mute", undefined, "GET")).state;
 }
 
-/** The title each Board card prints for the ordinary session and for the resident. */
 interface Surfaces { session: Locator; resident: Locator }
 
 function boardTitles(page: Page): Surfaces {

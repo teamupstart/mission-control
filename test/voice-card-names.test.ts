@@ -1,7 +1,3 @@
-// Which voice states title cards by spoken names, and which call sign a session's card prints.
-// The Board, the Console rail and the Residents drawer read both through App, so these pin the
-// rule each surface follows: Always-on while it listens, and Push-to-talk between holds and
-// during one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sessionCallSign } from "../src/shared/display-name.ts";

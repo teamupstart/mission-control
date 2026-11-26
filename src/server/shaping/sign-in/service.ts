@@ -522,8 +522,9 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     unsaved.delete(id);
     const value = readConfig();
     if (!value) return false;
-    if (!value.signedOut.includes(id)) return true;
-    return writeConfig({ ...value, signedOut: value.signedOut.filter((entry) => entry !== id) });
+    const cleared = !value.signedOut.includes(id) || writeConfig({ ...value, signedOut: value.signedOut.filter((entry) => entry !== id) });
+    // The overflow mark covers every stored record, listed or not: the next start removes this one too.
+    return cleared && !value.signedOutOverflow;
   };
 
   /** Asks the store to remove the record, and on its confirmation clears the entry. Throws what the store throws. */
@@ -825,6 +826,17 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     }
   });
 
+  /**
+   * Whether the key, as it is now, keeps this id's stored record from loading: listed, overflow
+   * marked, unsaved in memory, or unreadable. A load asks again after every store call it awaits,
+   * because a sign-out can change the key meanwhile.
+   */
+  const coveredNow = (id: string): boolean => {
+    if (unsaved.has(id)) return true;
+    const value = readConfig();
+    return !value || value.signedOutOverflow || value.signedOut.includes(id);
+  };
+
   const loadStore = async (): Promise<void> => {
     const source = getStore();
     const own = activation;
@@ -870,6 +882,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     for (const id of ids) {
       if (over()) return;
       if (overflow || signedOut.has(id)) continue;
+      if (coveredNow(id)) continue;
       let record: StoredSignIn | null;
       try {
         record = await source.read(id);
@@ -879,6 +892,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         continue;
       }
       if (over()) return;
+      // A sign-out while the store was answering may have listed this id or set the overflow mark.
+      if (coveredNow(id)) continue;
       if (!record || connectionId(record.target) !== id) continue;
       const conn = ensure(id, record.target);
       // Memory already decided this connection's record since the daemon started: it wins.

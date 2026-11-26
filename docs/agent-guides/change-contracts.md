@@ -257,7 +257,10 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   treats it as listed whether or not the write succeeds. A sign-in's store write retries an
   unsaved entry first too, so a refused write leaves the old record covered. A landed write whose
   entry the key cannot clear is reported as memory-only, because the next start would remove it,
-  and the next write that lands clears the entry. A new client registration the key
+  and the next write that lands clears the entry. A write that lands while `signedOutOverflow`
+  is set is reported as memory-only too, since the next start removes every stored record. A load
+  asks the key again after each store call it awaits, and installs no record whose id is listed,
+  unsaved, or covered by the overflow mark at that moment, or while the key is unreadable. A new client registration the key
   refuses to save is used for that sign-in only, since the key is a reuse cache. Known limit: when
   `app_config` and the store both refuse, and the daemon stops before either recovers, nothing
   durable records the sign-out and the next start loads the record again. A test pins this, and

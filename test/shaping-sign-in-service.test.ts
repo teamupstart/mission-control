@@ -1613,6 +1613,81 @@ test("with the overflow mark set, a store that cannot be listed keeps the mark, 
   assert.equal(regs.read()?.signedOutOverflow, false);
 });
 
+test("a sign-out that sets the overflow mark while the first load waits on the store's listing: that load installs nothing", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const signedOutTarget = seededRecord(fake, 0, "fake-seeded-client-0", "mcp:seed-0");
+  const other = seededRecord(fake, 1, "fake-seeded-client-1", "mcp:seed-1");
+  await records.write(signedOutTarget.id, signedOutTarget.record);
+  await records.write(other.id, other.record);
+  const regs = memoryRegistrations();
+  // The list is full, and the mark is not set yet.
+  const listed = Array.from({ length: SHAPING_SIGNED_OUT_CONNECTIONS }, (_, n) => n.toString(16).padStart(32, "0"));
+  regs.raw = { clients: [], signedOut: listed, signedOutOverflow: false };
+  const store = controlledStore("memory", records);
+  let releaseIds!: () => void;
+  const idsHeld = new Promise<void>((done) => { releaseIds = done; });
+  let idsStarted!: () => void;
+  const listing = new Promise<void>((done) => { idsStarted = done; });
+  store.store.ids = async () => { idsStarted(); await idsHeld; return records.ids(); };
+  const a = signedOutTarget.record.target;
+  const b = other.record.target;
+  const h = await harness(t, { fake, store, regs, inUse: [use(a), use(b)], start: false });
+  h.svc.start();
+  await listing;
+  // A sign-out while the load is listing: the list is full, so it sets the overflow mark.
+  assert.equal(await h.svc.signOut(signedOutTarget.id), true);
+  assert.equal(regs.read()?.signedOutOverflow, true);
+  releaseIds();
+  await settle(h);
+  assert.ok(!store.calls.includes(`read ${other.id}`), "the load rechecked the key and read nothing more");
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(h.svc.accessToken(b), { ok: false, reason: "signedOut" }, "no record installed under the mark");
+  assert.equal(regs.read()?.signedOutOverflow, true, "the mark stays until a start that began under it lists and removes every record");
+  assert.ok(await records.read(other.id), "the other record is still stored, so the next start removes it");
+});
+
+test("a sign-in whose write lands while the overflow mark is set is reported as memory-only, since the next start removes it", async (t) => {
+  const regs = memoryRegistrations();
+  regs.raw = { clients: [], signedOut: [], signedOutOverflow: true };
+  const store = controlledStore("memory");
+  // The start's listing fails, so the mark stays set for this run.
+  store.failIds = true;
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  assert.equal(regs.read()?.signedOutOverflow, true);
+  assert.ok(h.svc.accessToken(a).ok, "the sign-in works");
+  assert.equal(viewOf(h, id)?.storage, "memory");
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly, "and says a restart will need a new one");
+  const second = await restarted(t, h, h.store.records, [use(a)]);
+  await settle(second);
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "as the restart shows");
+});
+
+test("an unparseable shaping.signIn that app_config also refuses to rewrite: kept as it was, nothing read or installed, and logged", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const { id, record } = seededRecord(fake, 0, "fake-seeded-client-0", "mcp:context");
+  await records.write(id, record);
+  const regs = memoryRegistrations();
+  regs.raw = { clients: "not a list" };
+  regs.failWrites = true;
+  const store = controlledStore("memory", records);
+  store.failRemoves = true;
+  const h = await harness(t, { fake, store, regs, inUse: [use(record.target)] });
+  await settle(h);
+  assert.deepEqual(regs.raw, { clients: "not a list" }, "the original value remains");
+  assert.ok(!store.calls.includes(`read ${id}`), "the record is never read");
+  assert.deepEqual(h.svc.accessToken(record.target), { ok: false, reason: "signedOut" }, "or installed");
+  assert.ok(await records.read(id), "the store refused its removal");
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be read, so no stored sign-in is loaded")), "the unreadable value is logged");
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be saved")), "and so is the refused rewrite");
+});
+
 test("shaping.signIn in app_config: a missing row is empty, an older value gains empty lists, and a row that does not parse is unreadable", () => {
   openDb().exec("DELETE FROM app_config");
   assert.deepEqual(appConfigSignInRegistrations.read(), { clients: [], signedOut: [], signedOutOverflow: false });

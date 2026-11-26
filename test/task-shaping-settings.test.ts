@@ -57,6 +57,9 @@ import {
   signInMovesSince,
   signInRefusalApplies,
   signInRefusalsAfter,
+  signInRowShaper,
+  signInTargetsByShaper,
+  signInTargetUnchanged,
   signInStateIn,
   type SignInMoves,
   signInUrlOpenable,
@@ -1338,4 +1341,26 @@ test("a refusal applies only while its row still names the connection the reques
   // An unused entry's key always names its own connection.
   const unusedKey = signInConnectionKey(otherId);
   assert.equal(signInRefusalApplies({ sent, target: otherId }, { moves: sent, signIns: rescoped, key: unusedKey }), true);
+});
+
+test("each row's sign-in target is read from its definition, so a scope change shows with no sign-in entry at all", () => {
+  const rescoped = { ...signedMcp, transport: { ...signedMcp.transport, server: { ...signedMcp.transport.server, auth: { type: "oauth", scope: "mcp:other" } } } };
+  const before = signInTargetsByShaper(shapingList(view({ shapers: [signedMcp, remote] })));
+  const after = signInTargetsByShaper(shapingList(view({ shapers: [rescoped, remote] })));
+  assert.equal(before["signed-mcp"], JSON.stringify({ issuer: null, scope: "mcp:context", url: "https://tools.acme.example/mcp" }));
+  assert.equal(before["acme-guidance"], null, "a shaper that does not sign in has no target");
+  assert.equal(signInTargetUnchanged(before, before, "signed-mcp"), true);
+  assert.equal(signInTargetUnchanged(before, after, "signed-mcp"), false);
+  assert.equal(signInTargetUnchanged(before, after, "acme-guidance"), true);
+  assert.equal(signInTargetUnchanged(before, {}, "signed-mcp"), false, "a shaper removed meanwhile no longer signs in to it");
+  // The case the connection check cannot see: the row had no sign-in entry when its Sign in went
+  // out and has none when the refusal lands, so the refusal passes that check. The target check
+  // catches the scope change the definition shows.
+  const key = signInRowKey("signed-mcp");
+  assert.equal(signInRefusalApplies({ sent: {}, target: null }, { moves: {}, signIns: [], key }), true);
+  assert.equal(signInRowShaper(key), "signed-mcp");
+  assert.equal(signInRowShaper(signInConnectionKey(CONNECTION)), null);
+  // A folder shaper shadowed by a registered one of its id takes the registered one's target.
+  const folder = folderShaper("signed-mcp", "shadowed", { shaper: ShaperSchema.parse({ ...rescoped, label: "Folder copy" }) });
+  assert.equal(signInTargetsByShaper(shapingList(view({ shapers: [signedMcp] }), [folder as never]))["signed-mcp"], before["signed-mcp"]);
 });

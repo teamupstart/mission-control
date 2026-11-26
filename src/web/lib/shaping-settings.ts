@@ -801,6 +801,11 @@ export function signInConnectionKey(connection: string): string {
   return `${SIGN_IN_CONNECTION_PREFIX}${connection}`;
 }
 
+/** The shaper id a row control's key names, or null for an unused entry's connection key. */
+export function signInRowShaper(key: string): string | null {
+  return key.startsWith(SIGN_IN_ROW_PREFIX) ? key.slice(SIGN_IN_ROW_PREFIX.length) : null;
+}
+
 /** A connection in a state, as one comparable string: what a refusal is shown against. */
 export function signInSubject(connection: string | null, state: SignInListState): string {
   return `${connection ?? ""}|${state}`;
@@ -863,6 +868,35 @@ export function signInRefusalApplies(
   const current = signInControlConnection(now.signIns, now.key);
   if (request.target !== null && current !== request.target) return false;
   return !signInMovedSince(request.sent, now.moves, request.target ?? current);
+}
+
+/**
+ * What each listed shaper signs in to, by id, as one comparable string: its `auth` target's URL,
+ * scope and issuer, or null for a shaper that does not sign in. Read from the definitions the
+ * list draws, so it holds for a row whether or not the sign-in list has an entry for it. A shadowed
+ * folder shaper is left out, as its row offers no sign-in; the registered one of that id is used.
+ */
+export function signInTargetsByShaper(groups: readonly ShapingListGroup[]): Readonly<Record<string, string | null>> {
+  const targets: Record<string, string | null> = {};
+  for (const row of groups.flatMap((group) => group.rows)) {
+    if (row.duplicate || (row.origin === "discovered" && row.folderState === "shadowed") || Object.hasOwn(targets, row.id)) continue;
+    const target = row.shaper ? shaperSignInTarget(row.shaper) : null;
+    targets[row.id] = target ? canonicalJson(target) : null;
+  }
+  return targets;
+}
+
+/**
+ * Whether a shaper row still signs in to what it did when a request went out. A refusal or a
+ * link from before another window changed the shaper's URL, scope or issuer is about a
+ * connection the row no longer has, whether or not the sign-in list names either one.
+ */
+export function signInTargetUnchanged(
+  sent: Readonly<Record<string, string | null>>,
+  now: Readonly<Record<string, string | null>>,
+  shaper: string,
+): boolean {
+  return (Object.hasOwn(sent, shaper) ? sent[shaper] : null) === (Object.hasOwn(now, shaper) ? now[shaper] : null);
 }
 
 /** A sign-in control's refusal, with the subject it was shown against. */

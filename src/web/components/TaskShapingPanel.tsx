@@ -20,6 +20,10 @@ import {
   signInMovesSince,
   signInRefusalApplies,
   signInRefusalsAfter,
+  signInRowShaper,
+  signInTargetsByShaper,
+  signInTargetUnchanged,
+  shapingList,
   signInSubject,
   signInUrlOpenable,
   type ShaperSignInLink,
@@ -46,6 +50,8 @@ interface SignInRequest {
   sent: SignInMoves;
   sentIn: number;
   target: string | null;
+  /** What each row signed in to as the request went out. */
+  targets: Readonly<Record<string, string | null>>;
 }
 
 /** A refusal's sentence: the daemon's fixed reason, or what the request met when it had none. */
@@ -104,7 +110,9 @@ export function TaskShapingPanel({ state, signIns = NO_SHAPING_SIGN_INS }: {
     return reply.ok && Array.isArray(reply.discovered) ? reply.discovered.map((entry) => entry.id) : null;
   }, []);
   const onTest = useCallback<ShapingTestRunner>((request, signal) => api.testShaper(request, signal), []);
-  const signIn = useShaperSignIn(signIns);
+  // What each row signs in to, from the definitions the list draws, for a reply to compare with.
+  const targets = useMemo(() => (config ? signInTargetsByShaper(shapingList(config, discovered)) : {}), [config, discovered]);
+  const signIn = useShaperSignIn(signIns, targets);
   const repositories = useCallback(() => fetchRepos(), []);
   return (
     <TaskShapingView
@@ -136,7 +144,10 @@ export function TaskShapingPanel({ state, signIns = NO_SHAPING_SIGN_INS }: {
  * another state, which a reload drops too, and each control's request in flight and refusal. The
  * dashboard opens the link; the daemon never starts a browser.
  */
-function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInProps {
+function useShaperSignIn(
+  signIns: readonly ShapingSignInView[],
+  targets: Readonly<Record<string, string | null>>,
+): ShaperSignInProps {
   const enabled = useFeatureFlag(SHAPER_SIGN_IN_FLAG_ID);
   const [held, setHeld] = useState<Readonly<Record<string, ShaperSignInLink>>>({});
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
@@ -146,6 +157,9 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
   // The list as it is now, for a reply that lands after the event it follows.
   const latest = useRef(shown);
   latest.current = shown;
+  // What each row signs in to now, for a reply that lands after another window changed a shaper.
+  const targetsNow = useRef(targets);
+  targetsNow.current = targets;
   // Each connection's state changes, counted over every list this window has drawn, so a reply
   // can tell what happened while its request was in flight. Advanced once per new list, so a
   // second render of the same list counts nothing.
@@ -175,8 +189,13 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
   }, []);
   /** What a control's request recorded as it went out, for its reply to compare with. */
   const requestState = useCallback((target: string | null): SignInRequest => ({
-    sent: moves.current.moves, sentIn: activation.current.count, target,
+    sent: moves.current.moves, sentIn: activation.current.count, target, targets: targetsNow.current,
   }), []);
+  /** Whether the row behind `key` still signs in to what it did when `request` went out. */
+  const sameTarget = useCallback((request: SignInRequest, key: string): boolean => {
+    const shaper = signInRowShaper(key);
+    return shaper === null || signInTargetUnchanged(request.targets, targetsNow.current, shaper);
+  }, []);
   /**
    * Ends a control's request: its busy key is released whatever the reply says. A refusal is
    * shown against the connection's state now, or against `subject` when it expects a state the
@@ -187,11 +206,11 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
    */
   const settle = useCallback((busyKey: string, key: string, error: string | null, request: SignInRequest, subject?: string): void => {
     setBusy((current) => { const next = new Set(current); next.delete(busyKey); return next; });
-    if (error === null || !stillActive(request.sentIn)) return;
+    if (error === null || !stillActive(request.sentIn) || !sameTarget(request, key)) return;
     if (subject === undefined && !signInRefusalApplies(request, { moves: moves.current.moves, signIns: latest.current, key })) return;
     const refusal: ShaperSignInRefusal = { text: error, subject: subject ?? signInControlSubject(latest.current, key) };
     setRefusals((current) => ({ ...current, [key]: refusal }));
-  }, [stillActive]);
+  }, [stillActive, sameTarget]);
   /**
    * Opens a held sign-in link. One that did not open leaves a refusal on the row, shown while
    * that sign-in is pending, pointing at the two controls that offer the link again.
@@ -214,9 +233,10 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
     const request = requestState(signInControlConnection(latest.current, key));
     const { sent } = request;
     void api.signInShaper(shaper).then((reply) => {
-      if (!stillActive(request.sentIn)) {
-        // The flag changed while the request was in flight: the row's controls are not the ones
-        // that sent it, so there is no refusal to show, no link to hold and no page to open.
+      if (!stillActive(request.sentIn) || !sameTarget(request, key)) {
+        // The flag changed, or another window changed what the shaper signs in to, while the
+        // request was in flight: the row's controls are not the ones that sent it, so there is no
+        // refusal to show, no link to hold and no page to open.
         settle(key, key, null, request);
         return;
       }
@@ -238,7 +258,7 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
       // A sign-in that is already over has no page worth opening.
       if (link) open(connection, authorizationUrl, key);
     });
-  }, [begin, settle, open, stillActive, requestState]);
+  }, [begin, settle, open, stillActive, requestState, sameTarget]);
   const onSignOut = useCallback((connection: string, key: string): void => {
     const busyKey = signInConnectionKey(connection);
     begin(busyKey, key);

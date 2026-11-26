@@ -706,3 +706,69 @@ test("a sign-out refusal that lands after another window changed the shaper's sc
   await expect(unused.getByRole("alert")).toHaveCount(0);
   await page.unroute("**/api/shaping/sign-out");
 });
+
+test("a sign-in reply that lands after another window changed the shaper's scope shows no refusal and opens no page", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+  let tabs = 0;
+  page.on("popup", () => { tabs++; });
+  const rescope = async (scope: string) => {
+    const put = await fetch(`${daemon.baseURL}/api/shaping`, {
+      method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+        id: "signed-guidance", label: "Signed guidance", stage: "select",
+        transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope } } },
+      } }),
+    });
+    expect(put.status).toBe(200);
+    await expect(row(page)).toContainText(`Signs in: OAuth, scope ${scope}`);
+  };
+  /**
+   * Holds this window's next Sign in. `daemon` sends it on to the daemon before holding, so the
+   * daemon answers for the shaper as it is now and only the delivery of that answer is held.
+   */
+  const holdSignIn = async (answer: { daemon: true } | { refuse: string }) => {
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    let seen!: () => void;
+    const arrived = new Promise<void>((done) => { seen = done; });
+    await page.route("**/api/shaping/sign-in", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      const response = "daemon" in answer ? await route.fetch() : null;
+      seen();
+      await held;
+      if (response) await route.fulfill({ response });
+      else await route.fulfill({ status: 409, contentType: "application/json",
+        body: JSON.stringify({ error: "registration_limit", reason: (answer as { refuse: string }).refuse }) });
+    });
+    return { arrived, release };
+  };
+
+  // A refusal for the old scope, landing after the scope changed, is not shown on the row's new one.
+  const refused = await holdSignIn({ refuse: "Refused for this test: about the old scope." });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await refused.arrived;
+  await rescope("mcp:other");
+  refused.release();
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await page.unroute("**/api/shaping/sign-in");
+
+  // The daemon starts a sign-in for the scope the shaper has now, mcp:other, and its answer is held
+  // while another window changes the scope back. Landing after that, it opens no page: the sign-in
+  // it carries is for a connection the row no longer has.
+  const started = await holdSignIn({ daemon: true });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await started.arrived;
+  await rescope("mcp:context");
+  started.release();
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Open the sign-in page for Signed guidance" })).toHaveCount(0);
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  expect(tabs).toBe(0);
+  await page.unroute("**/api/shaping/sign-in");
+});

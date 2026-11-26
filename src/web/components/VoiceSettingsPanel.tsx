@@ -49,6 +49,7 @@ import {
 import { residentAccentStyle } from "../residents/marker.ts";
 import { useVoiceDecisionKey, useVoiceDevices, type VoiceConfigState, type VoiceDecisionKeyState } from "../useVoiceConfig.ts";
 import { SpokenReplies } from "./SpokenReplies.tsx";
+import { SeparatorWordRow } from "./VoiceSeparatorRow.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** The lengths the cancel window offers. A stored length outside the list is offered as well. */
@@ -600,6 +601,7 @@ export function VoiceSettingsPanel({
             </Tooltip>
           </div>
         </div>
+        <SeparatorWordRow state={state} dedicated={dedicated} roster={voice?.roster} />
       </div>
 
       <div className="settings-group">

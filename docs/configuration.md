@@ -283,17 +283,16 @@ reaches shapers only after a restart. `GET /api/shaping` reports it as `unset` u
 
 ## Shaper sign-in storage
 
-A shaper's sign-in will be kept in the macOS Keychain, or in the daemon's memory where there
-is no Keychain. [Where a shaper sign-in is kept](security.md#where-a-shaper-sign-in-is-kept)
+A shaper's sign-in is kept in the macOS Keychain, or in the daemon's memory where there is
+no Keychain. An operator signs a shaper in and out from **Settings > Task shaping**, behind the
+`shaper-sign-in` preview flag, which needs `task-shaping` on too
+([Signing in from Settings](task-shaping.md#signing-in-from-settings)). The shaper's row says
+which store holds its sign-in. [Where a shaper sign-in is kept](security.md#where-a-shaper-sign-in-is-kept)
 says what is stored and how to remove it.
-
-**Not in effect yet.** Nothing in the daemon creates the sign-in store yet, so this setting
-changes nothing today. It takes effect when shaper sign-in starts using the store, in a later
-change, and from then on it is read when the daemon creates the store at startup.
 
 | Env | Default | Meaning |
 | --- | --- | --- |
-| `MISSION_SHAPER_SIGN_IN_STORE` | unset | `memory` keeps every shaper sign-in in the daemon's memory only, so none outlives a restart and nothing is written to the Keychain. Unset or `keychain`, the daemon uses the Keychain on macOS when its Keychain addon loads, and memory otherwise. Any other value is read as `memory`, the choice that keeps nothing. Letter case and surrounding spaces are ignored. Follows the usual `MISSION_` / `FLEET_` / `HARNESS_` chain. Once sign-in uses the store, it is read once, when the daemon creates the store at startup |
+| `MISSION_SHAPER_SIGN_IN_STORE` | unset | `memory` keeps every shaper sign-in in the daemon's memory only, so none outlives a restart and nothing is written to the Keychain. Unset or `keychain`, the daemon uses the Keychain on macOS when its Keychain addon loads, and memory otherwise. Any other value is read as `memory`, the choice that keeps nothing. Letter case and surrounding spaces are ignored. Follows the usual `MISSION_` / `FLEET_` / `HARNESS_` chain. Read once, the first time the daemon opens the store, which is when both flags are first on |
 
 Off macOS the store is always memory, whatever this says.
 

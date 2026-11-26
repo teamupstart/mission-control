@@ -8,6 +8,8 @@ import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice,
 import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
+  type ShaperSignInReply,
+  type ShaperSignOutReply,
   type ShapingConfigView,
   type ShapingIntent,
   type ShapingReply,
@@ -2612,6 +2614,16 @@ export const api = {
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
+  /**
+   * Start a sign-in for a shaper that carries the `auth` marker (404 while `shaper-sign-in` is
+   * off). The reply's `authorizationUrl` is the one place the link appears: the sign-in list
+   * never carries it. A refusal carries the daemon's fixed `reason`.
+   */
+  signInShaper: (shaper: string) =>
+    post<ActionResult & Partial<ShaperSignInReply> & { reason?: string }>("/api/shaping/sign-in", { shaper }),
+  /** End a connection's sign-in, pending or held. A refusal carries the daemon's fixed `reason`. */
+  signOutShaper: (connection: string) =>
+    post<ActionResult & Partial<ShaperSignOutReply> & { reason?: string }>("/api/shaping/sign-out", { connection }),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
   setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
     put<ActionResult & { config?: ShapingConfigView; reason?: string; floor?: number }>("/api/shaping", intent, {

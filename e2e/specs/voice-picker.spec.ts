@@ -53,6 +53,7 @@ test("selecting F4 starts the shared download and preserves the choice across ca
     await page.reload();
     await expect(select.locator("option:checked")).toHaveText("F4, not available");
     await expect(status).toContainText("Download the Mission Control voices");
+    await capture(group, "f4-after-cancel");
     models.release();
     models.serve(models.largeFile, "corrupt");
     await group.getByRole("button", { name: /^Download/ }).click();
@@ -65,6 +66,7 @@ test("selecting F4 starts the shared download and preserves the choice across ca
     await expect(status).toHaveText("Mission Control voice F4 will speak.");
     await expect(select.locator("option:checked")).toHaveText("F4");
     await expect(group.getByRole("button", { name: "Play sample" })).toBeEnabled();
+    await capture(group, "f4-after-retry");
   } finally { await speaker.exit(); }
 });
 

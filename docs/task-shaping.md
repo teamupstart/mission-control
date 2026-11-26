@@ -1077,7 +1077,9 @@ its connection. Dispatch continues in every row:
 - A `401` to any request of a signed-in call, during an `mcp` handshake or the call itself,
   ends that call. The service is told which token was refused, once, when the `401` arrives,
   and runs at most one background refresh, at the time its own rules allow. The call is not
-  retried, and later calls answer "being renewed" until the refresh lands.
+  retried. While that refresh is pending, later calls answer "being renewed". A sign-in with
+  no refresh token ends instead, so later calls answer "not signed in". A refusal of a token
+  the service has already replaced changes nothing, and later calls use the sign-in it holds.
 - An `mcp` connection's shared event stream can be refused between calls. The service is told
   then too, and the connection is closed, so no later call of the run sends the refused token.
 - The trace context and work unit id are sent as they are for any shaper: `traceparent`,

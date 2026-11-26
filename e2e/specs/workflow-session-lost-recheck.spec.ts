@@ -158,14 +158,24 @@ function strandAsSessionLost(daemon: DaemonHandle, runId: string, boundSessionId
   });
 }
 
-/** Point the run's binding back at the session it was armed on, as a restore would. */
-function sessionReturns(daemon: DaemonHandle, runId: string, sessionId: string): void {
+/**
+ * Point the run's binding back at the session it was armed on, as a restore would, and then
+ * have that session report itself the way a returning one does.
+ *
+ * The rewrite alone is not a return: the daemon re-checks a blocked action on the bound
+ * session's next `session_upsert`, and a quiet idle session may not emit one for a long time
+ * (an idle SDK session on CI did not, inside thirty seconds). Renaming it through the
+ * operator's own route is a real update of that session that changes nothing about its
+ * conversation, so the re-check is driven by the product path rather than by timing.
+ */
+async function sessionReturns(daemon: DaemonHandle, runId: string, sessionId: string): Promise<void> {
   withDaemonDb(daemon, (db) => {
     db.prepare(
       `UPDATE workflow_bindings SET session_id = ?
         WHERE id = (SELECT binding_id FROM workflow_runs WHERE id = ?)`,
     ).run(sessionId, runId);
   });
+  await api(daemon, `/api/sessions/${encodeURIComponent(sessionId)}/rename`, { name: "restored-session" });
 }
 
 test("a run blocked by a lost session offers a round-free re-check and leaves the block when the session returns", async ({
@@ -202,7 +212,7 @@ test("a run blocked by a lost session offers a round-free re-check and leaves th
 
   // The session is back. Its next update re-checks the action with nobody clicking anything,
   // and the open page repaints out of the block.
-  sessionReturns(daemon, runId, sessionId);
+  await sessionReturns(daemon, runId, sessionId);
   await expect.poll(async () => (await detail(daemon, runId)).run.status, {
     message: "the returning session should re-check the blocked action",
     timeout: 30_000,
@@ -284,7 +294,7 @@ test("with every repair round spent, a lost-session block still offers Check the
 
   // The session returns: the action is re-checked on its own, still in round 11, with no new
   // submission and nothing re-sent.
-  sessionReturns(daemon, runId, sessionId);
+  await sessionReturns(daemon, runId, sessionId);
   await expect.poll(async () => (await api<RecoveryDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
     message: "the returning session should re-check the blocked action",
     timeout: 30_000,

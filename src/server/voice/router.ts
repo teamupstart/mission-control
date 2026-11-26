@@ -1779,9 +1779,7 @@ export class VoiceRouter {
     this.delivering.clear();
     this.outbox.clear();
     this.pendingVoiceActions.length = 0;
-    this.heard.clear();
-    // Speech a refused separated capture kept for its retry goes with the history it belonged to.
-    this.separatedCaptures.clear();
+    this.clearHistory();
     this.priorChoices.length = 0;
     this.picksLostThrough = undefined;
     this.onCancelWindowChange?.(false);

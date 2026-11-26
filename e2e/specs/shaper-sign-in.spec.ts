@@ -251,7 +251,7 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
   await signInButton.click();
   await expect(signIn(page)).toContainText("Waiting for the browser.");
   await expect(signIn(page).getByRole("alert")).toHaveText(
-    "The sign-in page did not open, perhaps because a new tab was blocked. Use Open the sign-in page, or Copy link to open it in another browser.");
+    "The sign-in page did not open. Use Open the sign-in page to try again, or Copy link to open it in another browser.");
   const openAgain = page.getByRole("button", { name: "Open the sign-in page for Signed guidance" });
   await expect(openAgain).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toBeVisible();
@@ -436,4 +436,84 @@ test("a sign-out refusal that lands after another window signed the connection o
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
   await capture(page, "7-late-refusal-dropped");
   await page.unroute("**/api/shaping/sign-out");
+});
+
+test("in the desktop app the sign-in page goes to the desktop bridge, and a bridge that fails leaves the recovery message", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  const put = await fetch(`${daemon.baseURL}/api/shaping`, {
+    method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+      id: "signed-guidance", label: "Signed guidance", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope: "mcp:context" } } },
+    } }),
+  });
+  expect(put.status).toBe(200);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+  let tabs = 0;
+  page.on("popup", () => { tabs++; });
+
+  // A fake desktop bridge that records what it is asked to open. The dashboard reads the bridge
+  // when it opens a link, so installing it now is the desktop app from here on.
+  const bridge = (mode: "record" | "reject") => page.evaluate((how) => {
+    const probe = window as unknown as { desktopOpened?: string[] };
+    probe.desktopOpened ??= [];
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        openExternal: async (url: string) => {
+          probe.desktopOpened!.push(url);
+          if (how === "reject") throw new Error("no registered handler");
+        },
+      },
+    });
+  }, mode);
+  const desktopOpened = () => page.evaluate(() => (window as unknown as { desktopOpened?: string[] }).desktopOpened ?? []);
+  const recovery = "The sign-in page did not open. Use Open the sign-in page to try again, or Copy link to open it in another browser.";
+  const authorizeUrl = `${new URL(fake.issuer).origin}/authorize`;
+
+  // Sign in hands the authorization URL to the bridge, which opens it outside the dashboard: no tab
+  // opens in this browser, and nothing reaches the authorization server from here.
+  await bridge("record");
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await expect(signIn(page)).toContainText("Waiting for the browser.");
+  await expect.poll(async () => (await desktopOpened()).length).toBe(1);
+  const [handed] = await desktopOpened();
+  const url = new URL(handed!);
+  expect(`${url.origin}${url.pathname}`).toBe(authorizeUrl);
+  expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+  expect(url.searchParams.get("scope")).toBe("mcp:context");
+  // It is the same link the row offers to copy.
+  await page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" }).click();
+  await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveText("Copied");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(handed);
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  expect(tabs).toBe(0);
+  expect(fake.requests.some((request) => request.path === "/authorize")).toBe(false);
+
+  // The bridge now fails. Open the sign-in page passes it the same link, and the rejection shows
+  // the recovery message with Open and Copy still offered.
+  await bridge("reject");
+  await page.getByRole("button", { name: "Open the sign-in page for Signed guidance" }).click();
+  await expect(signIn(page).getByRole("alert")).toHaveText(recovery);
+  expect((await desktopOpened()).at(-1)).toBe(handed);
+  await expect(page.getByRole("button", { name: "Open the sign-in page for Signed guidance" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toBeVisible();
+  await capture(page, "8-desktop-bridge-failed");
+
+  // A fresh Sign in whose bridge call fails says the same, right after the start.
+  await page.getByRole("button", { name: "Cancel sign-in for Signed guidance" }).click();
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await expect(signIn(page).getByRole("alert")).toHaveText(recovery);
+  await expect(signIn(page)).toContainText("Waiting for the browser.");
+  expect((await desktopOpened()).length).toBe(3);
+  expect(new URL((await desktopOpened()).at(-1)!).searchParams.get("state")).not.toBe(url.searchParams.get("state"));
+  expect(tabs).toBe(0);
+  await page.getByRole("button", { name: "Cancel sign-in for Signed guidance" }).click();
+  await expect(signIn(page)).toContainText("Not signed in.");
 });

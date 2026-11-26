@@ -38,7 +38,7 @@ import { TaskShapingView, type ShaperSignInProps } from "./TaskShapingView.tsx";
 export const SIGN_IN_URL_REFUSED = "The daemon's sign-in link is not https or this machine's loopback, so it was not opened. Start again, or check the shaper's server.";
 
 /** What a row says when the sign-in page could not be opened: a blocked tab, or a desktop bridge that failed. */
-export const SIGN_IN_TAB_NOT_OPENED = "The sign-in page did not open, perhaps because a new tab was blocked. Use Open the sign-in page, or Copy link to open it in another browser.";
+export const SIGN_IN_TAB_NOT_OPENED = "The sign-in page did not open. Use Open the sign-in page to try again, or Copy link to open it in another browser.";
 
 /** A refusal's sentence: the daemon's fixed reason, or what the request met when it had none. */
 function refusalText(reply: { reason?: string; error?: string }, what: string): string {

@@ -30,6 +30,7 @@ export class TranscriptPreview {
   private interim = "";
   private interimOnset = -1;
   private latestOnset = -1;
+  private hiddenThrough = -1;
   private finalizedThrough = -1;
   // A final decode can arrive after audio or partials for the next onset.
   private readonly partials = new Map<number, { highestCounts: Map<string, number>; visible: boolean }>();
@@ -39,6 +40,7 @@ export class TranscriptPreview {
   get text(): string { return transcriptTail(this.committed + " " + this.interim); }
 
   hide() {
+    this.hiddenThrough = this.latestOnset;
     this.expiresAt = 0;
     this.phase = undefined;
     this.committed = "";
@@ -49,6 +51,7 @@ export class TranscriptPreview {
   }
 
   observe(sample: TranscriptSample, now: number) {
+    if (this.expiresAt && now >= this.expiresAt) this.hide();
     if (sample.phase === "ready") {
       this.phase = "ready";
       return;
@@ -61,30 +64,30 @@ export class TranscriptPreview {
       return;
     }
 
-    const words = recognizedWords(sample.text);
-    if (!words.length) return;
     const partial = this.partials.get(sample.onset);
-    const highestCounts = partial?.highestCounts ?? new Map<string, number>();
-    // An older onset can finish decoding after its display window closed.
-    // Retire it below without reviving its text or renewing the current window.
-    const expiredEarlierOnset = sample.onset < this.latestOnset && partial?.visible === false;
-    const fresh = !expiredEarlierOnset && recordWordCounts(words, highestCounts);
-    const visible = fresh || partial?.visible === true;
-    if (visible && sample.onset === this.latestOnset) this.phase = "words";
-    if (fresh) this.expiresAt = now + VISIBLE_MS;
-    if (fresh) this.phase ??= "words";
+    const words = recognizedWords(sample.text);
     if (sample.final) {
       this.finalizedThrough = sample.onset;
       for (const onset of this.partials.keys()) {
         if (onset <= sample.onset) this.partials.delete(onset);
       }
-      if (visible) {
-        this.committed = transcriptTail(this.committed + " " + sample.text);
-      }
       if (this.interimOnset <= sample.onset) {
         this.interim = "";
         this.interimOnset = -1;
       }
+      // Even an onset without a partial may return its first words after expiry.
+      // Finalize it, but leave the current display and its deadline alone.
+      if (sample.onset < this.latestOnset && sample.onset <= this.hiddenThrough && !partial?.visible) return;
+    }
+    if (!words.length) return;
+    const highestCounts = partial?.highestCounts ?? new Map<string, number>();
+    const fresh = recordWordCounts(words, highestCounts);
+    const visible = fresh || partial?.visible === true;
+    if (visible && sample.onset === this.latestOnset) this.phase = "words";
+    if (fresh) this.expiresAt = now + VISIBLE_MS;
+    if (fresh) this.phase ??= "words";
+    if (sample.final) {
+      if (visible) this.committed = transcriptTail(this.committed + " " + sample.text);
     } else {
       if (fresh) this.partials.set(sample.onset, { highestCounts, visible });
       // Bound unfinished decodes if a listener never sends finals.

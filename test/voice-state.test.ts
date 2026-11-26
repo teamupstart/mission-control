@@ -749,3 +749,30 @@ test("inline punctuation revisions cannot extend or reopen a live transcript", t
   send("US policy");
   assert.equal(h.store.state().transcript?.text, "US policy");
 });
+
+test("delayed finals from expired onsets cannot reopen or extend the live transcript", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-delayed-final-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (sample: TranscriptSample) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, sample), true);
+
+  send({ phase: "audio", onset: 1 }); // Its first word result will be a late final.
+  send({ phase: "words", onset: 2, text: "turn on" });
+  h.advance(5000);
+  send({ phase: "audio", onset: 3 });
+  send({ phase: "words", onset: 1, text: "earlier speech", final: true });
+  assert.equal(h.store.state().transcript?.text, "");
+  send({ phase: "words", onset: 3, text: "new speech" });
+  h.advance(4999);
+  send({ phase: "words", onset: 2, text: "turn on the light", final: true });
+  assert.equal(h.store.state().transcript?.text, "new speech");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send({ phase: "words", onset: 3, text: "...", final: true });
+  send({ phase: "words", onset: 3, text: "delayed partial" });
+  assert.equal(h.store.state().transcript, undefined);
+});

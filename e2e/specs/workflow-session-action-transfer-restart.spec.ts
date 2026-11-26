@@ -200,9 +200,16 @@ test("after a restart, brief discovery misses of a delivered Pull Request action
         await new Promise((resolve) => setTimeout(resolve, 700));
       }
     })();
-    const seen = await watch(daemon, runId, source.id, "FLAPPING AFTER RESTART", FLAPPING_MS);
-    flapping = false;
-    await flaps;
+    let seen: string[];
+    try {
+      seen = await watch(daemon, runId, source.id, "FLAPPING AFTER RESTART", FLAPPING_MS);
+    } finally {
+      // Stopped and joined even when a poll throws, so the loop cannot recreate the marker
+      // after the outer cleanup removes it and run on into fixture teardown.
+      flapping = false;
+      await flaps;
+      rmSync(join(daemon.recordDir, "discovery-block"), { force: true });
+    }
     // The state existed: the binding stayed active while its session read `exited`.
     expect(seen.some((l) => l.includes("binding=active:successor:exited")), seen.join("\n")).toBe(true);
     expect(seen.filter((l) => l.includes("session_action_blocked")), seen.join("\n")).toEqual([]);

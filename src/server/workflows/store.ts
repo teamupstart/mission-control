@@ -9088,6 +9088,14 @@ export class WorkflowStore {
     if (!parsed.success || parsed.data.blocked?.code !== "session_lost") return null;
     const binding = this.getBinding(run.bindingId);
     if (binding?.state !== "active" || !binding.sessionId) return null;
+    // A delivered packet was typed into one session. Re-checking it is only honest while the
+    // binding still reaches that session - itself, or a successor through a committed runtime
+    // transfer, which is how a binding legitimately moves with its action. A binding moved to
+    // another session any other way would reopen an attempt the observer must block again.
+    const anchor = parsed.data.anchor;
+    if (anchor && !runtimeTransferConnects(anchor.sessionId, binding.sessionId, anchor.noteKey, this.db)) {
+      return null;
+    }
     return attempt;
   }
 

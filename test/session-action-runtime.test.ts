@@ -1573,6 +1573,78 @@ test("startup re-checks an action left blocked as session_lost once its session 
   }
 });
 
+test("the update that brings a blocked session back also records its pickup", async () => {
+  const h = await harness("session-lost-return-pickup", { sessionActionSessionGraceMs: 1_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    const attempt = waitingAttempt(h, runId)!;
+    // Away BEFORE any pickup was recorded, long enough to block.
+    h.registry.applyDiscovery([]);
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 2_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "session_action_blocked");
+    assert.equal(h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.pickedUpAt ?? null, null);
+
+    // One hook brings the session back AND is the first proof it is working on the packet. This
+    // harness reports no transcript, so if that update is missed no later sample can prove pickup.
+    h.reportWorking();
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting", "the returning session did not re-check");
+    assert.notEqual(
+      h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.pickedUpAt ?? null, null,
+      "pickup carried by the returning update was dropped",
+    );
+    h.head.sha = "head-2";
+    h.reportIdle();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getAttempt(attempt.id)?.state === "completed",
+      "the re-checked action never completed",
+    );
+    assert.equal(h.injected.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a binding moved to another session without a transfer is not offered the re-check", async () => {
+  const h = await harness("session-lost-moved-binding", { sessionActionSessionGraceMs: 1_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    h.registry.applyDiscovery([]);
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 2_000);
+    const run = h.store.getRun(runId)!;
+    assert.equal(run.currentPhase, "session_action_blocked");
+    assert.ok(h.store.recoverableLostSessionAction(run), "the block should be recoverable before the move");
+
+    // Same conversation, different session, and no committed runtime transfer: the delivered
+    // packet's anchor no longer reaches the binding's session.
+    const binding = h.store.getBinding(run.bindingId)!;
+    h.store.reattachBinding(binding.id, {
+      noteKey: binding.noteKey, sessionId: "some-other-session", sessionAgent: binding.sessionAgent,
+      sessionName: binding.sessionName, sessionCwd: binding.sessionCwd, sessionRepoRoot: binding.sessionRepoRoot,
+    });
+    assert.equal(h.store.recoverableLostSessionAction(h.store.getRun(runId)!), null);
+    assert.ok(!h.store.runSummary(runId)?.recovery?.operations.includes("retry"), "retry was offered for a stale anchor");
+    const retried = h.manager.retry(runId, { requestId: "stale-anchor" });
+    assert.equal(retried.ok, false, "retry reopened an attempt the observer must block again");
+    assert.equal(h.store.getRun(runId)?.status, "blocked");
+  } finally {
+    await h.stop();
+  }
+});
+
 test("a restart mid-flight never sends, completes, or captures twice", async () => {
   const h = await harness("restart", { downstream: true });
   try {

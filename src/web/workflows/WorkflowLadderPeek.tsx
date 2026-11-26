@@ -14,6 +14,7 @@ import type { InheritedPass } from "./run-model.ts";
 import { RepairRoundMeter, WorkflowStageMeter } from "./WorkflowStageMeter.tsx";
 import {
   actionBlockSentence,
+  sessionActionRecheckOffered,
   actionWaitSentence,
   carriedStageStatus,
   carriedStatus,
@@ -164,7 +165,8 @@ function projectWorkflowLadderStages(
       // tile: the stage is moving, so no failure sentence exists to claim the slot, and
       // without this the card reads "Session working" with nothing saying on what.
       if (sentence === null && actionState?.blocked) {
-        sentence = `${name}: ${actionBlockSentence(actionState.blocked.code)}`;
+        sentence = `${name}: ${actionBlockSentence(actionState.blocked.code,
+          sessionActionRecheckOffered(detail, attempt?.id))}`;
       } else if (sentence === null && actionState?.wait) {
         sentence = `${name}: ${actionWaitSentence(actionState.wait)}`;
       }

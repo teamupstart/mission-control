@@ -910,8 +910,11 @@ export class WorkflowManager {
         // Pickup is recorded HERE rather than on the sweep: a turn can start and finish
         // between two fifteen-second samples, and the proof would be gone by the time the
         // observer looked. See `noteSessionActionActivity`.
-        this.noteSessionActionActivity(event.session);
+        // Re-check FIRST. An action blocked because its session was away is back to `waiting`
+        // only after this, and the update that brings the session back may be the only proof
+        // that the turn was picked up - recorded below, which reads waiting attempts alone.
         this.recheckLostSessionActions(event.session.id);
+        this.noteSessionActionActivity(event.session);
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
           if (binding.noteKey === noteKeyFor(event.session)) continue;

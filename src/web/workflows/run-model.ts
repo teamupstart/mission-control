@@ -2546,9 +2546,7 @@ export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
       // the daemon re-checks it when the session is running again, and offers the same
       // re-check now as a round-free `retry`. Saying "will not restart on its own" over it is
       // the false instruction that gets a recoverable run cancelled.
-      const gate = detail.run.gateState as { code?: unknown } | null | undefined;
-      if (detail.run.currentPhase === "session_action_blocked" && gate?.code === "session_lost"
-        && detail.summary.recovery?.operations.includes("retry")) {
+      if (sessionActionRecheckOffered(detail)) {
         return yoursPosture("This action stopped because its session was away. It is checked again"
           + " on its own when the session is running, or check it again now. No repair round was spent.");
       }
@@ -2888,8 +2886,7 @@ const ACTION_BLOCK_SENTENCES: Record<SessionActionBlockCode, string> = {
   adapter_unavailable: "This build cannot prove the completion this action asks for.",
   prompt_too_large: "The authored instruction is larger than one delivery can carry.",
   required_skill_unavailable: "The skill this action requires is not loaded in the bound session.",
-  session_lost: "The bound session stayed away before the turn finished. It is checked again"
-    + " when the session is running, without spending a repair round.",
+  session_lost: "The bound session was gone before the turn finished.",
   conversation_changed: "The session's conversation was replaced, so the turn cannot be attributed.",
   delivery_refused: "The session's pane refused the write, so nothing was typed.",
   delivery_uncertain: "The write may or may not have landed. Check the pane, then resolve it below.",
@@ -2902,8 +2899,35 @@ const ACTION_BLOCK_SENTENCES: Record<SessionActionBlockCode, string> = {
     + "finish against it.",
 };
 
-export function actionBlockSentence(code: SessionActionBlockCode): string {
-  return ACTION_BLOCK_SENTENCES[code];
+/**
+ * The sentence for a blocked action, with the recovery clause only when the daemon offers it.
+ *
+ * `recheckOffered` must come from `sessionActionRecheckOffered`, never from the block code
+ * alone: a `session_lost` block whose binding was orphaned is not re-checked on its own, and
+ * promising that it is leaves an operator waiting instead of reattaching or cancelling.
+ */
+export function actionBlockSentence(code: SessionActionBlockCode, recheckOffered = false): string {
+  return code === "session_lost" && recheckOffered
+    ? "The bound session was away before the turn finished. It is checked again when the session"
+      + " is running, without spending a repair round."
+    : ACTION_BLOCK_SENTENCES[code];
+}
+
+/**
+ * Whether the daemon offers the round-free re-check for this blocked action attempt.
+ *
+ * The one reading of the projected capability the banner, the ladder and the tile peek share:
+ * the run is blocked on THIS attempt as `session_lost`, and the daemon's recovery projection
+ * (`recoverableLostSessionAction`, which requires an active binding that still reaches the
+ * delivery's session) lists `retry`.
+ */
+export function sessionActionRecheckOffered(detail: WorkflowRunDetail, attemptId?: string | null): boolean {
+  const gate = detail.run.gateState as { code?: unknown; attemptId?: unknown } | null | undefined;
+  return detail.run.status === "blocked"
+    && detail.run.currentPhase === "session_action_blocked"
+    && gate?.code === "session_lost"
+    && (attemptId == null || gate.attemptId === attemptId)
+    && detail.summary.recovery?.operations.includes("retry") === true;
 }
 
 /**

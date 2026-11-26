@@ -28,6 +28,7 @@ import { Keycap } from "../components/Keycap.tsx";
 import { CarriedProvenance, Rung, type PipelineStatus } from "./pipeline-bits.tsx";
 import {
   actionBlockSentence,
+  sessionActionRecheckOffered,
   actionWaitSentence,
   carriedStageStatus,
   carriedStatus,
@@ -372,7 +373,8 @@ export function WorkflowLadder({
                       && member.outcome
                       ? checkStatusView(member.outcome.status).sentence
                       : member.actionState?.blocked
-                        ? actionBlockSentence(member.actionState.blocked.code)
+                        ? actionBlockSentence(member.actionState.blocked.code,
+                          sessionActionRecheckOffered(detail, member.attempt?.id))
                         : member.actionState?.wait
                           ? actionWaitSentence(member.actionState.wait)
                           : null;

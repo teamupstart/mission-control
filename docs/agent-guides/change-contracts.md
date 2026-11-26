@@ -998,7 +998,12 @@ A SessionAction is a durable side effect, not an evaluator:
   projection's round-free `retry` and the runtime. The block is re-checked automatically on the
   bound session's next live `session_upsert` and once after startup discovery, and by hand
   through `retry`. Reopening keeps the attempt's delivery, anchor and pickup, types nothing, and
-  spends no repair round. Every completion proof is still required afterwards.
+  spends no repair round. Every completion proof is still required afterwards. A delivered
+  attempt is recoverable only while `runtimeTransferConnects(anchor.sessionId,
+  binding.sessionId, anchor.noteKey)` holds, so a binding moved any way other than a committed
+  runtime transfer is never reopened only to be blocked again. On `session_upsert` the re-check
+  runs BEFORE `noteSessionActionActivity`, because the update that brings the session back can
+  be the only proof of pickup and that recorder reads waiting attempts alone.
 - The authored prompt ceiling is DERIVED (`sessionActionPromptBytes` = `sessionActionPacketBytes`
   less `sessionActionEnvelopeBytes`), never set beside it. An action packet is the operator's
   own instruction frozen into an immutable version, so it is refused when it cannot be sent

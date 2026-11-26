@@ -78,6 +78,7 @@ import type {
 } from "./run-model.ts";
 import {
   actionBlockSentence,
+  sessionActionRecheckOffered,
   actionWaitSentence,
   attemptStateLabel,
   cancelGateHint,
@@ -572,11 +573,14 @@ function SessionActionCard({
   status,
   state,
   verifiedShipping,
+  recheckOffered,
 }: {
   attempt: WorkflowNodeAttempt;
   status: PipelineStatus;
   state: SessionActionProgress | null;
   verifiedShipping: boolean;
+  /** `sessionActionRecheckOffered` for this attempt: the daemon offers the round-free re-check. */
+  recheckOffered: boolean;
 }): React.JSX.Element {
   const snapshot = attempt.sessionAction;
   const blocked = state?.blocked ?? null;
@@ -599,7 +603,7 @@ function SessionActionCard({
           that had just said the same thing. */}
       <p className="wf-run-summary">
         {blocked
-          ? actionBlockSentence(blocked.code)
+          ? actionBlockSentence(blocked.code, recheckOffered)
           : state?.wait
             ? actionWaitSentence(state.wait)
             : state?.complete
@@ -4281,6 +4285,7 @@ export function WorkflowRunView({
                   attempt={attempt}
                   state={state}
                   status={sessionActionStatus(attempt.state, state?.wait ?? null)}
+                  recheckOffered={sessionActionRecheckOffered(detail, attempt.id)}
                   verifiedShipping={Boolean(
                     viewedRound?.verifiedShipping
                     && continuationSourceAttempt(detail, viewedRound.submissionId)?.id === attempt.id

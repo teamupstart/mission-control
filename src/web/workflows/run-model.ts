@@ -2542,6 +2542,16 @@ export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
         return recovery?.state === "pending" && detail.binding.state === "active" && detail.binding.deliveryMode === "live"
           ? autoPosture(preparation) : yoursPosture(preparation);
       }
+      // A session action blocked only because its session was away is NOT stopped for good:
+      // the daemon re-checks it when the session is running again, and offers the same
+      // re-check now as a round-free `retry`. Saying "will not restart on its own" over it is
+      // the false instruction that gets a recoverable run cancelled.
+      const gate = detail.run.gateState as { code?: unknown } | null | undefined;
+      if (detail.run.currentPhase === "session_action_blocked" && gate?.code === "session_lost"
+        && detail.summary.recovery?.operations.includes("retry")) {
+        return yoursPosture("This action stopped because its session was away. It is checked again"
+          + " on its own when the session is running, or check it again now. No repair round was spent.");
+      }
       return yoursPosture("This review is stopped and will not restart on its own."
         + " The path forward is yours to pick.");
     }
@@ -2878,7 +2888,8 @@ const ACTION_BLOCK_SENTENCES: Record<SessionActionBlockCode, string> = {
   adapter_unavailable: "This build cannot prove the completion this action asks for.",
   prompt_too_large: "The authored instruction is larger than one delivery can carry.",
   required_skill_unavailable: "The skill this action requires is not loaded in the bound session.",
-  session_lost: "The bound session was gone before the turn finished.",
+  session_lost: "The bound session stayed away before the turn finished. It is checked again"
+    + " when the session is running, without spending a repair round.",
   conversation_changed: "The session's conversation was replaced, so the turn cannot be attributed.",
   delivery_refused: "The session's pane refused the write, so nothing was typed.",
   delivery_uncertain: "The write may or may not have landed. Check the pane, then resolve it below.",
@@ -3984,7 +3995,9 @@ export function runRemedy(
     return {
       kind: "retry",
       label: "Retry",
-      tooltip: "Run the failed provider call again from where it stopped",
+      tooltip: run.phase === "session_action_blocked"
+        ? "Check the session action again now that its session is back - no repair round is spent"
+        : "Run the failed provider call again from where it stopped",
       path: runPath("retry"),
       body: {},
       confirm: null,

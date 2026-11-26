@@ -1931,6 +1931,11 @@ export interface SessionActionAttemptState {
   blocked: { code: SessionActionBlockCode; detail: string } | null;
   /** Advisories collected before the action advances. Missing on rows from older builds. */
   warnings?: SessionActionWarning[];
+  /**
+   * When the observer first found the bound session unavailable; null or missing while it is
+   * live. Missing on rows from older builds. See `SessionActionAttemptStateSchema`.
+   */
+  sessionMissingSince?: number | null;
 }
 
 /**

@@ -156,6 +156,7 @@ interface HarnessOptions {
   resolveCommitTree?: WorkflowManagerOptions["resolveCommitTree"];
   readRepositoryId?: WorkflowManagerOptions["readRepositoryId"];
   resumptionSettleMs?: number;
+  sessionActionSessionGraceMs?: number;
   localReport?: boolean;
   omitContentTree?: boolean;
   inspector?: boolean;
@@ -230,6 +231,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     trackCiFailures: options.trackCiFailures,
     publicationCheckoutRevision: options.publicationCheckoutRevision ?? (() => contentTree.oid),
     resumptionSettleMs: options.resumptionSettleMs,
+    sessionActionSessionGraceMs: options.sessionActionSessionGraceMs,
     ...(options.probeEvidence ? { readEvidenceProbe: async (_registry, binding) => ({
       stagedImageGeneration: store.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""),
       contentTreeOid: options.localReport ? full("tree-with-report") : contentTree.oid,
@@ -1318,6 +1320,254 @@ test("a session that exits before its turn is observed blocks rather than comple
     );
     await h.manager.sweepSessionActions(SETTLED());
     assert.equal(h.store.listSubmissions(runId).length, 1, "a lost session completed an action");
+  } finally {
+    await h.stop();
+  }
+});
+
+/**
+ * Issue #1733: a restart or an update leaves the bound session `exited` for a while and then
+ * brings it back. Blocking the action on the first such sample turned a healthy run into one
+ * only `cancel` could end once its repair rounds were spent.
+ */
+test("a session that is away only briefly after delivery does not block the action", async () => {
+  const h = await harness("session-brief", { sessionActionSessionGraceMs: 60_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    h.registry.applyDiscovery([]);
+    assert.equal(h.registry.getSession(h.sessionId)?.state, "exited");
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 59_000);
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action", "a short absence blocked the action");
+    assert.equal(h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.sessionMissingSince, away);
+
+    // The session comes back, finishes its turn, and the action completes as if nothing happened.
+    h.registry.applyDiscovery([discovered(h.sessionId)]);
+    assert.notEqual(h.registry.getSession(h.sessionId)?.state, "exited");
+    h.head.sha = "head-2";
+    h.reportIdle();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getAttempt(attempt.id)?.state === "completed",
+      "the action never completed after its session returned",
+    );
+    assert.equal(h.store.runSummary(runId)?.round, 1, "a returning session spent a repair round");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a session away past the grace window blocks, then is re-checked when it returns", async () => {
+  const h = await harness("session-lost-recheck", { sessionActionSessionGraceMs: 1_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    h.registry.applyDiscovery([]);
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 2_000);
+    const blocked = h.store.getRun(runId)!;
+    assert.equal(`${blocked.status}/${blocked.currentPhase}`, "blocked/session_action_blocked");
+    assert.equal((blocked.gateState as { code?: string }).code, "session_lost");
+    assert.match(String((blocked.gateState as { detail?: string }).detail), /checked again automatically/);
+    // A recovery that spends no round is offered, whatever the budget says.
+    const recovery = h.store.runSummary(runId)?.recovery;
+    assert.ok(recovery?.operations.includes("retry"), JSON.stringify(recovery));
+    assert.equal(recovery?.primary, "retry");
+    // A retry while the session is still away is refused with a reason, not swallowed.
+    const early = h.manager.retry(runId, { requestId: "recheck-early" });
+    assert.equal(early.ok, false);
+    assert.equal(early.ok ? null : early.reason, "session_unavailable");
+
+    // The session returning is enough: the action is observed again without anyone asking.
+    h.registry.applyDiscovery([discovered(h.sessionId)]);
+    await waitFor(
+      () => h.store.getRun(runId)?.status === "waiting_for_action",
+      "the returning session did not re-check the blocked action",
+    );
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting");
+    assert.ok(h.store.listEvents(runId).some((event) => event.kind === "session_action_rechecked"));
+    h.head.sha = "head-2";
+    h.reportIdle();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getAttempt(attempt.id)?.state === "completed",
+      "the re-checked action never completed",
+    );
+    assert.equal(h.injected.length, 1, "the re-check typed the instruction a second time");
+    assert.equal(h.store.runSummary(runId)?.round, 1, "the re-check spent a repair round");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("retry re-checks a lost-session action in place, once per request", async () => {
+  const h = await harness("session-lost-retry", { sessionActionSessionGraceMs: 1_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    h.registry.applyDiscovery([]);
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 2_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "session_action_blocked");
+    const recovery = h.store.runSummary(runId)?.recovery;
+    assert.equal(recovery?.primary, "retry", JSON.stringify(recovery));
+
+    // The session returns while nothing is listening, as it would before a daemon's discovery
+    // subscribed, so only the operator's retry can re-check it.
+    await h.manager.stop();
+    h.registry.applyDiscovery([discovered(h.sessionId)]);
+    const retried = h.manager.retry(runId, { requestId: "recheck-manual" });
+    assert.equal(retried.ok, true, JSON.stringify(retried));
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting");
+    const again = h.manager.retry(runId, { requestId: "recheck-manual" });
+    assert.equal(again.ok && again.idempotent, true, "a repeated request re-checked twice");
+    assert.equal(h.store.runSummary(runId)?.round, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("the grace window ends exactly at its deadline, and a return starts a fresh one", async () => {
+  const GRACE = 10_000;
+  const h = await harness("session-grace-deadline", { sessionActionSessionGraceMs: GRACE });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    const missingSince = () => h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.sessionMissingSince ?? null;
+
+    // First absence: the clock starts at the first sample that finds the session away.
+    h.registry.applyDiscovery([]);
+    const firstAway = Date.now();
+    await h.manager.sweepSessionActions(firstAway);
+    assert.equal(missingSince(), firstAway);
+    await h.manager.sweepSessionActions(firstAway + GRACE - 1);
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action", "blocked before the deadline");
+
+    // The session returns one millisecond before the deadline. The next live sample clears the
+    // clock, and nothing about the first absence is carried into the second.
+    h.registry.applyDiscovery([discovered(h.sessionId)]);
+    h.reportWorking();
+    await h.manager.sweepSessionActions(Date.now());
+    assert.equal(missingSince(), null, "a live sample did not clear the absence clock");
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+
+    // Second absence, starting well past where the first one's deadline was: a fresh full window.
+    h.registry.applyDiscovery([]);
+    const secondAway = firstAway + 5 * GRACE;
+    await h.manager.sweepSessionActions(secondAway);
+    assert.equal(missingSince(), secondAway, "the second absence reused the first one's clock");
+    await h.manager.sweepSessionActions(secondAway + GRACE - 1);
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action", "the second window was shorter than the grace");
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting");
+
+    // At the deadline itself the action blocks.
+    await h.manager.sweepSessionActions(secondAway + GRACE);
+    const blocked = h.store.getRun(runId)!;
+    assert.equal(`${blocked.status}/${blocked.currentPhase}`, "blocked/session_action_blocked");
+    assert.equal((blocked.gateState as { code?: string }).code, "session_lost");
+    assert.equal(h.store.runSummary(runId)?.round, 1, "a block spent a repair round");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("brief misses between observer samples do not add up to the grace window", async () => {
+  const GRACE = 10_000;
+  const h = await harness("session-miss-between-sweeps", { sessionActionSessionGraceMs: GRACE });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    const missingSince = () => h.store.sessionActionState(h.store.getAttempt(attempt.id)!)?.sessionMissingSince ?? null;
+
+    // A miss the observer happens to sample starts the clock.
+    h.registry.applyDiscovery([]);
+    const firstAway = Date.now();
+    await h.manager.sweepSessionActions(firstAway);
+    assert.equal(missingSince(), firstAway);
+
+    // The session is found again and missed again with NO observer sample in between. Its
+    // return is what ends the first miss.
+    h.registry.applyDiscovery([discovered(h.sessionId)]);
+    assert.equal(missingSince(), null, "the session's return did not end the absence clock");
+    h.registry.applyDiscovery([]);
+
+    // The next sample lands exactly where the first miss's deadline was. It starts a new clock
+    // rather than blocking on time the session spent back.
+    await h.manager.sweepSessionActions(firstAway + GRACE);
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action", "separate misses were added together");
+    assert.equal(missingSince(), firstAway + GRACE);
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("startup re-checks an action left blocked as session_lost once its session is back", async () => {
+  const h = await harness("session-lost-startup", { sessionActionSessionGraceMs: 1_000 });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.reportWorking();
+    const attempt = waitingAttempt(h, runId)!;
+    h.registry.applyDiscovery([]);
+    const away = Date.now();
+    await h.manager.sweepSessionActions(away);
+    await h.manager.sweepSessionActions(away + 2_000);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "session_action_blocked");
+    const deliveriesBefore = h.store.listDeliveriesForAttempt(attempt.id).length;
+
+    // The daemon goes down with the block persisted, and the session is restored while nothing
+    // is listening - so no session_upsert can be what re-checks it. Only startup can.
+    await h.manager.stop();
+    h.registry.applyDiscovery([discovered(h.sessionId)]);
+    assert.notEqual(h.registry.getSession(h.sessionId)?.state, "exited");
+    assert.equal(h.store.getRun(runId)?.status, "blocked", "the block was lifted before startup");
+    await h.restartWorkflowManager();
+    await h.settle();
+
+    const reopened = h.store.getRun(runId)!;
+    assert.equal(`${reopened.status}/${reopened.currentPhase}`, "waiting_for_action/session_action");
+    assert.equal(h.store.getAttempt(attempt.id)?.state, "waiting", "startup did not reopen the same attempt");
+    assert.equal(waitingAttempt(h, runId)?.id, attempt.id, "startup created a new attempt instead of reopening");
+    const rechecked = h.store.listEvents(runId).filter((event) => event.kind === "session_action_rechecked");
+    assert.equal(rechecked.length, 1);
+    assert.equal((rechecked[0]!.payload as { source?: string }).source, "session_returned");
+    assert.equal(h.store.listDeliveriesForAttempt(attempt.id).length, deliveriesBefore, "startup prepared another packet");
+    assert.equal(h.injected.length, 1, "startup typed the instruction a second time");
+    assert.equal(h.store.runSummary(runId)?.round, 1, "startup spent a repair round");
   } finally {
     await h.stop();
   }

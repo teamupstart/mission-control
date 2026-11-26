@@ -986,6 +986,19 @@ A SessionAction is a durable side effect, not an evaluator:
   either direction. `resolveDelivery`'s `mark_delivered` is the operator's answer and reopens
   the attempt. Recovery never re-prepares a refused packet - that would retry, on every daemon
   start, a write nobody re-authorized.
+- A missing or `exited` bound session is NOT an immediate block once the packet is delivered.
+  A restart or an update makes the session unavailable for a while and then brings it back, so
+  the observer records `sessionMissingSince` on the attempt state and blocks `session_lost`
+  only once the session has stayed away for the grace window
+  (`WORKFLOW_SESSION_ACTION_SESSION_GRACE_MS`). Nothing advances while it is away. The bound
+  session's live `session_upsert` ends that clock, not only an observer sample, so separate
+  brief misses between two samples never add up to the window. A
+  `session_lost` block is the one block besides the delivery ones that can be reopened:
+  `WorkflowStore.recoverableLostSessionAction` is the single predicate for both the recovery
+  projection's round-free `retry` and the runtime. The block is re-checked automatically on the
+  bound session's next live `session_upsert` and once after startup discovery, and by hand
+  through `retry`. Reopening keeps the attempt's delivery, anchor and pickup, types nothing, and
+  spends no repair round. Every completion proof is still required afterwards.
 - The authored prompt ceiling is DERIVED (`sessionActionPromptBytes` = `sessionActionPacketBytes`
   less `sessionActionEnvelopeBytes`), never set beside it. An action packet is the operator's
   own instruction frozen into an immutable version, so it is refused when it cannot be sent

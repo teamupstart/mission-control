@@ -5656,6 +5656,7 @@ export class WorkflowStore {
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
           recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
+          recoverableSessionAction: this.recoverableLostSessionAction(run) !== null,
         }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
@@ -9060,6 +9061,84 @@ export class WorkflowStore {
         attemptId,
       );
       return Number(changed.changes) === 1 ? this.mustAttempt(attemptId) : null;
+    });
+  }
+
+  /**
+   * The action attempt a `session_lost` block can be re-checked from, or null.
+   *
+   * Only the attempt the run is CURRENTLY blocked on, only when it is the newest attempt of its
+   * node, and only while the binding is still active and names a session. A lost session is a
+   * fact about the pane, not about the work: once the same conversation is back, observing the
+   * action again is the honest next step, and it spends no repair round. Shared by the run's
+   * recovery projection and by the runtime that performs the re-check, so the button and the
+   * route cannot disagree.
+   */
+  recoverableLostSessionAction(run: WorkflowRun): WorkflowNodeAttempt | null {
+    if (run.status !== "blocked" || run.currentPhase !== "session_action_blocked") return null;
+    const detail = run.gateState;
+    if (!detail || Array.isArray(detail) || typeof detail !== "object") return null;
+    if (detail.code !== "session_lost" || typeof detail.attemptId !== "string") return null;
+    const attempt = this.getAttempt(detail.attemptId);
+    if (!attempt || attempt.state !== "error" || !attempt.sessionAction) return null;
+    const submission = this.getSubmission(attempt.submissionId);
+    if (!submission || submission.runId !== run.id) return null;
+    if (this.latestAttemptForNode(submission.id, attempt.nodeId)?.id !== attempt.id) return null;
+    const parsed = SessionActionAttemptStateSchema.safeParse(attempt.output);
+    if (!parsed.success || parsed.data.blocked?.code !== "session_lost") return null;
+    const binding = this.getBinding(run.bindingId);
+    if (binding?.state !== "active" || !binding.sessionId) return null;
+    return attempt;
+  }
+
+  /**
+   * Return a `session_lost` action attempt to `waiting`, and its run to the action wait.
+   *
+   * The second backwards transition this runtime allows, beside `reopenSessionActionAttempt`.
+   * It keeps every observation the attempt had already made - its delivery, anchor and pickup -
+   * because none of them was wrong: the session was only unavailable when the observer looked.
+   * Nothing is typed here and no round is spent; the action observer picks the attempt up
+   * again from its durable anchor on its next pass.
+   */
+  reopenLostSessionActionAttempt(input: {
+    runId: string;
+    attemptId: string;
+    source: "session_returned" | "operator";
+    requestId: string | null;
+    now: number;
+  }): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(input.runId);
+      if (!run || this.recoverableLostSessionAction(run)?.id !== input.attemptId) return null;
+      const attempt = this.mustAttempt(input.attemptId);
+      const state = SessionActionAttemptStateSchema.parse(attempt.output);
+      const changed = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET state = 'waiting', error = NULL, finished_at = NULL, output_json = ?,
+                updated_at = ?
+          WHERE id = ? AND state = 'error'`,
+      ).run(
+        JSON.stringify({
+          ...state,
+          blocked: null,
+          sessionMissingSince: null,
+        } satisfies SessionActionAttemptState),
+        input.now,
+        input.attemptId,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      this.setRunState(run.id, "waiting_for_action", "session_action", {
+        nodeId: attempt.nodeId,
+        attemptId: attempt.id,
+        ...(state.deliveryId ? { deliveryId: state.deliveryId } : {}),
+      }, input.now);
+      this.appendEvent(run.id, "session_action_rechecked", {
+        attemptId: attempt.id,
+        nodeId: attempt.nodeId,
+        source: input.source,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+      }, input.now);
+      return this.mustAttempt(input.attemptId);
     });
   }
 

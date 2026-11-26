@@ -6702,6 +6702,17 @@ export const SessionActionAttemptStateSchema = z.object({
     .object({ code: z.enum(SESSION_ACTION_BLOCK_CODES), detail: z.string().max(2_000) })
     .nullable(),
   warnings: z.array(SessionActionWarningSchema).max(8).optional().default([]),
+  /**
+   * When the observer first found the bound session missing or `exited`, or null while it is
+   * live.
+   *
+   * A daemon restart or an update leaves a session briefly unavailable while it is restored,
+   * and blocking on the first such sample turned a healthy run into one only `cancel` could
+   * end. The observer blocks `session_lost` only once this is older than its grace window,
+   * and clears it the moment the session is live again. Optional and defaulted so a row
+   * written before the field existed keeps parsing.
+   */
+  sessionMissingSince: z.number().int().nullable().optional().default(null),
 });
 
 /** The build's per-adapter answer, as the browser receives it. Never re-derived client-side. */

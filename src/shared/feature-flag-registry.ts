@@ -37,6 +37,15 @@ export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 
 export const SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID = "seven-day-worktree-cleanup" as const;
 
+/**
+ * Lets automatic worktree retention also return disposable task checkouts Git no longer
+ * recognizes, and finish tasks whose terminal home is positively proved absent. Its own flag
+ * rather than part of `seven-day-worktree-cleanup`: that flag only chooses the window, and
+ * turning it off still enforces cleanup, so it cannot be the off switch for a new class of
+ * unattended deletion. See `docs/worktrees-and-checks.md#orphaned-task-checkouts`.
+ */
+export const ORPHANED_WORKTREE_RECLAIM_FLAG_ID = "orphaned-worktree-reclaim" as const;
+
 export const LOCAL_INSPECTOR_FLAG_ID = "local-inspector" as const;
 export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 
@@ -295,6 +304,14 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "Controls when unattended worktree deletion can occur.",
     keywords: ["worktrees", "cleanup", "retention", "disk space"],
+  },
+  {
+    id: ORPHANED_WORKTREE_RECLAIM_FLAG_ID,
+    label: "Reclaim orphaned task worktrees",
+    description: "Let automatic cleanup return task checkouts Git no longer recognizes after archiving their local-only files, and finish tasks whose terminal home is proved gone.",
+    stage: "preview",
+    sessionSetting: "Controls whether unattended deletion can remove checkouts that Git no longer recognizes.",
+    keywords: ["worktrees", "cleanup", "orphaned", "retention", "disk space", "terminal home"],
   },
 ] as const satisfies readonly (FeatureFlagDefinition & { sessionSetting: string })[];
 

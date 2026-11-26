@@ -88,6 +88,19 @@ export interface ArchiveCaptureScope {
   slot: string;
   /** The checkout-relative directory this job captures. */
   directory: string;
+  /**
+   * `checkout` jobs only: the exact checkout-relative files to preserve and the bytes each
+   * must still hold. Frozen at reservation, so a file that changed afterwards is refused
+   * rather than archived as something the retention decision never saw.
+   */
+  files?: ArchiveCaptureScopeFile[];
+}
+
+/** One frozen file of a `checkout` capture. */
+export interface ArchiveCaptureScopeFile {
+  path: string;
+  sha256: string;
+  bytes: number;
 }
 
 /** The identity and source locators one capture works from. All server-derived. */
@@ -502,12 +515,28 @@ function readScope(raw: string | null): ArchiveCaptureScope | null {
   const parsed = parseJson<Partial<ArchiveCaptureScope>>(raw);
   if (!parsed || typeof parsed.slot !== "string" || typeof parsed.directory !== "string") return null;
   if (parsed.slot === "" || parsed.directory === "") return null;
-  return { slot: parsed.slot, directory: parsed.directory, ...(parsed.managed ? { managed: parsed.managed } : {}) };
+  const files = parsed.files === undefined ? undefined : readScopeFiles(parsed.files);
+  if (files === null) return null;
+  return { slot: parsed.slot, directory: parsed.directory, ...(parsed.managed ? { managed: parsed.managed } : {}),
+    ...(files ? { files } : {}) };
+}
+
+function readScopeFiles(raw: unknown): ArchiveCaptureScopeFile[] | null {
+  if (!Array.isArray(raw)) return null;
+  const files: ArchiveCaptureScopeFile[] = [];
+  for (const entry of raw) {
+    const file = entry as Partial<ArchiveCaptureScopeFile> | null;
+    if (!file || typeof file.path !== "string" || file.path === "" || typeof file.sha256 !== "string" ||
+        !/^[0-9a-f]{64}$/.test(file.sha256) || typeof file.bytes !== "number" || !Number.isSafeInteger(file.bytes) ||
+        file.bytes < 0) return null;
+    files.push({ path: file.path, sha256: file.sha256, bytes: file.bytes });
+  }
+  return files;
 }
 
 /** The display name a job falls back to when the task it froze had no usable title. */
 function untitled(kind: ArchiveKind): string {
-  return kind === "plan" ? "Plan" : "Scout";
+  return kind === "plan" ? "Plan" : kind === "checkout" ? "Checkout files" : "Scout";
 }
 
 function readStatus(raw: string): ArchiveCaptureJobStatus {

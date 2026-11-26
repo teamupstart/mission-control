@@ -39,6 +39,15 @@ existing dashboard API. See [Recurring missions](recurring-missions.md#creating-
 `test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
 creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
+**Reclaim orphaned task worktrees** (`orphaned-worktree-reclaim`) lets automatic worktree
+retention return two classes it otherwise holds for ever: disposable task checkouts Git no
+longer recognizes, and tasks whose terminal home can be proved absent. It is its own flag rather
+than an extension of `seven-day-worktree-cleanup`, because that flag only chooses the retention
+window and turning it off still enforces cleanup; a new class of unattended deletion needs an
+off switch of its own. Its session policy is protected: a session can read it but not change it.
+`MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` evaluates both classes from read-only evidence
+whatever the flag says. See [Orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
+
 **Local Inspector** (`local-inspector`) exposes the pre-PR workflow stage, its Command tuning
 and the Local review setting in GitHub Inspector. It uses the repository workload independently
 of the Persona repository access preview. Turning the flag off hides its authoring controls
@@ -202,6 +211,7 @@ authority require an operator. Each new feature flag declares its session policy
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
 | `seven-day-worktree-cleanup` | preview | Seven-day task worktree retention. Off uses the configured window | [Worktrees and checks](worktrees-and-checks.md#task-worktree-retention) |
+| `orphaned-worktree-reclaim` | preview | Automatic retention of disposable task checkouts Git no longer recognizes, after archiving their local-only files, and of tasks whose terminal home is proved absent. Off holds both classes as before | [Worktrees and checks](worktrees-and-checks.md#orphaned-task-checkouts) |
 | `background-reasoning-effort` | preview | Per-call effort settings for background jobs, Foreman and GitHub Inspector. Turning it off suspends the saved overrides for new calls | [Models](models.md#reasoning-effort-for-background-work) |
 | `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |

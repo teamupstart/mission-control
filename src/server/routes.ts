@@ -515,7 +515,7 @@ import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
 import { interruptSession, requestSessionStop } from "./sdk/control.ts";
-import { spawnManagedResume } from "./dispatcher.ts";
+import { spawnManagedResume, worktreeSlotPath } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
 import { pushTask } from "./task-sources/push.ts";
@@ -2203,7 +2203,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const [inventory, disposable] = await Promise.all([
         worktreeOperations.inventory(), disposableWorktreeCensus(taskRows),
       ]);
-      return c.json({ ...inventory, retention: backgroundWorktreeRetentionStatus(taskRows), disposable });
+      return c.json({ ...inventory, retention: await backgroundWorktreeRetentionStatus(taskRows, worktreeSlotPath), disposable });
     } catch (error) {
       const failure = worktreeFailure(error);
       return c.json(failure.body, failure.status);

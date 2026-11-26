@@ -931,9 +931,11 @@ this line for both helpers.
 Protocol 4.1 backend fluidaudio speech {"audio": false, "systemVoices": []}
 ```
 
-Round 7, segment 1 of the voice picker review retains `installed-2-3-0-listener-check-command-output.txt`
-as artifact `txt_edcc35172169ebcab3715ef33604a302`. For the speaker, microphone and on-screen
-fallback results, see the [November 25 quiet-room trial](#november-25-2026-quiet-room-trial).
+To find the probe in the voice picker review, match `installed-2-3-0-listener-check-command-output.txt`
+and its SHA-256 digest `ff90abea7be2766ee02e0347df7fae7fbe6c8cca80e7ee92a6fa77c53e975526`.
+Artifact IDs are specific to each snapshot. In round 8, segment 0, this transcript is
+`txt_b380b7f45e3b55ee72e8350f75d0b98b`. For the speaker, microphone and on-screen fallback
+results, see the [November 25 quiet-room trial](#november-25-2026-quiet-room-trial).
 
 **Pending on hardware.** These picker checks require a signed listener that
 has passed the speaker and microphone check and advertises playback. On that

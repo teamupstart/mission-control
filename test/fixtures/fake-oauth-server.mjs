@@ -9,7 +9,7 @@
 //                 loopback origin with `{ separateIssuer: true }`
 //   elsewhereUrl  a third loopback origin nothing should reach; its requests are recorded too
 //   requests      every request: `{ server, method, path, query, headers, body }`
-//   setMode(patch), hold(path) -> release(), close()
+//   setMode(patch), hold(path, method?) -> release(), close()
 //
 // A token is accepted only by the resource its sign-in named in `resource`. Refresh tokens are
 // single use and rotate.
@@ -30,8 +30,9 @@
 //                  | "unauthorized-call" (only a `tools/call` does)
 //                  | "unauthorized-stream" (only the shared GET stream does; a `tools/call` is
 //                  answered once that 401 has been sent, so it is seen first)
-//                  | "unauthorized-stream-late" (only the shared GET stream does, half a second
-//                  after it arrives, so the call has already been answered)
+//                  | "unauthorized-stream-late" (only the shared GET stream does, with no wait of
+//                  its own: a test holds the GET with `hold("/mcp", "GET")` and releases it once
+//                  the call has returned, so the refusal lands between calls)
 //   stall          a path that never answers
 //   oversize       a path that answers 100 KiB
 //   redirect       a path that answers 307 to elsewhereUrl
@@ -179,7 +180,7 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
       res.writeHead(modes.status[path], { "content-type": "text/html" }).end(`<html><body>HTTP ${modes.status[path]} for ${path}: ${body}</body></html>`);
       return;
     }
-    const held = holds.filter((entry) => entry.path === path && !entry.released);
+    const held = holds.filter((entry) => entry.path === path && (!entry.method || entry.method === req.method) && !entry.released);
     if (held.length > 0) await Promise.all(held.map((entry) => entry.promise));
 
     // The resource a path-aware document names is the one its URL was built from, query included.
@@ -283,10 +284,7 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
 
     if (isResource && path === "/mcp") {
       if (modes.mcp === "unauthorized" || !bearerFor(req, urls.resourceUrl)) return challenge(res, "/mcp");
-      if (modes.mcp === "unauthorized-stream-late" && req.method === "GET") {
-        await new Promise((done) => setTimeout(done, 500));
-        return challenge(res, "/mcp");
-      }
+      if (modes.mcp === "unauthorized-stream-late" && req.method === "GET") return challenge(res, "/mcp");
       if (modes.mcp === "unauthorized-stream" && req.method === "GET") {
         challenge(res, "/mcp");
         streamRefused();
@@ -345,10 +343,10 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
     requests,
     setMode(patch) { Object.assign(modes, patch); },
     resetModes() { Object.assign(modes, DEFAULT_MODES); },
-    hold(path) {
+    hold(path, method = null) {
       let release;
       const promise = new Promise((done) => { release = done; });
-      const entry = { path, promise, released: false, release: () => { entry.released = true; release(); } };
+      const entry = { path, method, promise, released: false, release: () => { entry.released = true; release(); } };
       holds.push(entry);
       return entry.release;
     },

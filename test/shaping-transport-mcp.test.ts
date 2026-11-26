@@ -1735,14 +1735,17 @@ test("a 401 on the shared stream between calls tells the service at once, and th
   const noted = t.mock.method(shaperSignIns, "noteRefused");
   // The refresh the refusal asks for waits at /token, so nothing changes under the test.
   const release = fake.hold("/token");
+  // The shared stream's GET waits at the fixture until the call has returned, then is refused.
+  const releaseStream = fake.hold("/mcp", "GET");
   const run = ctx();
   try {
     fake.setMode({ mcp: "unauthorized-stream-late" });
     const from = fake.requests.length;
-    // Answered before the stream's refusal arrives: the call itself saw no 401.
+    // Answered while the stream is held: the call itself saw no 401.
     assert.deepEqual(data(await callMcp(request(false), marked, run)).guidance[0].id, "guide/billing-api");
     assert.equal(noted.mock.callCount(), 0, "no refusal yet");
     // No call is active when the 401 arrives, and the service is still told, once.
+    releaseStream();
     for (let tries = 0; tries < 200 && noted.mock.callCount() === 0; tries++) await new Promise((done) => setTimeout(done, 10));
     assert.equal(noted.mock.callCount(), 1);
     assert.deepEqual(noted.mock.calls[0]!.arguments, [target, held.token]);
@@ -1756,6 +1759,7 @@ test("a 401 on the shared stream between calls tells the service at once, and th
     assert.equal(methodsTo(fake, from).filter((method) => method === "GET").length, 1, "the stream was not retried");
     assert.equal(noted.mock.callCount(), 1);
   } finally {
+    releaseStream();
     (run.scope as ReturnType<typeof runScope>).close();
     release();
   }

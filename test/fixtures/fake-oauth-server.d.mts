@@ -36,8 +36,8 @@ export interface FakeOAuthServer {
   requests: FakeOAuthRequest[];
   setMode(patch: Partial<FakeOAuthModes>): void;
   resetModes(): void;
-  /** Holds every request to `path` until the returned function is called. */
-  hold(path: string): () => void;
+  /** Holds every request to `path`, or only those with `method`, until the returned function is called. */
+  hold(path: string, method?: string): () => void;
   close(): Promise<void>;
 }
 

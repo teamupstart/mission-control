@@ -176,7 +176,7 @@ struct FixtureUtterance: Encodable {
         return nil
     }
 
-    func transcribe(_ segment: Segment, boosting: Bool?) async throws -> FixtureUtterance? {
+    func transcribe(_ segment: Segment, boosting: Bool?, separator: String? = nil) async throws -> FixtureUtterance? {
         observe("decode " + segment.label)
         if segment.label == "undecodable" { throw CocoaError(.coderReadCorrupt) }
         if segment.label == "in-flight" || segment.label == "first hold" {

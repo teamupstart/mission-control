@@ -43,6 +43,8 @@ interface SeparatedCapture {
   captureKey?: string;
   /** The roster the capture was authorized against. Every part binds to these sessions. */
   roster: SpokenName[];
+  /** Parts already routed. A retry skips them however much history has been recorded since. */
+  routed: Set<number>;
 }
 
 interface ActionTime {
@@ -646,7 +648,7 @@ export class VoiceRouter {
       }) : null;
     if (separated) {
       return this.routeSeparated(utterance, { parts: separated, time, startHostUs, captureKey: timing.captureKey,
-        roster: roster.map(target => ({ ...target })) });
+        roster: roster.map(target => ({ ...target })), routed: new Set() });
     }
     return this.route(utterance, time, timing.captureKey);
   }
@@ -670,7 +672,14 @@ export class VoiceRouter {
     let previous = split.time;
     // The card the preceding part opened. A Cancel spoken after the separator addresses it alone.
     let preceding: string | undefined;
+    // Clearing actions and history ends this capture: no later part opens a card in the new lifetime.
+    const { signal } = this.lifetime;
     for (const [index, part] of split.parts.entries()) {
+      if (signal.aborted) {
+        this.separatedCaptures.delete(id);
+        this.rememberUtterance(id);
+        return true;
+      }
       const partId = `${id}:${index + 1}`;
       // The first part starts at the capture's onset. Later parts start at their first word.
       let at = previous;
@@ -680,15 +689,22 @@ export class VoiceRouter {
         at = offsetUs(candidate, previous) >= 0 ? candidate : previous;
       }
       previous = at;
-      const done = this.open.has(partId) || this.delivering.has(partId) || this.recentIds.has(partId);
+      const done = split.routed.has(index) || this.open.has(partId) || this.delivering.has(partId) || this.recentIds.has(partId);
       if (!done && !await this.route({ ...utterance, id: partId, text: part.text, words: part.words,
         capturedAt: index === 0 ? capturedAt : Math.round(at.openedAt) }, at,
       index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding ?? null : undefined })) {
         this.separatedCaptures.delete(id);
         this.separatedCaptures.set(id, split);
-        if (this.separatedCaptures.size > HISTORY_LIMIT) this.separatedCaptures.delete(this.separatedCaptures.keys().next().value!);
+        if (this.separatedCaptures.size > HISTORY_LIMIT) {
+          // Dropping a split forgets which parts were routed. Retire its capture instead of letting
+          // a retry split it again and send those parts twice.
+          const evicted = this.separatedCaptures.keys().next().value!;
+          this.separatedCaptures.delete(evicted);
+          this.rememberUtterance(evicted);
+        }
         return false;
       }
+      split.routed.add(index);
       preceding = this.open.has(partId) || this.delivering.has(partId) ? partId : undefined;
     }
     this.separatedCaptures.delete(id);
@@ -732,7 +748,7 @@ export class VoiceRouter {
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
     if (this.questions) {
-      const inbox = this.routeInbox(utterance, decision, entry, time);
+      const inbox = this.routeInbox(utterance, decision, entry, time, roster);
       if (inbox !== false) return inbox;
       const routed = this.routeQuestion(utterance, decision, entry, time, unsureCards);
       if (routed !== false) return routed;
@@ -773,7 +789,8 @@ export class VoiceRouter {
     return true;
   }
 
-  private routeInbox(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry, time: ActionTime): boolean | Promise<boolean> {
+  private routeInbox(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry, time: ActionTime,
+    roster: readonly SpokenName[] = this.state().roster): boolean | Promise<boolean> {
     const inbox = this.questions?.inbox;
     if (!inbox || decision.kind === "control") return false;
     const reply = /^reply(?:,\s*|\s+)(.+)$/iu.exec(utterance.text.trim());
@@ -785,7 +802,7 @@ export class VoiceRouter {
     const address = target && { key: target.key, sessionId: target.sessionId };
     const candidates = addressedCards(report?.cards ?? [], address);
     const card = focusedVoiceCard(candidates);
-    const owner = target ?? (card && this.state().roster.find(r => r.sessionId === card.sessionId || (card.kind !== "question" && r.key === card.agentKey))) ?? null;
+    const owner = target ?? (card && roster.find(r => r.sessionId === card.sessionId || (card.kind !== "question" && r.key === card.agentKey))) ?? null;
     const item: OpenCard = { time, entry, message: body, card: { id: utterance.id, state: "pending", reason: "inbox-action",
       parts: [{ target: owner, text: body }], deadline: null, openQuestions: 0, candidates: [] } };
     const notice = (detail: string, reason: string) => {

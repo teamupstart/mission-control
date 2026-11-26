@@ -119,7 +119,9 @@ export function splitAtSeparator<W extends SeparatorTiming>(
     if (!spoken(part)) return;
     const group = aligned ? timed[index]! : [];
     const partWords = letters(group.map(word => word.text).join("")) === letters(raw) ? group : [];
-    parts.push({ text: part, words: partWords, offsetMs: partWords[0]?.startMs ?? null });
+    // A decoder can time a bare comma on its own; the part starts at its first spoken word.
+    const firstWord = partWords.find(word => /[\p{L}\p{N}]/u.test(word.text));
+    parts.push({ text: part, words: partWords, offsetMs: firstWord?.startMs ?? null });
   });
   return parts;
 }

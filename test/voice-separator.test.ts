@@ -67,6 +67,16 @@ test("a timing group that does not spell its part's words leaves only that part 
   assert.deepEqual(parts?.map(part => [part.words.map(word => word.text), part.offsetMs]), [[["Steve,", "go,"], 0], [[], null]]);
 });
 
+test("a part is dated from its first spoken word, not a punctuation-only timing before it", () => {
+  const words = [["Steve", 0], ["go", 100], ["bagel", 200], [",", 300], ["Carol", 500], ["report", 700]]
+    .map(([text, startMs]) => ({ text: text as string, startMs: startMs as number, endMs: (startMs as number) + 90 }));
+  const parts = splitAtSeparator("Steve go bagel, Carol report", words, "bagel");
+  assert.deepEqual(texts(parts), ["Steve go", "Carol report"]);
+  assert.deepEqual(parts?.map(part => part.offsetMs), [0, 500]);
+  // An ordinary word-first group keeps its first timing.
+  assert.deepEqual(splitAtSeparator(EXAMPLE, timed(EXAMPLE), "bagel")?.map(part => part.offsetMs), [0, 500]);
+});
+
 test("timings that disagree with the text leave the parts unmeasured", () => {
   const parts = splitAtSeparator("Steve, go, bagel, Carol, stay", timed("Steve go Carol stay"), "bagel");
   assert.deepEqual(texts(parts), ["Steve, go", "Carol, stay"]);
@@ -242,6 +252,34 @@ test("a refused capture's retry cache keeps only unrouted speech, and clearing h
   router.clearHistory();
   assert.deepEqual(router.heard.list(), []);
   assert.equal(cache.size, 0, "no cached speech outlives a cleared history");
+});
+
+test("turning Voice off between parts stops a separated capture and keeps none of its speech", async t => {
+  const { router, cards, say } = harness(t);
+  // End the lifetime the way switching Voice off does, after the first part has routed.
+  const internals = router as unknown as { route: (...args: unknown[]) => Promise<boolean>; separatedCaptures: Map<string, unknown> };
+  const route = internals.route.bind(router);
+  let routed = 0;
+  internals.route = async (...args) => {
+    const result = await route(...args);
+    if (++routed === 1) router.clearActionsAndHistory();
+    return result;
+  };
+  assert.equal(await say(EXAMPLE), false);
+  assert.equal(routed, 1, "the second part is never routed on the new lifetime");
+  assert.equal([...cards.values()].some(card => card.parts[0]?.target?.name === "Carol"), false);
+  assert.equal(internals.separatedCaptures.size, 0);
+  assert.deepEqual(router.heard.list(), []);
+});
+
+test("clearing actions and history when Voice turns off releases a refused capture's cached speech", async t => {
+  const { router } = harness(t);
+  await fill(router, 49);
+  const cache = (router as unknown as { separatedCaptures: Map<string, unknown> }).separatedCaptures;
+  assert.equal(await router.accept({ id: "split", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) }), false);
+  assert.equal(cache.has("split"), true);
+  router.clearActionsAndHistory();
+  assert.equal(cache.size, 0);
 });
 
 async function fill(router: VoiceRouter, count: number) {

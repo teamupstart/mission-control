@@ -1,5 +1,4 @@
 import Darwin
-import FluidAudio
 import Foundation
 import Security
 
@@ -349,6 +348,15 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 }
 
+/// The one recognizer call a capture's decode makes, so a test can observe what each decode is
+/// given. Its types are associated so this file builds without the speech model's module: the
+/// lifecycle tests compile it against a stub recognizer.
+protocol SegmentTranscriber {
+    associatedtype Boosting
+    associatedtype Transcript: Encodable
+    func transcribe(_ segment: Segment, boosting: Boosting?, separator: String?) async throws -> Transcript?
+}
+
 @MainActor final class Capture {
     let revision: String
     var mic: Microphone?
@@ -378,8 +386,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     /// Decodes one segment with the separator in force now, so a live edit reaches every later decode.
-    func transcribe(_ segment: Segment, using recognizer: some SegmentTranscriber,
-                    boosting: VocabularyBoostingSession?) async throws -> Utterance? {
+    func transcribe<T: SegmentTranscriber>(_ segment: Segment, using recognizer: T,
+                                           boosting: T.Boosting?) async throws -> T.Transcript? {
         try await recognizer.transcribe(segment, boosting: boosting, separator: separator)
     }
 

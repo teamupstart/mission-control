@@ -1,5 +1,4 @@
 import AVFoundation
-import FluidAudio
 import XCTest
 @testable import VoiceListener
 
@@ -222,7 +221,7 @@ final class ListenerTests: XCTestCase {
         // Records the separator each decode is given, standing in for the speech model.
         final class RecordingTranscriber: SegmentTranscriber, @unchecked Sendable {
             var separators: [String?] = []
-            func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?, separator: String?) async throws -> Utterance? {
+            func transcribe(_ segment: Segment, boosting: Never?, separator: String?) async throws -> Utterance? {
                 separators.append(separator)
                 return Utterance(text: "Steve, check the build", words: [], capturedAt: segment.capturedAt)
             }

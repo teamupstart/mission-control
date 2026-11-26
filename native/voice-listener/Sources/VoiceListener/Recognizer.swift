@@ -157,11 +157,6 @@ struct Recognizer {
     }
 }
 
-/// The one recognizer call a capture's decode makes, so a test can observe what each decode is given.
-protocol SegmentTranscriber {
-    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?, separator: String?) async throws -> Utterance?
-}
-
 extension Recognizer: SegmentTranscriber {
     func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?, separator: String?) async throws -> Utterance? {
         try await transcribe(segment, boosting: boosting, separator: separator, onAddressSuggestion: nil)

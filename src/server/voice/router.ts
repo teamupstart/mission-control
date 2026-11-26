@@ -696,10 +696,17 @@ export class VoiceRouter {
 
   private async routeSeparatedParts(utterance: VoiceUtterance, split: SeparatedCapture, heldSends: Set<string>): Promise<boolean> {
     const { id, capturedAt } = utterance;
+    // Turning Voice off (or a reset) ends this lifetime while a part may still be waiting. The
+    // unrouted tail is dropped with the history and actions that lifetime held.
+    const lifetime = this.lifetime.signal;
     let previous = split.time;
     // The card the preceding part opened. A Cancel spoken after the separator addresses it alone.
     let preceding: string | undefined;
     for (const [index, part] of split.parts.entries()) {
+      if (lifetime.aborted) {
+        this.separatedCaptures.delete(id);
+        return false;
+      }
       const partId = `${id}:${index + 1}`;
       // The first part starts at the capture's onset. Later parts start at their first word.
       let at = previous;
@@ -714,6 +721,7 @@ export class VoiceRouter {
         capturedAt: index === 0 ? capturedAt : Math.round(at.openedAt) }, at,
       index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding ?? null : undefined, heldSends })) {
         this.separatedCaptures.delete(id);
+        if (lifetime.aborted) return false;
         this.separatedCaptures.set(id, split);
         if (this.separatedCaptures.size > HISTORY_LIMIT) this.separatedCaptures.delete(this.separatedCaptures.keys().next().value!);
         return false;
@@ -1709,6 +1717,8 @@ export class VoiceRouter {
     this.outbox.clear();
     this.pendingVoiceActions.length = 0;
     this.heard.clear();
+    // Speech a refused separated capture kept for its retry goes with the history it belonged to.
+    this.separatedCaptures.clear();
     this.priorChoices.length = 0;
     this.picksLostThrough = undefined;
     this.onCancelWindowChange?.(false);
@@ -1716,7 +1726,6 @@ export class VoiceRouter {
 
   reset(): void {
     this.clearActionsAndHistory();
-    this.separatedCaptures.clear();
     this.epochStart = this.clockSampleAt = performance.now();
     this.questionClockOffsetMs = voiceFocusClockSkewMs();
     this.priorEpochs.length = 0;

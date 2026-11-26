@@ -1,3 +1,4 @@
+import { SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
 import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -21,6 +22,7 @@ const { run } = await import("../src/server/util/exec.ts");
 const { worktreeReturnBlocker } = await import("../src/server/git/worktree-return-safety.ts");
 const { reserveWorktreeUse } = await import("../src/server/worktrees/use-reservation.ts");
 const { reserveSessionTransfer, updateSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { getWorktreesConfig, setWorktreesConfig } = await import("../src/server/worktrees/config.ts");
 const { CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
 const { setSdkSessionStatus, upsertSdkSession } = await import("../src/server/sdk/store.ts");
@@ -569,7 +571,7 @@ test("an unregistered directory stays on disk and appears with its blocker", asy
   assert.equal(census.entries.find((entry) => entry.taskId === w.task.id)?.gitMetadata, "unverified");
 });
 
-for (const change of ["ignored work", "deleted origin branch", "reattachment", "replacement"] as const) {
+for (const change of ["ignored work", "deleted origin branch", "reattachment", "replacement", "flag disabled"] as const) {
   test(`retention preserves the checkout when ${change} appears at the provider boundary`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     let mutate: () => void;
@@ -596,6 +598,19 @@ for (const change of ["ignored work", "deleted origin branch", "reattachment", "
       gitIn(w.path, "commit", "-am", "publish task work");
     }
     gitIn(w.path, "push", "origin", w.primary.branch);
+    const setFlag = (enabled: boolean) => applyFeatureFlagIntent({
+      kind: "flag", id: SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID, enabled,
+    });
+    const observer = change === "flag disabled"
+      ? createDaemonRetentionObserver({
+        listTasks: () => [w.registry.getTask(w.task.id)!],
+        refreshTaskAutomaticCleanup: (id) => w.registry.refreshTaskAutomaticCleanup(id),
+      }, w.manager, () => w.state.now)
+      : w.observer;
+    if (change === "flag disabled") {
+      assert.equal(setFlag(true).ok, true);
+      t.after(() => { setFlag(false); });
+    }
     mutate = () => {
       if (change === "ignored work") writeFileSync(join(w.path, "keep-private"), "private data\n");
       if (change === "deleted origin branch") gitIn(w.primary.origin, "update-ref", "-d", `refs/heads/${w.primary.branch}`);
@@ -604,13 +619,15 @@ for (const change of ["ignored work", "deleted origin branch", "reattachment", "
         w.exit(returning.id);
         t.mock.timers.tick(8_000);
       }
+      if (change === "flag disabled") assert.equal(setFlag(false).ok, true);
       if (change === "replacement") {
         w.registry.upsertTask({ ...w.registry.getTask(w.task.id)!, dispatchedAt: w.state.now });
       }
     };
-    await w.observer.runPass();
+    await observer.runPass();
     w.state.now += WEEK;
-    await w.observer.runPass();
+    await observer.runPass();
+    assert.ok(checks > 0, "the cleanup reached the provider guard");
     assert.ok(existsSync(w.path));
     assert.equal(w.registry.getTask(w.task.id)?.worktreePath, w.path);
     if (change === "reattachment") assert.equal(w.row()?.unownedSince, null);
@@ -664,12 +681,13 @@ test("retention leaves a hibernated task intact past its former deadline", async
   assert.ok(existsSync(w.path));
 });
 
-for (const [setting, mode, localWork] of [
-  ["report-only", "report-only"], [undefined, "configured"], ["enforce", "enforce"],
-  ["unexpected-preview-value", "report-only"],
-  ["report-only", "report-only", true],
+for (const [setting, enabled, mode, localWork] of [
+  ["report-only", true, "report-only"], [undefined, false, "configured"],
+  ["enforce", false, "configured"], [undefined, true, "enforce"],
+  ["unexpected-preview-value", true, "report-only"],
+  ["report-only", true, "report-only", true],
 ] as const) {
-  test(`daemon preview setting selects ${mode} retention when ${setting ?? "unset"}${localWork ? " with local work" : ""}`, async (t) => {
+  test(`daemon preview setting selects ${mode} retention when ${setting ?? "unset"}, flag ${enabled ? "on" : "off"}${localWork ? " with local work" : ""}`, async (t) => {
     for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
       const key = `${prefix}_WORKTREE_CLEANUP_PREVIEW`;
       const previous = process.env[key];
@@ -692,11 +710,23 @@ for (const [setting, mode, localWork] of [
       refreshTaskAutomaticCleanup: (id: string) => w.registry.refreshTaskAutomaticCleanup(id),
     };
     const observer = createDaemonRetentionObserver(registry, w.manager, () => w.state.now);
+    const setFlag = (value: boolean) => applyFeatureFlagIntent({
+      kind: "flag", id: SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID, enabled: value,
+    });
+    t.after(() => { setFlag(false); });
+    if (enabled) assert.equal(setFlag(true).ok, true);
     await observer.runPass();
     const deadline = w.state.now + (mode === "configured" ? 11 * DAY : WEEK);
     assert.equal(w.row()?.cleanupDueAt, deadline);
     assert.equal(backgroundWorktreeRetentionStatus(registry.listTasks()).mode, mode);
     w.state.now = deadline;
+    if (mode === "enforce") {
+      assert.equal(setFlag(false).ok, true);
+      assert.deepEqual((await observer.runPass()).cleanups, {});
+      assert.ok(existsSync(w.path));
+      assert.equal(w.row()?.cleanupDueAt, deadline + 4 * DAY);
+      w.state.now += 4 * DAY;
+    }
     const pass = await observer.runPass();
     if (mode === "report-only") {
       assert.deepEqual(pass.cleanups, {});

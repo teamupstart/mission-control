@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { Page } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
@@ -97,6 +97,33 @@ test("a separator word the daemon refuses to save says so and keeps the saved wo
   await expect.poll(async () => (await voiceConfig(page, daemon)).separatorWord).toBe("waffle");
   await expect(row.getByRole("alert")).toHaveCount(0);
   await expect(field).toHaveValue("waffle");
+});
+
+test("a refusal of an earlier separator save does not mark a newer saved word invalid", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const row = page.locator('[data-anchor="voice/separator"]');
+  const field = page.getByRole("textbox", { name: "Separator word" });
+  await expect(field).toHaveValue("bagel");
+  const held = Promise.withResolvers<Route>();
+  let puts = 0;
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    if (++puts === 1) return held.resolve(route);
+    return route.continue();
+  });
+  await field.fill("waffle");
+  await field.press("Enter");
+  const first = await held.promise;
+  // A newer word is saved while the first request is still pending; then the first is refused.
+  await field.fill("pancake");
+  await field.press("Enter");
+  await first.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "save_failed" }) });
+  await expect.poll(async () => (await voiceConfig(page, daemon)).separatorWord).toBe("pancake");
+  await expect(field).toHaveValue("pancake");
+  await expect(row.getByRole("alert"), "the refusal belonged to the superseded edit").toHaveCount(0);
+  await expect(field).not.toHaveAttribute("aria-invalid", "true");
+  expect(puts).toBe(2);
 });
 
 test("one Always-on capture with the separator shows two confirmations, each with its own Cancel", async ({ dashboard: page, daemon }) => {

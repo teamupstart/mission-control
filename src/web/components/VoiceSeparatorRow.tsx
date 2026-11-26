@@ -19,6 +19,10 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
   const [editing, setEditing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const discard = useRef(false);
+  // Each edit that reports back (a refusal of the word, or a save) takes a ticket. Only the latest
+  // one's save may report a failure, so a refusal that arrives after a newer word was entered
+  // cannot mark that newer word invalid.
+  const latestEdit = useRef(0);
   useEffect(() => { if (!editing) setDraft(saved); }, [saved, editing]);
 
   const commit = async () => {
@@ -32,6 +36,7 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
     const word = draft.trim() || VOICE_SEPARATOR_DEFAULT;
     const issue = separatorWordProblem(word);
     if (issue) {
+      latestEdit.current++;
       setProblem(issue);
       setDraft(saved);
       return;
@@ -39,7 +44,10 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
     setProblem(null);
     setDraft(word);
     if (word === saved) return;
-    if (!await state.update({ separatorWord: word })) setProblem("The separator word was not saved. Try again.");
+    const edit = ++latestEdit.current;
+    if (!await state.update({ separatorWord: word }) && edit === latestEdit.current) {
+      setProblem("The separator word was not saved. Try again.");
+    }
   };
 
   const callSign = roster.find(name => normalizeSeparatorWord(name.name) === normalizeSeparatorWord(saved));

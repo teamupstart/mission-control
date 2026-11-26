@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Route } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { enableVoice, say } from "../fixtures/voice.ts";
+import { runningAgent } from "../fixtures/voice-cards.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
@@ -14,10 +15,12 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
     capture = mkdtempSync(join(root, "heard-"));
   }
   await enableVoice(daemon);
-  const task = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
-    repoRoot: daemon.repo, intent: "Report the build state", title: "Voice fixture", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null, callSign: "Will",
-  } });
-  expect(task.ok(), await task.text()).toBe(true);
+  // Hold Will's turn open, so each addressed phrase below is deterministically queued behind it
+  // rather than racing the end of the session's first turn.
+  const will = await runningAgent(page, daemon, "Will");
+  const held = await page.request.post(daemon.baseURL + "/api/sessions/" + encodeURIComponent(will.id) + "/send",
+    { data: { text: "E2E_HOLD_TURN_UNTIL_RELEASED", submit: true, origin: "human" } });
+  expect(held.ok(), await held.text()).toBe(true);
   await openVoiceTab(page, "Names & routing", daemon.baseURL);
   await expect(page.getByRole("table", { name: "Agents that answer to a spoken name" }).getByRole("row").filter({ hasText: "Will" })).toContainText("Running");
   await openVoiceTab(page, "Recently heard");

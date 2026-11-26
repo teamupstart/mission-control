@@ -98,14 +98,14 @@ test("the setting accepts one word and refuses phrases, punctuation and voice co
 const agent = (name: string): SpokenName => ({ key: `task:${name.toLowerCase()}`, name, kind: "session", sessionId: name.toLowerCase(),
   taskId: name.toLowerCase(), role: "", colorId: null, agent: "codex", state: "running" });
 
-function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions } = {}) {
+function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions; cancelWindow?: boolean } = {}) {
   const cards = new Map<string, VoiceCard>();
   const delivered: { name: string; text: string }[] = [];
   let hostNow = 1_000_000;
   const state = { mode: options.mode ?? "listening", separatorWord: options.separatorWord === undefined ? "bagel" : options.separatorWord,
     roster: options.roster ?? [agent("Steve"), agent("Carol")] };
   const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: state.mode, roster: state.roster, separatorWord: state.separatorWord }),
-    () => ({ enabled: true, seconds: 30 }), {
+    () => ({ enabled: options.cancelWindow ?? true, seconds: 30 }), {
       deliver: async (target, text) => { delivered.push({ name: target.name, text }); return "queued"; },
     }, card => cards.set(card.id, card), undefined, () => hostNow, options.questions);
   t.after(() => router.reset());
@@ -141,6 +141,21 @@ test("a spoken Cancel after the separator cancels the message just opened", asyn
   await say("Steve, check the build, bagel, cancel");
   assert.equal(pending().length, 0);
   assert.deepEqual([...cards.values()].map(card => [card.parts[0]?.target?.name, card.state]), [["Steve", "cancelled"]]);
+});
+
+test("with the Cancel window Off, a Cancel after the separator stops the message before it is sent", async t => {
+  const { say, cards, delivered } = harness(t, { cancelWindow: false });
+  assert.equal(await say("Steve, run the tests, bagel, cancel"), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered, [], "nothing reaches Steve: both parts were transcribed before anything was sent");
+  assert.deepEqual([...cards.values()].map(card => [card.parts[0]?.target?.name, card.state]), [["Steve", "cancelled"]]);
+  // Without a Cancel every part is still sent at once, in spoken order.
+  assert.equal(await say(EXAMPLE), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered.map(({ name, text }) => [name, text]), [
+    ["Steve", "check the build"],
+    ["Carol", "give me a report on the status of some project"],
+  ]);
 });
 
 test("a Cancel after a part that opened no message cancels nothing and leaves earlier messages pending", async t => {
@@ -197,6 +212,36 @@ test("a capture whose second message is refused routes only that message on retr
   assert.equal(await router.accept(utterance), true);
   assert.equal(cards.size, published);
   assert.deepEqual(router.heard.list().filter(entry => entry.id.startsWith("split")).map(entry => entry.id).toSorted(), ["split:1", "split:2"]);
+});
+
+test("a refused capture's retry cache keeps only unrouted speech, and clearing history releases it", async t => {
+  const { router, pending } = harness(t);
+  await fill(router, 49);
+  const utterance: VoiceUtterance = { id: "split", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance), false);
+  const cache = (router as unknown as { separatedCaptures: Map<string, { routed: number; parts: { text: string; words: unknown[]; offsetMs: number | null }[] }> }).separatedCaptures;
+  const kept = cache.get("split");
+  assert.equal(kept?.routed, 1);
+  // The routed part is in Recently heard; the cache keeps only where it started.
+  assert.deepEqual(kept?.parts[0], { text: "", words: [], offsetMs: 0 });
+  assert.equal(kept?.parts[1]?.text, "Carol, give me a report on the status of some project");
+  // A retry after a slot opens still resumes from the refused part, from the trimmed cache.
+  assert.equal(router.cancel("filler-0"), true);
+  assert.equal(await router.accept(utterance), true);
+  assert.deepEqual(pending().filter(card => card.id.startsWith("split:")).map(card => [card.id, card.parts[0]?.text]), [
+    ["split:1", "check the build"], ["split:2", "give me a report on the status of some project"],
+  ]);
+  assert.equal(cache.has("split"), false);
+
+  // Clearing Recently heard also drops a capture still waiting to retry.
+  const second: VoiceUtterance = { id: "split-2", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  // Full again; one free slot lets the first message in and refuses the second.
+  assert.equal(router.cancel("filler-1"), true);
+  assert.equal(await router.accept(second), false);
+  assert.equal(cache.has("split-2"), true);
+  router.clearHistory();
+  assert.deepEqual(router.heard.list(), []);
+  assert.equal(cache.size, 0, "no cached speech outlives a cleared history");
 });
 
 async function fill(router: VoiceRouter, count: number) {

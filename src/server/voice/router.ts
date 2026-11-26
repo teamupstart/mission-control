@@ -43,6 +43,11 @@ interface SeparatedCapture {
   captureKey?: string;
   /** The roster the capture was authorized against. Every part binds to these sessions. */
   roster: SpokenName[];
+  /**
+   * How many parts have already routed. A routed part keeps only its offset, so a cached
+   * capture holds the speech still to be routed and nothing already shown in Recently heard.
+   */
+  routed: number;
 }
 
 interface ActionTime {
@@ -141,6 +146,8 @@ const inboxActionDetails = {
 type InboxActionResult = keyof typeof inboxActionDetails;
 
 interface OpenCard {
+  /** Set while a separated capture is routing; the card is sent when the capture's parts are done. */
+  heldSends?: Set<string>;
   inboxAction?: () => Promise<InboxActionResult>;
   answer?: VoiceAnswer;
   /** Daemon monotonic deadline. The wire deadline is in wall time for dashboard calibration. */
@@ -344,6 +351,8 @@ export class VoiceRouter {
   // A separated capture with a refused part keeps its original split, roster and timing until every
   // part has routed, so a retry routes the same messages after a separator or roster edit.
   private readonly separatedCaptures = new Map<string, SeparatedCapture>();
+  /** Hold sets of separated captures that are still routing. A card copied later carries a stale one. */
+  private readonly activeHolds = new Set<Set<string>>();
 
   // The model step of each utterance still resolving, so a caller can wait for it.
   private readonly resolutions = new Map<string, Promise<void>>();
@@ -605,6 +614,12 @@ export class VoiceRouter {
     }
   }
 
+  /** Clears Recently heard and the speech a refused separated capture kept for its retry. */
+  clearHistory(): void {
+    this.heard.clear();
+    this.separatedCaptures.clear();
+  }
+
   private rememberUtterance(id: string) {
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
@@ -646,7 +661,7 @@ export class VoiceRouter {
       }) : null;
     if (separated) {
       return this.routeSeparated(utterance, { parts: separated, time, startHostUs, captureKey: timing.captureKey,
-        roster: roster.map(target => ({ ...target })) });
+        roster: roster.map(target => ({ ...target })), routed: 0 });
     }
     return this.route(utterance, time, timing.captureKey);
   }
@@ -667,6 +682,20 @@ export class VoiceRouter {
       this.heard.record({ id, time: capturedAt, text, outcome: "ignored", rule: "separator-only", matchedName: null, pauseMs: null, detail: "" });
       return true;
     }
+    // With the Cancel window Off a card would be sent as it opens. Hold each one until every part
+    // of this capture has routed, so an in-capture Cancel settles before anything is dispatched.
+    const heldSends = new Set<string>();
+    this.activeHolds.add(heldSends);
+    try {
+      return await this.routeSeparatedParts(utterance, split, heldSends);
+    } finally {
+      this.activeHolds.delete(heldSends);
+      for (const cardId of heldSends) if (this.open.has(cardId)) void this.sendNow(cardId);
+    }
+  }
+
+  private async routeSeparatedParts(utterance: VoiceUtterance, split: SeparatedCapture, heldSends: Set<string>): Promise<boolean> {
+    const { id, capturedAt } = utterance;
     let previous = split.time;
     // The card the preceding part opened. A Cancel spoken after the separator addresses it alone.
     let preceding: string | undefined;
@@ -680,14 +709,19 @@ export class VoiceRouter {
         at = offsetUs(candidate, previous) >= 0 ? candidate : previous;
       }
       previous = at;
-      const done = this.open.has(partId) || this.delivering.has(partId) || this.recentIds.has(partId);
+      const done = index < split.routed || this.open.has(partId) || this.delivering.has(partId) || this.recentIds.has(partId);
       if (!done && !await this.route({ ...utterance, id: partId, text: part.text, words: part.words,
         capturedAt: index === 0 ? capturedAt : Math.round(at.openedAt) }, at,
-      index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding ?? null : undefined })) {
+      index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding ?? null : undefined, heldSends })) {
         this.separatedCaptures.delete(id);
         this.separatedCaptures.set(id, split);
         if (this.separatedCaptures.size > HISTORY_LIMIT) this.separatedCaptures.delete(this.separatedCaptures.keys().next().value!);
         return false;
+      }
+      // Its speech now lives in Recently heard; the retry cache keeps only where it started.
+      if (index >= split.routed) {
+        split.parts[index] = { text: "", words: [], offsetMs: part.offsetMs };
+        split.routed = index + 1;
       }
       preceding = this.open.has(partId) || this.delivering.has(partId) ? partId : undefined;
     }
@@ -704,7 +738,7 @@ export class VoiceRouter {
    * is not separated (`undefined`) lets Cancel take the newest pending action.
    */
   private async route(utterance: VoiceUtterance, time: ActionTime, captureKey?: string,
-    options: { roster?: SpokenName[]; cancelTarget?: string | null } = {}): Promise<boolean> {
+    options: { roster?: SpokenName[]; cancelTarget?: string | null; heldSends?: Set<string> } = {}): Promise<boolean> {
     const roster = options.roster ?? this.state().roster;
     const { id, capturedAt } = utterance;
     const unsureCards = this.picksLostThrough && offsetUs(time, this.picksLostThrough) <= 0 ? [] : Array.from(this.open.values())
@@ -769,7 +803,7 @@ export class VoiceRouter {
       id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
-    this.openCard({ card, entry, time, message: decision.text, commands: [decision.command] });
+    this.openCard({ card, entry, time, message: decision.text, commands: [decision.command], heldSends: options.heldSends });
     return true;
   }
 
@@ -1293,7 +1327,15 @@ export class VoiceRouter {
         });
         item.splitStops = { delivery, done };
       }
-      if (card.parts.every((_, index) => item.commands?.[index] === "stop") || !window.enabled) { void this.sendNow(card.id); return; }
+      const stopsOnly = card.parts.every((_, index) => item.commands?.[index] === "stop");
+      if (!window.enabled && !stopsOnly && item.heldSends && this.activeHolds.has(item.heldSends)) {
+        // A separated capture is still routing: a Cancel spoken after the separator must reach
+        // this card before it is sent. The capture sends what remains when its parts are done.
+        item.heldSends.add(card.id);
+        this.publish(card);
+        return;
+      }
+      if (stopsOnly || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
       card.windowMs = ms;
       card.deadline = Date.now() + ms;

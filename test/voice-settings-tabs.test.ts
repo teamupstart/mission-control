@@ -94,3 +94,23 @@ test("a deep link shows its tab in the same render", () => {
   }
   assert.match(render("voice/mode", 8), /id="voice-tab-listening"[^>]*aria-selected="true"/, "the status line keeps the current tab");
 });
+
+test("a jump to each Voice anchor selects the tab whose panel renders that control", () => {
+  // The registry and the panel can drift apart: a control moved to another tab without updating
+  // the registry would still be rendered somewhere and still resolve to a tab, yet a search
+  // result would open the wrong tab and find nothing. Render every anchor through its own jump.
+  const registered = ALL_SETTINGS_CONTROLS.filter((control) => control.category === "voice").map((control) => control.anchor);
+  const anchors = new Set([...registered, ...VOICE_SETTINGS_TABS.flatMap((tab) => [...tab.anchors])]);
+  let checked = 0;
+  for (const anchor of anchors) {
+    if (ABOVE_TABS.has(anchor)) continue;
+    const tab = voiceTabForAnchor(anchor)!;
+    const html = render(anchor, 11);
+    assert.match(html, new RegExp(`id="voice-tab-${tab}"[^>]*aria-selected="true"`), `${anchor} selects ${tab}`);
+    const panel = html.slice(html.indexOf('role="tabpanel"'));
+    assert.ok(panel.includes(`id="voice-tabpanel-${tab}"`), `${anchor}: the open panel is ${tab}`);
+    assert.ok(panel.includes(`data-anchor="${anchor}"`), `${anchor} is not rendered on the ${tab} tab its jump opens`);
+    checked++;
+  }
+  assert.ok(checked >= 18, `checked ${checked} anchors`);
+});

@@ -96,6 +96,8 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toHaveCount(0);
   // The tab is on the authorization server's page, with the browser's half of PKCE and the scope.
   await held.waitForURL(`${authorizeUrl}?**`);
+  // The tab cannot reach back into the dashboard: its opener was cut before the page ran.
+  expect(await held.evaluate(() => window.opener === null)).toBe(true);
   const opened = new URL(held.url());
   expect(opened.searchParams.get("code_challenge_method")).toBe("S256");
   expect(opened.searchParams.get("scope")).toBe("mcp:context");
@@ -108,6 +110,7 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await page.getByRole("button", { name: "Open the sign-in page for Signed guidance" }).click();
   const reopened = await again;
   await reopened.waitForURL(held.url());
+  expect(await reopened.evaluate(() => window.opener === null)).toBe(true);
   await capture(page, "2-pending-here");
 
   // A reload drops the link: the row still waits, and offers only what needs no link.

@@ -158,7 +158,7 @@ struct FixtureUtterance: Encodable {
     let text: String
 }
 
-@MainActor struct Recognizer {
+@MainActor struct Recognizer: SegmentTranscriber {
     static var pendingDecode: CheckedContinuation<Void, Never>?
     let ctc: Bool? = nil
 
@@ -174,6 +174,10 @@ struct FixtureUtterance: Encodable {
         let names = try JSONEncoder().encode(roster)
         observe("prime " + String(decoding: names, as: UTF8.self))
         return nil
+    }
+
+    func transcribe(_ segment: Segment, boosting: Bool?, separator: String?) async throws -> FixtureUtterance? {
+        try await transcribe(segment, boosting: boosting)
     }
 
     func transcribe(_ segment: Segment, boosting: Bool?) async throws -> FixtureUtterance? {

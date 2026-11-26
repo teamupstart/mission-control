@@ -9,6 +9,7 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { beListener, enableVoice, say } from "../fixtures/voice.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 // The roster includes stopped residents, so these fixtures only need profiles.
 
@@ -100,7 +101,7 @@ test("a reference name set on a resident's profile is checked as it is typed, su
 
   await daemon.shutdown();
   await daemon.restart();
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   const row = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: '"Marlowe"', exact: true }) });
   await expect(row.getByRole("cell")).toHaveText(["Release Captain", "Resident", '"Marlowe"', "Not running", "Distinct"]);
@@ -124,7 +125,7 @@ test("a reference name set on a resident's profile is checked as it is typed, su
     const profile = profiles.find((candidate) => candidate.id === captain.id);
     return profile ? [profile.revision, profile.settings.identity.referenceName ?? ""] : null;
   }, { message: "a new revision with no reference name" }).toEqual([3, ""]);
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   await expect(roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Release Captain", exact: true }) }).getByRole("cell"))
     .toHaveText(["Release Captain", "Resident", "Release Captain", "Not running", "Distinct"]);
 });
@@ -160,7 +161,7 @@ test("a warned reference name is saved as typed, and the roster lists it with it
   const profiles = await api<ResidentProfile[]>(daemon, "/api/residents/profiles");
   expect(profiles.find((profile) => profile.id === captain.id)?.settings.identity.referenceName).toBe("Stevie");
 
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   await expect(roster.getByRole("row").filter({ has: page.getByRole("cell", { name: '"Stevie"', exact: true }) }).getByRole("cell"))
     .toHaveText(["Release Captain", "Resident", '"Stevie"', "Not running", /Sounds like Steve$/]);
@@ -198,7 +199,7 @@ test("the listening composer quotes a resident reference name and an ordinary na
   await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: profile.id });
   const listener = await beListener(daemon);
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "On screen", daemon.baseURL);
     await page.getByRole("checkbox", { name: "Composer microphone" }).check();
     await page.goto(daemon.baseURL);
     await page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Sage/ }).click();
@@ -229,7 +230,7 @@ test("Recently Heard quotes the resident reference name after a near miss", asyn
     identity: { name: "Release reviewer", referenceName: "Cat" }, persona: { personaId: PERSONA_ID },
   } });
   expect(await (await say(daemon, "Pat help")).json()).toEqual({ accepted: true });
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Recently heard", daemon.baseURL);
   const history = page.getByRole("region", { name: "Recently heard" });
   const row = history.getByRole("row").filter({ hasText: "Pat help" });
   await expect(row.getByRole("cell", { name: 'None. Closest is "Cat", a weak match', exact: true })).toBeVisible();
@@ -255,9 +256,11 @@ test("Recently Heard quotes only the reference name after exact resident matches
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   const history = page.getByRole("region", { name: "Recently heard" });
   for (const { identity, utterance, label } of residents) {
+    await openVoiceTab(page, "Names & routing");
     const resident = roster.getByRole("row").filter({ hasText: identity.name });
     await expect(resident.getByRole("cell", { name: "Running", exact: true })).toBeVisible();
     expect(await (await say(daemon, utterance)).json()).toEqual({ accepted: true });
+    await openVoiceTab(page, "Recently heard");
     const row = history.getByRole("row").filter({ has: page.getByRole("cell", { name: utterance, exact: true }) });
     await expect(row.getByRole("cell", { name: `${label}, exactly`, exact: true })).toBeVisible();
     await expect(row.getByRole("cell", { name: `Routed to ${label}`, exact: true })).toBeVisible();

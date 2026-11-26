@@ -695,7 +695,7 @@ export function registerVoiceUtteranceRoutes(
     return c.json({ entries: router.heard.list() });
   });
   app.delete("/api/voice/heard", gate, (c) => {
-    router.heard.clear();
+    router.clearHistory();
     return c.body(null, 204);
   });
   app.post("/api/voice/cards/:id/cancel", gate, (c) => {

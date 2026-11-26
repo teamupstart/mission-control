@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { Page } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { beListener, enableVoice, say } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 const EXAMPLE = "Steve, check the build, bagel, Carol, give me a report on the status of some project";
 
@@ -21,7 +22,7 @@ async function heard(page: Page, daemon: DaemonHandle): Promise<{ id: string; te
   return (await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries;
 }
 
-test("the separator word is an Input setting that persists, validates and is disabled in Push-to-talk", async ({ dashboard: page, daemon }) => {
+test("the separator word is a Listening setting that persists, validates and is disabled in Push-to-talk", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   await page.goto(daemon.baseURL + "/#/fleet");
   await page.keyboard.press("Meta+k");
@@ -98,6 +99,56 @@ test("a separator word the daemon refuses to save says so and keeps the saved wo
   await expect(field).toHaveValue("waffle");
 });
 
+test("a refusal of an earlier separator save does not mark a newer saved word invalid", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const row = page.locator('[data-anchor="voice/separator"]');
+  const field = page.getByRole("textbox", { name: "Separator word" });
+  await expect(field).toHaveValue("bagel");
+  const held = Promise.withResolvers<Route>();
+  let puts = 0;
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    if (++puts === 1) return held.resolve(route);
+    return route.continue();
+  });
+  await field.fill("waffle");
+  await field.press("Enter");
+  const first = await held.promise;
+  // A newer word is saved while the first request is still pending; then the first is refused.
+  await field.fill("pancake");
+  await field.press("Enter");
+  await first.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "save_failed" }) });
+  await expect.poll(async () => (await voiceConfig(page, daemon)).separatorWord).toBe("pancake");
+  await expect(field).toHaveValue("pancake");
+  await expect(row.getByRole("alert"), "the refusal belonged to the superseded edit").toHaveCount(0);
+  await expect(field).not.toHaveAttribute("aria-invalid", "true");
+  expect(puts).toBe(2);
+});
+
+test("a refusal that arrives while a newer separator draft is being typed leaves that draft unmarked", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const row = page.locator('[data-anchor="voice/separator"]');
+  const field = page.getByRole("textbox", { name: "Separator word" });
+  await expect(field).toHaveValue("bagel");
+  const held = Promise.withResolvers<Route>();
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    return held.resolve(route);
+  }, { times: 1 });
+  await field.fill("waffle");
+  await field.press("Enter");
+  const first = await held.promise;
+  // The operator starts a new draft, not yet saved, while the first save is pending.
+  await field.fill("crumpet");
+  await first.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "save_failed" }) });
+  await expect(page.getByText("That change didn't stick: save_failed")).toBeVisible();
+  await expect(row.getByRole("alert"), "the refusal belonged to the earlier save").toHaveCount(0);
+  await expect(field).not.toHaveAttribute("aria-invalid", "true");
+  await expect(field).toHaveValue("crumpet");
+});
+
 test("one Always-on capture with the separator shows two confirmations, each with its own Cancel", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   await runningAgent(page, daemon, "Steve");
@@ -121,7 +172,7 @@ test("one Always-on capture with the separator shows two confirmations, each wit
 
     // A capture of only the separator routes nothing and says why.
     expect(await (await say(daemon, "Bagel.")).json()).toEqual({ accepted: true });
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Recently heard", daemon.baseURL);
     const history = page.getByRole("region", { name: "Recently heard" });
     await expect(history.getByRole("row").filter({ hasText: "separator word only" })).toContainText("Bagel.");
     await expect(history.getByRole("row").filter({ hasText: "Steve, check the build" })).toContainText("Cancelled");

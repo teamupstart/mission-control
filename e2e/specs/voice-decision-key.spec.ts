@@ -5,6 +5,7 @@ import { expect, test as base } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { say, startDecisionServer, type DecisionServer } from "../fixtures/voice.ts";
+import { openVoiceTab, type VoiceSettingsTab } from "../fixtures/voice-settings.ts";
 import { voiceRoutingWithoutProvider } from "../../src/shared/voice-decide.ts";
 import type { HeardEntry, VoiceCard } from "../../src/shared/voice-routing.ts";
 import type { Task } from "../../src/shared/types.ts";
@@ -121,10 +122,11 @@ const NOT_SET = `Not set: ${voiceRoutingWithoutProvider()}`;
 const using = (provider: string) =>
   `Using ${provider}. Sends the sentence with candidate names or the card question, options and option details.`;
 
-async function openVoiceSettings(page: Page, daemon: DaemonHandle): Promise<void> {
+/** Open Settings > Voice on the tab a test works in; the decision model is on Names & routing. */
+async function openVoiceSettings(page: Page, daemon: DaemonHandle, tab: VoiceSettingsTab = "Names & routing"): Promise<void> {
   await page.setViewportSize({ width: 1280, height: 1400 });
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
-  await expect(page.locator('[data-anchor="voice/faster-routing"]')).toBeVisible();
+  await openVoiceTab(page, tab, daemon.baseURL);
+  if (tab === "Names & routing") await expect(page.locator('[data-anchor="voice/faster-routing"]')).toBeVisible();
 }
 
 async function saveKey(page: Page, provider: string, key: string): Promise<void> {
@@ -167,6 +169,7 @@ test("a saved key is never shown again: its row reads Saved on this Mac, the gro
 
   // A reload reads the same: the report, never the key.
   await page.reload();
+  await openVoiceTab(page, "Names & routing");
   await expect(row(page, "OpenAI Decisions")).toContainText("Saved on this Mac");
   await expect(keyField(page, "OpenAI Decisions")).toHaveValue("");
 
@@ -267,8 +270,10 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     const previousResponse = page.waitForResponse(r => r.url().endsWith("/api/voice/config") &&
       r.request().method() === "PUT" && Boolean(r.request().postDataJSON().cancelWindow));
     try {
+      await openVoiceTab(page, "Listening");
       await length.selectOption("8");
       await held.promise;
+      await openVoiceTab(page, "Names & routing");
       await providerMenu(page).selectOption({ label: "Off" });
       await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_500 });
       const { entry } = await sayAndSettle(daemon, SPLIT);
@@ -279,7 +284,9 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       release.resolve();
       await (await previousResponse).finished();
     }
+    await openVoiceTab(page, "Listening");
     await expect(length).toHaveValue("8");
+    await openVoiceTab(page, "Names & routing");
     await expect(providerMenu(page)).toHaveValue("off");
     await expect(line(page)).toHaveText(NOT_SET);
     const { config } = await api<{ config: { decisionProvider: string; cancelWindow: { seconds: number } } }>(daemon, "/api/voice/config");
@@ -966,22 +973,26 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       await page.clock.install();
       await openVoiceSettings(page, daemon);
       const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window", exact: true });
+      await openVoiceTab(page, "Listening");
       await expect(length(page)).toHaveValue("4");
+      await openVoiceTab(page, "Names & routing");
       const stalled = await holdProviderRequest(page, stage);
       try {
         await providerMenu(page).selectOption("off");
         await stalled.held;
         await expect(providerMenu(page)).toHaveValue("off");
         await providerMenu(other).selectOption("openai");
+        await openVoiceTab(other, "Listening");
         await length(other).selectOption("8");
         await expect.poll(async () => (await api<{ config: { decisionProvider: string; cancelWindow: { seconds: number } } }>(daemon, "/api/voice/config")).config)
           .toMatchObject({ decisionProvider: "openai", cancelWindow: { seconds: 8 } });
         await page.clock.fastForward(75_000);
         await expect(providerMenu(page)).toHaveValue("openai", { timeout: 2_000 });
         await expect(line(page)).toHaveText(using("OpenAI Decisions"));
-        await expect(length(page)).toHaveValue("8");
         await expect(panel(page)).toContainText("The provider change could not be confirmed.");
         if (stage === "write") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "42-expired-provider-write");
+        await openVoiceTab(page, "Listening");
+        await expect(length(page)).toHaveValue("8");
       } finally {
         stalled.release();
       }
@@ -1065,7 +1076,7 @@ test("the voice preview gates the routing controls and background job live", asy
 test("an expired config write cannot restore an older cancel window", async ({ dashboard: page, daemon }) => {
   await turnVoiceOn(daemon);
   await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
-  await openVoiceSettings(page, daemon);
+  await openVoiceSettings(page, daemon, "Listening");
   const length = panel(page).getByRole("combobox", { name: "Cancel window", exact: true });
   await expect(length).toHaveValue("4");
   const stalled = Promise.withResolvers<Route>();
@@ -1093,8 +1104,9 @@ test("a fresh edit keeps its deadline after a slow config snapshot", async ({ da
   await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
   await openVoiceSettings(page, daemon);
   const length = panel(page).getByRole("combobox", { name: "Cancel window", exact: true });
-  await expect(length).toHaveValue("4");
   await expect(line(page)).toHaveText(NOT_SET);
+  await openVoiceTab(page, "Listening");
+  await expect(length).toHaveValue("4");
   await api(daemon, "/api/voice/config", { cancelWindow: { seconds: 6 } }, "PUT");
   const release = Promise.withResolvers<void>();
   let first = true;
@@ -1130,10 +1142,10 @@ test("a delayed config poll shows the newer cancel window when it reaches the da
   await turnVoiceOn(daemon);
   await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
   const writer = await context.newPage();
-  await openVoiceSettings(writer, daemon);
+  await openVoiceSettings(writer, daemon, "Listening");
   await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
   await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
-  await openVoiceSettings(page, daemon);
+  await openVoiceSettings(page, daemon, "Listening");
   const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window", exact: true });
   await expect(length(page)).toHaveValue("4");
 
@@ -1400,6 +1412,7 @@ for (const mutation of ["save", "remove"] as const) {
       await expect(line(page)).toHaveText(priorStatus);
       expect((await page.request.fetch(late.request())).status()).toBe(409);
       await page.reload();
+      await openVoiceTab(page, "Names & routing");
       await expect(line(page)).toHaveText(priorStatus);
       expect(existsSync(join(daemon.home, "voice", "decision-key.json"))).toBe(mutation === "remove");
       if (mutation === "save") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "46-expired-key-delivery");

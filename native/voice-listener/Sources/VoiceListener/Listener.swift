@@ -348,7 +348,16 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 }
 
-@MainActor private final class Capture {
+/// The one recognizer call a capture's decode makes, so a test can observe what each decode is
+/// given. Its types are associated so this file builds without the speech model's module: the
+/// lifecycle tests compile it against a stub recognizer.
+protocol SegmentTranscriber {
+    associatedtype Boosting
+    associatedtype Transcript: Encodable
+    func transcribe(_ segment: Segment, boosting: Boosting?, separator: String?) async throws -> Transcript?
+}
+
+@MainActor final class Capture {
     let revision: String
     var mic: Microphone?
     var previewTask: Task<Void, Never>?
@@ -364,6 +373,22 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     init(_ revision: String, daemon: Daemon) {
         self.revision = revision
         self.daemon = daemon
+    }
+
+    /// Applies a directive edit to this open Always-on capture without closing the microphone, when
+    /// the directive still authorizes it: the new end-of-speech delay and separator word take
+    /// effect for speech that has not been decoded yet. Returns false when the capture must reopen.
+    func applyLiveEdit(captureRevision: String?, held: Bool, endOfSpeechMs: Int, separator: String?) -> Bool {
+        guard !held, let captureRevision, captureRevision == revision, let mic, mic.isRunning else { return false }
+        mic.updateEndOfSpeechMs(endOfSpeechMs)
+        self.separator = separator
+        return true
+    }
+
+    /// Decodes one segment with the separator in force now, so a live edit reaches every later decode.
+    func transcribe<T: SegmentTranscriber>(_ segment: Segment, using recognizer: T,
+                                           boosting: T.Boosting?) async throws -> T.Transcript? {
+        try await recognizer.transcribe(segment, boosting: boosting, separator: separator)
     }
 
     func release(at time: Int64) {
@@ -523,10 +548,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                 let duration = next.endOfSpeechMs ?? (held ? 800 : Directive.defaultEndOfSpeechMs)
                 if capture {
                     guard (1...30_000).contains(duration) else { throw CaptureError.format }
-                    if !held, let authorization = next.captureRevision, current?.revision == authorization,
-                       let mic = current?.mic, mic.isRunning {
-                        mic.updateEndOfSpeechMs(duration)
-                        current?.separator = next.separator
+                    if current?.applyLiveEdit(captureRevision: next.captureRevision, held: held,
+                                              endOfSpeechMs: duration, separator: next.separator) == true {
                         revision = next.revision
                         continue
                     }
@@ -593,8 +616,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                         guard let clipped = segment.through(cutoff) else { return }
                                         segment = clipped
                                     }
-                                    let words = try await recognizer.transcribe(segment, boosting: daemon.isDictating(segment.speechStartHostUs, revision: batch.revision) ? nil : boosting,
-                                                                                separator: batch.separator)
+                                    let words = try await batch.transcribe(segment, using: recognizer,
+                                                                           boosting: daemon.isDictating(segment.speechStartHostUs, revision: batch.revision) ? nil : boosting)
                                     try Task.checkCancellation()
                                     // Key-up may have arrived during this very decode.
                                     if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }

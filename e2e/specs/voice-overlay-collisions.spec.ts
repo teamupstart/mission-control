@@ -50,7 +50,9 @@ async function expectApart(page: Page, cards: number) {
   // Every countdown and control is reachable, and a click lands on the card rather than the transcript.
   for (const card of await pendingCards(page).all()) {
     for (const control of [card.getByRole("button", { name: "Cancel", exact: true }), card.getByRole("button", { name: /^Send/ })]) {
-      await control.scrollIntoViewIfNeeded();
+      // Scroll the way a person would, to the middle of the stack. Edge alignment can leave a
+      // sub-pixel sliver outside a scrolled column-reverse stack.
+      await control.evaluate(element => element.scrollIntoView({ block: "center" }));
       await expect(control).toBeInViewport({ ratio: 1 });
       const box = (await control.boundingBox())!;
       expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest("button")?.textContent,

@@ -79,13 +79,14 @@ waits for more speech. The default is 2 seconds. Speaking again before the delay
 the words in the same utterance. Changes take effect while listening and persist after restart.
 **Listening mode** defaults to **Always-on**. Choose **Push-to-talk** to keep the
 microphone closed between holds. Hold the configured desktop hotkey to speak and
-release it to finish the utterance, including during calls. Release is the only thing
-that ends a hold's message: a pause of any length while the key is down keeps the words before
-and after it together, in order, and nothing reaches Recently heard, a confirmation card or a
-session until key-up. Each hold is a new message, routed on its own words, so two holds can
-address two agents. A missing shortcut
+release it to finish the utterance, including during calls. Release is the only normal way
+a hold's message ends: a pause while the key is down does not split it, so the words before and
+after the pause stay together, in order, and nothing reaches Recently heard, a confirmation card
+or a session until key-up. Each hold is a new message, routed on its own words, so two holds can
+address two agents. The safeguards below still end a hold without sending it. A missing shortcut
 or disconnected desktop keeps capture off. A missing key-up discards the hold
-after two minutes. Tap-to-mute, manual mute, call auto-mute, the automatic
+after two minutes, and speech a hold loses to an input gap or to the capture limit discards the
+whole hold. Tap-to-mute, manual mute, call auto-mute, the automatic
 end-of-speech delay and the separator word apply to Always-on. Switching back restores their saved values.
 
 In Always-on, a **Separator word** (`separatorWord`, default **bagel**) ends one message and
@@ -467,8 +468,9 @@ so the daemon can release the reservation.
 If no completion arrives, the reservation expires after 90 seconds for negotiated
 long capture or 35 seconds for older FluidAudio listeners and Sherpa. An onset inside a
 push-to-talk hold adds the two-minute hold limit to that budget, because the hold's transcript
-arrives only after key-up: a message the hold reserved is never sent while the key is still
-down, and a Cancel the hold carries still reaches it. Send now still claims the message immediately.
+arrives only after key-up: the countdown does not deliver a message the hold reserved while the
+key is still down, and a Cancel the hold carries still reaches it. Send now still claims the
+message immediately, during a hold or not.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

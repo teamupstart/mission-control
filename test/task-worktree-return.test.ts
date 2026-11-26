@@ -571,6 +571,19 @@ test("an unregistered directory stays on disk and appears with its blocker", asy
   assert.equal(census.entries.find((entry) => entry.taskId === w.task.id)?.gitMetadata, "unverified");
 });
 
+function setCleanupPreviewEnv(t: TestContext, setting?: string): void {
+  for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
+    const key = `${prefix}_WORKTREE_CLEANUP_PREVIEW`;
+    const previous = process.env[key];
+    t.after(() => {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
+    delete process.env[key];
+  }
+  if (setting !== undefined) process.env.MISSION_WORKTREE_CLEANUP_PREVIEW = setting;
+}
+
 for (const change of ["ignored work", "deleted origin branch", "reattachment", "replacement", "flag disabled"] as const) {
   test(`retention preserves the checkout when ${change} appears at the provider boundary`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -608,6 +621,7 @@ for (const change of ["ignored work", "deleted origin branch", "reattachment", "
       }, w.manager, () => w.state.now)
       : w.observer;
     if (change === "flag disabled") {
+      setCleanupPreviewEnv(t);
       assert.equal(setFlag(true).ok, true);
       t.after(() => { setFlag(false); });
     }
@@ -681,23 +695,15 @@ test("retention leaves a hibernated task intact past its former deadline", async
   assert.ok(existsSync(w.path));
 });
 
-for (const [setting, enabled, mode, localWork] of [
+for (const [setting, enabled, mode, localWork, disableBeforeDue] of [
   ["report-only", true, "report-only"], [undefined, false, "configured"],
   ["enforce", false, "configured"], [undefined, true, "enforce"],
+  [undefined, true, "enforce", false, true],
   ["unexpected-preview-value", true, "report-only"],
   ["report-only", true, "report-only", true],
 ] as const) {
-  test(`daemon preview setting selects ${mode} retention when ${setting ?? "unset"}, flag ${enabled ? "on" : "off"}${localWork ? " with local work" : ""}`, async (t) => {
-    for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
-      const key = `${prefix}_WORKTREE_CLEANUP_PREVIEW`;
-      const previous = process.env[key];
-      t.after(() => {
-        if (previous === undefined) delete process.env[key];
-        else process.env[key] = previous;
-      });
-      delete process.env[key];
-    }
-    if (setting !== undefined) process.env.MISSION_WORKTREE_CLEANUP_PREVIEW = setting;
+  test(`daemon preview setting selects ${mode} retention when ${setting ?? "unset"}, flag ${enabled ? "on" : "off"}${localWork ? " with local work" : ""}${disableBeforeDue ? " then switched off before due" : ""}`, async (t) => {
+    setCleanupPreviewEnv(t, setting);
     const previousDays = getWorktreesConfig().taskRetentionDays;
     t.after(() => { setWorktreesConfig({ taskRetentionDays: previousDays }); });
     setWorktreesConfig({ taskRetentionDays: 11 });
@@ -720,7 +726,7 @@ for (const [setting, enabled, mode, localWork] of [
     assert.equal(w.row()?.cleanupDueAt, deadline);
     assert.equal(backgroundWorktreeRetentionStatus(registry.listTasks()).mode, mode);
     w.state.now = deadline;
-    if (mode === "enforce") {
+    if (disableBeforeDue) {
       assert.equal(setFlag(false).ok, true);
       assert.deepEqual((await observer.runPass()).cleanups, {});
       assert.ok(existsSync(w.path));

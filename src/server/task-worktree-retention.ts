@@ -4,7 +4,7 @@ import { SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID } from "@shared/feature-flag-registr
 import { featureEnabled } from "./feature-flags/index.ts";
 import { envVar } from "./config.ts";
 import { getWorktreesConfig } from "./worktrees/config.ts";
-import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
+import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
 import {
   claimTaskWorktreeCleanup,
   completeTaskWorktreeCleanup,
@@ -278,7 +278,7 @@ export function createDaemonRetentionObserver(
       occupancyBlocker: (task) => tasks.backgroundWorktreeOccupancyBlocker(task),
       canReclaim: (row) => backgroundWorktreeCleanupMode() !== "report-only"
         && row.unownedSince !== null
-        && Math.max(row.unownedSince, row.lastChangedAt) + retentionMs() <= now(),
+        && worktreeRetentionCutoff(row.lastChangedAt, row.unownedSince, retentionMs()) <= now(),
       get reportOnlyBlocker() {
         return backgroundWorktreeCleanupMode() === "report-only" ? reportOnlyBlocker : undefined;
       },

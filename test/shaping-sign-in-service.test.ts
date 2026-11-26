@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test, type TestContext } from "node:test";
-import type { ShapingSignInClient, ShapingSignInView, SignInTarget } from "../src/shared/shaping.ts";
+import type { ShapingSignInClient, ShapingSignInConfig, ShapingSignInView, SignInTarget } from "../src/shared/shaping.ts";
 import type { SignInStore, StoredSignIn } from "../src/server/shaping/sign-in/store.ts";
 import type { BeginAnswer, ShaperSignInService, SignInFlow, SignInRegistrations, SignInUse, TimerHandle } from "../src/server/shaping/sign-in/service.ts";
 import type { FakeOAuthRequest, FakeOAuthServer } from "./fixtures/fake-oauth-server.mjs";
@@ -19,7 +19,7 @@ process.env.HARNESS_HOME = join(home, "state");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
-const { SIGN_IN_REASONS, SHAPING_SIGN_IN_CLIENTS, ShaperManifestSchema, ShapingConfigSchema } = await import("../src/shared/shaping.ts");
+const { SIGN_IN_REASONS, SHAPING_SIGN_IN_CLIENTS, SHAPING_SIGNED_OUT_CONNECTIONS, ShaperManifestSchema, ShapingConfigSchema, ShapingSignInConfigSchema } = await import("../src/shared/shaping.ts");
 const { openDb, getAppConfig } = await import("../src/server/db.ts");
 const { captureSettingsConfig } = await import("../src/server/settings-backups/config-registry.ts");
 const { appConfigSignInRegistrations, signInRedirectUri, signInUses } = await import("../src/server/shaping/sign-in/index.ts");
@@ -159,12 +159,21 @@ function controlledStore(kind: "memory" | "keychain" = "memory", records: SignIn
   return control;
 }
 
-function memoryRegistrations(initial: ShapingSignInClient[] = []): SignInRegistrations & { clients: ShapingSignInClient[]; writes: number } {
+/** The `shaping.signIn` key in memory. `raw` is what is stored: a value the schema does not accept reads as null, as the daemon's does. */
+function memoryRegistrations(initial: ShapingSignInClient[] = []): SignInRegistrations & { raw: unknown; writes: number; failWrites: boolean } {
   const state = {
-    clients: structuredClone(initial),
+    raw: { clients: structuredClone(initial), signedOut: [], signedOutOverflow: false } as unknown,
     writes: 0,
-    read: () => structuredClone(state.clients),
-    write: (clients: ShapingSignInClient[]) => { state.clients = structuredClone(clients); state.writes += 1; },
+    failWrites: false,
+    read: () => {
+      const parsed = ShapingSignInConfigSchema.safeParse(structuredClone(state.raw));
+      return parsed.success ? parsed.data : null;
+    },
+    write: (value: ShapingSignInConfig) => {
+      if (state.failWrites) throw new Error("fake app_config write failure");
+      state.raw = structuredClone(ShapingSignInConfigSchema.parse(value));
+      state.writes += 1;
+    },
   };
   return state;
 }
@@ -355,7 +364,9 @@ async function seed(fake: FakeOAuthServer, count: number, records: SignInStore |
   return { clients, ids };
 }
 
-const clientIds = (regs: Harness["regs"]) => regs.read().map((client) => client.clientId);
+const clientsOf = (regs: Harness["regs"]): ShapingSignInClient[] => regs.read()?.clients ?? assert.fail("shaping.signIn is unreadable");
+const signedOutOf = (regs: Harness["regs"]) => regs.read()?.signedOut ?? assert.fail("shaping.signIn is unreadable");
+const clientIds = (regs: Harness["regs"]) => clientsOf(regs).map((client) => client.clientId);
 
 // ---- tests ----
 
@@ -433,12 +444,12 @@ test("two scopes on one authorization server each register, and a third connecti
   const registered = registrationsSeen(h.fake);
   assert.equal(registered.length, 2);
   assert.deepEqual(registered.map((request) => JSON.parse(request.body).scope), ["mcp:context", "mcp:other"]);
-  assert.deepEqual(h.regs.read().map((client) => client.scope), ["mcp:context", "mcp:other"]);
+  assert.deepEqual(clientsOf(h.regs).map((client) => client.scope), ["mcp:context", "mcp:other"]);
 
   const before = h.fake.requests.length;
   await signIn(h, shape);
   assert.equal(registrationsSeen(h.fake, before).length, 0, "the shape connection reuses the mcp:context client");
-  assert.equal(h.regs.read().length, 2);
+  assert.equal(clientsOf(h.regs).length, 2);
 
   const clientOf = async (signInTarget: SignInTarget) => (await h.store.records.read(connectionId(signInTarget)))!.clientId;
   const expected = new Map([[await clientOf(context), 0], [await clientOf(other), 0]]);
@@ -470,16 +481,16 @@ test("at the registration limit: refused while every one is named, and room made
   const answerA = await begun(h, a);
   assert.equal(registrationsSeen(fake).length, 1);
   const clientA = clientIds(regs).at(-1)!;
-  assert.equal(regs.read().length, 16);
+  assert.equal(clientsOf(regs).length, 16);
 
   const b = target(fake, { scope: "mcp:other" });
-  const keyBefore = regs.read();
+  const keyBefore = clientsOf(regs);
   const idsBefore = await records.ids();
   const refused = await h.svc.begin(b);
   assert.deepEqual(refused, { ok: false, code: "registration_limit", reason: SIGN_IN_BEGIN_REFUSALS.registration_limit });
   assert.match(refused.ok ? "" : refused.reason, /at most 16 client registrations.*Sign out of one in Settings > Task shaping/);
   assert.equal(registrationsSeen(fake).length, 1, "no registration request");
-  assert.deepEqual(regs.read(), keyBefore);
+  assert.deepEqual(clientsOf(regs), keyBefore);
   assert.deepEqual(await records.ids(), idsBefore);
   assert.equal(viewOf(h, connectionId(b)), undefined, "nothing is pending for B");
 
@@ -487,7 +498,7 @@ test("at the registration limit: refused while every one is named, and room made
   assert.equal(await h.svc.signOut(answerA.connection), true);
   await begun(h, b);
   assert.equal(registrationsSeen(fake).length, 2);
-  assert.equal(regs.read().length, 16);
+  assert.equal(clientsOf(regs).length, 16);
   assert.ok(!clientIds(regs).includes(clientA));
   for (const client of seeded.clients) assert.ok(clientIds(regs).includes(client.clientId));
 
@@ -495,7 +506,7 @@ test("at the registration limit: refused while every one is named, and room made
   await h.svc.signOut(seeded.ids[3]!);
   await begun(h, target(fake, { scope: "mcp:third" }));
   assert.ok(!clientIds(regs).includes("fake-seeded-client-3"));
-  assert.equal(regs.read().length, 16);
+  assert.equal(clientsOf(regs).length, 16);
 
   // With two not named, the older is dropped.
   await h.svc.signOut(seeded.ids[7]!);
@@ -507,10 +518,10 @@ test("at the registration limit: refused while every one is named, and room made
   // A registration request the server refuses changes nothing.
   await h.svc.signOut(seeded.ids[9]!);
   fake.setMode({ registration: "refuse" });
-  const keyNow = regs.read();
+  const keyNow = clientsOf(regs);
   const failed = await h.svc.begin(target(fake, { scope: "mcp:fifth" }));
   assert.equal(failed.ok, false);
-  assert.deepEqual(regs.read(), keyNow);
+  assert.deepEqual(clientsOf(regs), keyNow);
 });
 
 test("one stored sign-in that cannot be read refuses at the limit with store_unread, and drops no registration it may name", async (t) => {
@@ -554,17 +565,17 @@ test("a store that could not be read refuses at the limit with store_unread, and
   const unreadable = controlledStore("memory", records);
   unreadable.failIds = true;
   const h = await harness(t, { fake, store: unreadable, regs });
-  const keyBefore = regs.read();
+  const keyBefore = clientsOf(regs);
   const refused = await h.svc.begin(target(fake));
   assert.deepEqual(refused, { ok: false, code: "store_unread", reason: SIGN_IN_BEGIN_REFUSALS.store_unread });
   assert.match(refused.ok ? "" : refused.reason, /could not read its stored sign-ins.*Restart Mission Control/);
   assert.equal(registrationsSeen(fake).length, 0);
-  assert.deepEqual(regs.read(), keyBefore);
+  assert.deepEqual(clientsOf(regs), keyBefore);
 
   const second = await harness(t, { fake, store: controlledStore("memory", records), regs });
   await begun(second, target(fake));
   assert.equal(registrationsSeen(fake).length, 1);
-  assert.equal(regs.read().length, 16);
+  assert.equal(clientsOf(regs).length, 16);
   assert.deepEqual(keyBefore.map((client) => client.clientId).filter((id) => !clientIds(regs).includes(id)), ["fake-seeded-client-15"]);
 });
 
@@ -623,7 +634,7 @@ test("two sign-ins started together for one issuer and scope send one registrati
   assert.ok(one.ok && two.ok);
   assert.equal(registrationsSeen(h.fake).length, 1);
   assert.equal(new URL(one.authorizationUrl).searchParams.get("client_id"), new URL(two.authorizationUrl).searchParams.get("client_id"));
-  assert.equal(h.regs.read().length, 1);
+  assert.equal(clientsOf(h.regs).length, 1);
 });
 
 test("a state works once, and an unknown, expired, error or wrong-issuer callback leaves no record", async (t) => {
@@ -747,7 +758,7 @@ test("client_rejected at the code exchange ends every sign-in that names the cli
   assert.equal(await records.read(heldId), null);
   assert.equal(viewOf(h, beganB.connection)?.state, "signed_out", "the pending sign-in that reused the client is gone");
   assert.equal((await h.svc.complete({ state: stateOf(beganB.authorizationUrl), code: "fake-code-b", error: null, iss: null }) as { code: string }).code, "unknown_state");
-  assert.deepEqual(regs.read(), []);
+  assert.deepEqual(clientsOf(regs), []);
   assert.equal(viewOf(h, beganA.connection)?.state, "signed_out");
 });
 
@@ -982,7 +993,7 @@ test("a begin abandoned at its deadline makes no registration request and saves 
   await settle(h);
   assert.equal(registrationsSeen(h.fake).length, 0, "no registration request after the caller was told timeout");
   assert.equal(regs.writes, 0, "and no registration saved");
-  assert.deepEqual(regs.read(), []);
+  assert.deepEqual(clientsOf(regs), []);
 });
 
 test("a sign-out while the first load is still reading the store keeps that record from loading", async (t) => {
@@ -1025,24 +1036,757 @@ test("signOut waits for the store's removal before it answers", async (t) => {
   assert.equal(await records.read(id), null);
 });
 
-test("known limitation: a removal the store refuses is logged, memory is signed out, and the tokens are revoked at the server", async (t) => {
+/** Store calls and `shaping.signIn` writes in one log, so a test can see which came first. */
+function loggedRegistrations(store: ControlledStore, initial: ShapingSignInClient[] = []) {
+  const regs = memoryRegistrations(initial);
+  const write = regs.write;
+  regs.write = (value) => {
+    write(value);
+    store.calls.push(`signedOut ${value.signedOut.join(",")}${value.signedOutOverflow ? " overflow" : ""}`);
+  };
+  return regs;
+}
+
+/** A second service over the same records and key, as after a daemon restart. */
+async function restarted(t: TestContext, first: Harness, records: SignInStore, inUse: SignInUse[], options: { failRemoves?: boolean } = {}) {
+  await first.svc.stop();
+  const store = controlledStore("memory", records);
+  store.failRemoves = options.failRemoves ?? false;
+  return harness(t, { fake: first.fake, clock: first.clock, store, regs: first.regs, inUse });
+}
+
+test("a removal the store refuses: the sign-out is listed before the store is asked, and a restart never loads it", async (t) => {
   const records = createMemorySignInStore();
   const store = controlledStore("memory", records);
-  const h = await harness(t, { store });
+  const regs = loggedRegistrations(store);
+  const h = await harness(t, { store, regs });
   const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
   const { id } = await signIn(h, a);
   const held = (await records.read(id))!;
   store.failRemoves = true;
   const from = h.fake.requests.length;
+  const callsFrom = store.calls.length;
   assert.equal(await h.svc.signOut(id), true);
   await settle(h);
+  assert.deepEqual(store.calls.slice(callsFrom), [`signedOut ${id}`, `remove ${id}`], "listed in app_config before the store is asked");
+  assert.deepEqual(signedOutOf(regs), [id], "the entry is the connection id alone: no time, no token");
   assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
-  assert.equal(viewOf(h, id), undefined);
   assert.ok(h.warnings.some((warning) => warning.includes("could not be removed")), "the refusal is logged");
   assert.ok(h.warnings.every((warning) => !warning.includes(held.accessToken) && !warning.includes(held.refreshToken!)));
   assert.deepEqual(revokedTokens(h.fake, from).sort(), [held.accessToken, held.refreshToken].sort(), "both tokens are revoked at the server");
-  // The store still holds the record: remembering this sign-out across a restart is the follow-up task.
+  assert.ok(await records.read(id), "the store still holds the record");
+
+  // Restarted with the store still refusing: the record is not loaded, read or refreshed, and stays listed.
+  const second = await restarted(t, h, records, [use(a)], { failRemoves: true });
+  assert.ok(!second.store.calls.includes(`read ${id}`), "a listed record is never read");
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.equal(viewOf(second, id)?.state, "signed_out");
+  await second.clock.advance(2 * HOUR);
+  assert.equal(refreshesSeen(second.fake, from).length, 0, "nothing refreshes the signed-out record");
+  assert.deepEqual(signedOutOf(regs), [id], "an entry whose removal is unconfirmed is never dropped");
   assert.ok(await records.read(id));
+
+  // Restarted with a store that removes: the record is removed and the entry cleared.
+  const third = await restarted(t, second, records, [use(a)]);
+  await settle(third);
+  assert.equal(await records.read(id), null);
+  assert.deepEqual(signedOutOf(regs), []);
+  assert.deepEqual(third.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  // A sign-in afterwards loads after the next restart as any other does.
+  await signIn(third, a);
+  const fourth = await restarted(t, third, records, [use(a)]);
+  assert.ok(fourth.svc.accessToken(a).ok);
+});
+
+for (const variant of ["revocation fails", "the server has no revocation endpoint"] as const) {
+  test(`a refused removal when ${variant}: the tokens still work at the server, and a restart never loads or uses them`, async (t) => {
+    const records = createMemorySignInStore();
+    const store = controlledStore("memory", records);
+    // No endpoint: the discovered metadata names none, so the flow revokes nothing.
+    const flowUsed: SignInFlow = variant === "revocation fails" ? realFlow : {
+      ...realFlow,
+      async discover(...args) {
+        const found = await realFlow.discover(...args);
+        if (!found.ok) return found;
+        const metadata = { ...found.discovery.metadata };
+        delete (metadata as { revocation_endpoint?: string }).revocation_endpoint;
+        return { ...found, discovery: { ...found.discovery, metadata } };
+      },
+    };
+    const h = await harness(t, { store, flow: flowUsed });
+    const a = target(h.fake);
+    h.svc.setInUse([use(a)]);
+    const { id } = await signIn(h, a);
+    const held = (await records.read(id))!;
+    if (variant === "revocation fails") h.fake.setMode({ revoke: "503" });
+    store.failRemoves = true;
+    const from = h.fake.requests.length;
+    assert.equal(await h.svc.signOut(id), true);
+    await settle(h);
+    const revokes = since(h.fake, from).filter((request) => request.path === "/revoke");
+    if (variant === "revocation fails") assert.ok(revokes.length > 0, "revocation was tried and refused");
+    else assert.equal(revokes.length, 0, "nothing to revoke against");
+    assert.deepEqual(signedOutOf(h.regs), [id]);
+    assert.deepEqual(await records.read(id), held, "the store still holds the unrevoked pair");
+
+    h.fake.resetModes();
+    const second = await restarted(t, h, records, [use(a)], { failRemoves: true });
+    assert.ok(!second.store.calls.includes(`read ${id}`), "the record is never read");
+    assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+    assert.equal(viewOf(second, id)?.state, "signed_out");
+    await second.clock.advance(2 * HOUR);
+    assert.equal(refreshesSeen(second.fake, from).length, 0, "the still-valid refresh token is never spent");
+    assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+    assert.deepEqual(signedOutOf(second.regs), [id]);
+  });
+}
+
+test("a sign-out during the first load with a removal the store refuses: no later start loads that record", async (t) => {
+  const records = createMemorySignInStore();
+  const first = await harness(t, { store: controlledStore("memory", records) });
+  const a = target(first.fake);
+  const { id } = await signIn(first, a);
+  await first.svc.stop();
+
+  const slow = controlledStore("memory", records);
+  slow.failRemoves = true;
+  const reads = slow.holdReads();
+  const regs = memoryRegistrations(clientsOf(first.regs));
+  const second = await harness(t, { fake: first.fake, clock: first.clock, store: slow, regs, inUse: [use(a)], start: false });
+  second.svc.start();
+  await reads.started;
+  assert.equal(await second.svc.signOut(id), true);
+  assert.deepEqual(signedOutOf(regs), [id], "listed while the load still holds the record it read");
+  reads.release();
+  await settle(second);
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.ok(await records.read(id), "the store refused the removal");
+
+  const third = await restarted(t, second, records, [use(a)], { failRemoves: true });
+  assert.deepEqual(third.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(signedOutOf(regs), [id]);
+});
+
+test("a flag turned off and on reloads nothing listed, and an entry clears only from a removal begun after the last sign-out", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const flags = flagSwitch(true);
+  const h = await harness(t, { store, flags });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(signedOutOf(h.regs), [id]);
+
+  // Off and on, removals still refused: the new load does not install the record.
+  flags.set(false);
+  flags.set(true);
+  await settle(h);
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(signedOutOf(h.regs), [id]);
+
+  // Off and on again. That load's removal is held and then confirmed; every removal after it is
+  // refused. A sign-out while the load still reads marks the connection again, so the held
+  // removal, begun before that sign-out, must not clear the entry.
+  let removeCalls = 0;
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((done) => { releaseFirst = done; });
+  let firstStarted!: () => void;
+  const firstRemoving = new Promise<void>((done) => { firstStarted = done; });
+  store.store.remove = async (removeId) => {
+    removeCalls += 1;
+    if (removeCalls > 1) throw new SignInStoreError("remove", -25308);
+    firstStarted();
+    await firstHeld;
+    return records.remove(removeId);
+  };
+  // Another stored record, not listed, which the load reads and is held at.
+  const other = seededRecord(h.fake, 1, "fake-seeded-client-1", "mcp:other");
+  await records.write(other.id, other.record);
+  const reads = store.holdReads();
+  flags.set(false);
+  flags.set(true);
+  await Promise.all([firstRemoving, reads.started]);
+  const signingOut = h.svc.signOut(id);
+  releaseFirst();
+  reads.release();
+  assert.equal(await signingOut, true, "a load was reading, so there was something to sign out of");
+  await settle(h);
+  assert.equal(removeCalls, 2);
+  assert.equal(await records.read(id), null, "the first removal was confirmed");
+  assert.deepEqual(signedOutOf(h.regs), [id], "but it began before the later sign-out, whose own removal was refused: the entry stays");
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+
+  // The next start's removal is confirmed after the last sign-out: the entry clears.
+  store.store.remove = (removeId) => records.remove(removeId);
+  flags.set(false);
+  flags.set(true);
+  await settle(h);
+  assert.deepEqual(signedOutOf(h.regs), []);
+});
+
+test("a write that a sign-out cancelled never clears the entry, and a sign-in still wanted when its write ends does", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const h = await harness(t, { store });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+
+  // A new sign-in whose write is in flight when it is signed out: the write lands, is not kept,
+  // and the removal that undoes it is refused. The entry stays.
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  const writes = store.holdWrites();
+  const completing = h.svc.complete(callback(back));
+  await writes.started;
+  const signingOut = h.svc.signOut(id);
+  writes.release();
+  assert.equal((await completing as { code: string }).code, "cancelled");
+  await signingOut;
+  await settle(h);
+  assert.ok(await records.read(id), "the cancelled write is still in the store, which refused every removal");
+  assert.deepEqual(signedOutOf(h.regs), [id], "a write a sign-out cancelled never clears the entry");
+  const second = await restarted(t, h, records, [use(a)], { failRemoves: true });
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "and no restart loads it");
+
+  // A sign-in whose write fails is kept in memory only, and the entry stays.
+  second.store.failWrites = true;
+  await signIn(second, a);
+  assert.equal(viewOf(second, id)?.reason, SIGN_IN_REASONS.memoryOnly);
+  assert.deepEqual(signedOutOf(second.regs), [id], "a write the store refused does not clear the entry");
+  const third = await restarted(t, second, records, [use(a)], { failRemoves: true });
+  assert.deepEqual(third.svc.accessToken(a), { ok: false, reason: "signedOut" });
+
+  // A sign-in still wanted when its write ends replaced the stored record: the entry clears, and it loads after a restart.
+  const { id: again } = await signIn(third, a);
+  assert.equal(again, id);
+  assert.deepEqual(signedOutOf(third.regs), []);
+  const kept = (await records.read(id))!;
+  const fourth = await restarted(t, third, records, [use(a)], { failRemoves: true });
+  assert.deepEqual(fourth.svc.accessToken(a), { ok: true, token: kept.accessToken });
+});
+
+test("a sign-in write in flight when the flag turns off: still wanted, so it clears the entry and loads after a restart", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const flags = flagSwitch(true);
+  const h = await harness(t, { store, flags });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(signedOutOf(h.regs), [id]);
+  store.failRemoves = false;
+
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  const writes = store.holdWrites();
+  const completing = h.svc.complete(callback(back));
+  await writes.started;
+  // The flag clears with the write in flight: nothing signed it out, so the write is still wanted.
+  flags.set(false);
+  assert.deepEqual(signedOutOf(h.regs), [id], "the entry stays while the write is in flight");
+  writes.release();
+  assert.deepEqual(await completing, { ok: true, connection: id });
+  await settle(h);
+  const kept = (await records.read(id))!;
+  assert.deepEqual(signedOutOf(h.regs), [], "the confirmed, wanted write cleared the entry");
+  assert.equal(h.svc.view().length, 0, "nothing is reported while the flag is off");
+
+  flags.set(true);
+  await settle(h);
+  assert.deepEqual(h.svc.accessToken(a), { ok: true, token: kept.accessToken });
+  const second = await restarted(t, h, records, [use(a)]);
+  assert.deepEqual(second.svc.accessToken(a), { ok: true, token: kept.accessToken }, "and it loads after a restart");
+});
+
+test("a sign-in write in flight when a rejected client cancels it: the undo is listed first, so a refused removal never loads after a restart", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = loggedRegistrations(store);
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  const b = target(h.fake, { url: h.fake.shapeUrl });
+  h.svc.setInUse([use(a), use(b)]);
+  // B holds a sign-in with the client A's sign-in uses too.
+  const { id: idB } = await signIn(h, b);
+  const idA = connectionId(a);
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  assert.equal(registrationsSeen(h.fake).length, 1, "one client for both");
+
+  const writes = store.holdWrites();
+  const callsFrom = store.calls.length;
+  const completing = h.svc.complete(callback(back));
+  await writes.started;
+  // B's refresh is refused for the client while A's write is in flight: A's completion is cancelled with no sign-out.
+  h.fake.setMode({ refresh: "invalid_client" });
+  store.failRemoves = true;
+  const refreshesBefore = refreshesSeen(h.fake).length;
+  h.clock.fireDue(46 * MINUTE);
+  await waitFor(() => refreshesSeen(h.fake).length > refreshesBefore, "B's refresh request");
+  await waitFor(() => viewOf(h, idB)?.state === "signed_out", "B signed out by the rejected client");
+  assert.deepEqual(signedOutOf(regs), [idB], "B's removal is listed; A held no record yet");
+
+  writes.release();
+  assert.equal((await completing as { code: string }).code, "cancelled");
+  await settle(h);
+  const undo = store.calls.slice(callsFrom);
+  const wrote = undo.indexOf(`write ${idA}`);
+  const listed = undo.indexOf(`signedOut ${idB},${idA}`);
+  const removed = undo.lastIndexOf(`remove ${idA}`);
+  assert.ok(wrote >= 0 && listed >= 0 && removed >= 0, `all three events happened: ${JSON.stringify(undo)}`);
+  assert.ok(wrote < listed, "the cancelled write was asked for first");
+  assert.ok(listed < removed, "and its undo was listed before the store was asked to remove it");
+  assert.ok(await records.read(idA), "the cancelled write landed, and the store refused the undo");
+  assert.deepEqual([...signedOutOf(regs)].sort(), [idA, idB].sort());
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+
+  const second = await restarted(t, h, records, [use(a), use(b)], { failRemoves: true });
+  assert.ok(!second.store.calls.includes(`read ${idA}`), "the cancelled write's record is never read");
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(second.svc.accessToken(b), { ok: false, reason: "signedOut" });
+
+  // A start whose removals succeed removes both and clears both entries.
+  const third = await restarted(t, second, records, [use(a), use(b)]);
+  await settle(third);
+  assert.equal(await records.read(idA), null);
+  assert.deepEqual(signedOutOf(regs), []);
+});
+
+test("a sign-out app_config refuses to save: the store is still asked, and the entry is saved by the next write the key takes", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  const b = target(h.fake, { url: h.fake.shapeUrl });
+  h.svc.setInUse([use(a), use(b)]);
+  const { id: idA } = await signIn(h, a);
+  const { id: idB } = await signIn(h, b);
+
+  // app_config refuses, the store removes: the confirmed removal holds the sign-out on its own.
+  regs.failWrites = true;
+  await h.svc.signOut(idA);
+  await settle(h);
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be saved yet")));
+  assert.equal(await records.read(idA), null, "the store was asked although the entry was not saved");
+
+  // Both refuse for B: the entry is kept in memory, and the next write the key takes saves it.
+  await signIn(h, a);
+  store.failRemoves = true;
+  await h.svc.signOut(idB);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), [], "not saved while app_config refuses");
+  assert.ok(await records.read(idB));
+  regs.failWrites = false;
+  await h.svc.signOut(idA);
+  await settle(h);
+  assert.deepEqual([...signedOutOf(regs)].sort(), [idA, idB].sort(), "B's unsaved entry went out with A's");
+
+  const second = await restarted(t, h, records, [use(a), use(b)], { failRemoves: true });
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(second.svc.accessToken(b), { ok: false, reason: "signedOut" });
+});
+
+test("a sign-out app_config refused, saved by a later load in the same run: that load lists it and never installs its record", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const flags = flagSwitch(true);
+  const h = await harness(t, { store, regs, flags });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  regs.failWrites = true;
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.ok(await records.read(id), "the store refused the removal");
+  assert.deepEqual(signedOutOf(regs), [], "and app_config refused the entry");
+
+  // app_config recovers, and a reload runs in the same daemon: it saves the entry and treats it as listed.
+  regs.failWrites = false;
+  const callsFrom = store.calls.length;
+  flags.set(false);
+  flags.set(true);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), [id], "the reload saved the entry");
+  assert.ok(!store.calls.slice(callsFrom).includes(`read ${id}`), "and never read the record");
+  assert.ok(store.calls.slice(callsFrom).includes(`remove ${id}`), "it queued the removal again");
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  await h.clock.advance(2 * HOUR);
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+});
+
+test("a new client registration app_config refuses to save is used for that sign-in only", async (t) => {
+  const regs = memoryRegistrations();
+  const h = await harness(t, { regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  regs.failWrites = true;
+  const answer = await h.svc.begin(a);
+  assert.ok(answer.ok, `begin answered ${JSON.stringify(answer)}`);
+  assert.ok(h.warnings.some((warning) => warning.includes("used for this sign-in only")));
+  const done = await h.svc.complete(callback(await authorize(answer.authorizationUrl)));
+  assert.deepEqual(done, { ok: true, connection: connectionId(a) });
+  assert.ok(h.svc.accessToken(a).ok);
+  assert.deepEqual(clientsOf(regs), [], "nothing was saved");
+});
+
+test("a sign-in after an unsaved sign-out saves that sign-out before its write, so a refused write still leaves the old record covered", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  const old = (await records.read(id))!;
+  regs.failWrites = true;
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), []);
+
+  // app_config recovers. A new sign-in reuses the client, so begin writes nothing, and its store write fails.
+  regs.failWrites = false;
+  store.failWrites = true;
+  await signIn(h, a);
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly);
+  assert.deepEqual(signedOutOf(regs), [id], "the unsaved sign-out was saved before the store write");
+  assert.deepEqual(await records.read(id), old, "the old record is still stored");
+  const second = await restarted(t, h, records, [use(a)], { failRemoves: true });
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "and a restart does not load it");
+});
+
+test("a sign-in whose write lands but whose sign-out entry cannot be cleared is reported as memory-only, and the next landed write clears it", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), [id]);
+
+  // The new sign-in's write lands, but app_config refuses to clear the entry: the next start would remove it.
+  regs.failWrites = true;
+  await signIn(h, a);
+  assert.ok(h.svc.accessToken(a).ok);
+  assert.equal(viewOf(h, id)?.storage, "memory");
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly);
+  assert.deepEqual(signedOutOf(regs), [id]);
+
+  // app_config recovers; the 75% refresh writes again and clears it, and the sign-in is stored once more.
+  regs.failWrites = false;
+  await h.clock.advance(46 * MINUTE);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), []);
+  assert.equal(viewOf(h, id)?.reason, null);
+  const kept = (await records.read(id))!;
+  const second = await restarted(t, h, records, [use(a)]);
+  assert.deepEqual(second.svc.accessToken(a), { ok: true, token: kept.accessToken });
+});
+
+test("an expired record removed while its replacement is being written: the replacement is reported as memory-only, as the next start removes it", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const h = await harness(t, { store });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  h.fake.setMode({ tokens: "no-refresh" });
+  const { id } = await signIn(h, a);
+  // The held record expires; it has no refresh token, so reading it removes it. Jumped before
+  // the new sign-in begins, so its own pending sign-in is still live.
+  h.clock.jump(2 * HOUR);
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  const writes = store.holdWrites();
+  const completing = h.svc.complete(callback(back));
+  await writes.started;
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" }, "the expired record is removed during the write");
+  writes.release();
+  assert.deepEqual(await completing, { ok: true, connection: id }, "the removal does not cancel the completion");
+  await settle(h);
+  assert.ok(h.svc.accessToken(a).ok, "the replacement is held");
+  assert.deepEqual(signedOutOf(h.regs), [id], "the removal's entry stays, and its skipped removal cannot clear it");
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly, "so the replacement is reported as memory-only");
+  const second = await restarted(t, h, records, [use(a)]);
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "as the restart shows");
+});
+
+test("accepted limit: app_config and the store both refuse, and the daemon restarts before either recovers", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  regs.failWrites = true;
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be saved yet")), "the failure is logged");
+  // Neither durable place took the sign-out, so nothing outlives this daemon: the record loads again.
+  regs.failWrites = false;
+  const second = await restarted(t, h, records, [use(a)]);
+  assert.equal(second.svc.accessToken(a).ok, true);
+});
+
+test("an unparseable shaping.signIn is unreadable, never empty: no stored record loads, and the key fails closed", async (t) => {
+  const records = createMemorySignInStore();
+  const first = await harness(t, { store: controlledStore("memory", records) });
+  const a = target(first.fake);
+  const { id } = await signIn(first, a);
+  await first.svc.stop();
+
+  const regs = memoryRegistrations();
+  regs.raw = { clients: "not a list" };
+  const store = controlledStore("memory", records);
+  store.failRemoves = true;
+  const second = await harness(t, { fake: first.fake, clock: first.clock, store, regs, inUse: [use(a)] });
+  assert.ok(!store.calls.includes(`read ${id}`));
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(regs.read(), { clients: [], signedOut: [], signedOutOverflow: true }, "rewritten to the overflow mark");
+  assert.ok(await records.read(id), "the store refused the removal");
+
+  // While the mark stands, no start loads a stored record. A start whose removals succeed clears it.
+  const third = await restarted(t, second, records, [use(a)], { failRemoves: true });
+  assert.deepEqual(third.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.equal(regs.read()?.signedOutOverflow, true);
+  const fourth = await restarted(t, third, records, [use(a)]);
+  await settle(fourth);
+  assert.equal(await records.read(id), null);
+  assert.equal(regs.read()?.signedOutOverflow, false);
+  // A key that turns unreadable later refuses a begin rather than overwriting what it may list.
+  regs.raw = "unreadable";
+  assert.equal((await fourth.svc.begin(target(fourth.fake, { scope: "mcp:fresh" })) as { code: string }).code, "store_unread");
+  assert.equal(regs.raw, "unreadable");
+});
+
+test("a full signed-out list is never trimmed: one more sign-out fails closed until a start removes every stored record", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const listed = Array.from({ length: SHAPING_SIGNED_OUT_CONNECTIONS }, (_, n) => n.toString(16).padStart(32, "0"));
+  regs.raw = { clients: [], signedOut: listed, signedOutOverflow: false };
+  store.failRemoves = true;
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  const b = target(h.fake, { scope: "mcp:other" });
+  h.svc.setInUse([use(a), use(b)]);
+  const { id } = await signIn(h, a);
+  const { id: kept } = await signIn(h, b);
+  assert.deepEqual(signedOutOf(regs), listed, "the start's refused removals keep every entry");
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(regs.read(), { clients: regs.read()!.clients, signedOut: listed, signedOutOverflow: true }, "no entry dropped to make room");
+
+  // Fail closed: no stored record loads, not even one never signed out.
+  const second = await restarted(t, h, records, [use(a), use(b)], { failRemoves: true });
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(second.svc.accessToken(b), { ok: false, reason: "signedOut" });
+  assert.ok(await records.read(kept));
+
+  // A start whose removals succeed removes every stored record, clears the entries and the mark.
+  const third = await restarted(t, second, records, [use(a), use(b)]);
+  await settle(third);
+  assert.deepEqual(await records.ids(), []);
+  assert.deepEqual(regs.read()?.signedOut, []);
+  assert.equal(regs.read()?.signedOutOverflow, false);
+});
+
+test("with the overflow mark set, a store that cannot be listed keeps the mark, and no later start loads a stored record until one lists and removes it", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const { id, record } = seededRecord(fake, 0, "fake-seeded-client-0", "mcp:context");
+  await records.write(id, record);
+  const regs = memoryRegistrations();
+  regs.raw = { clients: [], signedOut: [], signedOutOverflow: true };
+  const a = record.target;
+
+  const unlisted = controlledStore("memory", records);
+  unlisted.failIds = true;
+  const first = await harness(t, { fake, store: unlisted, regs, inUse: [use(a)] });
+  await settle(first);
+  assert.equal(regs.read()?.signedOutOverflow, true, "an incomplete listing never clears the mark");
+  assert.deepEqual(first.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.ok(await records.read(id));
+
+  // Listed now, removal refused: still nothing loads, and the mark stays.
+  const second = await restarted(t, first, records, [use(a)], { failRemoves: true });
+  await settle(second);
+  assert.ok(!second.store.calls.includes(`read ${id}`));
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.equal(regs.read()?.signedOutOverflow, true);
+
+  // Listed and removed: the mark clears.
+  const third = await restarted(t, second, records, [use(a)]);
+  await settle(third);
+  assert.equal(await records.read(id), null);
+  assert.equal(regs.read()?.signedOutOverflow, false);
+});
+
+test("a sign-out that sets the overflow mark while the first load waits on the store's listing: that load installs nothing", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const signedOutTarget = seededRecord(fake, 0, "fake-seeded-client-0", "mcp:seed-0");
+  const other = seededRecord(fake, 1, "fake-seeded-client-1", "mcp:seed-1");
+  await records.write(signedOutTarget.id, signedOutTarget.record);
+  await records.write(other.id, other.record);
+  const regs = memoryRegistrations();
+  // The list is full, and the mark is not set yet.
+  const listed = Array.from({ length: SHAPING_SIGNED_OUT_CONNECTIONS }, (_, n) => n.toString(16).padStart(32, "0"));
+  regs.raw = { clients: [], signedOut: listed, signedOutOverflow: false };
+  const store = controlledStore("memory", records);
+  let releaseIds!: () => void;
+  const idsHeld = new Promise<void>((done) => { releaseIds = done; });
+  let idsStarted!: () => void;
+  const listing = new Promise<void>((done) => { idsStarted = done; });
+  store.store.ids = async () => { idsStarted(); await idsHeld; return records.ids(); };
+  const a = signedOutTarget.record.target;
+  const b = other.record.target;
+  const h = await harness(t, { fake, store, regs, inUse: [use(a), use(b)], start: false });
+  h.svc.start();
+  await listing;
+  // A sign-out while the load is listing: the list is full, so it sets the overflow mark.
+  assert.equal(await h.svc.signOut(signedOutTarget.id), true);
+  assert.equal(regs.read()?.signedOutOverflow, true);
+  releaseIds();
+  await settle(h);
+  assert.ok(!store.calls.includes(`read ${other.id}`), "the load rechecked the key and read nothing more");
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  assert.deepEqual(h.svc.accessToken(b), { ok: false, reason: "signedOut" }, "no record installed under the mark");
+  assert.equal(regs.read()?.signedOutOverflow, true, "the mark stays until a start that began under it lists and removes every record");
+  assert.ok(await records.read(other.id), "the other record is still stored, so the next start removes it");
+});
+
+test("a sign-in whose write lands while the overflow mark is set is reported as memory-only, since the next start removes it", async (t) => {
+  const regs = memoryRegistrations();
+  regs.raw = { clients: [], signedOut: [], signedOutOverflow: true };
+  const store = controlledStore("memory");
+  // The start's listing fails, so the mark stays set for this run.
+  store.failIds = true;
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  assert.equal(regs.read()?.signedOutOverflow, true);
+  assert.ok(h.svc.accessToken(a).ok, "the sign-in works");
+  assert.equal(viewOf(h, id)?.storage, "memory");
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly, "and says a restart will need a new one");
+  const second = await restarted(t, h, h.store.records, [use(a)]);
+  await settle(second);
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "as the restart shows");
+});
+
+test("an unparseable shaping.signIn that app_config also refuses to rewrite: kept as it was, nothing read or installed, and logged", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const { id, record } = seededRecord(fake, 0, "fake-seeded-client-0", "mcp:context");
+  await records.write(id, record);
+  const regs = memoryRegistrations();
+  regs.raw = { clients: "not a list" };
+  regs.failWrites = true;
+  const store = controlledStore("memory", records);
+  store.failRemoves = true;
+  const h = await harness(t, { fake, store, regs, inUse: [use(record.target)] });
+  await settle(h);
+  assert.deepEqual(regs.raw, { clients: "not a list" }, "the original value remains");
+  assert.ok(!store.calls.includes(`read ${id}`), "the record is never read");
+  assert.deepEqual(h.svc.accessToken(record.target), { ok: false, reason: "signedOut" }, "or installed");
+  assert.ok(await records.read(id), "the store refused its removal");
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be read, so no stored sign-in is loaded")), "the unreadable value is logged");
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be saved")), "and so is the refused rewrite");
+});
+
+test("a sign-out while overflow cleanup is in flight keeps the mark, so a record that sign-out could not list stays covered", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const stale = seededRecord(fake, 0, "fake-seeded-client-0", "mcp:seed-0");
+  await records.write(stale.id, stale.record);
+  const regs = memoryRegistrations();
+  // A full list and the mark set: the start's cleanup removes every stored record, then may clear the mark.
+  const listed = Array.from({ length: SHAPING_SIGNED_OUT_CONNECTIONS }, (_, n) => n.toString(16).padStart(32, "0"));
+  regs.raw = { clients: [], signedOut: listed, signedOutOverflow: true };
+  const store = controlledStore("memory", records);
+  const a = target(fake);
+  const idA = connectionId(a);
+  // Every removal waits until released; then A's is refused and the rest succeed.
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
+  let removing!: () => void;
+  const removalStarted = new Promise<void>((done) => { removing = done; });
+  store.store.remove = async (removeId) => {
+    store.calls.push(`remove ${removeId}`);
+    removing();
+    await gate;
+    if (removeId === idA) throw new SignInStoreError("remove", -25308);
+    return records.remove(removeId);
+  };
+  const h = await harness(t, { fake, store, regs, inUse: [use(a)], start: false });
+  h.svc.start();
+  await removalStarted;
+
+  // With the cleanup held, A signs in and out. The list is full, so A's sign-out can only rely on the mark.
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  assert.equal((await h.svc.complete(callback(back))).ok, true);
+  assert.ok(await records.read(idA), "A's record is stored");
+  const signingOut = h.svc.signOut(idA);
+  assert.equal(regs.read()?.signedOut.includes(idA), false, "A could not be listed");
+  release();
+  await signingOut;
+  await settle(h);
+  assert.equal(await records.read(stale.id), null, "the cleanup's own removals succeeded");
+  assert.ok(await records.read(idA), "A's removal was refused");
+  assert.equal(regs.read()?.signedOutOverflow, true, "a sign-out during the cleanup keeps the mark");
+
+  const second = await restarted(t, h, records, [use(a)], { failRemoves: true });
+  assert.ok(!second.store.calls.includes(`read ${idA}`));
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "so A's record never loads again");
+});
+
+test("with the overflow mark set and an empty store, a start whose listing completes clears the mark", async (t) => {
+  const regs = memoryRegistrations();
+  regs.raw = { clients: [], signedOut: [], signedOutOverflow: true };
+  const store = controlledStore("memory");
+  const h = await harness(t, { store, regs });
+  await settle(h);
+  assert.ok(store.calls.includes("ids"), "the store was listed");
+  assert.ok(!store.calls.some((call) => call.startsWith("remove ")), "with nothing to remove");
+  assert.equal(regs.read()?.signedOutOverflow, false, "a complete listing with no records clears the mark");
+  // And sign-ins after it are stored as usual, not memory-only.
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  assert.equal(viewOf(h, id)?.reason, null);
+});
+
+test("shaping.signIn in app_config: a missing row is empty, an older value gains empty lists, and a row that does not parse is unreadable", () => {
+  openDb().exec("DELETE FROM app_config");
+  assert.deepEqual(appConfigSignInRegistrations.read(), { clients: [], signedOut: [], signedOutOverflow: false });
+  openDb().prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run("shaping.signIn", JSON.stringify({ clients: [] }));
+  assert.deepEqual(appConfigSignInRegistrations.read(), { clients: [], signedOut: [], signedOutOverflow: false });
+  openDb().prepare("UPDATE app_config SET value = ? WHERE key = ?").run("{not json", "shaping.signIn");
+  assert.equal(appConfigSignInRegistrations.read(), null);
+  openDb().prepare("UPDATE app_config SET value = ? WHERE key = ?").run(JSON.stringify({ signedOut: ["not an id"] }), "shaping.signIn");
+  assert.equal(appConfigSignInRegistrations.read(), null);
+  openDb().exec("DELETE FROM app_config");
 });
 
 test("stop waits for a code exchange in flight, so the tokens it receives are stored", async (t) => {
@@ -1349,7 +2093,7 @@ test("a begin queued across a flag reset is refused, and never drops a registrat
     releaseFirst();
     await new Promise((done) => setTimeout(done, 50));
     assert.equal(registrationsSeen(fake).length, 0, "no registration request while the new load is still reading");
-    keyBefore = regs.read();
+    keyBefore = clientsOf(regs);
   } finally {
     // Both loads are let go even when an assertion above fails, in the same order as normally.
     releaseFirst();
@@ -1357,7 +2101,7 @@ test("a begin queued across a flag reset is refused, and never drops a registrat
   }
   assert.equal((await answer as { code: string }).code, "flag_off", "requested before the reset, it is refused when its turn comes");
   assert.equal(registrationsSeen(fake).length, 0);
-  assert.deepEqual(regs.read(), keyBefore, "no registration a stored sign-in names was dropped");
+  assert.deepEqual(clientsOf(regs), keyBefore, "no registration a stored sign-in names was dropped");
 });
 
 test("a late refusal of a token already replaced is ignored, and a refusal of the current token is not", async (t) => {
@@ -1817,7 +2561,7 @@ test("client_rejected ends every sign-in that names the client, drops its pendin
     assert.equal(await h.store.records.read(id), null);
   }
   assert.equal(viewOf(h, pending.connection)?.state, "signed_out", "the pending sign-in is gone");
-  assert.deepEqual(h.regs.read(), []);
+  assert.deepEqual(clientsOf(h.regs), []);
 });
 
 test("a connection that is not in use is not refreshed", async (t) => {

@@ -15,11 +15,17 @@
 //   before its result is kept, it keeps nothing and revokes the pair it received.
 // - A refresh that a call asks for never starts while one is running or while a later try is
 //   already set, and refreshes that refusals ask for are spaced by `BACKOFF_MS`.
+//
+// And one rule keeps a sign-out across a restart, whatever the store does: every removal lists
+// its connection in `app_config` key `shaping.signIn` (`signedOut`) before the store is asked,
+// a load never installs a listed connection's record, and the entry leaves the list only once
+// the store confirmed a removal, or a write that was still wanted when it ended, with no later
+// sign-out of that connection since it began. See `markSignedOut`.
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
-  SHAPING_SIGN_IN_CLIENTS, SIGN_IN_REASONS,
-  type ShapingSignInClient, type ShapingSignInView, type SignInReason, type SignInTarget,
+  SHAPING_SIGN_IN_CLIENTS, SHAPING_SIGNED_OUT_CONNECTIONS, SIGN_IN_REASONS,
+  type ShapingSignInClient, type ShapingSignInConfig, type ShapingSignInView, type SignInReason, type SignInTarget,
 } from "@shared/shaping.ts";
 import { connectionId } from "./connection.ts";
 import {
@@ -79,10 +85,14 @@ export interface SignInFlow {
   revoke(discovery: SignInDiscovery, client: SignInClient, token: string, options?: FlowOptions): Promise<RevokeResult>;
 }
 
-/** The client registrations, `app_config` key `shaping.signIn` in the daemon. Synchronous, as SQLite is. */
+/**
+ * The client registrations and the signed-out connections, `app_config` key `shaping.signIn` in
+ * the daemon. Synchronous, as SQLite is. `read` answers null for a value it cannot read, never
+ * the empty value, because an unreadable value may list sign-outs.
+ */
 export interface SignInRegistrations {
-  read(): ShapingSignInClient[];
-  write(clients: ShapingSignInClient[]): void;
+  read(): ShapingSignInConfig | null;
+  write(value: ShapingSignInConfig): void;
 }
 
 export interface TimerHandle {
@@ -202,7 +212,6 @@ interface Connection {
   /** Refreshes refusals asked for since the count last started again, and when the last ran. */
   refusals: number;
   lastRefusalRefreshAt: number | null;
-  queue: Promise<void>;
 }
 
 const defaultSetTimer = (callback: () => void, delayMs: number): TimerHandle => setTimeout(callback, delayMs);
@@ -404,36 +413,152 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         id, target: { url: target.url, scope: target.scope, issuer: target.issuer },
         record: null, generation: 0, storage: null, reason: null, refusedGeneration: null, pending: null, completing: null, removing: null, discovery: null,
         refreshing: null, nextAt: null, held: null, timer: null, retries: 0, refusals: 0, lastRefusalRefreshAt: null,
-        queue: Promise.resolve(),
       };
       connections.set(id, conn);
     }
     return conn;
   };
 
+  /**
+   * Each connection's store calls, by id: a connection only the signed-out list names, with no
+   * target known, still has its removal ordered with every other store call for that id.
+   */
+  const queues = new Map<string, Promise<void>>();
+
   /** Runs `op` after every store call asked for before it on this connection. */
-  const enqueue = <T>(conn: Connection, op: () => Promise<T>): Promise<T> => {
-    const run = conn.queue.then(op);
-    conn.queue = run.then(() => undefined, () => undefined);
-    void track(conn.queue);
+  const enqueue = <T>(id: string, op: () => Promise<T>): Promise<T> => {
+    const run = (queues.get(id) ?? Promise.resolve()).then(op);
+    const tail = run.then(() => undefined, () => undefined);
+    queues.set(id, tail);
+    void track(tail).then(() => { if (queues.get(id) === tail) queues.delete(id); });
     return run;
   };
 
+  // ---- the signed-out list ----
+
   /**
-   * Removes the stored record in its turn, unless a newer record was stored by then. A removal
-   * the store refuses is logged and nothing more: memory is already clear, and a sign-out
-   * revokes the tokens at the server. Remembering such a sign-out across a restart is a
-   * follow-up task, not this phase.
+   * Counts the sign-outs marked for each connection since the daemon started, and across every
+   * connection. An entry is cleared only by a store call that began after the last mark, so a
+   * removal or a write that a later sign-out overtook never clears that sign-out's entry. Counts,
+   * not times: no clock is compared.
+   */
+  const marks = new Map<string, number>();
+  let marksTotal = 0;
+
+  const emptyConfig = (): ShapingSignInConfig => ({ clients: [], signedOut: [], signedOutOverflow: false });
+
+  /** `shaping.signIn`, or null when it cannot be read: an unparseable value is unreadable, never empty. */
+  const readConfig = (): ShapingSignInConfig | null => {
+    try {
+      return deps.registrations.read();
+    } catch (error) {
+      warn(`the sign-in settings could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  };
+
+  /**
+   * Sign-outs whose entry `app_config` refused to save. Every later write of the key carries
+   * them, and each one's store-call turn tries again before asking the store, so the entry is
+   * saved as soon as the key takes a write. The store is still asked meanwhile: a confirmed
+   * removal is the other way the sign-out holds, and not asking would leave the record certain
+   * to load.
+   */
+  const unsaved = new Set<string>();
+
+  /** Adds every unsaved sign-out to `value`, setting the overflow mark when the list is full. */
+  const withUnsaved = (value: ShapingSignInConfig): ShapingSignInConfig => {
+    let { signedOut, signedOutOverflow } = value;
+    for (const id of unsaved) {
+      if (signedOut.includes(id)) continue;
+      if (signedOut.length < SHAPING_SIGNED_OUT_CONNECTIONS) signedOut = [...signedOut, id];
+      else signedOutOverflow = true;
+    }
+    return { ...value, signedOut, signedOutOverflow };
+  };
+
+  const writeConfig = (value: ShapingSignInConfig): boolean => {
+    try {
+      deps.registrations.write(withUnsaved(value));
+      unsaved.clear();
+      return true;
+    } catch (error) {
+      warn(`the sign-in settings could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  };
+
+  /**
+   * What fails closed puts in place of a value that cannot be read: no registration, which only
+   * costs reuse, and the overflow mark, so no stored record loads until a start removes them all.
+   */
+  const failClosed = (): ShapingSignInConfig => ({ ...emptyConfig(), signedOutOverflow: true });
+
+  /**
+   * Lists the connection as signed out, before the store is asked to remove its record, so a
+   * restart never loads that record whatever the store answers. A full list sets the overflow
+   * mark instead: no entry is ever dropped to make room.
+   */
+  const markSignedOut = (id: string): void => {
+    marks.set(id, (marks.get(id) ?? 0) + 1);
+    marksTotal += 1;
+    const value = readConfig() ?? failClosed();
+    if (value.signedOut.includes(id) && unsaved.size === 0) return;
+    unsaved.add(id);
+    saveUnsaved(value);
+  };
+
+  /** Writes the unsaved sign-outs into the key. While it refuses, only a confirmed removal keeps a restart from loading them. */
+  const saveUnsaved = (value: ShapingSignInConfig | null = readConfig() ?? failClosed()): void => {
+    if (unsaved.size === 0 || !value) return;
+    if (!writeConfig(value)) warn("a sign-out could not be saved yet: it is tried again before each store call, and until then only a confirmed removal keeps a restart from loading it");
+  };
+
+  /** Clears the connection's entry after a confirmed store call that began at mark count `since`. */
+  /**
+   * False when the key may still list the connection: a sign-out was marked since the store
+   * call began (its entry stays, and its own removal may be skipped for a newer record), the
+   * key could not be read, it refused the write, or the overflow mark covers every record.
+   */
+  const clearSignedOut = (id: string, since: number | undefined): boolean => {
+    if (marks.get(id) !== since) return false;
+    // The store confirmed it: an entry not saved yet no longer needs saving.
+    unsaved.delete(id);
+    const value = readConfig();
+    if (!value) return false;
+    const cleared = !value.signedOut.includes(id) || writeConfig({ ...value, signedOut: value.signedOut.filter((entry) => entry !== id) });
+    // The overflow mark covers every stored record, listed or not: the next start removes this one too.
+    return cleared && !value.signedOutOverflow;
+  };
+
+  /** Asks the store to remove the record, and on its confirmation clears the entry. Throws what the store throws. */
+  const storeRemove = async (id: string): Promise<void> => {
+    const since = marks.get(id);
+    // Saved before the store is asked, if `app_config` refused it the first time.
+    if (unsaved.has(id)) saveUnsaved();
+    await getStore().remove(id);
+    clearSignedOut(id, since);
+  };
+
+  const removalRefused = (error: unknown): void => {
+    warn(`a stored sign-in could not be removed, so it stays signed out until a removal succeeds: ${error instanceof Error ? error.message : String(error)}`);
+  };
+
+  /**
+   * Removes the stored record in its turn, unless a newer record was stored by then. The
+   * connection is listed as signed out first, so a removal the store refuses still keeps the
+   * record from loading after a restart, and a later start tries the removal again.
    */
   const removeStored = (conn: Connection): Promise<void> => {
     const decidedFor = conn.generation;
-    const removing = enqueue(conn, async () => {
+    markSignedOut(conn.id);
+    const removing = enqueue(conn.id, async () => {
       // A newer record was stored since: this removal was for the one before it.
       if (conn.generation !== decidedFor) return;
       try {
-        await getStore().remove(conn.id);
+        await storeRemove(conn.id);
       } catch (error) {
-        warn(`a stored sign-in could not be removed: ${error instanceof Error ? error.message : String(error)}`);
+        removalRefused(error);
       }
     });
     conn.removing = removing;
@@ -459,11 +584,14 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
    * later write for the connection, which runs after this turn, still stands.
    */
   const commit = (conn: Connection, record: StoredSignIn, stillWanted: () => boolean, newSignIn: boolean): Promise<boolean> =>
-    enqueue(conn, async () => {
+    enqueue(conn.id, async () => {
       if (!stillWanted()) return false;
       let storage: SignInStorage = getStore().kind;
       let reason: SignInReason | null = null;
       let written = false;
+      const since = marks.get(conn.id);
+      // Saved before the store is asked, as `storeRemove` does: if this write fails, the old record stays covered.
+      if (unsaved.has(conn.id)) saveUnsaved();
       try {
         await getStore().write(conn.id, record);
         written = true;
@@ -476,6 +604,14 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         // Signed out, superseded or replaced meanwhile: what this turn wrote is not left behind.
         if (written) await restoreStored(conn);
         return false;
+      }
+      // A wanted write replaced whatever was stored: a sign-out listed before it began is done.
+      // While the key may still list it, the next start removes this record, so it is reported
+      // as memory-only. The next write that lands clears the entry again.
+      if (written && !clearSignedOut(conn.id, since)) {
+        storage = "memory";
+        reason = "memoryOnly";
+        warn("a sign-in is kept in memory only: its earlier sign-out could not be cleared from the sign-in settings");
       }
       conn.record = record;
       conn.generation += 1;
@@ -498,7 +634,10 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   const restoreStored = async (conn: Connection): Promise<void> => {
     try {
       if (conn.record) await getStore().write(conn.id, conn.record);
-      else await getStore().remove(conn.id);
+      else {
+        markSignedOut(conn.id);
+        await storeRemove(conn.id);
+      }
     } catch (error) {
       warn(`a stored sign-in could not be put back: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -573,13 +712,10 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       if (conn.pending && names(conn.pending.client)) dropPending(conn);
       if (conn.completing && names(conn.completing.client)) conn.completing = null;
     }
-    try {
-      const clients = deps.registrations.read();
-      const kept = clients.filter((client) => !names(client));
-      if (kept.length !== clients.length) deps.registrations.write(kept);
-    } catch (error) {
-      warn(`a rejected client registration could not be removed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    const value = readConfig();
+    const kept = value?.clients.filter((client) => !names(client));
+    if (!value || !kept) warn("a rejected client registration could not be removed: the sign-in settings could not be read");
+    else if (kept.length !== value.clients.length) writeConfig({ ...value, clients: kept });
     notify();
   };
 
@@ -676,22 +812,81 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     }
   };
 
+  /**
+   * Removes a listed connection's stored record in its turn, while it is still listed. A record
+   * memory holds from a write the store took is kept: only the overflow mark lists it then.
+   */
+  const resolveSignedOut = (id: string): Promise<boolean> => enqueue(id, async () => {
+    const value = readConfig();
+    if (value && !value.signedOut.includes(id) && !value.signedOutOverflow && !unsaved.has(id)) return true;
+    const conn = connections.get(id);
+    if (conn?.record && conn.reason !== "memoryOnly") return true;
+    try {
+      await storeRemove(id);
+      return true;
+    } catch (error) {
+      removalRefused(error);
+      return false;
+    }
+  });
+
+  /**
+   * Whether the key, as it is now, keeps this id's stored record from loading: listed, overflow
+   * marked, unsaved in memory, or unreadable. A load asks again after every store call it awaits,
+   * because a sign-out can change the key meanwhile.
+   */
+  const coveredNow = (id: string): boolean => {
+    if (unsaved.has(id)) return true;
+    const value = readConfig();
+    return !value || value.signedOutOverflow || value.signedOut.includes(id);
+  };
+
   const loadStore = async (): Promise<void> => {
     const source = getStore();
     const own = activation;
     // Switched off, or switched on again with a load of its own: this one reads and publishes nothing more.
     const over = () => !active || activation !== own;
+    const marksAtStart = marksTotal;
+    // Read before the store is: an id listed as signed out is never installed, whenever it was written.
+    let config = readConfig();
+    if (!config) {
+      // Unreadable is not empty: it may list sign-outs. Fail closed, and say so in the key.
+      config = failClosed();
+      warn("the sign-in settings could not be read, so no stored sign-in is loaded and every one is removed");
+      writeConfig(config);
+    }
+    // Sign-outs `app_config` refused earlier in this daemon's life count as listed, and are
+    // saved now if it takes the write. Taken from the merged value, not from `unsaved`, which
+    // a successful save empties.
+    config = withUnsaved(config);
+    saveUnsaved(config);
+    const signedOut = new Set(config.signedOut);
+    const overflow = config.signedOutOverflow;
     let incomplete = false;
+    let listed = true;
     let ids: string[] = [];
     try {
       ids = await source.ids();
     } catch (error) {
       incomplete = true;
+      listed = false;
       warn(`the stored sign-ins could not be listed: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (over()) return;
+    // Every listed connection, and with the overflow mark every stored one, is removed in its turn.
+    const resolving = [...new Set([...signedOut, ...(overflow ? ids : [])])].map(resolveSignedOut);
+    if (overflow) {
+      // The mark clears once a full listing's records were all removed, with no sign-out since this load began.
+      void track(Promise.all(resolving).then((done) => {
+        if (!listed || !done.every(Boolean) || marksTotal !== marksAtStart) return;
+        const value = readConfig();
+        if (value?.signedOutOverflow) writeConfig({ ...value, signedOutOverflow: false });
+      }));
+    }
     for (const id of ids) {
       if (over()) return;
+      if (overflow || signedOut.has(id)) continue;
+      if (coveredNow(id)) continue;
       let record: StoredSignIn | null;
       try {
         record = await source.read(id);
@@ -701,6 +896,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         continue;
       }
       if (over()) return;
+      // A sign-out while the store was answering may have listed this id or set the overflow mark.
+      if (coveredNow(id)) continue;
       if (!record || connectionId(record.target) !== id) continue;
       const conn = ensure(id, record.target);
       // Memory already decided this connection's record since the daemon started: it wins.
@@ -796,7 +993,10 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     conn.discovery = discovery;
     const matches = (client: ShapingSignInClient) =>
       issuersMatch(client.issuer, discovery.authorizationServer) && client.redirectUri === deps.redirectUri && client.scope === target.scope;
-    const clients = deps.registrations.read();
+    const config = readConfig();
+    // Unreadable: which registrations a held record names, and which sign-outs it lists, are unknown.
+    if (!config) return refusal("store_unread");
+    const clients = config.clients;
     const reuse = clients.find(matches) ?? null;
     // Timed out while discovering: no registration request, and nothing saved.
     if (abandoned()) return refusal("timeout");
@@ -812,14 +1012,19 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       if (result.ok && abandoned()) return refusal("timeout");
       if (result.ok && reset()) return refusal("flag_off");
       if (result.ok) {
-        // In one write: room made from what is held now, and the new registration saved.
-        let kept = deps.registrations.read();
+        // In one write: room made from what is held now, and the new registration saved. The
+        // signed-out list is written back as it was read, in the same synchronous step.
+        const current = readConfig();
+        if (!current) return refusal("store_unread");
+        let kept = current.clients;
         if (kept.length >= SHAPING_SIGN_IN_CLIENTS) {
           const drop = loadIncomplete ? null : oldestUnnamed(kept);
           if (!drop) return refusal(loadIncomplete ? "store_unread" : "registration_limit");
           kept = kept.filter((client) => client !== drop);
         }
-        deps.registrations.write([...kept, { ...result.client }]);
+        // A registration the key refuses is used for this sign-in only: the key is a reuse cache, and a held
+        // record refreshes with the client it names, whatever the key holds.
+        if (!writeConfig({ ...current, clients: [...kept, { ...result.client }] })) warn("a new client registration could not be saved, so it is used for this sign-in only");
       }
     }
     if (!result.ok) return reset() ? refusal("flag_off") : { ok: false, code: result.code, reason: result.reason };

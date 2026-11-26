@@ -297,7 +297,7 @@ test("start: with 16 registrations each named by a held sign-in, another scope i
       expiresAt: now + 3_600_000, scope, obtainedAt: now,
     });
   }
-  let held = structuredClone(clients);
+  let held = { clients: structuredClone(clients), signedOut: [] as string[], signedOutOverflow: false };
   const service = createShaperSignInService({
     store: () => store,
     flow: { discover: flow.discover, begin: flow.begin, exchange: flow.exchange, refresh: flow.refresh, revoke: flow.revoke },
@@ -321,7 +321,7 @@ test("start: with 16 registrations each named by a held sign-in, another scope i
   assert.equal(refused.status, 409, refused.text);
   assert.deepEqual(JSON.parse(refused.text), { error: "registration_limit", reason: SIGN_IN_BEGIN_REFUSALS.registration_limit });
   assert.equal(fake.requests.filter((request) => request.path === "/register").length, before, "the fixture saw no registration request");
-  assert.equal(held.length, 16);
+  assert.equal(held.clients.length, 16);
   assertNothingLeaked(seen, []);
 });
 

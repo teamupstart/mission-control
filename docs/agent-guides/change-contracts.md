@@ -229,10 +229,44 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   reinterpreted. The `shaping` settings backup domain id is final, and its surface is
   `settings` (`src/shared/settings-backup-domains.ts`).
   See [Task shaping](../task-shaping.md)
-- Shaper sign-in's client registrations, `app_config` key `shaping.signIn`
-  (`ShapingSignInConfigSchema` in `src/shared/shaping.ts`): `{ clients: [{ issuer, clientId,
-  redirectUri, scope, registeredAt }] }`, at most `SHAPING_SIGN_IN_CLIENTS` (16). The key name is
-  final. Value class `operational`, in no backup domain, so a settings snapshot never carries it;
+- Shaper sign-in's client registrations and signed-out connections, `app_config` key
+  `shaping.signIn` (`ShapingSignInConfigSchema` in `src/shared/shaping.ts`): `{ clients: [{ issuer,
+  clientId, redirectUri, scope, registeredAt }], signedOut: [connectionId], signedOutOverflow }`,
+  at most `SHAPING_SIGN_IN_CLIENTS` (16) clients and `SHAPING_SIGNED_OUT_CONNECTIONS` (64)
+  signed-out ids. The key name and both new field names are final. A sign-out is never undone by
+  a restart, whatever the store does, by these rules. Every removal of a stored record lists its
+  connection id in `signedOut` before the store is asked. A load reads the key before the store,
+  never reads or installs a listed connection's record, and removes it in that connection's
+  store-call turn. An entry holds the id alone, and no rule compares clocks. An entry leaves the
+  list only after the store confirmed a removal, or a write that was still wanted when it ended,
+  and only when no sign-out of that connection was marked since that store call began (a
+  per-connection count in memory). So a write a sign-out cancelled, a write the store refused
+  (`memoryOnly`) and a removal a later sign-out overtook never clear it. An entry whose removal
+  is unconfirmed is never dropped: a sign-out that finds the list full sets `signedOutOverflow`
+  instead, which fails closed. While it is set no stored record loads, and it clears only after a
+  start that listed the whole store removed every record memory does not hold, with no sign-out
+  marked meanwhile. A row that is not JSON or does not match the schema is unreadable, never
+  empty: the daemon's reader answers null, a load rewrites the key to `{ clients: [], signedOut:
+  [], signedOutOverflow: true }` and loads nothing, and a `begin` refuses with `store_unread`
+  without writing. Every write of the key reads it in the same synchronous step and writes the
+  other fields back unchanged. An older build that drops the new fields on write does not honour
+  them either. A sign-out whose entry `app_config` refuses to save is still sent to the store,
+  because a confirmed removal is the other way it holds and not asking would leave the record
+  certain to load. The entry is kept in memory, every later write of the key carries it, and its
+  connection's next store call and the next load try the write again first, and that load
+  treats it as listed whether or not the write succeeds. A sign-in's store write retries an
+  unsaved entry first too, so a refused write leaves the old record covered. A landed write whose
+  entry the key cannot clear is reported as memory-only, because the next start would remove it,
+  and the next write that lands clears the entry. A write that lands while `signedOutOverflow`
+  is set is reported as memory-only too, since the next start removes every stored record, and so
+  is one during which a sign-out of its connection was marked (an expired record removed
+  meanwhile, for example), since that entry stays listed. A load
+  asks the key again after each store call it awaits, and installs no record whose id is listed,
+  unsaved, or covered by the overflow mark at that moment, or while the key is unreadable. A new client registration the key
+  refuses to save is used for that sign-in only, since the key is a reuse cache. Known limit: when
+  `app_config` and the store both refuse, and the daemon stops before either recovers, nothing
+  durable records the sign-out and the next start loads the record again. A test pins this, and
+  it is logged. Value class `operational`, in no backup domain, so a settings snapshot never carries it;
   it holds no token and no secret. The sign-in service in `src/server/shaping/sign-in/service.ts`
   is its only writer. The rules for when a registration is reused, kept, dropped, refused or
   removed belong to the [phased plan](../plans/shaper-oauth-sign-in/phased-plan.md): its "Client

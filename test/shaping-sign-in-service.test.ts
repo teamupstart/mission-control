@@ -1322,6 +1322,7 @@ test("a sign-in write in flight when a rejected client cancels it: the undo is l
   assert.equal(registrationsSeen(h.fake).length, 1, "one client for both");
 
   const writes = store.holdWrites();
+  const callsFrom = store.calls.length;
   const completing = h.svc.complete(callback(back));
   await writes.started;
   // B's refresh is refused for the client while A's write is in flight: A's completion is cancelled with no sign-out.
@@ -1333,14 +1334,17 @@ test("a sign-in write in flight when a rejected client cancels it: the undo is l
   await waitFor(() => viewOf(h, idB)?.state === "signed_out", "B signed out by the rejected client");
   assert.deepEqual(signedOutOf(regs), [idB], "B's removal is listed; A held no record yet");
 
-  const callsFrom = store.calls.length;
   writes.release();
   assert.equal((await completing as { code: string }).code, "cancelled");
   await settle(h);
   const undo = store.calls.slice(callsFrom);
-  assert.ok(undo.indexOf(`write ${idA}`) < undo.indexOf(`signedOut ${idB},${idA}`), "the cancelled write landed first");
-  assert.ok(undo.indexOf(`signedOut ${idB},${idA}`) < undo.lastIndexOf(`remove ${idA}`), "and its undo was listed before the store was asked to remove it");
-  assert.ok(await records.read(idA), "the store refused the undo");
+  const wrote = undo.indexOf(`write ${idA}`);
+  const listed = undo.indexOf(`signedOut ${idB},${idA}`);
+  const removed = undo.lastIndexOf(`remove ${idA}`);
+  assert.ok(wrote >= 0 && listed >= 0 && removed >= 0, `all three events happened: ${JSON.stringify(undo)}`);
+  assert.ok(wrote < listed, "the cancelled write was asked for first");
+  assert.ok(listed < removed, "and its undo was listed before the store was asked to remove it");
+  assert.ok(await records.read(idA), "the cancelled write landed, and the store refused the undo");
   assert.deepEqual([...signedOutOf(regs)].sort(), [idA, idB].sort());
   assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
 
@@ -1434,6 +1438,64 @@ test("a new client registration app_config refuses to save is used for that sign
   assert.deepEqual(done, { ok: true, connection: connectionId(a) });
   assert.ok(h.svc.accessToken(a).ok);
   assert.deepEqual(clientsOf(regs), [], "nothing was saved");
+});
+
+test("a sign-in after an unsaved sign-out saves that sign-out before its write, so a refused write still leaves the old record covered", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  const old = (await records.read(id))!;
+  regs.failWrites = true;
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), []);
+
+  // app_config recovers. A new sign-in reuses the client, so begin writes nothing, and its store write fails.
+  regs.failWrites = false;
+  store.failWrites = true;
+  await signIn(h, a);
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly);
+  assert.deepEqual(signedOutOf(regs), [id], "the unsaved sign-out was saved before the store write");
+  assert.deepEqual(await records.read(id), old, "the old record is still stored");
+  const second = await restarted(t, h, records, [use(a)], { failRemoves: true });
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "and a restart does not load it");
+});
+
+test("a sign-in whose write lands but whose sign-out entry cannot be cleared is reported as memory-only, and the next landed write clears it", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const h = await harness(t, { store, regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), [id]);
+
+  // The new sign-in's write lands, but app_config refuses to clear the entry: the next start would remove it.
+  regs.failWrites = true;
+  await signIn(h, a);
+  assert.ok(h.svc.accessToken(a).ok);
+  assert.equal(viewOf(h, id)?.storage, "memory");
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly);
+  assert.deepEqual(signedOutOf(regs), [id]);
+
+  // app_config recovers; the 75% refresh writes again and clears it, and the sign-in is stored once more.
+  regs.failWrites = false;
+  await h.clock.advance(46 * MINUTE);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), []);
+  assert.equal(viewOf(h, id)?.reason, null);
+  const kept = (await records.read(id))!;
+  const second = await restarted(t, h, records, [use(a)]);
+  assert.deepEqual(second.svc.accessToken(a), { ok: true, token: kept.accessToken });
 });
 
 test("accepted limit: app_config and the store both refuse, and the daemon restarts before either recovers", async (t) => {

@@ -515,13 +515,15 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   };
 
   /** Clears the connection's entry after a confirmed store call that began at mark count `since`. */
-  const clearSignedOut = (id: string, since: number | undefined): void => {
-    if (marks.get(id) !== since) return;
+  /** False when the key may still list the connection: it could not be read, or refused the write. */
+  const clearSignedOut = (id: string, since: number | undefined): boolean => {
+    if (marks.get(id) !== since) return true;
     // The store confirmed it: an entry not saved yet no longer needs saving.
     unsaved.delete(id);
     const value = readConfig();
-    if (!value?.signedOut.includes(id)) return;
-    writeConfig({ ...value, signedOut: value.signedOut.filter((entry) => entry !== id) });
+    if (!value) return false;
+    if (!value.signedOut.includes(id)) return true;
+    return writeConfig({ ...value, signedOut: value.signedOut.filter((entry) => entry !== id) });
   };
 
   /** Asks the store to remove the record, and on its confirmation clears the entry. Throws what the store throws. */
@@ -583,6 +585,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       let reason: SignInReason | null = null;
       let written = false;
       const since = marks.get(conn.id);
+      // Saved before the store is asked, as `storeRemove` does: if this write fails, the old record stays covered.
+      if (unsaved.has(conn.id)) saveUnsaved();
       try {
         await getStore().write(conn.id, record);
         written = true;
@@ -597,7 +601,13 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         return false;
       }
       // A wanted write replaced whatever was stored: a sign-out listed before it began is done.
-      if (written) clearSignedOut(conn.id, since);
+      // While the key may still list it, the next start removes this record, so it is reported
+      // as memory-only. The next write that lands clears the entry again.
+      if (written && !clearSignedOut(conn.id, since)) {
+        storage = "memory";
+        reason = "memoryOnly";
+        warn("a sign-in is kept in memory only: its earlier sign-out could not be cleared from the sign-in settings");
+      }
       conn.record = record;
       conn.generation += 1;
       conn.storage = storage;

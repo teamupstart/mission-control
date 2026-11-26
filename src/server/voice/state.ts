@@ -223,7 +223,7 @@ export class VoiceStateStore {
     // Only names travel to the recognizer. Also bind the revision to the destinations
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
-    const { inputDevice, endOfSpeechMs: configuredDelay } = this.deps.config();
+    const { inputDevice, endOfSpeechMs: configuredDelay, separatorWord } = this.deps.config();
     const automaticDelay = this.cancelWindowOpen ? 500 : configuredDelay;
     // An automatic timing edit must not interrupt a hold or revoke its pending key-up delivery.
     const endOfSpeechMs = state.mode === "push-to-talk" || awaitingVoiceHold(state.mode) ? 800 : automaticDelay;
@@ -234,13 +234,16 @@ export class VoiceStateStore {
       last.directive.capture === capture && last.directive.inputDevice === inputDevice && last.recipients === recipients && last.press === press;
     // Protocol 4.0 reopens its microphone on every revision, dropping the unfinished phrase.
     const canUpdateTiming = Number(hello?.version.split(".")[1] ?? 0) >= 1;
-    if (sameCapture && (!canUpdateTiming || last.directive.endOfSpeechMs === endOfSpeechMs)) return last.directive;
-    // A timing edit wakes pollers but keeps the same authorization for automatic audio already captured.
+    // Only automatic capture ends at the separator. A hold ends on key release.
     const automatic = capture && state.mode === "listening";
+    const separator = automatic ? separatorWord : undefined;
+    if (sameCapture && (!canUpdateTiming || (last.directive.endOfSpeechMs === endOfSpeechMs &&
+        last.directive.separator === separator))) return last.directive;
+    // A timing or separator edit wakes pollers but keeps the same authorization for automatic audio already captured.
     const previousGrant = sameCapture ? last.directive.captureRevision : undefined;
     const captureRevision = automatic ? previousGrant ?? randomUUID() : undefined;
     this.timingRevision = sameCapture ? this.timingRevision + 1 : 0;
-    const directive = { capture, speak: null, inputDevice, endOfSpeechMs, roster: state.roster.map(entry => entry.name),
+    const directive = { capture, speak: null, inputDevice, endOfSpeechMs, ...(separator && { separator }), roster: state.roster.map(entry => entry.name),
       pauseMs: null, revision: captureRevision ? `${captureRevision}:${this.timingRevision}` : randomUUID(),
       ...(captureRevision && { captureRevision }) };
     // Only successive key presses and releases share pending delivery rights.
@@ -492,7 +495,8 @@ export class VoiceStateStore {
     const reported = hello?.backend ?? null;
     const backend = reported && this.backendSelected(reported) ? reported : null;
     const longCapture = backend === "fluidaudio" && Number(hello?.version.split(".")[1] ?? 0) >= 2;
-    return { mode, roster, backend, longCapture, reportsSpeechOnset: hello?.reportsSpeechOnset === true };
+    return { mode, roster, backend, longCapture, reportsSpeechOnset: hello?.reportsSpeechOnset === true,
+      separatorWord: this.deps.config().separatorWord };
   }
 
   /**

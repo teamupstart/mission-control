@@ -14,6 +14,7 @@ const ruleLabels: Record<string, string> = {
   "no-name": "no opening name", "no-message": "name without a message",
   "capture-limit": "duration limit", "nothing-pending": "nothing to cancel", "ambiguous-name": "ambiguous name",
   "second-name": "second name", cancel: "spoken cancel", pick: "spoken selection",
+  "separator-only": "separator word only",
 };
 const outcomes: Record<HeardEntry["outcome"], string> = {
   pending: "Pending", resolving: "Resolving", unsure: "Unsure", cancelled: "Cancelled", sent: "Routed",

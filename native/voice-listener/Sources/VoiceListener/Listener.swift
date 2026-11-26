@@ -26,6 +26,8 @@ struct Directive: Decodable {
     let inputDevice: String
     let speak: Speak?
     let roster: [String]
+    /// The Always-on separator word. Absent for held capture and from older daemons.
+    let separator: String?
 }
 
 struct Hello: Encodable {
@@ -354,6 +356,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     var releasedAt: Int64?
     var releasedSegments: [Segment] = []
     var onInputClosed: (() -> Void)?
+    /// Follows live directive edits, like the end-of-speech delay.
+    var separator: String?
 
     let daemon: Daemon
 
@@ -522,6 +526,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     if !held, let authorization = next.captureRevision, current?.revision == authorization,
                        let mic = current?.mic, mic.isRunning {
                         mic.updateEndOfSpeechMs(duration)
+                        current?.separator = next.separator
                         revision = next.revision
                         continue
                     }
@@ -541,6 +546,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                 } else if capture {
                     let captureRevision = held ? next.revision : next.captureRevision ?? next.revision
                     let batch = Capture(captureRevision, daemon: daemon)
+                    batch.separator = held ? nil : next.separator
                     current = batch
                     let limit = captureLimit
                     let microphone = try openInput(next.inputDevice, held, duration, limit, { [daemon] onset in
@@ -587,7 +593,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                         guard let clipped = segment.through(cutoff) else { return }
                                         segment = clipped
                                     }
-                                    let words = try await recognizer.transcribe(segment, boosting: daemon.isDictating(segment.speechStartHostUs, revision: batch.revision) ? nil : boosting)
+                                    let words = try await recognizer.transcribe(segment, boosting: daemon.isDictating(segment.speechStartHostUs, revision: batch.revision) ? nil : boosting,
+                                                                                separator: batch.separator)
                                     try Task.checkCancellation()
                                     // Key-up may have arrived during this very decode.
                                     if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }

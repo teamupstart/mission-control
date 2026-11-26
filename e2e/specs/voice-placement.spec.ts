@@ -107,9 +107,12 @@ test("moving a selected confirmation keeps its pending Cancel and the other mess
   const pill = await opening;
   for (const id of ["older", "newer"]) {
     await say(daemon, "Steve, inspect the " + id + " build", { id });
-    await expect(pill.getByRole("status")).toContainText(id);
+    await expect(pill.getByRole("status").filter({ hasText: id })).toBeVisible();
   }
-  await pill.getByRole("combobox", { name: "Voice message" }).selectOption("older");
+  // Both countdowns are on screen; acting on the older pill selects it for the move.
+  const older = pill.getByRole("status").filter({ hasText: "inspect the older build" });
+  await expect(pill.getByRole("status").first()).toContainText("inspect the older build");
+  await expect(pill.getByRole("combobox", { name: "Voice message" })).toHaveCount(0);
   const response = Promise.withResolvers<void>();
   await page.route("**/cards/older/cancel", async route => {
     await response.promise;
@@ -118,8 +121,9 @@ test("moving a selected confirmation keeps its pending Cancel and the other mess
   const move = page.waitForEvent("popup");
   let popover: Page;
   try {
-    await pill.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(pill.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+    await older.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(older.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+    await expect(pill.getByRole("status").filter({ hasText: "inspect the newer build" }).getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
     await page.getByRole("radio", { name: /Tray popover/ }).check();
     popover = await move;
     await expect(popover.getByRole("combobox", { name: "Voice message" })).toHaveValue("older", { timeout: 3000 });

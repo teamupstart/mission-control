@@ -1,6 +1,6 @@
 import { VoiceTranscriptText } from "./VoiceTranscriptText.tsx";
 import { spokenNameLabel } from "@shared/voice-names.ts";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   voiceCaptures, voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
 } from "@shared/voice.ts";
@@ -17,6 +17,74 @@ export const VoiceWindow = createContext<{
   setMuted(muted: boolean): Promise<void>;
   openSetup(): void;
 } | null>(null);
+
+const TRANSCRIPT_TOAST_GAP = 8;
+/** Lowest transcript height kept on screen when a tall toast stack leaves little room above it. */
+const TRANSCRIPT_MIN_HEIGHT = 56;
+
+/**
+ * Keep the live transcript and the corner toast's cards apart wherever they share the bottom
+ * edge: the bottom-right card always, the capsule and the bottom-left card in narrow windows.
+ * The transcript rises above the cards. In a window too short for both, the toast stack also
+ * gives up height and scrolls, so every countdown and control stays reachable and uncovered.
+ * Nothing moves when the two do not overlap.
+ */
+function useTranscriptClearsToasts(aside: RefObject<HTMLElement | null>, active: boolean) {
+  useLayoutEffect(() => {
+    const element = aside.current;
+    if (!active || !element) return;
+    const view = element.ownerDocument.defaultView!;
+    let lift = 0;
+    let stack: HTMLElement | null = null;
+    const release = () => stack?.style.removeProperty("--voice-stack-max");
+    const place = () => {
+      const found = element.ownerDocument.querySelector<HTMLElement>(".voice-card-stack");
+      if (found !== stack) {
+        if (stack) { observer.unobserve(stack); release(); }
+        stack = found;
+        if (stack) observer.observe(stack);
+      }
+      const own = element.getBoundingClientRect();
+      // Where the transcript ends without a lift. Its horizontal extent never changes.
+      const bottom = own.bottom + lift;
+      const cards = stack ? [...stack.querySelectorAll(".voice-card")].map(card => card.getBoundingClientRect())
+        .filter(box => box.right > own.left && box.left < own.right) : [];
+      let wanted = 0;
+      let squeeze: number | null = null;
+      if (stack && cards.length) {
+        // Measure the stack's natural height, not the height a previous squeeze left it.
+        const area = stack.getBoundingClientRect();
+        const style = view.getComputedStyle(stack);
+        const inset = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+        const cardsBottom = area.bottom - parseFloat(style.paddingBottom);
+        const naturalTop = cardsBottom - (stack.scrollHeight - inset);
+        wanted = Math.max(0, bottom + TRANSCRIPT_TOAST_GAP - naturalTop);
+        const room = Math.max(0, bottom - 2 * TRANSCRIPT_TOAST_GAP - TRANSCRIPT_MIN_HEIGHT);
+        if (wanted > room) {
+          wanted = room;
+          squeeze = Math.max(0, Math.floor(area.bottom - (bottom - room) - TRANSCRIPT_TOAST_GAP + parseFloat(style.paddingTop)));
+        }
+      }
+      if (squeeze === null) release();
+      else stack!.style.setProperty("--voice-stack-max", squeeze + "px");
+      const next = Math.round(wanted);
+      if (next === lift) return;
+      lift = next;
+      if (lift) element.style.setProperty("--vt-lift", lift + "px");
+      else element.style.removeProperty("--vt-lift");
+    };
+    const observer = new ResizeObserver(place);
+    observer.observe(element);
+    view.addEventListener("resize", place);
+    place();
+    return () => {
+      observer.disconnect();
+      view.removeEventListener("resize", place);
+      release();
+      element.style.removeProperty("--vt-lift");
+    };
+  }, [aside, active]);
+}
 
 export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, openSetup, children }: {
   state: VoiceState | null; enabled: boolean; acknowledgeVoiceMode(ack: VoiceState): void; openSetup(): void; children: ReactNode;
@@ -63,9 +131,11 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
   } : null, [enabled, state, openSetup, setMuted, pendingMute]);
   const transcript = enabled && state && voiceCaptures(state.mode) ? state.transcript : undefined;
   const phaseLabel = transcript && { ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[transcript.phase];
+  const transcriptRef = useRef<HTMLElement>(null);
+  useTranscriptClearsToasts(transcriptRef, !!transcript?.text);
   return <VoiceWindow.Provider value={value}>
     {children}
-    {transcript?.text && <aside aria-label="Live voice transcript"
+    {transcript?.text && <aside ref={transcriptRef} aria-label="Live voice transcript"
       className={`voice-transcript vt-${transcript.style} vt-${transcript.corner} vt-${transcript.phase}`}>
       <strong>{phaseLabel}</strong>
       <VoiceTranscriptText as="span" className="vt-text" text={transcript.text} />

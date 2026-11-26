@@ -7,8 +7,9 @@ import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, surface, hidden, fading, notify, sound, notifications }: {
+function Card({ card, actions, surface, hidden, fading, notify, sound, notifications, onActivate }: {
   card: DashboardVoiceCard; actions: VoiceCardActions; surface?: "pill" | "popover"; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
+  onActivate?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ state: DashboardVoiceCard["state"]; message: string } | null>(null);
@@ -129,7 +130,7 @@ function Card({ card, actions, surface, hidden, fading, notify, sound, notificat
       dismiss?.();
     };
   }, [cardId, wireDeadline, deadline, card.windowMs, card.provisionalDeadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
-  return <VoiceCardView surface={surface} card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
+  return <VoiceCardView surface={surface} card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} onActivate={onActivate} />;
 }
 
 export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, notifications }: {
@@ -137,7 +138,7 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
   surface?: "pill" | "popover"; sound: boolean; notifications: boolean;
 }) {
   const [, reselect] = useReducer((revision: number) => revision + 1, 0);
-  const [selection, setSelection] = useState<{ id: string; openWindows: Map<string, number | null> } | null>(null);
+  const [selection, setSelection] = useState<{ id: string; openWindows: Map<string, number | null>; fromStack?: boolean } | null>(null);
   const now = performance.now();
   const pending: DashboardVoiceCard[] = [];
   const others: DashboardVoiceCard[] = [];
@@ -145,17 +146,16 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     if (card.state === "pending" && (voiceCardDeadline(card) ?? 0) > now) pending.push(card);
     else others.push(card);
   }
-  pending.sort((a, b) => {
-    // A stop receipt refreshes a split in the stream without opening a new cancel window.
-    const openedA = a.deadline! - (a.windowMs ?? 0);
-    const openedB = b.deadline! - (b.windowMs ?? 0);
-    return openedB - openedA || (b.firstReceivedAt ?? 0) - (a.firstReceivedAt ?? 0) || a.id.localeCompare(b.id);
-  });
+  // A stop receipt refreshes a split in the stream without opening a new cancel window.
+  const opened = (card: DashboardVoiceCard) => card.deadline! - (card.windowMs ?? 0);
+  pending.sort((a, b) => opened(b) - opened(a) || (b.firstReceivedAt ?? 0) - (a.firstReceivedAt ?? 0) || a.id.localeCompare(b.id));
   const choices = pending.length ? pending : others;
   // A manual choice applies to the windows the operator has seen. Each later window
   // takes priority until it closes or the operator makes another explicit selection.
   const newWindow = pending.find(card => selection?.openWindows.get(card.id) !== card.deadline);
-  const selected = surface && (newWindow ?? choices.find(card => card.id === selection?.id)
+  // Acting on a stacked pill selects it only while its countdown is open, so a recipient
+  // picker still comes first once the stack has closed.
+  const selected = surface && (newWindow ?? choices.find(card => card.id === selection?.id && (!selection.fromStack || pending.includes(card)))
     ?? choices.find(card => card.state === "unsure") ?? choices[0]);
   const nextDeadline = pending.length ? Math.min(...pending.map(card => voiceCardDeadline(card)!)) : null;
   useEffect(() => {
@@ -163,15 +163,23 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     const timer = window.setTimeout(reselect, Math.max(0, Math.ceil(nextDeadline - performance.now())));
     return () => window.clearTimeout(timer);
   }, [nextDeadline]);
+  // The pill shows every open countdown at once, oldest at the top. A card that sends, is
+  // cancelled or expires leaves the stack and the pills below it move up with their own clocks.
+  const stacked = surface === "pill" && pending.length > 0;
+  const shown = stacked ? pending.toSorted((a, b) => opened(a) - opened(b)
+    || (a.firstReceivedAt ?? 0) - (b.firstReceivedAt ?? 0) || a.id.localeCompare(b.id, undefined, { numeric: true })) : pending;
+  const visible = (card: DashboardVoiceCard) => stacked ? shown.includes(card) : !selected || card === selected;
+  // Acting on a pill makes it the selection a placement change carries to the popover.
+  const select = (id: string, fromStack = false) => setSelection({ id, openWindows: new Map(pending.map(card => [card.id, card.deadline])), fromStack });
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
     <div className="sr-only" role="region" aria-live="polite" aria-relevant="additions" aria-label="Voice countdown">
-      {pending.filter(card => !selected || card === selected).map(card => <CountdownAnnouncement key={JSON.stringify([card.id, card.deadline])} card={card} deadline={voiceCardDeadline(card)!} />)}
+      {shown.filter(visible).map(card => <CountdownAnnouncement key={JSON.stringify([card.id, card.deadline])} card={card} deadline={voiceCardDeadline(card)!} />)}
     </div>
-    {pending.concat(others).map(card => <Card surface={surface} key={JSON.stringify([card.id, card.deadline])} card={card} actions={actions} hidden={!!selected && card !== selected}
-      fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
-    {choices.length > 1 && selected && <label className="vc-switch">Voice message
-      <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event =>
-        setSelection({ id: event.target.value, openWindows: new Map(pending.map(card => [card.id, card.deadline])) })}>
+    {shown.concat(others).map(card => <Card surface={surface} key={JSON.stringify([card.id, card.deadline])} card={card} actions={actions} hidden={!visible(card)}
+      fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications}
+      onActivate={stacked ? () => { if (selection?.id !== card.id || !selection.fromStack) select(card.id, true); } : undefined} />)}
+    {!stacked && choices.length > 1 && selected && <label className="vc-switch">Voice message
+      <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event => select(event.target.value)}>
         {choices.map(card => <option key={card.id} value={card.id}>
           {card.parts.map(part => [part.target ? spokenNameLabel(part.target) : part.restoredSession?.name, card.questionTitle, part.text].filter(Boolean).join(": ")).join(" · ")}
         </option>)}

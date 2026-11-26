@@ -73,8 +73,8 @@ export function CountdownAnnouncement({ card, deadline }: { card: DashboardVoice
   return <span className="sr-only">{message}</span>;
 }
 
-export function VoiceCardView({ card, actions, operation, surface, hidden = false, fading = false }: {
-  card: DashboardVoiceCard; actions: VoiceCardActions; surface?: "pill" | "popover"; hidden?: boolean; fading?: boolean;
+export function VoiceCardView({ card, actions, operation, surface, hidden = false, fading = false, onActivate }: {
+  card: DashboardVoiceCard; actions: VoiceCardActions; surface?: "pill" | "popover"; hidden?: boolean; fading?: boolean; onActivate?: () => void;
   operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string, failure?: string, retryAfterMs?: number): Promise<void> };
 }) {
   const [now, setNow] = useState(() => performance.now());
@@ -106,7 +106,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
     tick();
     return () => window.clearTimeout(timer);
   }, [deadline, hidden]);
-  // Standalone routes present one card at a time. Keep the operation and retry ID mounted.
+  // A hidden card keeps its operation and retry ID mounted until its surface shows it again.
   if (hidden) return null;
   const button = (label: string, hint: string, click: () => void, style = "", disabled = false, describedBy?: string) =>
     <Tooltip label={hint}><button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click} aria-describedby={describedBy}>{label}</button></Tooltip>;
@@ -256,7 +256,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
           <SpokenHint action="answer" name={first?.target ?? ""} command="{name}, answer" instruction="to reply to one." /></>}</>;
   }
   return <article ref={article} role="status" tabIndex={surface ? -1 : undefined} aria-label={pill && card.state === "pending" ? `To ${first?.target && spokenNameLabel(first.target)}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
-    onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
+    onFocus={() => { setFocused(true); onActivate?.(); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     data-pill={pill && ((card.state === "pending" && remaining > 0) || card.state === "sent" || card.state === "queued") || undefined}
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>

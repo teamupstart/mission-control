@@ -136,9 +136,17 @@ route gives an open cancel window priority over a newer outcome. When the displa
 countdown expires, it switches to another open window even if the event stream is disconnected.
 With no countdown open or message selected, an address awaiting a recipient choice appears
 ahead of delivery results, including messages held behind a question.
-When several messages remain, the Voice message selector lets you revisit their cards,
+The floating pill shows every open countdown at once, one pill per message, oldest at the
+top and newer ones beneath. Each pill keeps its recipient, its own countdown, Send now and
+Cancel. “Say cancel to stop” appears once, under the newest pill, because a spoken “cancel”
+acts on the newest message. When a message is sent, cancelled or reaches its deadline, its
+pill leaves the stack and the pills below move up without restarting their countdowns. Once
+no countdown is open, the pill returns to showing one card at a time.
+When several messages remain on the tray popover, or on the pill after its countdowns close,
+the Voice message selector lets you revisit their cards,
 including individual turns held for the same agent. A new countdown takes priority even
-when you selected another pending delivery. A stop receipt updates its own card and keeps
+when you selected another pending delivery. While its countdown is open, the pill you last acted on is
+the one the popover shows when you switch placement. A stop receipt updates its own card and keeps
 the current countdown selected. When the new window closes, the surface returns to your
 selection if its card is still available and eligible.
 If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
@@ -1753,3 +1761,10 @@ action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.
 With the Voice preview enabled, Settings > Voice lets you show the live transcript as a wrapping corner card or a bottom-center capsule. The card starts at the bottom right and can move to the bottom left. The overlay starts enabled and displays up to 20 recognized words. Set **Maximum transcript words** to any whole number from 1 to 100.
 
 Both styles appear when the listener recognizes words and hide five seconds after the last new word. New words extend that time or reopen a hidden overlay. The microphone can keep listening while the overlay is hidden. Screen readers still announce microphone readiness, audio detection, and transcription. Muting voice or losing capture hides it immediately. Partial words are for display only. Addressing uses the completed phrase.
+
+The transcript never covers a corner toast. Where the two share the bottom of the window (the
+bottom-right card always, the capsule and the bottom-left card in narrower windows), the
+transcript rises above the toast's cards and returns to its place when they close. In a window
+too short for both, the toast stack also gives up height and scrolls, so every countdown,
+Cancel and Send now stays reachable. The floating pill and the tray popover are separate
+desktop windows above the dashboard and do not move the transcript.

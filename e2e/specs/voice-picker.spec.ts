@@ -75,6 +75,9 @@ test("an uninterrupted download makes the chosen voice ready without another cli
     await page.goto(daemon.baseURL + "/#/settings/voice");
     const group = page.getByRole("region", { name: "Spoken replies" });
     models.serve(models.largeFile, "hold");
+    await group.getByRole("link", { name: "What it restricts" }).focus();
+    await expect(page.locator(".tooltip").filter({ hasText: "Read the model licence and its use restrictions" })).toBeVisible();
+    await capture(group, "licence-tooltip");
     await group.getByRole("combobox").selectOption({ label: "F4" });
     await expect(group.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "49");
     models.release();

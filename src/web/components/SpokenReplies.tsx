@@ -4,6 +4,7 @@ import { VOICE_SPEECH_MODELS, VOICE_SPEECH_NEURAL_VOICES } from "@shared/voice-m
 import { resolveSpeechVoice, type VoiceSpeechCatalog, type VoiceSpeechVoice } from "@shared/voice-speech.ts";
 import { api } from "../lib/api.ts";
 import type { VoiceConfigState } from "../useVoiceConfig.ts";
+import { Tooltip } from "./Tooltip.tsx";
 import { VoiceModelProgress } from "./VoiceModelProgress.tsx";
 
 const appleSettings = "System Settings > Accessibility > Read & Speak";
@@ -96,19 +97,23 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
       <div className="kb-row voice-picker-row">
         <label className="kb-row-label" htmlFor="spoken-voice">Voice</label>
         <div className="kb-row-controls">
-          <select className="settings-select" id="spoken-voice" aria-describedby="spoken-voice-status"
-            value={optionValue(choice)} disabled={!config || !speech || busy} onChange={e => void perform(() => select(e.target.value))}>
-            <option value="">Automatic{automatic && speech ? `: ${voiceName(automatic, speech.catalog)}` : ""}</option>
-            <optgroup label="Mission Control voices">
-              {neural.map(v => <option key={v.id} value={`neural:${v.id}`}>{v.name}{choice?.engine === "neural" && choice.id === v.id && model?.status !== "ready" ? ", not available" : ""}</option>)}
-            </optgroup>
-            {system.length > 0 && <optgroup label="This Mac's voices">
-              {system.map(v => <option key={v.id} value={`system:${v.id}`}>{v.name}{v.detail === "premium" ? " (Premium)" : v.detail === "enhanced" ? " (Enhanced)" : " (Standard)"}</option>)}
-            </optgroup>}
-            {unlisted && <option value={optionValue(choice)}>{choice.id}, not available</option>}
-          </select>
-          <button className="btn btn-ghost" type="button" disabled={busy || (liveSample ? liveSample.state === "stopping" : !!sampleReason)}
-            aria-description={liveSample ? undefined : sampleReason} onClick={() => void perform(sample)}>{liveSample ? "Stop" : "Play sample"}</button>
+          <Tooltip label="Choose the voice that asks questions aloud">
+            <select className="settings-select" id="spoken-voice" aria-describedby="spoken-voice-status"
+              value={optionValue(choice)} disabled={!config || !speech || busy} onChange={e => void perform(() => select(e.target.value))}>
+              <option value="">Automatic{automatic && speech ? `: ${voiceName(automatic, speech.catalog)}` : ""}</option>
+              <optgroup label="Mission Control voices">
+                {neural.map(v => <option key={v.id} value={`neural:${v.id}`}>{v.name}{choice?.engine === "neural" && choice.id === v.id && model?.status !== "ready" ? ", not available" : ""}</option>)}
+              </optgroup>
+              {system.length > 0 && <optgroup label="This Mac's voices">
+                {system.map(v => <option key={v.id} value={`system:${v.id}`}>{v.name}{v.detail === "premium" ? " (Premium)" : v.detail === "enhanced" ? " (Enhanced)" : " (Standard)"}</option>)}
+              </optgroup>}
+              {unlisted && <option value={optionValue(choice)}>{choice.id}, not available</option>}
+            </select>
+          </Tooltip>
+          <Tooltip label={liveSample ? "Stop the current voice sample" : sampleReason ?? "Hear a sample in the selected voice"}>
+            <button className="btn btn-ghost" type="button" disabled={busy || (liveSample ? liveSample.state === "stopping" : !!sampleReason)}
+              onClick={() => void perform(sample)}>{liveSample ? "Stop" : "Play sample"}</button>
+          </Tooltip>
         </div>
         <p className="kb-row-desc" id="spoken-voice-status" role="status">{status}</p>
       </div>
@@ -116,7 +121,11 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
         <div className="kb-row-text">
           <span className="kb-row-label">{model.status === "downloading" ? "Downloading Mission Control voices" :
             model.status === "verifying" ? "Checking Mission Control voices" : "Mission Control voices are not downloaded."}</span>
-          <span className="kb-row-desc">Licence: {licence}. <a href="https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE" target="_blank" rel="noreferrer">What it restricts</a></span>
+          <span className="kb-row-desc">Licence: {licence}.{" "}
+            <Tooltip label="Read the model licence and its use restrictions">
+              <a href="https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE" target="_blank" rel="noreferrer">What it restricts</a>
+            </Tooltip>
+          </span>
           {model.status === "failed" && <span className="kb-row-desc">{downloadSize}</span>}
           {model.error && <span className="settings-error">{model.error}</span>}
         </div>
@@ -125,9 +134,11 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
             const result = await api.cancelVoiceSpeechDownload();
             if (!result.ok) setError(result.error ?? "Could not cancel the download.");
           })} />
-          : canDownload && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void perform(download)}>
-            {model.status === "failed" ? "Retry" : `Download ${downloadSize}`}
-          </button>}
+          : canDownload && <Tooltip label="Download the shared model for all ten Mission Control voices">
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void perform(download)}>
+              {model.status === "failed" ? "Retry" : `Download ${downloadSize}`}
+            </button>
+          </Tooltip>}
       </div>}
       {macListener && <p className="settings-hint">Install better Apple voices in {appleSettings}. Mission Control cannot download them.</p>}
       {(error || sampleFailed) && <p role="alert" className="settings-error">{error ?? "The sample did not finish. Check the listener and try again."}</p>}

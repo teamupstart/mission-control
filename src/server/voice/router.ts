@@ -52,6 +52,8 @@ interface SeparatedCapture {
   expiresAt: number;
   /** Finished or cleared: a retry routes nothing. The parts and roster are released. */
   retired: boolean;
+  /** The routing attempt still running. A retry that overlaps it shares its result. */
+  inFlight?: Promise<boolean>;
 }
 
 interface ActionTime {
@@ -709,7 +711,18 @@ export class VoiceRouter {
    * and a retry routes from that part on, so a later part (a spoken Cancel included) never
    * runs ahead of the message it follows. Clearing actions or history retires the capture.
    */
-  private async routeSeparated(utterance: VoiceUtterance, split: SeparatedCapture): Promise<boolean> {
+  private routeSeparated(utterance: VoiceUtterance, split: SeparatedCapture): Promise<boolean> {
+    // A retry that arrives while an earlier request is still routing this capture (for example
+    // behind an inbox action) waits for that attempt instead of routing the same parts again.
+    if (split.inFlight) return split.inFlight;
+    const attempt = this.runSeparated(utterance, split).finally(() => {
+      if (split.inFlight === attempt) split.inFlight = undefined;
+    });
+    split.inFlight = attempt;
+    return attempt;
+  }
+
+  private async runSeparated(utterance: VoiceUtterance, split: SeparatedCapture): Promise<boolean> {
     const { id, capturedAt, text } = utterance;
     if (split.retired) return true;
     if (!split.parts.length) {

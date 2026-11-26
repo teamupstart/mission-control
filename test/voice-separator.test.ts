@@ -486,6 +486,29 @@ test("a completed separated capture is remembered past the recent history, and a
   assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
 });
 
+test("a retry that overlaps a capture still routing shares that attempt and routes each part once", async t => {
+  const { router, cards } = harness(t);
+  // Hold the first part's routing open, the way an inbox action can, while the retry arrives.
+  const internals = router as unknown as { route: (utterance: VoiceUtterance, ...rest: unknown[]) => Promise<boolean> };
+  const route = internals.route.bind(router);
+  const routedIds: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  internals.route = async (utterance, ...rest) => {
+    routedIds.push(utterance.id);
+    if (utterance.id === "overlap:1") await held;
+    return route(utterance, ...rest);
+  };
+  const utterance: VoiceUtterance = { id: "overlap", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  const first = router.accept(utterance);
+  const retry = router.accept(utterance);
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  assert.deepEqual(await Promise.all([first, retry]), [true, true]);
+  assert.deepEqual(routedIds, ["overlap:1", "overlap:2"]);
+  assert.deepEqual([...cards.keys()].filter(id => id.startsWith("overlap:")), ["overlap:1", "overlap:2"]);
+});
+
 test("a clear while a part is refused retires the capture instead of keeping it for a retry", async t => {
   const { router, cards } = harness(t);
   await fill(router, 50);

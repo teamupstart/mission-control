@@ -218,3 +218,85 @@ test("a run blocked by a lost session offers a round-free re-check and leaves th
   await dashboard.mouse.move(0, 0);
   await shoot(header, "03-rechecked-back-to-waiting");
 });
+
+/**
+ * Spend the run's whole repair budget the way the report found it: round 11 of a cap of 10.
+ * The current round is the highest submission round, so the one submission is moved to round
+ * 11 and the run's cap set to 10. Written behind the daemon for the reason the block is: eleven
+ * real rounds are eleven model reviews.
+ */
+function exhaustRepairRounds(daemon: DaemonHandle, runId: string): void {
+  withDaemonDb(daemon, (db) => {
+    db.prepare("UPDATE workflow_submissions SET round = 11 WHERE run_id = ?").run(runId);
+    db.prepare("UPDATE workflow_runs SET max_repair_rounds = 10 WHERE id = ?").run(runId);
+  });
+}
+
+interface RecoveryDetail extends RunDetail {
+  summary: {
+    round: number;
+    maxRepairRounds: number;
+    recovery?: { operations: string[]; primary: string | null; resubmit: { refusal: string | null } | null };
+  };
+  submissions: Array<{ id: string; round: number }>;
+}
+
+test("with every repair round spent, a lost-session block still offers Check the action again and costs no round", async ({
+  dashboard,
+  daemon,
+}) => {
+  const { runId, sessionId } = await seedWaitingAction(dashboard, daemon);
+  strandAsSessionLost(daemon, runId, `${sessionId}-not-restored`);
+  exhaustRepairRounds(daemon, runId);
+
+  // The daemon's own answer: no round left to resubmit with, and the re-check offered anyway.
+  const before = await api<RecoveryDetail>(daemon, `/api/workflow-runs/${runId}`);
+  expect(`${before.summary.round}/${before.summary.maxRepairRounds}`).toBe("11/10");
+  expect(before.summary.recovery?.primary).toBe("retry");
+  expect(before.summary.recovery?.operations).toContain("retry");
+  expect(before.summary.recovery?.resubmit?.refusal).toMatch(/used every repair round/);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  // The header counts rounds, not repairs: a cap of 10 repair rounds is 11 rounds, and this is
+  // the last of them.
+  await expect(header).toContainText(/round 11 of 11/i);
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  const recheck = header.getByRole("button", { name: "Check the action again" });
+  await expect(recheck).toBeVisible();
+  await expect(recheck).toBeEnabled();
+  await expect(dashboard.getByText("This action stopped because its session was away.", { exact: false }).first()).toBeVisible();
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "11-exhausted-offers-recheck");
+
+  // The control reaches its route even with no round left. The session is not back yet, so
+  // the daemon answers with its reason rather than a round-limit refusal.
+  const retried = dashboard.waitForResponse((r) =>
+    r.url().endsWith(`/api/workflow-runs/${encodeURIComponent(runId)}/retry`) && r.request().method() === "POST");
+  await recheck.click();
+  const response = await retried;
+  expect(response.status()).toBe(404);
+  expect(((await response.json()) as { code: string }).code).toBe("workflow_session_unavailable");
+  await expect(dashboard.getByText("The bound session is not running yet").first()).toBeVisible();
+  expect((await api<RecoveryDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status).toBe("blocked");
+  await dashboard.mouse.move(0, 0);
+  await shoot(dashboard, "12-exhausted-recheck-route-answered");
+
+  // The session returns: the action is re-checked on its own, still in round 11, with no new
+  // submission and nothing re-sent.
+  sessionReturns(daemon, runId, sessionId);
+  await expect.poll(async () => (await api<RecoveryDetail>(daemon, `/api/workflow-runs/${runId}`)).run.status, {
+    message: "the returning session should re-check the blocked action",
+    timeout: 30_000,
+  }).toBe("waiting_for_action");
+  await expect(recheck).toHaveCount(0);
+  await expect(header).toContainText("Waiting for a session action");
+  await expect(header).toContainText(/round 11 of 11/i);
+  const after = await api<RecoveryDetail>(daemon, `/api/workflow-runs/${runId}`);
+  expect(after.summary.round).toBe(11);
+  expect(after.submissions).toHaveLength(1);
+  expect(after.deliveries.map((delivery) => delivery.state)).toEqual(["prepared"]);
+  expect(after.events.some((event) => event.kind === "session_action_rechecked")).toBe(true);
+  await dashboard.mouse.move(0, 0);
+  await shoot(header, "13-exhausted-rechecked-still-round-11");
+});

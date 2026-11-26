@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import type { VoiceDecider } from "../src/server/voice/decide.ts";
 import { VoiceRouter } from "../src/server/voice/router.ts";
 import type { VoiceQuestions } from "../src/server/voice/questions.ts";
 import { applyVoiceConfigPatch, VOICE_CONFIG_DEFAULTS, VoiceConfigPatchSchema, VoiceConfigSchema, type VoiceMode } from "../src/shared/voice.ts";
@@ -110,7 +111,8 @@ const agent = (name: string): SpokenName => ({ key: `task:${name.toLowerCase()}`
 
 function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions; cancelWindow?: boolean;
   /** Delays one delivery until the returned promise settles, to observe what waits behind it. */
-  holdDelivery?: (text: string, command?: string) => Promise<void> | undefined } = {}) {
+  holdDelivery?: (text: string, command?: string) => Promise<void> | undefined;
+  decider?: VoiceDecider } = {}) {
   const cards = new Map<string, VoiceCard>();
   const delivered: { name: string; text: string; command?: string }[] = [];
   let hostNow = 1_000_000;
@@ -123,7 +125,7 @@ function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode
         await options.holdDelivery?.(text, command);
         return "queued";
       },
-    }, card => cards.set(card.id, card), undefined, () => hostNow, options.questions);
+    }, card => cards.set(card.id, card), options.decider, () => hostNow, options.questions);
   t.after(() => router.reset());
   let sequence = 0;
   const say = (text: string, extra: Partial<VoiceUtterance> = {}, timing: Parameters<VoiceRouter["accept"]>[1] = { startHostUs: hostNow, speechStartHostUs: hostNow }) => {
@@ -186,6 +188,23 @@ test("with the Cancel window Off, a separated Stop is sent only after the messag
   release();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop"]);
+});
+
+test("with the Cancel window Off, a separated Stop waits for an earlier part still with the decision model", async t => {
+  let answer!: () => void;
+  const answered = new Promise<void>(resolve => { answer = resolve; });
+  const { say, delivered } = harness(t, { cancelWindow: false, decider: { ask: async () => {
+    await answered;
+    return { rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "test" };
+  } } });
+  assert.equal(await say("Steve, check the tests, Carol, check the build, bagel, Steve, stop"), true);
+  for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered, [], "the Stop keeps its place behind the part the model is still deciding");
+  answer();
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered.map(({ name, text, command }) => [name, command ?? text]), [
+    ["Steve", "check the tests"], ["Carol", "check the build"], ["Steve", "stop"],
+  ]);
 });
 
 test("with the Cancel window on, a separated Stop followed by Cancel never interrupts the agent", async t => {

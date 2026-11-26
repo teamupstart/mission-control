@@ -192,6 +192,7 @@ test("the separator word sits beside End-of-speech delay with its default, valid
   await panel(page, "Listening").getByRole("combobox", { name: "Listening mode" }).selectOption("push-to-talk");
   await expect(word).toBeDisabled();
   await expect(row).toContainText("Push-to-talk ends on key release.");
+  await expect(row.getByRole("alert"), "the Always-on edit's message does not outlive the switch").toHaveCount(0);
   await capture(page, "separator-push-to-talk");
 
   // From another tab, a search for the word opens Listening and flashes the row.

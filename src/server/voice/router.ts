@@ -689,19 +689,29 @@ export class VoiceRouter {
     try {
       return await this.routeSeparatedParts(utterance, split, heldSends);
     } finally {
-      this.activeHolds.delete(heldSends);
-      if (heldSends.size) void this.sendHeldInOrder([...heldSends]);
+      void this.sendHeldInOrder(split.parts.map((_, index) => `${utterance.id}:${index + 1}`), heldSends);
     }
   }
 
-  /** Releases a separated capture's held cards one after another, so a later Stop never overtakes. */
-  private async sendHeldInOrder(cardIds: string[]): Promise<void> {
-    for (const cardId of cardIds) {
-      const item = this.open.get(cardId);
-      if (!item) continue;
-      const sent = this.releasePending(item);
-      if (sent) await sent;
-      else this.publish(item.card);
+  /**
+   * Releases a separated capture's held cards in capture order, one after another, so a later
+   * Stop never overtakes. A part still with the decision model keeps its place: later parts wait
+   * for it, and the hold stays active so the card it opens joins the hold too.
+   */
+  private async sendHeldInOrder(partIds: string[], heldSends: Set<string>): Promise<void> {
+    try {
+      for (const partId of partIds) {
+        const resolving = this.resolutions.get(partId);
+        if (resolving) await resolving;
+        if (!heldSends.has(partId)) continue;
+        const item = this.open.get(partId);
+        if (!item) continue;
+        const sent = this.releasePending(item);
+        if (sent) await sent;
+        else this.publish(item.card);
+      }
+    } finally {
+      this.activeHolds.delete(heldSends);
     }
   }
 
@@ -813,7 +823,7 @@ export class VoiceRouter {
     }
     entry.pauseMs = decision.pauseMs;
     if (decision.kind === "needs-model") {
-      this.startModelStep(decision, utterance, entry, time);
+      this.startModelStep(decision, utterance, entry, time, options.heldSends);
       return true;
     }
     entry.rule = decision.match;
@@ -1216,7 +1226,14 @@ export class VoiceRouter {
     if (windowMs) this.armCountdown(item, Math.max(0, Math.ceil(expiresAt - performance.now())));
     this.questions!.publish(review.id, item.answer);
     if (!item.answer.footerWindowId) this.publish(item.card);
-    if (!windowMs) await this.sendNow(id);
+    if (!windowMs) {
+      // In a separated capture still routing, a Cancel later in the capture must reach it first.
+      // Its zero-length window has not started, so the card has no deadline to expire meanwhile.
+      if (item.heldSends && this.activeHolds.has(item.heldSends)) {
+        item.card = { ...item.card, deadline: null };
+        item.heldSends.add(id);
+      } else await this.sendNow(id);
+    }
   }
 
   /**
@@ -1227,7 +1244,8 @@ export class VoiceRouter {
    * answer shows no intermediate state. A card cancelled, or voice turned off, while the step
    * runs is gone from `open` when the answer comes, and that answer is dropped.
    */
-  private startModelStep(decision: NeedsModel, utterance: VoiceUtterance, entry: HeardEntry, time: ActionTime): void {
+  private startModelStep(decision: NeedsModel, utterance: VoiceUtterance, entry: HeardEntry, time: ActionTime,
+    heldSends?: Set<string>): void {
     const { id } = utterance;
     entry.rule = decision.reason;
     recordMatchedName(entry, decision.reason === "second-name" ? decision.target : null);
@@ -1236,7 +1254,7 @@ export class VoiceRouter {
     const candidates = [...possible].map(agentRow);
     const modelStep = new AbortController();
     const item: OpenCard = {
-      entry, time,
+      entry, time, heldSends,
       message: decision.text,
       choicesOfferedAt: laterTime(time, this.now()),
       modelStep,

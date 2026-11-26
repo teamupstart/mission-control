@@ -24,6 +24,9 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
   // cannot mark that draft invalid.
   const latestEdit = useRef(0);
   useEffect(() => { if (!editing) setDraft(saved); }, [saved, editing]);
+  // In Push-to-talk the word does nothing and the field is disabled, so a message about an
+  // Always-on edit would sit under an input the operator cannot change.
+  useEffect(() => { if (dedicated) setProblem(null); }, [dedicated]);
 
   const commit = async () => {
     setEditing(false);

@@ -66,6 +66,7 @@ import {
   residentAccentStyle,
   residentActionName,
   residentCardProfileName,
+  residentCardTitle,
   residentMarkTitle,
   type ResidentSessionMark,
 } from "../../residents/marker.ts";
@@ -239,7 +240,7 @@ export function SessionTile({
   // and the run owns its next turn. Same source as the `held` flag above, so the tag and the
   // refusal cannot disagree about one tile.
   const droppable = canAcceptTask(session, draggingRepo, workflowRuns);
-  const openName = residentActionName(resident, callSign ?? (session.name ? sessionTitleDetail(session) : "unnamed session"));
+  const openName = residentActionName(resident, session.name ? sessionTitleDetail(session) : "unnamed session", callSign);
 
   // Which optional items this operator asked the card to draw. ONE registry
   // (`lib/board-card.ts`) owns the ids and the prose the settings panel prints, and this
@@ -362,7 +363,7 @@ export function SessionTile({
   const residentProfileName = residentNameStyles.size > 0 ? residentCardProfileName(resident) : null;
   const nameSubtitle = residentNameStyles.has("subtitle") ? residentProfileName : null;
   const chipName = residentNameStyles.has("chip") ? residentProfileName ?? undefined : undefined;
-  const tileName = resident?.listeningTitle || callSign || session.name || "(unnamed)";
+  const tileName = residentCardTitle(resident, session.name || "(unnamed)", callSign);
 
   return (
     <div

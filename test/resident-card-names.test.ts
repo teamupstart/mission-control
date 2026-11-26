@@ -236,3 +236,13 @@ test("a card's title, its Open label and its rail row name an agent by one prece
     assert.match(railRow(resident, callSign), new RegExp(`aria-label="${name}"`), `rail row for ${callSign ?? "no call sign"}`);
   }
 });
+
+test("residents sharing a listening title keep the plain title on the card, and add the ordinary name only on Open and the rail row", () => {
+  const shared: Mark = { ...CALLED, sharedListeningTitle: true };
+  for (const callSign of [undefined, "Atlas"]) {
+    const card = tile(shared, true, callSign);
+    assert.match(card, /<span class="tile-name"[^>]*>&quot;Scout&quot;<\/span>/, `tile title for ${callSign ?? "no call sign"}`);
+    assert.match(card, /aria-label="Open &quot;Scout&quot; \(triage-loop\)"/, `Open label for ${callSign ?? "no call sign"}`);
+    assert.match(railRow(shared, callSign), /aria-label="&quot;Scout&quot; \(triage-loop\)"/, `rail row for ${callSign ?? "no call sign"}`);
+  }
+});

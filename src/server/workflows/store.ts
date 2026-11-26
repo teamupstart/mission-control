@@ -5405,8 +5405,18 @@ export class WorkflowStore {
 
   /** The action and its accepted continuation are durable even when the author finishes later. */
   publicationHandoffTree(runId: string, generation: number): string | null {
+    return this.publicationHandoff(runId, generation)?.treeOid ?? null;
+  }
+
+  /**
+   * The accepted tree together with the continuation submission that captured it. A run that
+   * then finished through Inspector-only repair rounds proves its terminal content from this
+   * submission forward, so the caller needs the row, not only its tree.
+   */
+  publicationHandoff(runId: string, generation: number): { treeOid: string; submissionId: string } | null {
     const row = this.db.prepare(
-      `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree
+      `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree,
+              child.id AS submission_id
          FROM workflow_submissions child
         JOIN workflow_node_attempts action ON action.id = child.continuation_node_attempt_id
         JOIN workflow_runs r ON r.id = child.run_id
@@ -5417,7 +5427,8 @@ export class WorkflowStore {
           AND json_extract(action.output_json, '$.continuationSubmissionId') = child.id
         ORDER BY child.round DESC, child.segment DESC LIMIT 1`,
     ).get(runId, generation);
-    return typeof row?.tree === "string" ? row.tree : null;
+    return typeof row?.tree === "string" && typeof row.submission_id === "string"
+      ? { treeOid: row.tree, submissionId: row.submission_id } : null;
   }
 
   latestRunForBinding(bindingId: string): WorkflowRun | null {

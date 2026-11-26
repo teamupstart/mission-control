@@ -8,6 +8,12 @@ export function mockCaptureClock(t: TestContext): number {
   const elapsed = performance.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   t.mock.method(performance, "now", () => elapsed + (Date.now() - now));
+  // The two samples above are separate real reads, so the mocked pair freezes whatever pause
+  // fell between them into its wall-to-monotonic skew. A pause of 2ms or more (a loaded CI
+  // runner) differs from the skew `beforeEach` sampled on the real clocks by more than the
+  // router's 1ms step tolerance, and the router correctly refuses captures across what looks
+  // like a wall-clock step. Re-sample it on the mocked clocks the test actually uses.
+  registry.voiceRouter!.reset();
   return now;
 }
 

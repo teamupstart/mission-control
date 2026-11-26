@@ -601,8 +601,11 @@ export function registerVoiceUtteranceRoutes(
     if (phase === "finish") router.speechFinished(key);
     else {
       if (!authorized()) return c.json({ accepted: false });
-      // Reserve a possible spoken cancel at receipt, before the focus round trip.
-      router.speechStarted(key, parsed.data.speechStartUs);
+      // Reserve a possible spoken cancel at receipt, before the focus round trip. A held capture
+      // reports its transcript only after key-up, so its reservation lasts the whole hold.
+      const held = voiceStateStore.state().mode === "push-to-talk" ||
+        (revision !== undefined && voiceStateStore.releasedCapture(revision) !== undefined);
+      router.speechStarted(key, parsed.data.speechStartUs, { held });
       // Sherpa reports quiet and audio in order through its transcript endpoint.
       if (voiceStateStore.routingState().backend !== "sherpa-onnx") {
         voiceStateStore.reportTranscript(owner, revision, { phase: "audio", onset: parsed.data.speechStartUs });

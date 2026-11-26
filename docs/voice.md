@@ -465,8 +465,10 @@ speech releases the message for delivery.
 For other dropped or interrupted segments, the listener promptly reports completion
 so the daemon can release the reservation.
 If no completion arrives, the reservation expires after 90 seconds for negotiated
-long capture or 35 seconds for older FluidAudio listeners and Sherpa. Send now still
-claims the message immediately.
+long capture or 35 seconds for older FluidAudio listeners and Sherpa. An onset inside a
+push-to-talk hold adds the two-minute hold limit to that budget, because the hold's transcript
+arrives only after key-up: a message the hold reserved is never sent while the key is still
+down, and a Cancel the hold carries still reaches it. Send now still claims the message immediately.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

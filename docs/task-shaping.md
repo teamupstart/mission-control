@@ -1142,6 +1142,12 @@ refresh that fails and an expiry show with no reload.
   window replaced drops its link as the list arrives, with no reload. Its row reads as pending
   elsewhere and offers **Sign in** and **Cancel sign-in** again, and the window whose sign-in
   is pending now offers the link.
+  One rare case is a known limit. If Mission Control restarts in the moment between a window
+  receiving its sign-in reply and the list showing that sign-in, that window may not keep the
+  link of its next **Sign in** until the row leaves pending: the row reads as pending elsewhere and
+  offers **Sign in** and **Cancel sign-in**, with no **Open the sign-in page** or **Copy link**
+  for it. No dead link appears, and no token is affected. To get the link, reload the window
+  or select **Cancel sign-in**, then select **Sign in** again.
 - **Cancel sign-in** and **Sign out** end the connection's sign-in: a pending one is dropped,
   and a held one's tokens are removed from where they are kept and revoked at the server.
   Every shaper that shares the connection is signed out with it.

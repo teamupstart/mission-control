@@ -1761,6 +1761,22 @@ test("a sign-out while overflow cleanup is in flight keeps the mark, so a record
   assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "so A's record never loads again");
 });
 
+test("with the overflow mark set and an empty store, a start whose listing completes clears the mark", async (t) => {
+  const regs = memoryRegistrations();
+  regs.raw = { clients: [], signedOut: [], signedOutOverflow: true };
+  const store = controlledStore("memory");
+  const h = await harness(t, { store, regs });
+  await settle(h);
+  assert.ok(store.calls.includes("ids"), "the store was listed");
+  assert.ok(!store.calls.some((call) => call.startsWith("remove ")), "with nothing to remove");
+  assert.equal(regs.read()?.signedOutOverflow, false, "a complete listing with no records clears the mark");
+  // And sign-ins after it are stored as usual, not memory-only.
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  assert.equal(viewOf(h, id)?.reason, null);
+});
+
 test("shaping.signIn in app_config: a missing row is empty, an older value gains empty lists, and a row that does not parse is unreadable", () => {
   openDb().exec("DELETE FROM app_config");
   assert.deepEqual(appConfigSignInRegistrations.read(), { clients: [], signedOut: [], signedOutOverflow: false });

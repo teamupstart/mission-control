@@ -11,6 +11,7 @@ import {
   ARCHIVE_PRIMARY_REPORT_PATH,
   ARCHIVE_TEXT_LIMITS,
   archiveKey,
+  archiveRepoSlot,
   formatArchiveDigest,
   decodeArchiveCursor,
   isArchiveId,
@@ -61,6 +62,26 @@ import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
  * that turns them into a path - always by GENERATING the path from a decoded key and
  * re-checking containment, never by trusting a stored or claimed path.
  */
+
+/** The idempotent operation key for one checkout's exact local-only file set. */
+function checkoutPreservationKey(input: CheckoutPreservation) {
+  const files = [...input.files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const digest = createHash("sha256").update(JSON.stringify(files.map((file) => [file.path, file.sha256, file.bytes])))
+    .digest("hex");
+  return { files, operationKey: JSON.stringify(["checkout-v1", input.taskId, input.checkout, digest]) };
+}
+
+/** One orphaned checkout's local-only files, as automatic retention found them. */
+export interface CheckoutPreservation {
+  taskId: string;
+  title: string;
+  repoLabel: string | null;
+  /** The checkout directory the files live in. Read through `resolveRoots`, never trusted. */
+  checkout: string;
+  /** The commit the files were compared with, recorded as the repository head. */
+  commit: string | null;
+  files: readonly { path: string; sha256: string; bytes: number }[];
+}
 
 export class ArchiveError extends Error {
   constructor(
@@ -399,6 +420,84 @@ export class ArchiveManager {
    */
   async settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     return this.withCleanup(taskId, () => this.settleTaskArchives(taskId));
+  }
+
+  /**
+   * Archive an orphaned checkout's local-only files before automatic retention removes it.
+   *
+   * Idempotent by construction: the operation key is derived from the task, the checkout and
+   * the exact file set with its digests, so a retry replays the published bundle's
+   * verification rather than publishing a second one, and a set that changed reserves a new
+   * job instead of being published under a decision it did not match. A bundle an operator
+   * deleted is never recreated here; the checkout stays held. Errors are bounded and carry no
+   * path, because they are persisted as the retention blocker.
+   */
+  async preserveCheckoutFiles(input: CheckoutPreservation): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (input.files.length === 0) return { ok: true };
+    const { files, operationKey } = checkoutPreservationKey(input);
+    const slot = archiveRepoSlot(1);
+    let job: ArchiveCaptureJob;
+    try {
+      job = this.captureStore.reserve({
+        operationKey,
+        kind: "checkout",
+        taskId: input.taskId,
+        sessionId: null,
+        episodeId: null,
+        producerId: this.producer.id,
+        title: input.title,
+        question: null,
+        prompts: null,
+        origin: { agent: null, model: null, source: "orphaned-checkout" },
+        repos: [{ slot, label: input.repoLabel, root: input.checkout, head: input.commit, primary: true }],
+        scope: { slot, directory: ".", files },
+      });
+    } catch {
+      return { ok: false, error: "local-only files could not be reserved for archiving" };
+    }
+    if (job.status === "deleted") {
+      return { ok: false, error: "the archive of this checkout's local-only files was deleted" };
+    }
+    const outcome = await this.captureUnlessDeleted(operationKey);
+    if (!outcome) return { ok: false, error: "the archive of this checkout's local-only files was deleted" };
+    if (!outcome.ok) {
+      console.warn(`[archives] could not archive an orphaned checkout's local-only files: ${outcome.problems.join("; ")}`);
+      return { ok: false, error: "local-only files in the orphaned checkout could not be archived" };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Run `removal` while the archive holding these local-only files is guaranteed to exist.
+   *
+   * It takes the archive's own mutation lock - the one an operator's delete takes - so a
+   * delete that arrives while the checkout is being removed waits until removal has finished.
+   * Under that lock it re-reads the job and re-verifies the bundle from disk, including that
+   * every file is in its manifest with the digest the removal decision saw. Throws, without
+   * calling `removal`, if any of that is not so.
+   */
+  async withCheckoutFilesHeld<T>(input: CheckoutPreservation, removal: () => Promise<T>): Promise<T> {
+    const { files, operationKey } = checkoutPreservationKey(input);
+    const job = this.captureStore.get(operationKey);
+    if (!job || job.status !== "published") {
+      throw new Error("local-only files in the orphaned checkout are not archived");
+    }
+    const identity = { producerId: job.producerId, archiveId: job.archiveId };
+    return this.withMutation(archiveKey(identity.producerId, identity.archiveId), async () => {
+      if (this.captureStore.get(operationKey)?.status !== "published") {
+        throw new Error("the archive of this checkout's local-only files was deleted");
+      }
+      const root = await realpath(this.libraryPath).catch(() => null);
+      const read = root ? await verifyArchiveBundle(root, identity) : null;
+      if (read?.kind !== "verified") {
+        throw new Error("the archive of this checkout's local-only files could not be verified");
+      }
+      const archived = new Map(read.bundle.manifest.artifacts.map((artifact) => [artifact.originalPath, artifact.sha256]));
+      if (files.some((file) => archived.get(file.path) !== formatArchiveDigest(file.sha256))) {
+        throw new Error("the archive of this checkout's local-only files does not hold them");
+      }
+      return removal();
+    });
   }
 
   private async settleTaskArchives(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {

@@ -3395,7 +3395,7 @@ test("repository review verifies executor capability, the live grant at material
   // that owns no event-loop handles and never settles its promises.
   const keepAlive = setTimeout(() => {}, 15_000);
   t.after(() => clearTimeout(keepAlive));
-  const scenarios = ["unsupported", "cancel acknowledged", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "unresponsive", "stale"] as const;
+  const scenarios = ["unsupported", "cancel acknowledged", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "unresponsive", "unreturned", "returned before start", "returned after terminal", "stale"] as const;
   // The permission decision must hold even when the supervisor's watchdog has never fired.
   t.mock.timers.enable({ apis: ["setInterval"] });
   for (const [index, scenario] of scenarios.entries()) {
@@ -3410,11 +3410,42 @@ test("repository review verifies executor capability, the live grant at material
     const cancellations: { workloadId: string; generation: number }[] = [];
     let cancellationRequested = false;
     let leaseOpened = false;
+    // Everything the executor reported, so its replay can offer the same events again.
+    const replayed: PersonaWorkloadEvent[] = [];
     const executor: Executor = {
       repositoryEvidenceCapability: scenario === "unsupported" ? "older" : REPOSITORY_EVIDENCE_CAPABILITY,
       async *dispatch(request, workloadSignal) {
         launches++;
         const envelope = { workloadId: request.workloadId, attemptId, timestamp: 7 };
+        if (scenario === "returned before start") {
+          // A return reported before the provider started. The replay offers it again, and
+          // the supervisor must refuse it there too rather than charge an unstarted provider.
+          replayed.push(
+            { ...envelope, type: "accepted", eventId: randomUUID(), sequence: 1 },
+            { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: 2 },
+            { ...envelope, type: "persona_returned", eventId: randomUUID(), sequence: 3 },
+            { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 4 },
+            { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 5, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+              result: { status: "failed", code: "invalid_verdict", usage: {} } },
+          );
+          yield* replayed;
+          return;
+        }
+        if (scenario === "returned after terminal") {
+          // The replay settles the workload as a provider failure and only then reports a return.
+          // The live stream breaks off after the start, so only the replay carries that order.
+          replayed.push(
+            { ...envelope, type: "accepted", eventId: randomUUID(), sequence: 1 },
+            { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: 2 },
+            { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 3 },
+            { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 4, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+              result: { status: "failed", code: "provider_unavailable" } },
+            { ...envelope, type: "persona_returned", eventId: randomUUID(), sequence: 5 },
+          );
+          yield* replayed.slice(0, 3);
+          yield replayed[4]!;
+          return;
+        }
         const accepted = { ...envelope, type: "accepted" as const, eventId: randomUUID(), sequence: 1 };
         yield accepted;
         if (scenario === "revoked before materialization" || scenario === "equal replay") {
@@ -3444,7 +3475,9 @@ test("repository review verifies executor capability, the live grant at material
           },
         };
         if (scenario === "stale") store.cancelRun(runId, "operator cancelled", Date.now());
-        yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 4, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+        // "unreturned" claims a completed verdict without ever reporting the provider's return.
+        if (scenario !== "unreturned") yield { ...envelope, type: "persona_returned", eventId: randomUUID(), sequence: 4 };
+        yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: scenario === "unreturned" ? 4 : 5, capability: REPOSITORY_EVIDENCE_CAPABILITY,
           result: { status: "completed", usage: {}, result: { kind: "persona_verdict", verdict: {
             verdict: "pass", approvalDetails: { reason: "Verified", evidence: [] }, summary: "Verified", confidence: 1,
           } } } };
@@ -3455,7 +3488,10 @@ test("repository review verifies executor capability, the live grant at material
         cancellations.push({ workloadId, generation });
         if (scenario === "unresponsive") await new Promise<void>(() => {});
       },
-      async reconcile(workloadId) { return { workloadId, state: scenario === "cancel acknowledged" ? "running" : "terminal", events: [] }; },
+      async reconcile(workloadId, after) {
+        return { workloadId, state: scenario === "cancel acknowledged" ? "running" : "terminal",
+          events: replayed.filter(event => event.sequence > after) };
+      },
     };
     if (scenario === "revoked during cleanup") {
       const { LocalPersonaWorkloadExecutor } = await import("../src/server/workflows/persona-workload/executor.ts");
@@ -3481,7 +3517,14 @@ test("repository review verifies executor capability, the live grant at material
       "revoked before materialization": { code: "artifact_unavailable" },
       "revoked during cleanup": /ownership expired before verdict acceptance/i,
       unresponsive: /failed to confirm cancellation/i,
+      unreturned: /no verified repository execution/i,
+      "returned before start": /returned before it started/i,
+      "returned after terminal": /sequence mismatch/i,
     }[scenario]);
+    if (scenario === "unreturned" || scenario === "returned before start" || scenario === "returned after terminal") {
+      assert.equal(openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(callId)?.state, "failed");
+      assert.equal(openDb().prepare("SELECT 1 FROM workflow_repository_events WHERE workload_id=? AND kind IN ('terminal','persona_returned')").get(callId), undefined);
+    }
     assert.equal(launches, scenario === "unsupported" ? 0 : 1);
     assert.equal(leaseOpened, scenario === "equal replay", scenario);
     if (scenario === "unresponsive" || scenario === "cancel acknowledged") {
@@ -3498,7 +3541,7 @@ test("repository review verifies executor capability, the live grant at material
     const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
     assert.deepEqual(rows.map(row => row.sequence), {
       unsupported: [], "cancel acknowledged": [1], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
-      unresponsive: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4], "revoked during cleanup": [1, 2, 3, 4],
+      unresponsive: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4, 5], "revoked during cleanup": [1, 2, 3, 4, 5], unreturned: [1, 2, 3], "returned before start": [1, 2], "returned after terminal": [1, 2, 3],
     }[scenario]);
   }
 });
@@ -3643,6 +3686,7 @@ for (const { id, description, query, severity } of [
             }
           }
           const resolved = subsequent ? [fp] : [];
+          yield { ...event(), type: "persona_returned" };
           yield { ...event(), type: "terminal", capability: REPOSITORY_EVIDENCE_CAPABILITY,
             result: { status: "completed", usage: {}, result: { kind: "inspector_verdict", verdict: {
               summary: "Fixture review", findings: subsequent || !query ? [] : [finding], resolved,
@@ -3684,8 +3728,10 @@ for (const { id, description, query, severity } of [
     assert.equal(store.latestAttemptForNode(first, "pr"), null);
     if (!query) {
       assert.equal(store.getRun(runId)?.currentPhase, "command_action_required");
-      assert.equal(store.checkRunsSpent(runId, "inspector", null), 0);
       const revoked = id === "local-inspector-revoked";
+      // A provider that returned a verdict spent its execution even though the verdict was
+      // rejected; a review that was never dispatched spent nothing.
+      assert.equal(store.checkRunsSpent(runId, "inspector", null), revoked ? 0 : 1);
       assert.equal(providerCalls, revoked ? 0 : 1);
       assert.match(store.latestAttemptForNode(first, "inspect")?.error ?? "",
         revoked ? /not on the workflow allowlist/ : /verified repository query/);

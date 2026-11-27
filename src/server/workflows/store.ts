@@ -245,14 +245,23 @@ const repositoryCleanupForRun = `SELECT 1 FROM workflow_llm_calls l
   LEFT JOIN workflow_repository_local_owners o ON o.workload_id=w.id
   WHERE l.run_id=r.id AND (o.workload_id IS NOT NULL OR w.state IN ('running','cancellation_pending','interrupted'))`;
 
-// An Inspector review that returned a verified result spends its claim even if processing
-// that result fails. The durable model-call record distinguishes it from an interrupted launch.
+// A Local Inspector attempt whose provider returned a response. The repository workload's
+// `persona_returned` event is recorded before the reply is judged, so a malformed verdict, a
+// verdict without a verified repository query, an audit failure or an interruption after the
+// return all still read as an execution. A succeeded model call is the older witness of the
+// same fact. A launch that failed or was interrupted before the provider returned has neither.
+const inspectorReviewReturned = `EXISTS (
+  SELECT 1 FROM workflow_llm_calls l WHERE l.submission_id = a.submission_id
+    AND l.node_attempt_id = a.id AND l.purpose = 'inspector_review'
+    AND (l.state = 'succeeded' OR EXISTS (
+      SELECT 1 FROM workflow_repository_events e WHERE e.workload_id = l.id AND e.kind = 'persona_returned'
+    ))
+)`;
+
+// An Inspector review that returned spends its claim even if processing that result fails.
 const countedCheckRun = `(
   a.state NOT IN ('error', 'cancelled') OR a.check_run_slot = 'coderabbit'
-  OR (a.check_run_slot = 'inspector' AND EXISTS (
-    SELECT 1 FROM workflow_llm_calls l WHERE l.submission_id = a.submission_id
-      AND l.node_attempt_id = a.id AND l.purpose = 'inspector_review' AND l.state = 'succeeded'
-  ))
+  OR (a.check_run_slot = 'inspector' AND ${inspectorReviewReturned})
 )`;
 
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
@@ -2926,7 +2935,7 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
-  continuationStillMatches?: () => boolean;
+  continuationStillMatches?: (deadline: number) => boolean;
   /** Includes targets without a publication of their own when a sibling's probe yielded. */
   expectedLatestRunId?: string | null;
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
@@ -7415,7 +7424,7 @@ export class WorkflowStore {
         }
       }
       for (const input of inputs) {
-        const stored = this.claimForemanCompletion(input, eligible.has(input));
+        const stored = this.claimForemanCompletion(input, eligible.has(input), deadline);
         if (!stored.result.claimed) {
           if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
           return [stored];
@@ -7431,7 +7440,11 @@ export class WorkflowStore {
    * The manager selects the already-bound workflow; this transaction never creates a binding.
    * A worker's expected plan ownership can only reject that selection, never replace it.
    */
-  claimForemanCompletion(input: ForemanCompletionStoreInput, reusePublication?: boolean): ForemanCompletionStoreResult {
+  claimForemanCompletion(
+    input: ForemanCompletionStoreInput,
+    reusePublication?: boolean,
+    deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS,
+  ): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
       const binding = input.binding;
       const noteKey = binding.noteKey;
@@ -7488,7 +7501,7 @@ export class WorkflowStore {
         };
       }
 
-      if (input.continuationStillMatches && !input.continuationStillMatches()) {
+      if (input.continuationStillMatches && !input.continuationStillMatches(deadline)) {
         throw new Error("Continuation evidence changed before handoff");
       }
       if (input.completionKind === "prompted" && !expectedIntent) {
@@ -8547,6 +8560,11 @@ export class WorkflowStore {
     const id = request.workloadId;
     this.transact(db => {
       if (!authorized()) throw new Error("Repository workload ownership expired");
+      // A provider-return witness may already hold this sequence. The same event is recorded.
+      const prior = db.prepare("SELECT hash FROM workflow_repository_events WHERE workload_id=? AND sequence=?")
+        .get(id, event.sequence)?.hash;
+      if (prior === hash) return;
+      if (prior !== undefined) throw new Error("Conflicting repository event");
       db.prepare(`INSERT INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
         VALUES(?,?,?,?,?,?)`).run(id, event.sequence, event.eventId, hash, event.type, Date.now());
       if (event.type === "terminal" && event.result.usage) {
@@ -8563,6 +8581,29 @@ export class WorkflowStore {
         const insert = db.prepare("INSERT INTO workflow_repository_handles(id,operation_id,audit_index) VALUES(?,?,?)");
         for (const [index, handle] of audit.handles.entries()) insert.run(handle.evidenceHandleId, audit.operationId, index);
       }
+    });
+  }
+
+  /**
+   * Keep the provider-return witness of a workload: written by an in-process executor's sink in
+   * the tick its provider returns, or recovered from replay when the supervisor stopped reading
+   * before recording that return in order (a shutdown, a rejected event or an expired grant).
+   *
+   * Unlike `recordRepositoryEvent` it skips the live-ownership check, because the witness only
+   * spends the attempt's execution and grants nothing. The event's workload and attempt must be
+   * the request's, it binds to the workload row the supervisor started for that attempt, and an
+   * already recorded sequence is left as it is.
+   */
+  recordRepositoryReturn(request: PersonaWorkloadRequest, event: Extract<PersonaWorkloadEvent, { type: "persona_returned" }>, hash: string) {
+    // The event must name this request's workload and attempt, exactly as a streamed event must:
+    // a witness can never charge a different attempt than the one that dispatched it.
+    if (event.type !== "persona_returned" || event.workloadId !== request.workloadId || event.attemptId !== request.attemptId)
+      throw new Error("Repository return identity mismatch");
+    this.transact(db => {
+      db.prepare(`INSERT OR IGNORE INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
+        SELECT ?,?,?,?,'persona_returned',? WHERE EXISTS (
+          SELECT 1 FROM workflow_repository_workloads WHERE id=? AND attempt_id=?
+        )`).run(request.workloadId, event.sequence, event.eventId, hash, Date.now(), request.workloadId, request.attemptId);
     });
   }
 
@@ -9278,8 +9319,8 @@ export class WorkflowStore {
    * `cancelled` is excluded because a submission that stopped discards the answer it bought.
    * CodeRabbit keeps charged claims even on error or cancellation. Its runner explicitly
    * releases claims for infrastructure failures, while vendor failures can still spend a slot.
-   * Local Inspector keeps claims after a verified provider result, even if post-review
-   * processing fails.
+   * Local Inspector keeps claims once its provider returned, even if the returned verdict,
+   * its repository evidence, its audit or post-review processing is rejected.
    *
    * `round >= epoch` implements the two operator escape hatches. A null epoch counts the whole
    * run, which is both the pre-column behaviour and the behaviour of a run nobody intervened in.
@@ -9313,12 +9354,18 @@ export class WorkflowStore {
     });
   }
 
-  /** Return a claim the check runner determined did not consume an execution slot. */
+  /**
+   * Return a claim the check runner determined did not consume an execution slot.
+   *
+   * Refused for a Local Inspector attempt whose provider returned: the runner sees only that
+   * its review threw, and the durable return record is what says an execution was bought.
+   */
   releaseCheckRun(attemptId: string, slot: string): boolean {
     return this.db.prepare(
-      `UPDATE workflow_node_attempts
+      `UPDATE workflow_node_attempts AS a
           SET check_run_slot = NULL
-        WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
+        WHERE a.id = ? AND a.state = 'running' AND a.check_run_slot = ?
+          AND NOT (a.check_run_slot = 'inspector' AND ${inspectorReviewReturned})`,
     ).run(attemptId, slot).changes === 1;
   }
 

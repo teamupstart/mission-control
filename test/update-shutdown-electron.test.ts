@@ -51,7 +51,9 @@ test('Electron waits for its utility to interrupt and reap a live check before q
       onSupervisorReady:()=>setImmediate(()=>process.parentPort.postMessage('ready'))});
     writeFileSync(${JSON.stringify(output)}, JSON.stringify(outcome));
     process.exit(0);
-  `,resolveDir:process.cwd()},bundle:true,platform:'node',format:'esm',packages:'external',alias:{'@shared':'./src/shared'},outfile:join(root,'worker.mjs')});
+  `,resolveDir:process.cwd()},bundle:true,platform:'node',format:'esm',alias:{'@shared':'./src/shared'},outfile:join(root,'worker.mjs')});
+  // Packages are bundled, not left external: the worker runs from a temp directory with no
+  // node_modules, so a bare import such as `zod` could never resolve there.
   buildSync({stdin:{contents:`
     import {app,utilityProcess} from 'electron';
     import {stopUtilityProcess} from './src/main/utility-shutdown.ts';

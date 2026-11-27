@@ -110,7 +110,19 @@ import {
   teardownWorktree,
   worktreeSlotPath,
   type TaskDispatchOptions,
+  type TeardownExtensions,
 } from "./dispatcher.ts";
+import {
+  classifyTaskCheckout,
+  orphanedCheckoutEvidence,
+  orphanedCheckoutFingerprint,
+  orphanedWorktreeReclaimMode,
+  proveOrphanedContent,
+  removeOrphanedTaskCheckout,
+  type OrphanReturnEvidence,
+  type RecordedPullRequestLookup,
+} from "./worktrees/orphaned-task-checkout.ts";
+import type { CheckoutPreservation } from "./archives/manager.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 import {
@@ -152,7 +164,7 @@ import {
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { completionPolicyForOccurrence } from "./schedules/store.ts";
-import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict, type TaskRepoRef } from "@shared/task-repos.ts";
 import { appendRank, placeBacklogRank, prependRank } from "./backlog-rank.ts";
 import {
   isRetentionRetryable,
@@ -160,7 +172,7 @@ import {
   taskHoldsCleanupResources,
   taskResourceGeneration,
 } from "./task-resource-generation.ts";
-import { defaultWorktreeActivityDeps, readFailureClass, worktreeActivityFingerprint, type ActivityFingerprint } from "./git/worktree-activity.ts";
+import { defaultWorktreeActivityDeps, readFailureClass, taskActivityFingerprint, worktreeActivityFingerprint, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { worktreeRegistrationBlocker, worktreeReturnBlocker, type ReadReturnActivity } from "./git/worktree-return-safety.ts";
 import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { gitInfo } from "./util/git.ts";
@@ -256,7 +268,7 @@ import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
 import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
 import { RESIDENT_CALL_SIGN_REFUSAL, taskKindTakesCallSign } from "@shared/voice-names.ts";
 import { unref } from "./util/timers.ts";
-import { homeAlive, killHome } from "./terminal/home.ts";
+import { homeAbsenceEstablished, homeAlive, killHome } from "./terminal/home.ts";
 import { configuredTerminalDeps } from "./terminals-config.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
@@ -617,6 +629,12 @@ export interface TaskManagerStartupDeps {
   occupancy?: typeof inspectWorktreeOccupancy;
   returnBlocker?: typeof worktreeReturnBlocker;
   registrationBlocker?: typeof worktreeRegistrationBlocker;
+  /** Orphaned-checkout evidence, injectable so a test can drive the decision without Git. */
+  orphanEvidence?: typeof orphanedCheckoutEvidence;
+  /** The recorded pull request lookup, injectable so a test needs no episode binding. */
+  orphanPullRequest?: (task: Task, ref: TaskRepoRef) => RecordedPullRequestLookup;
+  /** Positive terminal-home absence, injectable so a test needs no terminal backend. */
+  homeAbsent?: (task: Task) => Promise<boolean>;
   /**
    * The Mission-tools probe an edit awaits after reading its base row. Injectable so a test can
    * hold an edit at exactly that point and land another write underneath it.
@@ -853,6 +871,16 @@ export interface TaskArchiveGate {
   ensureReady(taskId: string): Promise<{ ok: true } | { ok: false; problems: string[] }>;
   /** Publish whatever this task produced before its checkout is destroyed. */
   settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Archive an orphaned checkout's local-only files, or replay the verification of the bundle
+   * that already holds them. Absent means no orphan with local-only files can be removed.
+   */
+  preserveCheckoutFiles?(input: CheckoutPreservation): Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Run an orphaned checkout's removal while the archive of its local-only files is held
+   * present and re-verified, so an archive delete cannot land between the check and the delete.
+   */
+  withCheckoutFilesHeld?<T>(input: CheckoutPreservation, removal: () => Promise<T>): Promise<T>;
 }
 
 /**
@@ -7043,21 +7071,215 @@ export class TaskManager {
   }
 
   async backgroundWorktreeOccupancyBlocker(task: Task, path?: string): Promise<string | null> {
-    const paths = path ? [path] : this.cleanupPaths(task);
+    const occupied = await this.processOccupancyBlocker(path ? [path] : this.cleanupPaths(task));
+    if (occupied) return occupied;
+    if (task.homeName && await homeAlive(task.homeName, configuredTerminalDeps, task.homeBackend ?? null,
+        task.terminalResourceId ?? null) !== false && !(await this.terminalHomeProvedAbsent(task))) {
+      return "the task's terminal home is present or its absence could not be verified";
+    }
+    return null;
+  }
+
+  private async processOccupancyBlocker(paths: readonly string[]): Promise<string | null> {
     const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths).catch(() => null);
     for (const checkout of paths) {
       const state = occupancy?.get(checkout);
       if (state?.status !== "known") return "checkout process occupancy could not be verified";
       if (state.occupants.length) return "a process still uses a checkout";
     }
-    if (task.homeName && await homeAlive(task.homeName, configuredTerminalDeps, task.homeBackend ?? null,
-        task.terminalResourceId ?? null) !== false) {
-      return "the task's terminal home is present or its absence could not be verified";
-    }
     return null;
   }
 
-  async backgroundWorktreeSafety(task: Task, path: string, fetch: boolean, readActivity?: ReadReturnActivity): Promise<string | null> {
+  /**
+   * The one addition orphaned-checkout reclaim makes to terminal homes: a home `homeAlive`
+   * cannot identify counts as gone only when its recording backend positively answers that no
+   * server is running and no process of it runs (`homeAbsenceEstablished`). Off with the flag.
+   */
+  private async terminalHomeProvedAbsent(task: Task): Promise<boolean> {
+    if (!task.homeName || orphanedWorktreeReclaimMode() === "off") return false;
+    if (this.startupDeps.homeAbsent) return this.startupDeps.homeAbsent(task);
+    return homeAbsenceEstablished(task.homeName, configuredTerminalDeps, task.homeBackend ?? null,
+      task.terminalResourceId ?? null);
+  }
+
+  /**
+   * Retention's activity probe. The ordinary fingerprint, except that while orphaned-checkout
+   * reclaim is evaluated, a disposable checkout Git no longer knows is read through its own
+   * read-only fingerprint (content against the recorded base commit) instead of failing.
+   */
+  backgroundWorktreeActivity(task: Task): Promise<ActivityFingerprint> {
+    return taskActivityFingerprint(task, defaultWorktreeActivityDeps, (ref) => this.orphanedActivity(task, ref));
+  }
+
+  private async orphanedActivity(task: Task, ref: TaskRepoRef): Promise<ActivityFingerprint | null> {
+    if (orphanedWorktreeReclaimMode() === "off" || ref.provider !== "git" || !ref.worktreePath) return null;
+    return orphanedCheckoutFingerprint(ref, worktreeSlotPath(task.id, ref.position));
+  }
+
+  /** The pull request the daemon recorded for this task's branch in this repository. */
+  private orphanPullRequest(task: Task, ref: TaskRepoRef): RecordedPullRequestLookup {
+    if (this.startupDeps.orphanPullRequest) return this.startupDeps.orphanPullRequest(task, ref);
+    const bindings = [taskWorkEpisodeForTask(task.id), ...historicalTaskWorkEpisodeBindingsForTask(task.id)]
+      .filter((binding): binding is NonNullable<typeof binding> =>
+        // Exactly this checkout's branch: a binding with no recorded branch cannot prove that
+        // its pull request is the one this checkout's content came from.
+        binding !== null && binding.branch !== null && binding.branch === ref.branch);
+    const records = ref.role === "primary"
+      ? bindings.flatMap((binding) => binding.prUrl
+        ? [{ url: binding.prUrl, headSha: binding.prHeadSha, merged: binding.mergedAt !== null }] : [])
+      : workEpisodeRepoPrsForTask(task.id)
+        .filter((pr) => pr.repoRoot === ref.repoRoot && bindings.some((binding) => binding.episodeId === pr.episodeId))
+        .map((pr) => ({ url: pr.prUrl, headSha: pr.prHeadSha, merged: pr.mergedAt !== null || pr.prState === "merged" }));
+    const merged = records.filter((record) => record.merged);
+    if (merged.length === 0) return null;
+    if (new Set(merged.map((record) => record.headSha)).size > 1) return "ambiguous";
+    return merged[0]!;
+  }
+
+  private orphanEvidence(task: Task, ref: TaskRepoRef, fetchRemote: boolean): Promise<OrphanReturnEvidence> {
+    return (this.startupDeps.orphanEvidence ?? orphanedCheckoutEvidence)({
+      ref,
+      slotPath: worktreeSlotPath(task.id, ref.position),
+      fetchRemote,
+      pullRequest: () => this.orphanPullRequest(task, ref),
+    });
+  }
+
+  /** What one orphaned checkout's local-only files are archived as. */
+  private checkoutPreservation(task: Task, ref: TaskRepoRef,
+    evidence: Pick<Extract<OrphanReturnEvidence, { kind: "orphaned" }>, "commit" | "localOnly">): CheckoutPreservation {
+    return {
+      taskId: task.id,
+      title: `Local files left in ${task.title}`.slice(0, 200),
+      repoLabel: basename(ref.repoRoot) || null,
+      checkout: ref.worktreePath!,
+      commit: evidence.commit,
+      files: evidence.localOnly,
+    };
+  }
+
+  /**
+   * The orphaned-checkout half of `backgroundWorktreeSafety`, or undefined for a checkout the
+   * ordinary registered rules own. `final` is the provider boundary, after the archive step:
+   * only there must local-only files already be held by a verified archive.
+   */
+  private async orphanedCheckoutSafety(
+    task: Task,
+    ref: TaskRepoRef,
+    fetch: boolean,
+    readActivity: ReadReturnActivity | undefined,
+    final: boolean,
+  ): Promise<string | null | undefined> {
+    if (orphanedWorktreeReclaimMode() === "off") return undefined;
+    // The scratch fetch of a pull request head never touches the user's repository, so the
+    // provider boundary may make it even when the ordinary origin refresh is not repeated.
+    // Report-only never reaches the network.
+    const evidence = await this.orphanEvidence(task, ref, (fetch || final) && orphanedWorktreeReclaimMode() === "enforce");
+    if (evidence.kind === "registered") return undefined;
+    if (evidence.kind === "held") return evidence.reason;
+    if (readActivity) {
+      const activity = await readActivity();
+      if ("blocker" in activity) return activity.blocker;
+    }
+    if (evidence.kind === "absent" || !final || evidence.localOnly.length === 0) return null;
+    const preserved = await this.archives?.preserveCheckoutFiles?.(this.checkoutPreservation(task, ref, evidence));
+    return preserved?.ok ? null : preserved?.error ?? "local-only files in the orphaned checkout need the archive library";
+  }
+
+  /**
+   * The read-only report for one due checkout in report-only mode, or null for the ordinary
+   * "passed read-only eligibility checks" line. Never archives and never fetches.
+   */
+  async backgroundWorktreeReportOnly(task: Task, path: string): Promise<string | null> {
+    const ref = taskRepoRefs(task).find((entry) => entry.worktreePath === path);
+    const blocked = await this.backgroundWorktreeSafety(task, path, false);
+    if (blocked || !ref || ref.provider !== "git" || orphanedWorktreeReclaimMode() === "off") return blocked;
+    const evidence = await this.orphanEvidence(task, ref, false);
+    if (evidence.kind === "absent") return "report only: the checkout is already gone; its record would be released";
+    if (evidence.kind !== "orphaned") return null;
+    return evidence.localOnly.length > 0
+      ? `report only: orphaned checkout would be removed after archiving ${evidence.localOnly.length} local-only file(s)`
+      // Only a merged-head proof names the pull request. `local-only` with no files is a base
+      // comparison whose only differences are deleted tracked files, which the base still holds.
+      : `report only: orphaned checkout matches its ${evidence.proof === "merged-pr" ? "merged pull request head" : "base commit"} and would be removed`;
+  }
+
+  /**
+   * Archive every orphaned checkout's local-only files before guard 2. The same settlement
+   * rule as `settleArchivesBeforeTeardown`: a refusal stops the cleanup and holds the task.
+   */
+  private async preserveOrphanedCheckouts(task: Task): Promise<Ok> {
+    if (orphanedWorktreeReclaimMode() !== "enforce") return { ok: true };
+    for (const ref of taskRepoRefs(task)) {
+      if (ref.provider !== "git" || !ref.worktreePath) continue;
+      const evidence = await this.orphanEvidence(task, ref, true);
+      if (evidence.kind === "held") return { ok: false, error: evidence.reason };
+      if (evidence.kind !== "orphaned" || evidence.localOnly.length === 0) continue;
+      if (!this.archives?.preserveCheckoutFiles) {
+        return { ok: false, error: "local-only files in the orphaned checkout need the archive library" };
+      }
+      const preserved = await this.archives.preserveCheckoutFiles(this.checkoutPreservation(task, ref, evidence));
+      if (!preserved.ok) return preserved;
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Teardown's extensions for this class, or none while it is not enforced. `claimed` is the
+   * per-checkout digest the cleanup claim was taken against, which removal must still find.
+   */
+  private retentionTeardownExtensions(
+    task: Task,
+    claimed: (path: string) => string | undefined,
+    /** Receives a removal refusal's bounded, path-free reason, so it becomes the row's blocker. */
+    refused: (reason: string) => void,
+  ): TeardownExtensions {
+    if (orphanedWorktreeReclaimMode() !== "enforce") return {};
+    return {
+      unregistered: (path) => this.removeOrphanedForRetention(task, path, claimed).catch((error: unknown) => {
+        refused(error instanceof Error ? error.message.slice(0, 200) : "orphaned checkout removal was refused");
+        throw error;
+      }),
+      homeAbsent: () => this.terminalHomeProvedAbsent(task),
+    };
+  }
+
+  /** `unregistered` for one checkout. Every message it throws is a bounded sentence with no path. */
+  private async removeOrphanedForRetention(
+    task: Task,
+    path: string,
+    claimed: (path: string) => string | undefined,
+  ): Promise<"removed" | "absent" | "registered"> {
+        const ref = taskRepoRefs(task).find((entry) => entry.worktreePath === path && entry.provider === "git");
+        if (!ref) return "registered";
+        const slot = worktreeSlotPath(task.id, ref.position);
+        const checkout = await classifyTaskCheckout(ref, slot);
+        if (checkout.kind === "registered") return "registered";
+        if (checkout.kind === "unproven") throw new Error(checkout.reason);
+        // The guard runs on the set-aside directory, after every identity and content check, so
+        // the local-only set it archives is computed from the exact bytes the delete removes,
+        // and that archive is held - present and re-verified - until the delete has finished.
+        return removeOrphanedTaskCheckout(ref, slot, claimed(path), (at) => this.processOccupancyBlocker([at]),
+          async (aside, commonDir, finish) => {
+            const proof = await proveOrphanedContent({ ref, commonDir, contentPath: aside, fetchRemote: true,
+              pullRequest: () => this.orphanPullRequest(task, ref) });
+            if (proof.kind === "held") throw new Error(proof.reason);
+            if (proof.localOnly.length === 0) return finish();
+            if (!this.archives?.withCheckoutFilesHeld) {
+              throw new Error("local-only files in the orphaned checkout need the archive library");
+            }
+            return this.archives.withCheckoutFilesHeld(this.checkoutPreservation(task, ref, proof), finish);
+          });
+  }
+
+  async backgroundWorktreeSafety(
+    task: Task,
+    path: string,
+    fetch: boolean,
+    readActivity?: ReadReturnActivity,
+    /** The provider boundary, after the archive step. See `orphanedCheckoutSafety`. */
+    final = false,
+  ): Promise<string | null> {
     const ref = taskRepoRefs(task).find((entry) => entry.worktreePath === path);
     if (!ref) return "task checkout ownership changed";
     if (ref.provider === "git") {
@@ -7065,6 +7287,8 @@ export class TaskManager {
       if (join(canonicalWorktreePath(dirname(expected)), basename(expected)) !== canonicalWorktreePath(path)) {
         return "disposable checkout path does not match its task";
       }
+      const orphaned = await this.orphanedCheckoutSafety(task, ref, fetch, readActivity, final);
+      if (orphaned !== undefined) return orphaned;
     } else if (ref.provider === "mission") {
       if (!ref.worktreeLeaseId || this.worktrees?.lookupLease({
         leaseId: ref.worktreeLeaseId, path, owner: { kind: "task", key: `${task.id}:${ref.position}` },
@@ -7209,6 +7433,14 @@ export class TaskManager {
         if (!archived.ok) {
           return { kind: "archive-refused", detail: "this task's archive could not be published" };
         }
+        // Local-only files of an orphaned checkout are archived on the same terms, before guard
+        // 2 and the provider boundary that re-proves them archived.
+        if (request.claimIsCurrent) {
+          const preserved = await this.preserveOrphanedCheckouts(this.registry.getTask(taskId) ?? before);
+          if (!preserved.ok) {
+            return { kind: "archive-refused", detail: preserved.error ?? "local-only files could not be archived" };
+          }
+        }
 
         // --- guard 2: the trees about to be removed, and what is in them, right now ---
         const current = this.registry.getTask(taskId) ?? getDurableTask(taskId);
@@ -7228,20 +7460,21 @@ export class TaskManager {
         const beforeReturn = request.claimIsCurrent ? async (path: string): Promise<string | null> => {
           const refusal = checkOwner();
           if (refusal) return (blocked = refusal);
-          const safety = await this.backgroundWorktreeSafety(current, path, true);
+          const safety = await this.backgroundWorktreeSafety(current, path, true, undefined, true);
           if (safety) return (blocked = safety);
           const occupied = await this.backgroundWorktreeOccupancyBlocker(current, path);
           if (occupied) return (blocked = occupied);
+          const gitRef = taskRepoRefs(current).find((ref) => ref.worktreePath === path && ref.provider === "git");
           const readActivity: ReadReturnActivity = async () => {
-            const activity = await worktreeActivityFingerprint(path, defaultWorktreeActivityDeps);
+            const orphaned = gitRef ? await this.orphanedActivity(current, gitRef) : null;
+            const activity = orphaned ?? await worktreeActivityFingerprint(path, defaultWorktreeActivityDeps);
             if (activity.kind === "unknown") return { blocker: activity.reason };
-            if (!activity.head) return { blocker: "checkout HEAD could not be verified" };
+            if (!orphaned && !activity.head) return { blocker: "checkout HEAD could not be verified" };
             if (activity.digest !== checkoutActivity?.get(path)) return { blocker: "Git activity changed during cleanup" };
-            return { head: activity.head };
+            return { head: activity.head ?? null };
           };
-          const disposableGit = taskRepoRefs(current).some((ref) => ref.worktreePath === path && ref.provider === "git");
-          const finalSafety = await (disposableGit
-            ? this.backgroundWorktreeSafety(current, path, false, readActivity)
+          const finalSafety = await (gitRef
+            ? this.backgroundWorktreeSafety(current, path, false, readActivity, true)
             : worktreeReturnBlocker(path, { strictIndex: true, readActivity }));
           if (finalSafety) return (blocked = finalSafety);
           const finalBlocker = checkOwner();
@@ -7258,7 +7491,10 @@ export class TaskManager {
           // that to let an operator's dispatch acquire ahead of maintenance, which is the
           // ordering that keeps a large stale fleet from standing in front of live work.
           const teardown = this.startupDeps.teardown ?? teardownWorktree;
-          await teardown(current, this.legacyWorktrees, "background", this.worktrees, beforeReturn);
+          await teardown(current, this.legacyWorktrees, "background", this.worktrees, beforeReturn,
+            request.claimIsCurrent
+              ? this.retentionTeardownExtensions(current, (path) => checkoutActivity?.get(path), (reason) => { blocked ??= reason; })
+              : {});
         } catch (error) {
           const partial = getDurableTask(taskId);
           if (!stillOwns(partial)) {

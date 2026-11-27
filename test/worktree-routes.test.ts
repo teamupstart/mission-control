@@ -112,10 +112,17 @@ test("GET /api/worktrees reports disposable check-lease provenance and retention
   assert.equal(response.status, 200);
   const { disposable, retention } = await response.json();
   assert.equal(disposable.checkRoot, "complete");
-  assert.deepEqual(disposable.entries.find((entry: { path: string }) => entry.path === path), {
-    path, taskId: null, checkState: "returning", gitMetadata: "readable",
+  assert.deepEqual(disposable.entries.find((entry: { root: string; name: string }) =>
+    entry.root === "check" && entry.name === attemptId), {
+    root: "check", name: attemptId, taskId: null, checkState: "returning", gitMetadata: "readable", orphanEvidence: null,
   });
+  // The diagnostics name checkouts by root, name, task and position - never by location.
+  const diagnostics = JSON.stringify({ disposable, retention });
+  assert.ok(!diagnostics.includes(CHECK_WORKTREES_DIR), "no check checkout path in the response");
+  assert.ok(!diagnostics.includes(path));
+  assert.ok(!diagnostics.includes(root), "no repository path in the response");
   assert.ok(["configured", "report-only", "enforce"].includes(retention.mode));
+  assert.ok(["off", "report-only", "enforce"].includes(retention.orphanReclaim));
   assert.ok(Array.isArray(retention.entries));
   assert.ok(Number.isInteger(retention.total));
   assert.equal(store.get(attemptId)?.cleanupState, "returning");

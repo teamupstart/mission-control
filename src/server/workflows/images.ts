@@ -8,13 +8,15 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
+  type BigIntStats,
 } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { LlmImageInput } from "@shared/llm.ts";
 import type {
   WorkflowAgentEvidenceLocator,
@@ -539,6 +541,54 @@ export async function continuationFileStatus(root: string, tray: WorkflowStagedE
     return "revalidated";
   } catch {
     return "unavailable";
+  }
+}
+
+function sameEvidenceFile(before: BigIntStats, after: BigIntStats): boolean {
+  return before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+    before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs;
+}
+
+/** Reopen already-validated file sources under the completion claim's synchronous budget.
+ * Read only the registered length, even if a concurrent writer grows the file. Inline
+ * commands have already been hash-checked by the staging reader in the same transaction.
+ */
+export function continuationFileBytesMatch(root: string, tray: WorkflowStagedEvidenceList, deadline: number): boolean {
+  try {
+    const checked: Array<{ path: string; stat: BigIntStats }> = [];
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    for (const item of [...tray.images, ...tray.artifacts]) {
+      if (performance.now() >= deadline) return false;
+      if (item.sourceKind === "command") continue;
+      if (item.sourceKind !== "agent" || isAbsolute(item.sourceLocator)) return false;
+      const path = resolve(root, item.sourceLocator);
+      if (path === root || !isInside(root, path) || realpathSync(path) !== path) return false;
+      const fd = openSync(path, checkoutOpenFlags(root) | constants.O_NONBLOCK);
+      try {
+        const stat = fstatSync(fd, { bigint: true });
+        if (!stat.isFile() || stat.size !== BigInt(item.bytes)) return false;
+        assertOpenedInsideCheckout(fd, path, root, item.mimeType === "text/plain" ? "artifact" : "image");
+        const hash = createHash("sha256");
+        let remaining = item.bytes;
+        while (remaining > 0) {
+          if (performance.now() >= deadline) return false;
+          const read = readSync(fd, buffer, 0, Math.min(remaining, buffer.length), null);
+          if (read === 0) return false;
+          hash.update(buffer.subarray(0, read));
+          remaining -= read;
+        }
+        if (hash.digest("hex") !== item.sha256 || !sameEvidenceFile(stat, fstatSync(fd, { bigint: true }))) return false;
+        checked.push({ path, stat });
+      } finally {
+        closeSync(fd);
+      }
+    }
+    // A source checked early must still name the same file after the rest of the packet.
+    return checked.every(({ path, stat }) => performance.now() < deadline &&
+      realpathSync(path) === path && sameEvidenceFile(stat, lstatSync(path, { bigint: true }))) &&
+      performance.now() < deadline;
+  } catch {
+    return false;
   }
 }
 

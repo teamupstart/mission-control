@@ -228,8 +228,8 @@ export function isArchivedHtml(archivePath: string): boolean {
 
 /**
  * The subset of `paths` (relative, `/`-separated) that can all be written beside one another on a
- * case-insensitive volume, the macOS default. Two paths collide there when, folded to lower case,
- * they are the same path, or one is a directory of the other: a file `Data` and a file
+ * case-insensitive volume, the macOS default. Two paths collide there when, normalized to NFC and
+ * folded to lower case, they are the same path, or one is a directory of the other: a file `Data` and a file
  * `data/x.csv` need `data` to be a file and a directory at once. Decided in sorted order, so the
  * outcome is the same however the paths arrive: a path is kept unless it collides with one kept
  * before it. Directories that differ only in case (`Dir/a.csv`, `dir/b.csv`) merge harmlessly
@@ -240,7 +240,9 @@ export function caseDistinctPaths(paths: Iterable<string>): Set<string> {
   const files = new Set<string>();
   const directories = new Set<string>();
   for (const candidate of [...new Set(paths)].sort()) {
-    const folded = candidate.toLowerCase();
+    // Normalized as well as case-folded: APFS treats canonically equivalent names (NFC `café`
+    // and NFD `café`) as one file, as it does names that differ only in case.
+    const folded = candidate.normalize("NFC").toLowerCase();
     const segments = folded.split("/");
     const parents = segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join("/"));
     if (files.has(folded) || directories.has(folded) || parents.some((parent) => files.has(parent))) continue;

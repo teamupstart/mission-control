@@ -124,7 +124,7 @@ export async function readStoredReportCompanions(
         // file: it is not a stored companion, so its link is unlinked as missing. Any other
         // failure (permissions, I/O) is thrown, so Publish answers 500 rather than archiving, for
         // ever, a page without a file it holds.
-        if (error.code === "ENOENT" || error.code === "ELOOP" || error.code === "ENOTDIR" || error.code === "ENXIO") return null;
+        if (["ENOENT", "ELOOP", "ENOTDIR", "ENXIO", "ENAMETOOLONG"].includes(error.code ?? "")) return null;
         throw error;
       });
     if (!handle) continue;

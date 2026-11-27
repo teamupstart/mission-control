@@ -353,8 +353,14 @@ export function unlinkMissingCompanions(
   for (const span of spans.sort((a, b) => a.start - b.start)) {
     let start = span.start;
     // HTML whitespace only (tab, LF, FF, CR, space): a non-breaking space is part of a preceding
-    // unquoted attribute value, never a separator, and stays.
-    while (start > cursor && HTML_WHITESPACE.has(html[start - 1]!)) start -= 1;
+    // unquoted attribute value, never a separator, and stays. And a removed attribute followed by
+    // `/` keeps the whitespace before it: in `<image width=10 href="gone.svg"/>` that separator is
+    // what keeps the slash out of the unquoted `width` value and the tag self-closing.
+    let after = span.end;
+    while (after < html.length && HTML_WHITESPACE.has(html[after]!)) after += 1;
+    if (html[after] !== "/") {
+      while (start > cursor && HTML_WHITESPACE.has(html[start - 1]!)) start -= 1;
+    }
     parts.push(html.slice(cursor, start));
     cursor = span.end;
   }

@@ -424,8 +424,10 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   those bounds is left out. A linked file that exists but cannot be read (`EACCES`, `EIO`)
   refuses the post, naming the file and the error, so the report can be posted again once it is
   readable rather than stored without data that was there; so does a checkout that cannot be
-  resolved for any reason other than being gone. Paths that collide on a case-insensitive volume
-  (the same path in another letter case, or a file where another linked path needs a directory,
+  resolved for any reason other than being gone, and so does a checkout replaced at the same
+  path between reading the document and collecting its linked files, which are only ever taken
+  from the checkout the document was read from. Paths that collide on a case-insensitive volume
+  (the same path in another letter case or another Unicode normalization form, or a file where another linked path needs a directory,
   such as `Data` and `data/x.csv`) cannot all be stored or archived, so one is kept, decided in
   sorted order, and a link to any other is unlinked as missing. Directories that differ only in
   case merge harmlessly and keep all their files.
@@ -444,7 +446,8 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   that one built page, never from a second read of the stored document), capped at the same 512
   lookups as posting, so every stored companion is read however deep its directories, and a
   store swapped for a symlink to a large tree cannot stall a publish. A stored companion that
-  is gone, or was replaced by a symlink or a named pipe, is unlinked as missing; any other
+  is gone, was replaced by a symlink or a named pipe, or has a path too long for the filesystem,
+  is unlinked as missing; any other
   failure reading it fails the publish with a 500 and writes no archive.
   A link that climbs out of the document's directory is not a companion. Neither is a sibling
   named `report.html` in any letter case (on a case-insensitive volume `Report.html` is the
@@ -460,7 +463,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   the companions stored with the report. A relative link to a file that was not stored (a report
   posted before companions were stored, or a file left out at post time) is unlinked rather than
   refused: the attribute naming it is removed, with the HTML whitespace before it (never a
-  non-breaking space, which belongs to a preceding unquoted value), so its text stays and the
+  non-breaking space, which belongs to a preceding unquoted value; and not before a `/`, so a
+  self-closing tag such as `<image width=10 href="gone.svg"/>` keeps the separator that stops the
+  slash joining the unquoted value), so its text stays and the
   rest of the page keeps its bytes, and the bundle is `partial` with each such path listed as a missing
   `report_companion`. The whole attribute goes, so a `srcset` or `style` attribute that also names
   a stored file loses that reference too; the stored file stays in the bundle and is listed with

@@ -1008,6 +1008,76 @@ test("a file and a directory path that collide case-insensitively keep one, so t
   assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
 });
 
+test("a linked name too long for the filesystem is left out at post and publishes as missing, not a 500", async () => {
+  const { post, publish, manifest, root, checkout } = setup();
+  // Four 246-character directories and a file: within an archive path's limits (1,024
+  // characters, 255 per segment), but too long for the filesystem on every platform, so every
+  // lookup answers ENAMETOOLONG. Each segment is 492 UTF-8 bytes (Linux allows 255 per name), and
+  // the whole path under the state home passes macOS's 1,024-byte path limit.
+  const segment = "\u00e9".repeat(246);
+  const long = `${segment}/${segment}/${segment}/${segment}/x.csv`;
+  assert.ok(`report/${long}`.length <= 1024);
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("long-name.html", `<html><body><a href="${long}">long</a> <a href="kept.csv">k</a></body></html>`, "Long name");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"]);
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: [long] });
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("Unicode-equivalent companion spellings keep one, so the archive is written on a normalization-insensitive volume", async () => {
+  const { manifest, root, archives } = setup();
+  const nfc = "caf\u00e9.csv";
+  const nfd = "cafe\u0301.csv";
+  const html = `<html><body><a href="${nfc}">composed</a> <a href="${nfd}">decomposed</a></body></html>`;
+  assert.equal(linkedCompanionPaths("html", Buffer.from(html)).length, 1, "one capture candidate");
+  const published = await archives.publishReportPage({
+    reportId: "r-90004", reportCreatedAt: 90004, title: "Unicode aliases", documentName: "page.html",
+    page: Buffer.from(html),
+    companions: [{ path: nfd, bytes: Buffer.from("d\n") }, { path: nfc, bytes: Buffer.from("c\n") }],
+    session: { id: "s-direct", name: "Direct", taskId: null }, repositoryLabel: null,
+  });
+  assert.equal(published.ok, true, JSON.stringify(published));
+  const archiveId = reportArchiveId(PRODUCER, "r-90004", 90004);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.equal(stored.length, 1);
+  assert.equal(missing.length, 1);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a checkout replaced at the same path after the document is read refuses the post instead of mixing checkouts", async () => {
+  const outer = join(home, `swap-outer-${Date.now()}`);
+  const checkout = join(outer, "checkout");
+  mkdirSync(checkout, { recursive: true });
+  writeFileSync(join(checkout, "data.csv"), "original\n");
+  writeFileSync(join(checkout, "doc.html"), "<html><body><a href=\"data.csv\">d</a></body></html>");
+  const registry = new Registry();
+  let swap = true;
+  const reports = new ReportManager(registry, {
+    stateDir: home,
+    // After the document was read from the original checkout, another directory takes its path.
+    beforeCompanionCapture: (real) => {
+      if (!swap) return;
+      renameSync(real, `${real}-original`);
+      mkdirSync(real);
+      writeFileSync(join(real, "data.csv"), "replacement\n");
+    },
+  });
+  after(() => reports.stop());
+  const session = mkSession({ id: `s-swap-${serial}`, name: "Swap", repoRoot: "/repos/swap", cwd: checkout });
+  await assert.rejects(
+    reports.post(session, { title: "Swapped checkout", body: "b", file: "doc.html" }),
+    /the checkout was replaced while the report was being posted/,
+  );
+  assert.deepEqual(reports.listForSession(session.id), [], "nothing was posted");
+  swap = false;
+  writeFileSync(join(checkout, "doc.html"), "<html><body><a href=\"data.csv\">d</a></body></html>");
+  const posted = await reports.post(session, { title: "Settled checkout", body: "b", file: "doc.html" });
+  assert.equal(readFileSync(join(reportDocumentDir(posted.id, home), "companions", "data.csv"), "utf8"), "replacement\n");
+});
+
 test("a link that climbs out of the document's directory is neither stored nor unlinked, and still refuses the page", async () => {
   const { post, publish, bundles, checkout } = setup();
   mkdirSync(join(checkout, "sub"), { recursive: true });

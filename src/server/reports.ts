@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, dirname, join, posix } from "node:path";
+import { basename, dirname, join, posix, sep } from "node:path";
 import { agentDisplayName, sessionDisplayNameInput, withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
@@ -71,6 +71,39 @@ export class ReportRefusal extends Error {
   constructor(message: string, readonly status: 400 | 403 | 404 | 409 | 413) {
     super(message);
   }
+}
+
+/** The checkout a report's document was read from: its real path and identity at that moment. */
+interface CheckoutIdentity {
+  real: string;
+  dev: number;
+  ino: number;
+}
+
+/** The checkout's real path and identity, null when it is gone; refuses a post it cannot examine. */
+async function checkoutIdentity(root: string): Promise<CheckoutIdentity | null> {
+  const absent = (error: NodeJS.ErrnoException): null => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw checkoutUnreadable(error);
+  };
+  const real = await realpath(root).catch(absent);
+  if (!real) return null;
+  const info = await stat(real).catch(absent);
+  return info ? { real, dev: info.dev, ino: info.ino } : null;
+}
+
+function checkoutUnreadable(error: NodeJS.ErrnoException): ReportRefusal {
+  return new ReportRefusal(
+    `the checkout could not be read to collect the files the document links to (${error.code ?? error.message}); nothing was posted. Post again once it is readable.`,
+    409,
+  );
+}
+
+function checkoutChanged(): ReportRefusal {
+  return new ReportRefusal(
+    "the checkout was replaced while the report was being posted, so its linked files could not be matched to the document; nothing was posted. Post again.",
+    409,
+  );
 }
 
 /** Why a post was refused: a linked file exists in the checkout but could not be read. */
@@ -733,6 +766,10 @@ export class ReportManager {
     if (!kind) throw new ReportRefusal(`${file} is not an .html or .md file`, 400);
     const root = sessionWorkspaceRoot(session);
     if (!root) throw new ReportRefusal("this session has no checkout to attach a file from", 400);
+    // The checkout the document is read from, fixed before the read: its real path and identity.
+    // Companions are collected from this same directory, never from whatever occupies the path
+    // later. Absent here, the read below refuses the post with its own message.
+    const checkout = await checkoutIdentity(root);
     let target: string;
     try {
       // The Files viewer's containment check: relative, inside the checkout through symlinks,
@@ -755,7 +792,9 @@ export class ReportManager {
     } finally {
       await handle.close();
     }
-    return { name: basename(target), kind, bytes, companions: await this.stageCompanions(root, file, kind, bytes) };
+    if (!checkout) return { name: basename(target), kind, bytes, companions: [] };
+    if (!target.startsWith(`${checkout.real}${sep}`)) throw checkoutChanged();
+    return { name: basename(target), kind, bytes, companions: await this.stageCompanions(checkout, file, kind, bytes) };
   }
 
   /**
@@ -764,18 +803,24 @@ export class ReportManager {
    * file that is missing, outside the checkout, not a regular file or past the bounds is left
    * out, and the published page lists it as missing instead.
    */
-  private async stageCompanions(root: string, file: string, kind: ReportDocumentKind, bytes: Buffer): Promise<ReportCompanion[]> {
-    await this.beforeCompanionCapture?.(root);
-    // A checkout that is gone has no companions. One that cannot be resolved for another reason
-    // (permissions, I/O) refuses the post, so its linked files are not silently left out.
-    const realRoot = await realpath(root).catch((error: NodeJS.ErrnoException) => {
+  private async stageCompanions(
+    checkout: CheckoutIdentity,
+    file: string,
+    kind: ReportDocumentKind,
+    bytes: Buffer,
+  ): Promise<ReportCompanion[]> {
+    await this.beforeCompanionCapture?.(checkout.real);
+    // Still the checkout the document was read from? A checkout that is gone has no companions.
+    // One replaced at the same path (removed and recreated, or a symlink retargeted) refuses the
+    // post rather than pairing this page with another checkout's files, and one that cannot be
+    // examined (permissions, I/O) refuses it so its linked files are not silently left out.
+    const now = await stat(checkout.real).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
-      throw new ReportRefusal(
-        `the checkout could not be read to collect the files the document links to (${error.code ?? error.message}); nothing was posted. Post again once it is readable.`,
-        409,
-      );
+      throw checkoutUnreadable(error);
     });
-    if (!realRoot) return [];
+    if (!now) return [];
+    if (now.dev !== checkout.dev || now.ino !== checkout.ino) throw checkoutChanged();
+    const realRoot = checkout.real;
     const directory = posix.dirname(file);
     const companions: ReportCompanion[] = [];
     let total = 0;

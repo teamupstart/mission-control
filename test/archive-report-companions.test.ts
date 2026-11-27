@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseFragment } from "parse5";
 import {
   reportRelativeReferences,
   unlinkMissingCompanions,
@@ -131,4 +132,34 @@ test("paths that collide on a case-insensitive volume keep one, decided in sorte
   assert.deepEqual(keep(["dir/b.csv", "Dir/a.csv"]), ["Dir/a.csv", "dir/b.csv"]);
   // Nothing to fold: everything is kept.
   assert.deepEqual(keep(["x/y.csv", "x/z.csv", "w.csv"]), ["w.csv", "x/y.csv", "x/z.csv"]);
+});
+
+test("two missing-file attributes on one element are both removed, and the page still validates", () => {
+  const html = page(`<p><a href="gone.csv" style="background:url(gone.png)">both</a></p>`);
+  const result = unlinkMissingCompanions(html, new Set(["report.html"]));
+  assert.deepEqual(result.unlinked, ["gone.csv", "gone.png"]);
+  assert.equal(result.html, html.replace(' href="gone.csv" style="background:url(gone.png)"', ""));
+  assert.match(result.html, /<a>both<\/a>/);
+  assert.deepEqual(validateStaticReportHtml(result.html, new Set(["report.html"])), { ok: true });
+});
+
+test("a missing link removed from a self-closing tag keeps its separator, so the tag still self-closes", () => {
+  const html = page(`<svg><image width=10 href="gone.svg"/><image href="a.svg" xlink:href="b.svg"/><g></g></svg>`);
+  const result = unlinkMissingCompanions(html, new Set(["report.html"]));
+  assert.deepEqual(result.unlinked, ["a.svg", "b.svg", "gone.svg"]);
+  assert.ok(result.html.includes("<image width=10 /><image /><g></g>"), result.html);
+  assert.deepEqual(validateStaticReportHtml(result.html, new Set(["report.html"])), { ok: true });
+  // Parsed, the first image keeps width "10" (no slash in it) and closes itself: <g> is its sibling.
+  const svg = parseFragment(result.html.slice(result.html.indexOf("<svg>"), result.html.indexOf("</svg>") + 6)).childNodes[0] as any;
+  const children = svg.childNodes.map((node: any) => node.tagName);
+  assert.deepEqual(children, ["image", "image", "g"]);
+  assert.deepEqual(svg.childNodes[0].attrs, [{ name: "width", value: "10" }]);
+});
+
+test("canonically equivalent Unicode spellings collide like case variants", () => {
+  const nfc = "caf\u00e9.csv";
+  const nfd = "cafe\u0301.csv";
+  assert.notEqual(nfc, nfd);
+  assert.equal(caseDistinctPaths([nfd, nfc]).size, 1);
+  assert.equal(caseDistinctPaths([`d/${nfc}`, `D/${nfd}`]).size, 1);
 });

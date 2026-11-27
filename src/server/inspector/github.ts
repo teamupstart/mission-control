@@ -503,7 +503,49 @@ export async function configuredGitHubRepositories(
   return [...repositories.values()];
 }
 
+export interface MergedCiWitness {
+  headSha: string;
+  branch: string;
+  mergedAt: number;
+  startedAt: number;
+  finishedAt: number;
+}
+
+// Strict subset of merged publications: one complete green check page for the named
+// commit, with a successful final check whose lifetime can witness the wait/result turns.
+const mergedCiRecord = z.object({
+  state: z.literal("MERGED"), headRefOid: recoveryHeadOid, headRefName: z.string().min(1),
+  mergedAt: z.string().datetime(), isDraft: z.literal(false),
+  reviewDecision: z.enum(["APPROVED"]).nullable(),
+  reviewThreads: z.object({ pageInfo: z.object({ hasNextPage: z.literal(false) }),
+    nodes: z.array(z.object({ isResolved: z.literal(true) })) }),
+  commits: z.object({ nodes: z.tuple([z.object({ commit: z.object({ oid: recoveryHeadOid,
+    statusCheckRollup: z.object({ state: z.literal("SUCCESS"), contexts: z.object({
+      pageInfo: z.object({ hasNextPage: z.literal(false) }),
+      nodes: z.array(z.object({ __typename: z.literal("CheckRun"), status: z.literal("COMPLETED"),
+        conclusion: z.enum(["SUCCESS", "SKIPPED", "NEUTRAL"]), startedAt: z.string().datetime(),
+        completedAt: z.string().datetime() })).min(1).max(100),
+    }) }),
+  }) })]) }),
+});
+
+export function mergedCiWitness(raw: unknown): MergedCiWitness | null {
+  const parsed = mergedCiRecord.safeParse(raw);
+  if (!parsed.success) return null;
+  const pr = parsed.data;
+  const { commit } = pr.commits.nodes[0];
+  if (commit.oid !== pr.headRefOid) return null;
+  const last = commit.statusCheckRollup.contexts.nodes.reduce((a, b) =>
+    Date.parse(a.completedAt) >= Date.parse(b.completedAt) ? a : b);
+  const startedAt = Date.parse(last.startedAt);
+  const finishedAt = Date.parse(last.completedAt);
+  const mergedAt = Date.parse(pr.mergedAt);
+  if (last.conclusion !== "SUCCESS" || !(startedAt < finishedAt && finishedAt <= mergedAt)) return null;
+  return { headSha: pr.headRefOid, branch: pr.headRefName, mergedAt, startedAt, finishedAt };
+}
+
 export interface PrSnapshot {
+  mergedCiWitness?: MergedCiWitness;
   state: "OPEN" | "CLOSED" | "MERGED";
   headSha: string;
   /**
@@ -629,7 +671,7 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
       baseRefName baseRefOid mergeCommit{ oid } mergedAt repository{ defaultBranchRef{ name } }
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ state ${CHECK_CONTEXTS} } } } }
+      commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state ${CHECK_CONTEXTS} } } } }
       reviewThreads(first:${GITHUB_PAGE_SIZE}){
         nodes{
           id isResolved path
@@ -789,6 +831,7 @@ function isPrState(value: unknown): value is PrSnapshot["state"] {
 }
 
 function toSnapshot(pr: Record<string, unknown>, state: PrSnapshot["state"]): PrSnapshot {
+  const ci = state === "MERGED" ? mergedCiWitness(pr) : null;
   const reviewPage = toReviewPage(pr.reviews);
   const firstThreads = threadPage(pr.reviewThreads);
   const headCommit = (
@@ -799,6 +842,7 @@ function toSnapshot(pr: Record<string, unknown>, state: PrSnapshot["state"]): Pr
   const createdAt = Date.parse(String(pr.createdAt ?? ""));
   return {
     state,
+    ...(ci ? { mergedCiWitness: ci } : {}),
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
     headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
     ...refFields(pr),

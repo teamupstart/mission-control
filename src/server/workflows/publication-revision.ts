@@ -13,7 +13,7 @@ export const PUBLICATION_REVISION_BUDGET_MS = 500;
  * expensive checkout earns a fresh review. No checkout files or Git objects are written.
  */
 export function publicationCheckoutRevision(checkout: string, retained: readonly { path: string }[],
-  deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS): string | null {
+  deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS, expectedHead?: string): string | null {
   try {
     if (performance.now() >= deadline) return null;
     const executable = locateExecutableSync("git");
@@ -33,7 +33,8 @@ export function publicationCheckoutRevision(checkout: string, retained: readonly
     const fields = decoder.decode(facts).trimEnd().split("\n");
     const [root, admin, common, index, shallow, head] = fields;
     if (fields.length !== 6 || !root || !admin || !common || !index || !shallow ||
-        !head || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) return null;
+        !head || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head) ||
+        (expectedHead !== undefined && head !== expectedHead)) return null;
     const inventory = git(root, ["ls-files", "-v", "--stage", "--others", "--exclude-standard", "-z"]);
     const digest = createHash("sha256").update(facts).update(inventory);
     const recordStat = (file: string) => {
@@ -50,7 +51,7 @@ export function publicationCheckoutRevision(checkout: string, retained: readonly
       paths.add(record.startsWith("? ") ? record.slice(2) : record.slice(record.indexOf("\t") + 1));
     }
     const metadata = new Set([root, join(root, ".git"), admin, common, index, shallow,
-      join(common, "config"), join(admin, "config.worktree"),
+      join(admin, "HEAD"), join(common, "config"), join(admin, "config.worktree"),
       join(common, "info", "attributes"), join(common, "info", "exclude")]);
     for (const path of paths) {
       if (performance.now() >= deadline) return null;

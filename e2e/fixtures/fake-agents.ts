@@ -143,6 +143,7 @@ export interface FakePullRequest {
    * failure. Omitted means that read finds no pull request, and the failure stands.
    */
   checkContexts?: unknown[];
+  checkRollupState?: "SUCCESS" | "PENDING" | "FAILURE";
   branchUpdate?: { mergeStateStatus: string; baseRefOid: string; isDraft?: boolean; reviewDecision?: string | null; refusal?: string };
   /**
    * What the Inspector's pull request read reports to Shipping's merge gate: the head commit's
@@ -785,6 +786,10 @@ if (argv[0] === "--version") {
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
     mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
     repository: { defaultBranchRef: { name: pr.defaultBranch ?? "main" } },
+    ...(pr.checkRollupState ? { reviewDecision: null, commits: { nodes: [{ commit: {
+      oid: pr.headRefOid, statusCheckRollup: { state: pr.checkRollupState,
+        contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts } },
+    } }] } } : {}),
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     ...(pr.mergeGate ? { mergeable: pr.mergeGate.mergeable ?? "MERGEABLE", reviewDecision: null,
       commits: { nodes: [{ commit: { statusCheckRollup: { state: pr.mergeGate.checks } } }] } } : {}),

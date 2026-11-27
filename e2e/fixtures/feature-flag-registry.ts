@@ -20,6 +20,7 @@ export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as const;
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
+export const INBOX_SPLIT_FLAG_ID = "inbox-split" as const;
 
 export const FEATURE_FLAGS = [
   { id: SESSION_SETTINGS_FLAG_ID, label: "Session settings through MCP", description: "Session settings route fixture", stage: "preview", keywords: [] },

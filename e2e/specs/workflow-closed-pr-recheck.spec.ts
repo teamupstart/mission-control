@@ -76,7 +76,7 @@ async function api<T>(
 interface RunProbe {
   run: { status: string; currentPhase: string };
   summary: { recovery?: { operations: string[]; primary: string | null } };
-  events: Array<{ kind: string }>;
+  events: Array<{ kind: string; payload?: { requestId?: string } | null }>;
 }
 
 const probe = (daemon: DaemonHandle, runId: string): Promise<RunProbe> =>
@@ -231,7 +231,11 @@ function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED" | "MERGED",
     headRefName: "feat/closed-pr",
     headRefOid: head,
     createdAt: new Date(Date.now() - 60_000).toISOString(),
-    mergedAt: null,
+    mergedAt: state === "MERGED" ? new Date().toISOString() : null,
+    ...(state === "MERGED" ? { checkRollupState: "SUCCESS", checkContexts: [{
+      __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS",
+      startedAt: new Date(Date.now() - 40_000).toISOString(), completedAt: new Date(Date.now() - 5_000).toISOString(),
+    }] } as const : {}),
   }]);
 }
 
@@ -406,6 +410,19 @@ test("a run waiting on a pull request that merged before its gate opened holds a
   const pane = dashboard.getByRole("tabpanel", { name: /^Completion/ });
   await expect(pane).toContainText("The adopted pull request was closed or switched.");
   await shoot(dashboard, header, "12-merged-before-gate-holds-as-closed");
+
+  // Recheck the explicit block as well. Green CI without a preceding accepted run
+  // and its publication claim leaves this manually initiated review held.
+  const [recheck] = await Promise.all([
+    dashboard.waitForResponse(r => r.url().endsWith(`/api/workflow-runs/${runId}/recheck-inspector`) && r.ok()),
+    checkAgain.click(),
+  ]);
+  const { requestId } = recheck.request().postDataJSON();
+  expect(requestId).toBeTruthy();
+  await expect.poll(async () => (await probe(daemon, runId)).events.some(event =>
+    event.kind === "duplicate_publication_recovery_held" && event.payload?.requestId === requestId)).toBe(true);
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  expect(await eventCount(daemon, runId, "duplicate_publication_recovered")).toBe(0);
 
   // Reopened on GitHub: the same button lifts the hold, and the gate's ordinary exact-head check
   // takes over. GitHub's head is not the one this run reviewed, so it waits on the session -

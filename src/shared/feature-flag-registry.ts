@@ -31,6 +31,9 @@ export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort"
 /** The one owner of the Markdown question body preview's id; the dashboard's question surfaces read it. */
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
+/** The one owner of the unified split inbox's id; the attention inbox reads it. */
+export const INBOX_SPLIT_FLAG_ID = "inbox-split" as const;
+
 export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as const;
 
 export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
@@ -231,6 +234,17 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "A prerequisite of workstation microphone capture.",
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
+  },
+  {
+    id: INBOX_SPLIT_FLAG_ID,
+    label: "Unified split inbox",
+    description:
+      "Show the attention inbox as one list with a detail pane: every question, permission, halt, stuck " +
+      "session and report is a row, the selected one opens beside the list with its usual controls, and " +
+      "the next one opens when it is settled. Tabs filter to what is owed, what is to read and what is snoozed.",
+    stage: "preview",
+    sessionSetting: "read-write",
+    keywords: ["inbox", "attention", "split", "reader", "list", "detail", "questions", "reports", "next"],
   },
   {
     id: IDLE_RAIL_SECTION_COUNTS_FLAG_ID,

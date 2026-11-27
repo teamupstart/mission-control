@@ -4960,7 +4960,7 @@ function cloneRow(table: string, id: string, patch: Record<string, unknown>): vo
  */
 async function newerRunOnSamePullRequest(
   seeded: Awaited<ReturnType<typeof seed>>,
-  options: { stage: boolean; attempt?: "failed" | "skipped" },
+  options: { stage: boolean; attempt?: "failed" | "skipped"; status?: "cancelled" | "failed" },
 ): Promise<string> {
   const later = `${seeded.ids.run}-newer`;
   const first = db.prepare(`SELECT started_at FROM workflow_runs WHERE id = ?`).get(seeded.ids.run) as { started_at: number };
@@ -4973,8 +4973,9 @@ async function newerRunOnSamePullRequest(
     cloneRow("workflow_versions", seeded.ids.version, { id: versionId, version: 2, graph_json: JSON.stringify(graph) });
   }
   cloneRow("workflow_runs", seeded.ids.run, { id: later, trigger_key: `${later}-trigger`, workflow_version_id: versionId,
-    status: "waiting_for_inspector", current_phase: "inspector_awaiting_fresh_observation",
-    started_at: first.started_at + 1000, completed_at: null });
+    status: options.status ?? "waiting_for_inspector",
+    current_phase: options.status ? "cancelled" : "inspector_awaiting_fresh_observation",
+    started_at: first.started_at + 1000, completed_at: options.status ? first.started_at + 2000 : null });
   cloneRow("workflow_submissions", seeded.ids.submission, { id: `${later}-submission`, run_id: later,
     trigger_key: `${later}-submission-trigger` });
   if (options.attempt) {
@@ -5036,3 +5037,23 @@ test("only direct evidence makes a run the pull request's owner: its Pull Reques
   assert.deepEqual(seeded.store.listRunsWithPullRequestAction(seeded.key).map((run) => run.id), [seeded.ids.run]);
   assert.equal((await ask())?.submissionId, seeded.ids.submission, "the action's record is ownership");
 });
+
+for (const newer of [
+  { name: "skipped its Local Inspector stage and was then cancelled", stage: true, attempt: "skipped" as const, status: "cancelled" as const },
+  { name: "was cancelled before its Local Inspector review finished", stage: true, status: "cancelled" as const },
+  { name: "failed before its Local Inspector review finished", stage: true, status: "failed" as const },
+]) {
+  test(`a newer owner that ${newer.name} still keeps the GitHub review over an older run's pass`, async (t) => {
+    const seeded = await seedLocal();
+    t.after(localTeardown(seeded));
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+    const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+    assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the older run alone vouches for the head");
+
+    const later = await newerRunOnSamePullRequest(seeded, newer);
+    assert.equal(seeded.store.getRun(later)?.status, newer.status);
+    assert.equal(seeded.store.listRunsNamingGatePr(seeded.key)[0]?.id, later, "the terminal newer run owns the pull request");
+    assert.equal(await ask(), null, "a terminal newer owner decides no, and the older pass does not stand in");
+  });
+}

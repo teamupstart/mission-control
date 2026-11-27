@@ -3422,8 +3422,9 @@ export class WorkflowManager {
    * The worker asks about the owning runs newest first, and the newest decides: a newer run
    * whose version has no Local Inspector stage, or whose stage skipped, failed or blocked, is no
    * match even if an older run passed the same tree, because that newer run's gate is waiting
-   * for the GitHub review. Only while the newer run's Local Inspector review is still pending
-   * does an older run's pass keep vouching for a head it already reviewed.
+   * for the GitHub review. A newer owner that was cancelled or failed is no match too. Only
+   * while the newer run's Local Inspector review is still pending, in a run still going, does an
+   * older run's pass keep vouching for a head it already reviewed.
    *
    * Every other case answers null, which keeps today's GitHub review: Local review off, a
    * different tree or base, a head git cannot resolve, and - until Shipping accepts local
@@ -3437,7 +3438,9 @@ export class WorkflowManager {
     const adopted = getInspectorPr(prKey);
     if (!adopted || !getInspectorConfig().localReview) return null;
     for (const run of this.localReviewOwners(adopted.key)) {
-      if (run.status === "cancelled" || run.status === "failed") continue;
+      // A cancelled or failed owner still decides, and it decides no: it never finishes a local
+      // review, so it can neither vouch for a head nor let an older run's pass stand in for one.
+      if (run.status === "cancelled" || run.status === "failed") return null;
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       if (version?.completionPolicy.kind !== "inspector") return null;
       const review = this.localReviewState(run.id, version);

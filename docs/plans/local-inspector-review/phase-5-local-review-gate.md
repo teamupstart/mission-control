@@ -159,9 +159,11 @@ Request action recorded the key as the pull request it opened (completed runs in
 matched head stays matched after the workflow finishes). A run that merely shares the session and
 repository is not an owner. A newer owner whose version has no Local Inspector stage, or whose
 latest attempt skipped, failed or blocked, is no match even when an older run passed the same
-tree, because that newer run's gate waits for the GitHub review. Only while the newer run's
-Local Inspector review is still pending (a node queued, running or waiting, or a round that has
-not reached the stage) does an older run's pass keep vouching for a head it already reviewed.
+tree, because that newer run's gate waits for the GitHub review. A newer owner that was cancelled
+or failed is no match too: it never finishes a local review. Only while the newer run's Local
+Inspector review is still pending (a node queued, running or waiting, or a round that has not
+reached the stage) in a run still going does an older run's pass keep vouching for a head it
+already reviewed.
 The gate asks only about its own run.
 
 ### Gate and worker behavior

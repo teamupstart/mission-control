@@ -442,7 +442,29 @@ workflow reaches a [Local Inspector Command](workflows.md#local-inspector-comman
 Inspector must be on. Both Dry run and Live support local review. Findings go to the author's
 session, and enabled reviews require a verified read-only workload on the submitted checkout.
 Tune the blocking severity, timeout and allowance in **Library > Commands > Local Inspector**.
-The GitHub Inspector continues to review posted heads in this preview.
+
+With Local review on, a workflow that ran the Local Inspector last before its Pull Request
+action (No-Mistakes Review version 23) does not get a GitHub review round:
+
+| Setting | Before the pull request | After the pull request |
+| --- | --- | --- |
+| Local review off | Nothing | Every pushed head is reviewed on GitHub. Live posts, Dry run records |
+| Local review on, Dry run | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed, never posted |
+| Local review on, Live | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed and posted as before |
+
+A head matches when its Git tree and base branch equal what a passed (not skipped) Local
+Inspector attempt read. For a matched head the worker keeps observing the pull request (state,
+checks, CodeRabbit follow-up, stack lifecycle and the merge check) but starts no review,
+answers no thread and posts nothing. It records the head with review posture `local` under a
+Live Inspector, and with the current posture (`dry-run` or `not-allowlisted`) otherwise. The
+session chip shows a check mark and says the head was reviewed locally. Existing Inspector
+threads on the pull request are left as they are. See
+[Local review replaces the GitHub round](workflows.md#local-review-replaces-the-github-round)
+for the fallbacks.
+
+Until Shipping accepts a local review as merge provenance, the merge predicate refuses the
+`local` posture as an unpublished review, and a repository holding the **merge grant** keeps the
+GitHub review for every head, so nothing there is left without merge provenance.
 
 ## Shipping (YOLO mode)
 

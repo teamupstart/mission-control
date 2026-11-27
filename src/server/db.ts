@@ -2511,6 +2511,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       stack_note         TEXT,
       stack_state        TEXT,           -- JSON StackObservation: the last lifecycle observation
       stack_await_replacement_at INTEGER, -- the operator chose Wait for a replacement
+      local_review_head_sha TEXT,        -- head matched to a passed Local Inspector review
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -5178,6 +5179,10 @@ function migrate(d: DatabaseSync): void {
   // operator has chosen to wait for a replacement parent.
   addColumn(d, "inspector_prs", "stack_state", "TEXT");
   addColumn(d, "inspector_prs", "stack_await_replacement_at", "INTEGER");
+  // The head the worker matched to a passed Local Inspector review, in any posture. Nullable
+  // with no default: a row written before it was never matched, so it reads as reviewed (or
+  // not) on GitHub exactly as before.
+  addColumn(d, "inspector_prs", "local_review_head_sha", "TEXT");
   // One row per (pull request, prompt kind, condition tip): the claim taken BEFORE a catch-up
   // or restack prompt is typed, exactly as CodeRabbit's receipts are. `outcome` is
   // `uncertain` from the claim until delivery is confirmed (`delivered`); a confirmed
@@ -17537,6 +17542,7 @@ interface InspectorPrRow {
   stack_note?: string | null;
   stack_state?: string | null;
   stack_await_replacement_at?: number | null;
+  local_review_head_sha?: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -17610,6 +17616,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     reviewedBaseRef: r.reviewed_base_ref ?? null,
     reviewedBaseSha: r.reviewed_base_sha ?? null,
     mergeCommitSha: r.merge_commit_sha ?? null,
+    localReviewHeadSha: r.local_review_head_sha ?? null,
     stack: rowToStackLineage(r),
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
@@ -17712,6 +17719,8 @@ export function updateInspectorPr(
     /** Written beside `reviewedBaseRef`; advanced when GitHub confirms the same merge base. */
     reviewedBaseSha?: string | null;
     mergeCommitSha?: string | null;
+    /** The head matched to a passed Local Inspector review, or null once a head is not. */
+    localReviewHeadSha?: string | null;
   },
   now: number,
 ): void {
@@ -17728,7 +17737,7 @@ export function updateInspectorPr(
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
               title = ?, base_ref_name = ?, reviewed_base_ref = ?, reviewed_base_sha = ?, merge_commit_sha = ?,
-              updated_at = ?
+              local_review_head_sha = ?, updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -17755,6 +17764,7 @@ export function updateInspectorPr(
       next.reviewedBaseRef ?? null,
       next.reviewedBaseSha ?? null,
       next.mergeCommitSha ?? null,
+      next.localReviewHeadSha ?? null,
       now,
       key,
     );

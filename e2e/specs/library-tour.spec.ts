@@ -438,7 +438,9 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await expect(dialog).toContainText("Step 11 of 15");
   const authoredStrip = dashboard.getByRole("group", { name: "Workflow pipeline editor" });
   await expect(authoredStrip).toHaveCSS("outline-width", "2px");
-  await expect(authoredStrip.locator("section.wf-pipeline-stage")).toHaveCount(6);
+  await expect(dialog).toContainText("Seven stages");
+  await expect(dialog).toContainText("the Local Inspector, which skips unless local review is on");
+  await expect(authoredStrip.locator("section.wf-pipeline-stage")).toHaveCount(7);
   await shoot(dashboard, "04-no-mistakes");
   await dialog.getByRole("button", { name: "Next" }).click();
 

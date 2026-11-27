@@ -107,6 +107,7 @@ import {
   inheritedAttempts,
   inheritedPasses,
   inspectorGateSentence,
+  localReviewGate,
   inspectorFooterStatus,
   latestAttemptsFor,
   elapsedSpansFor,
@@ -3237,13 +3238,14 @@ function CompletionPane({
 }): React.JSX.Element {
   const gate = detail.inspectorGate;
   const spentGateCondition = spentInspectorGateCondition(detail);
+  const local = localReviewGate(detail);
   return (
     <>
       {gate && summary.gate && (
         <div className="wf-run-strip">
           <RunStat
             label="Gate"
-            value={summary.gate.label}
+            value={local ? "Reviewed locally" : summary.gate.label}
             tone={summary.gate.tone === "passed" ? "ok" : summary.gate.tone === "failed" ? "alert" : null}
           />
           <RunStat
@@ -3272,7 +3274,16 @@ function CompletionPane({
       {gate && (
         <>
           <p className="wf-run-sentence">{inspectorGateSentence(detail)}</p>
-          <h5 className="wf-run-subhead">Findings</h5>
+          {local && (
+            <section aria-label="Local Inspector review">
+              <h5 className="wf-run-subhead">Local Inspector findings</h5>
+              {local.outcome?.output
+                ? <pre className="wf-run-check-output">{local.outcome.output}</pre>
+                : <p className="wf-run-empty">The Local Inspector recorded no findings on the reviewed tree.</p>}
+              {local.outcome?.note && <p className="wf-run-meta">{local.outcome.note}</p>}
+            </section>
+          )}
+          <h5 className="wf-run-subhead">{local ? "GitHub Inspector findings" : "Findings"}</h5>
           {gate.findings.length === 0 ? (
             /* Two sentences, because "no findings" means two different things. A gate that
                has adopted a pull request and found nothing wrong is a result; a gate that has

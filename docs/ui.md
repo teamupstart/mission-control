@@ -622,7 +622,7 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
    and node palette.
 10. **Draft and published** spotlights the Pipeline/Graph toggle, then the **disabled**
     Publish button - the draft-versus-published lesson without a draft existing.
-11. **No-Mistakes Review** walks the six stages on the authored pipeline strip, including optional CodeRabbit.
+11. **No-Mistakes Review** walks the seven stages on the authored pipeline strip, including optional CodeRabbit and the Local Inspector.
 12. **Binding it** spotlights **Bind to a session…** and names the postures version 10 ships.
 13. **A run, moving** opens `#/runs/:id` on one run that has already ended and spotlights its
     pipeline strip, then its review worklist.

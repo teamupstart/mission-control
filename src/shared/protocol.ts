@@ -3201,6 +3201,7 @@ export const InspectorInspectionSchema = z.object({
   reviewedBaseRef: z.string().nullable().optional(),
   reviewedBaseSha: z.string().nullable().optional(),
   mergeCommitSha: z.string().nullable().optional(),
+  localReviewHeadSha: z.string().nullable().optional(),
   // Stacked pull requests' lineage and standing are carried as objects but not restated
   // field by field: no reader of this schema decides anything from them.
   stack: z.custom<StackLineage | null>((value) => value === null || typeof value === "object").optional(),
@@ -7900,7 +7901,7 @@ export const WorkflowInspectorGateStateSchema = z.object({
   enteredAt: z.number().int().nonnegative(),
   lastObservedAt: z.number().int().nonnegative().nullable(),
   observedHeadSha: z.string().min(1).max(100).nullable(),
-  reviewPosture: z.enum(["off", "dry-run", "not-allowlisted", "live"]).nullable(),
+  reviewPosture: z.enum(INSPECTOR_POSTURES).nullable(),
   waitReason: z.enum(WORKFLOW_GATE_WAIT_REASONS).nullable(),
   findingFingerprints: z
     .array(z.string().min(1).max(200))
@@ -7916,6 +7917,14 @@ export const WorkflowInspectorGateStateSchema = z.object({
     minimumObservedAt: z.number().int().nonnegative(),
     requestedAt: z.number().int().nonnegative(),
     verifiedHeadSha: z.string().min(1).max(100).optional(),
+  }).optional(),
+  // Present only when the gate completed on a head matching a passed Local Inspector review.
+  localReview: z.object({
+    submissionId: z.string().min(1).max(200),
+    attemptId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100),
+    treeOid: z.string().min(1).max(100),
+    baseRef: z.string().min(1).max(500),
   }).optional(),
 });
 

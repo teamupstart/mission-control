@@ -96,6 +96,7 @@ import type {
   WorkflowRetainedEvidenceLocator,
   WorkflowStagedEvidenceList,
   WorkflowSessionEvidenceList,
+  WorkflowLocalReviewMatch,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
@@ -114,6 +115,7 @@ import {
   selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
+  localReviewBaseBranch,
   type WorkflowLaunchBlock,
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
@@ -134,6 +136,7 @@ import {
   SessionActionCompletedOutputSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowContextSnapshotSchema,
+  WorkflowCheckOutcomeSchema,
 } from "@shared/protocol.ts";
 import type { InspectionUpdated, InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
@@ -246,6 +249,7 @@ import {
   taskReposFor,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
+import { repositoryHoldsMergeGrant } from "../shipping/config.ts";
 import { parsePrUrl, readInspectorBranchActivity, recheckInspectorRecoveryTip } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
@@ -3262,6 +3266,112 @@ export class WorkflowManager {
   }
 
   /**
+   * The one answer to "does this pull request head match a passed local review".
+   *
+   * The completion gate and the Inspector worker both ask here, and nothing else decides it.
+   * A head matches when a workflow run that owns the pull request has a passed - not skipped -
+   * Local Inspector attempt on its latest submission, and the head's Git tree and the pull
+   * request's base branch equal the tree and base that review read. The match is by tree, not
+   * by commit, so a re-created commit with the same tree still matches. Owners are asked newest
+   * first; a newer run still mid-review does not hide a head an earlier run already passed.
+   * The gate asks only about its own run.
+   *
+   * Every other case answers null, which keeps today's GitHub review: Local review off, a
+   * version without the stage, a skipped or failed stage, a different tree or base, a head git
+   * cannot resolve, and - until Shipping accepts local reviews - a repository holding the merge
+   * grant, so no head there is left without merge provenance.
+   */
+  async localReviewMatch(
+    prKey: string,
+    head: { headSha: string; baseRefName: string | null },
+  ): Promise<WorkflowLocalReviewMatch | null> {
+    const adopted = getInspectorPr(prKey);
+    if (!adopted || !getInspectorConfig().localReview) return null;
+    for (const run of this.localReviewOwners(adopted)) {
+      if (run.status === "cancelled" || run.status === "failed") continue;
+      const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+      if (version?.completionPolicy.kind !== "inspector") continue;
+      const match = await this.matchLocalReview(run, version, adopted, head,
+        this.store.getBinding(run.bindingId)?.sessionRepoRoot || adopted.repoRoot);
+      if (match) return match;
+    }
+    return null;
+  }
+
+  /**
+   * The runs that reviewed this pull request, newest first: each one's gate pinned the key, or -
+   * in the moment between the Pull Request action opening it and the gate pinning it - its
+   * session and repository adopted it after the run started, the rule `matchesUnpinnedGate`
+   * applies.
+   */
+  private localReviewOwners(adopted: InspectorPr): WorkflowRun[] {
+    const owners: WorkflowRun[] = this.store.listRunsNamingGatePr(adopted.key)
+      .filter((run) => this.gateState(run)?.prKey === adopted.key);
+    for (const binding of this.store.listBindings()) {
+      if (binding.state !== "active" || !binding.sessionId || !binding.sessionRepoRoot) continue;
+      if (adopted.sessionId !== binding.sessionId || adopted.repoRoot !== binding.sessionRepoRoot) continue;
+      const run = this.store.activeRunForBinding(binding.id);
+      if (run && !this.gateState(run)?.prKey && adopted.adoptedAt >= run.startedAt) owners.push(run);
+    }
+    return owners.sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id));
+  }
+
+  private async matchLocalReview(
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    pr: Pick<InspectorPr, "cwd" | "repoRoot">,
+    head: { headSha: string; baseRefName: string | null },
+    repositoryRoot: string | null,
+  ): Promise<WorkflowLocalReviewMatch | null> {
+    if (!getInspectorConfig().localReview || !repositoryRoot || !head.baseRefName) return null;
+    if (repositoryHoldsMergeGrant(pr.cwd, pr.repoRoot)) return null;
+    const passed = this.passedLocalReview(run.id, version);
+    if (!passed || localReviewBaseBranch(passed.baseRef) !== head.baseRefName) return null;
+    const tree = await (this.options.resolveCommitTree ?? resolveCommitTree)(repositoryRoot, head.headSha)
+      .catch(() => null);
+    if (!tree || tree !== passed.treeOid) return null;
+    return { ...passed, headSha: head.headSha };
+  }
+
+  /**
+   * The passed Local Inspector review of the run's latest submission, or null.
+   *
+   * A continuation segment (the Pull Request action's) runs nothing before its action, so the
+   * review it carries is the one its parent segment recorded. Every Local Inspector node in the
+   * version must have passed on the same tree; one that skipped, failed or blocked is no match.
+   */
+  private passedLocalReview(runId: string, version: WorkflowVersion): Omit<WorkflowLocalReviewMatch, "headSha"> | null {
+    const nodes = new Set(version.graph.nodes
+      .filter((node) => node.kind === "check" && node.slot === "inspector")
+      .map((node) => node.id));
+    if (nodes.size === 0) return null;
+    let submission = this.store.latestSubmission(runId);
+    while (submission?.mode === "full_workflow") {
+      const attempts = this.store.listAttempts(submission.id).filter((attempt) => nodes.has(attempt.nodeId));
+      if (attempts.length === 0) {
+        if (submission.segment === 0 || !submission.parentSubmissionId) return null;
+        submission = this.store.getSubmission(submission.parentSubmissionId);
+        continue;
+      }
+      let match: Omit<WorkflowLocalReviewMatch, "headSha"> | null = null;
+      for (const nodeId of nodes) {
+        // Ordered oldest first, so the last one is the node's current answer.
+        const attempt = attempts.filter((row) => row.nodeId === nodeId).at(-1);
+        if (attempt?.state !== "completed") return null;
+        const outcome = WorkflowCheckOutcomeSchema.safeParse(attempt.output);
+        const review = outcome.success ? outcome.data.localInspector : undefined;
+        if (outcome.data?.status !== "passed" || review?.status !== "passed"
+          || !review.publicationTree || !review.baseRef) return null;
+        if (match && (match.treeOid !== review.publicationTree || match.baseRef !== review.baseRef)) return null;
+        match ??= { submissionId: submission.id, attemptId: attempt.id,
+          treeOid: review.publicationTree, baseRef: review.baseRef };
+      }
+      return match;
+    }
+    return null;
+  }
+
+  /**
    * Give a run that spent its repair budget more rounds, so it stops being a dead end.
    *
    * It raises the budget and, for one class of run, puts the status back.
@@ -5134,6 +5244,29 @@ export class WorkflowManager {
     // A recovered binding may predate repository capture. The pinned adopted PR is
     // durable repository provenance; never fall back to an unrelated session's cwd.
     const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
+    // The local path: the pushed head is the content a passed Local Inspector review read, so
+    // there is nothing for the GitHub Inspector to add. A run already repairing GitHub
+    // findings stays on the GitHub path it is on. No match - a different tree or base, a
+    // skipped stage, a version without one - falls through to today's checks unchanged, so a
+    // different head keeps its `head_mismatch` wait and every other head its GitHub review.
+    if (run.status !== "waiting_for_new_head" && state.observedHeadSha) {
+      const local = await this.matchLocalReview(run, version, ledger,
+        { headSha: state.observedHeadSha, baseRefName: ledger.baseRefName ?? null }, repositoryRoot);
+      if (local) {
+        this.transitionInspectorGate(
+          run,
+          state,
+          { ...state, targetHeadSha: local.headSha, waitReason: null, findingFingerprints: [], localReview: local },
+          "completed",
+          "complete",
+          "inspector_gate_clean",
+          { prKey: state.prKey, targetHeadSha: local.headSha, reviewPosture: state.reviewPosture,
+            path: "local", submissionId: local.submissionId, treeOid: local.treeOid },
+          now,
+        );
+        return;
+      }
+    }
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
       if (recoveryHead && recoveryHead !== newHead) {
@@ -5420,7 +5553,7 @@ export class WorkflowManager {
       "completed",
       "complete",
       "inspector_gate_clean",
-      { prKey: state.prKey, targetHeadSha: state.targetHeadSha, reviewPosture: ledger.reviewPosture },
+      { prKey: state.prKey, targetHeadSha: state.targetHeadSha, reviewPosture: ledger.reviewPosture, path: "github" },
       now,
     );
   }

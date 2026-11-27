@@ -22,6 +22,7 @@ import { llmRunner } from "../llm/index.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import type { LlmSpendRole } from "@shared/llm-spend.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
+import type { WorkflowLocalReviewMatch } from "@shared/workflow.ts";
 import { unref } from "../util/timers.ts";
 import {
   INSPECTOR_LIMITS,
@@ -656,6 +657,7 @@ async function processPr(
   replyRetryOrder: Map<string, Set<string>>,
   onObserved: ((snapshot: PrSnapshot, observedAt: number) => void) | null = null,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
+  localReview: LocalReviewMatcher = noLocalReview,
 ): Promise<boolean> {
   const tick: TickState = { failed: false };
   const backedOff = pr.nextAttemptAt !== null && now < pr.nextAttemptAt;
@@ -783,6 +785,16 @@ async function processPr(
   recordFindingUrls(rows, snapshotLinkSources(s), login);
   const posture = inspectorPosture(cfg, pr.cwd, pr.repoRoot);
   const post = posture === "live";
+  // A head whose tree a passed Local Inspector review already read. The workflow manager is
+  // the one owner of that answer; a failure to get it is no match, which keeps the GitHub
+  // review. A matched head gets no review, no reply and no post below - observation, the
+  // CodeRabbit follow-up, the stack lifecycle and the merge check above and below still run.
+  const localMatch = s.headSha
+    ? await localReview(pr.key, { headSha: s.headSha, baseRefName: s.baseRefName || null }).catch((error: unknown) => {
+      console.error("[inspector] local review match failed:", pr.key, error);
+      return null;
+    })
+    : null;
   const readDiff = diffOncePerTick(dir, pr);
   let acted = false;
   const resolvedThreadIds = new Set<string>();
@@ -791,7 +803,7 @@ async function processPr(
   // Both share a queue so a model failure and a GitHub refusal follow the same retry order.
   const work = new Map<string, () => Promise<string | null>>();
   const resolutionKey = (threadId: string) => `resolve:${threadId}`;
-  if (post) {
+  if (post && !localMatch) {
     for (const w of threadsAwaitingUs(s, rows, login)) {
       if (w.newest.databaseId === null) continue;
       const key = `reply:${w.newest.databaseId}`;
@@ -829,8 +841,8 @@ async function processPr(
     }
   }
 
-  const order = new Set(post ? [...(replyRetryOrder.get(pr.key) ?? []), ...work.keys()] : []);
-  if (post) replyRetryOrder.delete(pr.key);
+  const order = new Set(post && !localMatch ? [...(replyRetryOrder.get(pr.key) ?? []), ...work.keys()] : []);
+  if (post && !localMatch) replyRetryOrder.delete(pr.key);
   for (const key of order) {
     const run = work.get(key);
     if (run && inspectorPosture(getInspectorConfig(), pr.cwd, pr.repoRoot) !== "live") {
@@ -898,6 +910,8 @@ async function processPr(
     await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)
   ) return true;
 
+  if (localMatch) return recordLocalReview(pr, s, posture, now) || acted;
+
   // 3. Nothing pushed: reuse the completed review and finish any pending publication.
   //
   // A dry-run review is current as an analysis result, but not as merge provenance.
@@ -915,6 +929,8 @@ async function processPr(
     !reviewBaseChanged(pr.reviewedBaseRef ?? null, s.baseRefName || null, s.defaultBranch || null) &&
     // ...and the same base name over a moved merge base is a different diff too.
     baseReview === "current" &&
+    // A matched head returned above, so a `local` head here no longer matches and is
+    // reviewed on GitHub once the posture is live.
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
     // A legacy or incomplete review cannot certify safety. Once its retained findings
     // are resolved, review again on this head; only complete provenance can be reused.
@@ -939,6 +955,47 @@ async function processPr(
   }
   const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick, readDiff, resolvedThreadIds);
   return acted || reviewed;
+}
+
+/** The workflow manager's answer to "does this head match a passed local review". */
+export type LocalReviewMatcher = (
+  prKey: string,
+  head: { headSha: string; baseRefName: string | null },
+) => Promise<WorkflowLocalReviewMatch | null>;
+
+const noLocalReview: LocalReviewMatcher = async () => null;
+
+/**
+ * Record a head the Local Inspector passed, with no GitHub review behind it.
+ *
+ * `local` only under a Live Inspector. In Dry run or for a repository not on the Inspector's
+ * list the current posture is recorded instead, as a dry review is, so Dry run never produces
+ * a `local` head; the first sweep after a switch to Live finds the match still holds and
+ * records `local`, again without a GitHub review. Returns whether the row changed.
+ */
+function recordLocalReview(
+  pr: InspectorPr,
+  s: PrSnapshot,
+  posture: ReturnType<typeof inspectorPosture>,
+  now: number,
+): boolean {
+  const reviewPosture = posture === "live" ? "local" : posture;
+  const current = getInspectorPr(pr.key) ?? pr;
+  if (current.headSha === s.headSha && current.localReviewHeadSha === s.headSha
+    && current.reviewPosture === reviewPosture && current.lastError === null) return false;
+  updateInspectorPr(pr.key, {
+    headSha: s.headSha,
+    localReviewHeadSha: s.headSha,
+    reviewPosture,
+    reviewComplete: true,
+    reviewedBaseRef: s.baseRefName || null,
+    reviewedBaseSha: s.baseSha || null,
+    lastError: null,
+    failCount: 0,
+    lastFailKind: null,
+    nextAttemptAt: null,
+  }, now);
+  return true;
 }
 
 async function answerFollowUp(
@@ -1605,6 +1662,8 @@ function reconcilePosting(
  */
 export interface InspectorStartOptions {
   workflowGate?: (prKey: string) => WorkflowGateStanding;
+  /** The workflow manager's local review match; absent means no head is ever matched. */
+  localReview?: LocalReviewMatcher;
 }
 
 export function startInspector(registry: Registry, options: InspectorStartOptions = {}): () => void {
@@ -1693,6 +1752,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
               if (codeRabbitEnabled()) registry.refreshInspections();
             },
             options.workflowGate ?? (() => "none"),
+            options.localReview ?? noLocalReview,
           ));
           // Re-read after every completed review or failure. The immediate signal above
           // reports the fetched GitHub head; this one carries the resulting durable ledger.

@@ -53,7 +53,15 @@ export const INSPECTOR_LIMITS = {
  * operator's GitHub identity, in a repo they trusted, with the feature switched on.
  * Every other value names which switch is withholding that.
  */
-export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted"] as const;
+/**
+ * APPEND-ONLY: persisted beside a reviewed head.
+ *
+ * `local` is a recorded posture, never a current one: `inspectorPosture` cannot return it. The
+ * worker records it for a head whose tree matches a passed Local Inspector review, and only
+ * while the current posture is `live`, so Dry run never produces one. The merge predicate
+ * refuses it until Shipping accepts local reviews.
+ */
+export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted", "local"] as const;
 export type InspectorPosture = (typeof INSPECTOR_POSTURES)[number];
 
 /**
@@ -70,7 +78,7 @@ export function inspectorPosture(
   cfg: Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist">,
   cwd: string | null,
   repoRoot: string | null,
-): InspectorPosture {
+): Exclude<InspectorPosture, "local"> {
   if (!cfg.enabled) return "off";
   if (cfg.mode !== "live") return "dry-run";
   if (!repoAllowlisted(cwd, repoRoot, cfg.repoAllowlist)) return "not-allowlisted";
@@ -83,6 +91,11 @@ export function inspectorPosture(
  * A non-live current posture does not spend another model run: it still could not
  * publish the result. The transition to live is what makes an earlier dry-run,
  * unallowlisted, or legacy review stale for shipping purposes.
+ *
+ * A `local` head counts as unpublished here too. The worker never asks about a head that
+ * still matches a passed local review - it records that head and stops - so a `local` head
+ * that reaches this question no longer matches (Local review switched off, or the repository
+ * given the merge grant) and is reviewed on GitHub.
  */
 export function reviewNeedsLiveRerun(
   current: InspectorPosture,
@@ -252,5 +265,6 @@ export function inspectorSummaryOf(
     reviewedHeadSha: row.headSha,
     observedHeadSha: row.observedHeadSha,
     cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
+    localReviewHeadSha: row.localReviewHeadSha ?? null,
   };
 }

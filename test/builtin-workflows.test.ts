@@ -24,7 +24,7 @@ import { compileStages, projectStages, stageBlockers } from "../src/shared/workf
 import type { EvaluationStage, Stage } from "../src/shared/workflow-stages.ts";
 import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 import { BUILTIN_PERSONAS } from "../src/server/workflows/builtin-personas.ts";
-import { BUILTIN_SESSION_ACTIONS } from "../src/server/workflows/builtin-session-actions.ts";
+import { BUILTIN_SESSION_ACTIONS, PULL_REQUEST_SESSION_ACTION_ID } from "../src/server/workflows/builtin-session-actions.ts";
 import {
   BUILTIN_WORKFLOWS,
   BUILTIN_WORKFLOW_ID_PREFIX,
@@ -244,7 +244,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 22),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 23),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -284,7 +284,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review (High Rigor)");
-  assert.equal(builtin.versions.length, 22);
+  assert.equal(builtin.versions.length, 23);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -410,7 +410,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 22, "one workflow, twenty-two versions");
+  assert.equal(builtin.versions.length, 23, "one workflow, twenty-three versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -707,7 +707,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 22);
+  assert.equal(builtin.versions.length, 23);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -880,7 +880,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 22);
+  assert.equal(builtin.versions.length, 23);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -1415,7 +1415,8 @@ for (const [slug, previousCount, historicalDigest] of [
 ] as const) {
   test(`documentation guidelines append a version without rewriting ${slug} bindings`, () => {
     const builtin = BUILTIN_WORKFLOWS.find((item) => item.definition.id === builtinWorkflowId(slug))!;
-    assert.equal(builtin.versions.length, previousCount + (slug === "no-mistakes-review" ? 2 : 1));
+    // No-Mistakes appended CodeRabbit (22) and the Local Inspector (23) after this one.
+    assert.equal(builtin.versions.length, previousCount + (slug === "no-mistakes-review" ? 3 : 1));
     assert.equal(createHash("sha256").update(JSON.stringify(builtin.versions.slice(0, previousCount)))
       .digest("hex"), historicalDigest, "a previously published snapshot changed");
     const previous = builtin.versions[previousCount - 1]!;
@@ -1445,3 +1446,55 @@ for (const [slug, previousCount, historicalDigest] of [
     ]);
   });
 }
+
+// Captured from the catalog before version 23 was appended. Versions 1 to 22 are what existing
+// bindings run, so appending the Local Inspector must leave every byte of them alone.
+const NO_MISTAKES_REVIEW_V1_TO_V22_DIGEST = "88dd18da7d70d5b869f76c019a649ae139c2159447ae49a0d64532e436a3a509";
+
+test("version 23 runs the Local Inspector last before the Pull Request action and rewrites no earlier version", () => {
+  const builtin = noMistakesReview();
+  assert.equal(builtin.versions.length, 23);
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(builtin.versions.slice(0, 22))).digest("hex"),
+    NO_MISTAKES_REVIEW_V1_TO_V22_DIGEST,
+    "a previously published No-Mistakes version changed",
+  );
+  const previous = builtin.versions[21]!;
+  const current = builtin.versions[22]!;
+  assert.equal(current.id, builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 23));
+  assert.equal(builtin.definition.currentVersionId, current.id);
+  assert.equal(current.sourceDraftRevision, previous.sourceDraftRevision + 1);
+  // The completion policy is version 22's: the gate after the pull request stays, and is what
+  // confirms the pushed content is the content the local review passed.
+  assert.deepEqual(current.completionPolicy, previous.completionPolicy);
+  assert.deepEqual(current.completionPolicy, { kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" });
+  assert.deepEqual(current.bindingDefaults, previous.bindingDefaults);
+  assert.equal(current.resumptionPolicy, previous.resumptionPolicy);
+  assert.equal(current.evidenceReadinessPolicy, previous.evidenceReadinessPolicy);
+
+  const before = shapeOf(asDraft(previous.graph));
+  const after = shapeOf(asDraft(current.graph));
+  assert.deepEqual(after, [...before.slice(0, -1), ["check:inspector"], before.at(-1)!],
+    "one stage, holding only the Local Inspector, immediately before the Pull Request action");
+  assert.deepEqual(after.at(-1), [`action:${PULL_REQUEST_SESSION_ACTION_ID}`]);
+
+  // A new node id, and every earlier node keeps its id and Persona snapshot.
+  const inspectorNodes = current.graph.nodes.filter((node) => node.kind === "check" && node.slot === "inspector");
+  assert.deepEqual(inspectorNodes.map((node) => node.id), ["nmr-check-local-inspector"]);
+  for (const version of builtin.versions.slice(0, 22)) {
+    assert.equal(version.graph.nodes.some((node) => node.id === "nmr-check-local-inspector"), false);
+    assert.equal(version.graph.nodes.some((node) => node.kind === "check" && node.slot === "inspector"), false);
+  }
+  for (const node of previous.graph.nodes) {
+    const same = current.graph.nodes.find((candidate) => candidate.id === node.id);
+    assert.ok(same, `node ${node.id} survives into version 23`);
+    if (node.kind === "persona") assert.deepEqual(same.kind === "persona" ? same.persona : null, node.persona);
+  }
+  // The stage's pass reaches the action and its fail returns to the session for repair, so a
+  // run that spends its rounds on the Local Inspector never opens a pull request.
+  const route = (port: string) => current.graph.edges
+    .filter((edge) => edge.source === "nmr-check-local-inspector" && edge.sourcePort === port)
+    .map((edge) => `${edge.target}:${edge.targetPort}`);
+  assert.deepEqual(route("pass"), ["nmr-pull-request:activate"]);
+  assert.deepEqual(route("fail"), ["nmr-session:return_for_changes"]);
+});

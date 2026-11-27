@@ -3,6 +3,7 @@ import { getAppConfig } from "../db.ts";
 import { ShippingConfigSchema } from "@shared/protocol.ts";
 import type { ShippingConfig, ShippingConfigPatch } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import { repoAllowlisted } from "@shared/allowlist.ts";
 
 // YOLO mode's config: a schema-validated blob over the `app_config` KV, exactly like the
 // Inspector's next door, so a new key needs no migration - Zod's defaults are applied on
@@ -30,4 +31,13 @@ export function setShippingConfig(patch: ShippingConfigPatch): ShippingConfig {
 /** An unavailable or malformed setting cannot authorize observation or delivery. */
 export function codeRabbitEnabled(): boolean {
   try { return getShippingConfig().codeRabbitAutoResolve; } catch { return false; }
+}
+
+/**
+ * Whether this repository holds the merge grant: it is on Shipping's own allowlist, whether
+ * or not YOLO mode is armed right now. An unreadable setting reads as holding it, which keeps
+ * the GitHub review - the direction that never leaves a head without merge provenance.
+ */
+export function repositoryHoldsMergeGrant(cwd: string | null, repoRoot: string | null): boolean {
+  try { return repoAllowlisted(cwd, repoRoot, getShippingConfig().repoAllowlist); } catch { return true; }
 }

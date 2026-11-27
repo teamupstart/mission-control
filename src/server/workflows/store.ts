@@ -5427,6 +5427,24 @@ export class WorkflowStore {
     return row ? parseWorkflowRunRow(row) : null;
   }
 
+  /**
+   * Runs whose stored gate names this pull request key, newest first.
+   *
+   * A text prefilter only: the caller decodes each gate through the lifecycle decoder and keeps
+   * the runs whose gate actually pinned the key. Terminal runs are included on purpose - a
+   * completed run still says which pull request it reviewed.
+   */
+  listRunsNamingGatePr(prKey: string): WorkflowRun[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_runs
+        WHERE gate_state_json IS NOT NULL AND instr(gate_state_json, ?) > 0
+        ORDER BY started_at DESC, id DESC`,
+    ).all(JSON.stringify(prKey)) as unknown[];
+    return rows.flatMap((row) => {
+      try { return [parseWorkflowRunRow(row)]; } catch (error) { diagnose(error); return []; }
+    });
+  }
+
   listRuns(): WorkflowRun[] {
     const rows = this.db.prepare(`SELECT * FROM workflow_runs ORDER BY updated_at DESC`).all() as unknown[];
     return rows.flatMap((row) => {

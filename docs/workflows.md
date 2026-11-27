@@ -354,7 +354,7 @@ Their earlier versions remain available with their original review graphs and co
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks No-Mistakes Review - its six stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its seven stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -381,6 +381,10 @@ Version 22 inserts optional YAML-enabled CodeRabbit at stage 2, moving these Per
 stages 3, 4 and 5. Earlier versions retain their original numbering.
 Each group runs in parallel behind its own All-pass Join. Every fail returns to the session for
 repair, and the Pull Request action does not run until all three Persona stages pass.
+Version 23 adds the [Local Inspector](#local-inspector-command-preview) as stage 6, the last
+stage before the Pull Request action, so it reviews content every other reviewer already
+accepted. With Local review off the stage skips with a note and version 23 behaves as
+version 22. See [Local review replaces the GitHub round](#local-review-replaces-the-github-round).
 
 Test Coverage Judge assesses whether the submitted tests appropriately cover changed material
 executable behavior through meaningful happy-path, boundary, and exception assertions. It traces
@@ -3153,8 +3157,42 @@ its exhaustion policy is **Skip**.
 Submission capture records whether local review is enabled. When the preview, Inspector or
 local review is off, the stage skips with a note. An enabled stage blocks for operator action
 if the repository lacks Commands permission, the submitted worktree is unavailable, the
-provider fails, the diff is oversized, or findings cannot be retained. GitHub Inspector
-continues reviewing after the Pull Request action.
+provider fails, the diff is oversized, or findings cannot be retained.
+
+### Local review replaces the GitHub round
+
+No-Mistakes Review version 23 places the Local Inspector last before the Pull Request action
+and keeps version 22's Inspector completion gate. With Local review on, the gate after the pull
+request is a check, not a review: it completes the run when the submission's Local Inspector
+attempt **passed** (not skipped) and the open pull request's head has the Git tree that review
+read, on the base branch it compared against. The match is by tree and base, not by commit, so a
+re-created commit with the same tree still matches. No remote model call runs and nothing is
+posted, so the change reaches GitHub with one push and runs CI once. The Completion tab says
+**Reviewed locally** and lists the Local Inspector's findings, and the gate's
+`inspector_gate_clean` event records `path: "local"` (or `"github"` on the GitHub path).
+
+The GitHub Inspector still sweeps the pull request for state, head, checks, CodeRabbit
+follow-up, the stack lifecycle and Shipping. For a matched head it starts no review, answers no
+thread and posts nothing. Under a Live Inspector it records the head with review posture
+`local`; in Dry run, or in a repository not on its list, it records the current posture, so Dry
+run never produces a `local` head. Switching to Live records `local` on the next sweep, again
+without a GitHub review. The workflow manager owns the match, and the gate and the worker both
+ask it.
+
+Every other head keeps today's GitHub review, so no pull request silently loses review:
+
+- a later push whose tree differs, such as a CI repair or a conflict merge. The gate waits on
+  `head_mismatch` for a full workflow round as it always has;
+- a run whose Local Inspector stage skipped, failed or blocked, and any workflow version
+  without the stage, including bindings pinned to version 22 or earlier;
+- a pull request opened outside a workflow;
+- every head in a repository holding the Shipping merge grant. Shipping does not yet accept a
+  local review as merge provenance and refuses the `local` posture, so those repositories keep
+  the GitHub review until it does.
+
+A run whose repair budget ends while the Local Inspector still fails stops at `round_limit`
+before the Pull Request action, so the gate is never reached and no GitHub review starts for
+it. Local Inspector findings stay run data. They are not copied into the Inspections table.
 
 ## Local CodeRabbit Command
 

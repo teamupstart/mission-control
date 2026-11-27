@@ -26,7 +26,7 @@ for (const name of ["General Review", "Bug Fix Review", "No-Mistakes Review (Hig
     await dashboard.getByRole("button", { name: new RegExp(name.replace(/[()]/g, "\\$&")) }).click();
     await expect(dashboard.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(name);
     const stages = dashboard.locator(".wf-pipeline-strip section.wf-pipeline-stage");
-    await expect(stages).toHaveCount(name === "No-Mistakes Review (High Rigor)" ? 6 : 5);
+    await expect(stages).toHaveCount(name === "No-Mistakes Review (High Rigor)" ? 7 : 5);
     const first = stages.first();
     await expect(first.locator(".wf-pipeline-stage-name")).toHaveText("Stage 1");
     await expect(first.locator(".wf-pipeline-reviewer-name")).toHaveText([
@@ -58,7 +58,7 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   await expect(pipeline).toBeVisible();
   const stages = pipeline.locator("section.wf-pipeline-stage");
-  await expect(stages).toHaveCount(6);
+  await expect(stages).toHaveCount(7);
   await expect(stages.nth(1).locator(".wf-pipeline-reviewer-name")).toHaveText(["Commandcoderabbit"]);
 
   const stage2 = stages.nth(2);
@@ -92,7 +92,9 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
     "Slop Filter",
   ]);
 
-  const pullRequest = stages.nth(5);
+  // Version 23: the Local Inspector, alone in its stage, immediately before the action.
+  await expect(stages.nth(5).locator(".wf-pipeline-stage-name")).toHaveText("Command · Local Inspector");
+  const pullRequest = stages.nth(6);
   await expect(pullRequest.locator(".wf-pipeline-stage-name")).toHaveText("Pull Request");
   await expect(pipeline.locator(".wf-pipeline-inspector")).toBeVisible();
 

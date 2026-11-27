@@ -5173,3 +5173,39 @@ for (const change of ["merge grant given", "Local review switched off"] as const
     assert.equal(gateOf(seeded).localReview, undefined);
   });
 }
+
+const { localReviewBaseBranch } = await import("../src/shared/workflow.ts");
+
+test("localReviewBaseBranch reads the branch from each recorded ref form and refuses the rest", () => {
+  assert.equal(localReviewBaseBranch("refs/remotes/origin/main"), "main");
+  assert.equal(localReviewBaseBranch("refs/remotes/upstream/release/2026"), "release/2026");
+  assert.equal(localReviewBaseBranch("refs/heads/main"), "main");
+  assert.equal(localReviewBaseBranch("origin/feature/x"), "feature/x");
+  for (const refused of ["refs/remotes/origin/HEAD", "origin/HEAD", "refs/heads/HEAD", "main", "refs/tags/v1", "upstream/main", ""]) {
+    assert.equal(localReviewBaseBranch(refused), null, refused);
+  }
+});
+
+for (const baseRef of ["refs/heads/main", "origin/main", "refs/remotes/upstream/main"]) {
+  test(`a passed review recorded against ${baseRef} matches a pull request based on main`, async (t) => {
+    const seeded = await seedLocal({ localInspector: { status: "passed", publicationTree: REVIEWED_TREE, baseRef } });
+    t.after(localTeardown(seeded));
+    const match = await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+    assert.equal(match?.baseRef, baseRef, "the worker's answer is a match");
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the gate did not complete locally");
+    assert.equal(gateOf(seeded).localReview?.baseRef, baseRef);
+  });
+}
+
+for (const baseRef of ["refs/remotes/origin/HEAD", "main", "refs/tags/v1"]) {
+  test(`a passed review recorded against unreadable base ref ${baseRef} keeps the GitHub review`, async (t) => {
+    const seeded = await seedLocal({ localInspector: { status: "passed", publicationTree: REVIEWED_TREE, baseRef } });
+    t.after(localTeardown(seeded));
+    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "an unreadable recorded base did not fall back to the GitHub review");
+    assert.equal(gateOf(seeded).localReview, undefined);
+  });
+}

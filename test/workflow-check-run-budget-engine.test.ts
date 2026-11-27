@@ -29,6 +29,7 @@ import type {
   WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { gitIn, seedGitHistory } from "./helpers/git-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-check-run-budget-"));
@@ -775,6 +776,85 @@ test("installing a missing executable lets an action-required Command retry unde
 });
 
 
+test("CodeRabbit retries when the lease settles before its withheld result reaches the engine", async () => {
+  const root = realpathSync(mkdtempSync(join(home, "coderabbit-settled-")));
+  const [base, head] = seedGitHistory(root, {
+    branch: "feature",
+    config: { "commit.gpgsign": "false" },
+    later: [{ files: { "keep.txt": "changed\n" }, message: "change" }],
+  });
+  gitIn(root, "update-ref", "refs/remotes/origin/main", base!);
+  gitIn(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  const graph: PublishedWorkflowGraph = {
+    ...budgetGraph,
+    nodes: budgetGraph.nodes.map(node => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+  };
+  const id = "coderabbit-cleanup-settled";
+  const runId = `run-${id}`;
+  const submissionId = `submission-${id}`;
+  const store = seedSubmission(id, 5, graph);
+  const db = openDb();
+  db.prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?")
+    .run(root, root, `binding-${id}`);
+  const snapshot = { ...context, evidence: { ...context.evidence, headSha: head!,
+    coderabbit: { source: ".coderabbit.yaml", digest: "a".repeat(64), enabled: true, state: "enabled", diagnostic: "enabled" },
+  } };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson(snapshot), evidence: workflowJson(snapshot.evidence), fingerprint: id, status: "running",
+  }, Date.now());
+  const leaseRows = new CheckLeaseStore(db);
+  const leases = new CheckLeaseManager(db);
+  const executions: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }),
+    workflowCommand: catalogFor(1),
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    unresolvedCheckLease: (submission, node) => leases.unresolvedLeaseForNode(submission, node),
+    retryBaseMs: 1,
+    checkDeps: ({ attemptId, nodeId }) => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async (request) => {
+        executions.push(attemptId);
+        if (executions.length === 1) {
+          leaseRows.insertHeld({
+            attemptId, submissionId, nodeId, provider: "mission", leaseId: "fixture-lease",
+            repoRoot: root, leasePath: join(root, "fixture-worktree"), holderToken: "fixture-lease", now: Date.now(),
+          });
+          leaseRows.setState(attemptId, "returning", Date.now());
+          assert.equal(leases.unresolvedLeaseForNode(submissionId, nodeId), true);
+          // Model the reclaimer's terminal write before the executor delivers the result.
+          leaseRows.setState(attemptId, "returned", Date.now());
+          return { kind: "infrastructure", cleanupFailed: true, reason: "Pooled worktree hand-back timed out" };
+        }
+        return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0, review: {
+          comparison: request.coderabbit!, status: "complete", counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 },
+          titles: [], diagnostic: "Complete review",
+        } };
+      },
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission(submissionId);
+    await waitFor(() => ["blocked", "completed"].includes(store.getRun(runId)!.status), 60_000);
+    assert.equal(store.getRun(runId)!.status, "completed");
+    assert.deepEqual(store.listSubmissions(runId).map(({ id, round }) => ({ id, round })), [{ id: submissionId, round: 1 }]);
+    const attempts = store.listAttempts(submissionId).filter(attempt => attempt.nodeId === "gate");
+    assert.deepEqual(attempts.map(attempt => attempt.state), ["error", "completed"]);
+    assert.deepEqual(executions, attempts.map(attempt => attempt.id));
+    assert.equal(leaseRows.get(executions[0]!)?.cleanupState, "returned");
+    assert.equal(attempts[0]?.verdict, null);
+    assert.equal(store.checkRunsSpent(runId, "coderabbit", null), 1);
+    assert.equal((attempts[1]!.output as { status: string }).status, "passed");
+    const events = store.listEvents(runId).map(event => event.kind);
+    assert.equal(events.filter(kind => kind === "persona_retry_scheduled").length, 1);
+    assert.ok(!events.includes("check_cleanup_unresolved") && !events.includes("command_action_required"));
+  } finally {
+    await engine.stop();
+  }
+});
+
 test("CodeRabbit returns the allowance after hand-back failure and skips only after ten charged executions", { timeout: 300_000 }, async (t) => {
   const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
@@ -820,7 +900,7 @@ test("CodeRabbit returns the allowance after hand-back failure and skips only af
       codeRabbitProbe: async () => { probes++; return { command: "/fake/coderabbit", env: {}, error: null }; },
       execute: async (request) => {
         executions++; comparisons.push(request.coderabbit!);
-        if (executions === 1) return { kind: "infrastructure", started: true, reason: "Pooled worktree hand-back timed out" };
+        if (executions === 1) return { kind: "infrastructure", cleanupFailed: true, reason: "Pooled worktree hand-back timed out" };
         const incomplete = executions === 2;
         return { kind: "exited", exitCode: incomplete ? 1 : 2, output: "", truncatedBytes: 0,
           review: { comparison: request.coderabbit!, status: incomplete ? "incomplete" : "complete", counts: { critical: 0, major: 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: ["Verify claim"], diagnostic: incomplete ? "Incomplete coverage" : "Complete findings" } };
@@ -833,6 +913,8 @@ test("CodeRabbit returns the allowance after hand-back failure and skips only af
     const first = store.latestAttemptForNode(`submission-${id}`, "gate")!;
     assert.equal(first.verdict, null);
     assert.match(first.error!, /hand-back timed out/);
+    assert.doesNotMatch(first.error!, /Settings > Setup/);
+    assert.equal((first.output as { review: { remainingRuns: number } }).review.remainingRuns, 10);
     assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
     assert.equal(store.getRun(`run-${id}`)!.currentPhase, "check_cleanup_unresolved");
     assert.equal(manager.retry(`run-${id}`, { requestId: "retry-hand-back", nodeAttemptId: first.id }).ok, false);

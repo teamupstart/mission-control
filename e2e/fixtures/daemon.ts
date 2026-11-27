@@ -286,6 +286,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     extraEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY === "1";
   const codexOnDaemonPathOnly = extraEnv.MC_E2E_CODEX_ON_DAEMON_PATH_ONLY === "1";
   const gitFetchRefRace = extraEnv.MC_E2E_GIT_FETCH_REF_RACE === "1";
+  const gitCheckHandBackTimeout = extraEnv.MC_E2E_GIT_CHECK_HAND_BACK_TIMEOUT === "1";
   const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
@@ -293,18 +294,29 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   const gitFetchRefRaceMarker = join(home, "git-fetch-ref-race");
-  if (gitFetchRefRace) {
+  if (gitFetchRefRace || gitCheckHandBackTimeout) {
     const fakeGit = join(home, "bin", "git");
     mkdirSync(dirname(fakeGit), { recursive: true });
     writeFileSync(
       fakeGit,
       [
         "#!/usr/bin/env node",
-        "const { existsSync, unlinkSync } = require('node:fs');",
+        "const { existsSync, readFileSync, unlinkSync, writeFileSync } = require('node:fs');",
         "const { spawnSync } = require('node:child_process');",
         `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
         `const realPath = ${JSON.stringify(process.env.PATH ?? "")};`,
         "const args = process.argv.slice(2);",
+        ...(gitCheckHandBackTimeout ? [
+          `const stalled = ${JSON.stringify(join(home, "git-check-hand-back-stalled"))};`,
+          "const reviews = process.env.MC_E2E_RECORD_DIR + '/coderabbit.jsonl';",
+          "if (args.slice(2).join(' ') === 'ls-remote --symref origin HEAD' && !existsSync(stalled)",
+          "    && existsSync(reviews) && readFileSync(reviews, 'utf8').includes('\"args\":[\"review\"')) {",
+          "  writeFileSync(stalled, '', { flag: 'wx' });",
+          // Leave the probe unanswered until the daemon's real 30-second deadline.
+          "  setInterval(() => {}, 1000);",
+          "  return;",
+          "}",
+        ] : []),
         "if (args[0] === '-C' && args[2] === 'fetch' && args[3] === 'origin' && existsSync(marker)) {",
         "  unlinkSync(marker);",
         "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
@@ -431,7 +443,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     PATH:
       conductorNodeVersion === undefined
         ? [
-            ...(gitFetchRefRace ? [join(home, "bin")] : []),
+            ...(gitFetchRefRace || gitCheckHandBackTimeout ? [join(home, "bin")] : []),
             ...(codexOnDaemonPathOnly ? [daemonPathBin] : []),
             process.env.PATH ?? "",
           ].filter(Boolean).join(delimiter)

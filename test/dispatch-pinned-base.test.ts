@@ -319,6 +319,24 @@ test("a fetch stopped by its time limit says so instead of reporting an exit git
   assert.equal(refused.ok === false ? refused.reason : "", "git fetch origin failed: exit 128");
 });
 
+test("the remote HEAD probe names its 30-second network timeout", async () => {
+  const probe = (timedOut: boolean) => currentRemoteDefaultSha("/anywhere", async (_bin, args, options) => {
+    assert.deepEqual(args.slice(2), ["ls-remote", "--symref", "origin", "HEAD"]);
+    assert.equal(options?.timeoutMs, 30_000);
+    return { stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false, timedOut, signal: "SIGTERM" };
+  });
+  assert.deepEqual(await probe(true), {
+    ok: false,
+    outcomeUnknown: true,
+    reason: "network probe timeout: git ls-remote --symref origin HEAD timed out after 30 s",
+  });
+  assert.deepEqual(await probe(false), {
+    ok: false,
+    outcomeUnknown: true,
+    reason: "git ls-remote --symref origin HEAD was stopped before it finished (it is allowed 30s)",
+  });
+});
+
 test("a stale-ref fetch race is retried because the competing fetch already made progress", async () => {
   let attempts = 0;
   const result = await fetchOrigin("/anywhere", withLocalRefs(async () => {

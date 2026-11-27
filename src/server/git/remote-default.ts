@@ -48,11 +48,14 @@ function failure(
   step: string,
   result: Awaited<ReturnType<Run>>,
   timeoutMs: number,
+  timeoutCause?: string,
 ): RemoteProbe<never> {
   const said = result.stderr.trim();
+  const unanswered = result.timedOut && timeoutCause
+    ? `${timeoutCause}: ${step} timed out after ${timeoutMs / 1000} s`
+    : `${step} was stopped before it finished (it is allowed ${timeoutMs / 1000}s)`;
   const reason = result.outcomeUnknown
-    ? `${step} was stopped before it finished (it is allowed ${timeoutMs / 1000}s)` +
-      (said ? `: ${said}` : "")
+    ? unanswered + (said ? `: ${said}` : "")
     : `${step} failed: ${said || `exit ${result.code}`}`;
   return {
     ok: false,
@@ -226,7 +229,7 @@ export async function currentRemoteDefaultSha(
   const symref = await execute("git", ["-C", root, "ls-remote", "--symref", "origin", "HEAD"], {
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
-  if (failed(symref)) return failure("git ls-remote --symref origin HEAD", symref, NETWORK_TIMEOUT_MS);
+  if (failed(symref)) return failure("git ls-remote --symref origin HEAD", symref, NETWORK_TIMEOUT_MS, "network probe timeout");
   const branch = parseSymrefHeadBranch(symref.stdout);
   if (!branch) {
     return {

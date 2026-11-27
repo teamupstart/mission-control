@@ -815,12 +815,18 @@ export class ReportManager {
     // One replaced at the same path (removed and recreated, or a symlink retargeted) refuses the
     // post rather than pairing this page with another checkout's files, and one that cannot be
     // examined (permissions, I/O) refuses it so its linked files are not silently left out.
-    const now = await stat(checkout.real).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
-      throw checkoutUnreadable(error);
-    });
-    if (!now) return [];
-    if (now.dev !== checkout.dev || now.ino !== checkout.ino) throw checkoutChanged();
+    // Checked here and again for every file, at the capture boundary below: a checkout moved
+    // aside and replaced at the same path mid-capture must not supply any file's bytes.
+    const sameCheckout = async (): Promise<boolean> => {
+      const now = await stat(checkout.real).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+        throw checkoutUnreadable(error);
+      });
+      if (!now) return false;
+      if (now.dev !== checkout.dev || now.ino !== checkout.ino) throw checkoutChanged();
+      return true;
+    };
+    if (!(await sameCheckout())) return [];
     const realRoot = checkout.real;
     const directory = posix.dirname(file);
     const companions: ReportCompanion[] = [];
@@ -876,6 +882,9 @@ export class ReportManager {
           continue;
         }
         if (again.dev !== info.dev || again.ino !== info.ino) continue;
+        // The capture boundary: every check above resolved paths under the checkout's path, so
+        // the directory at that path must still be the checkout the document was read from.
+        if (!(await sameCheckout())) throw checkoutChanged();
         if (info.size > REPORT_LIMITS.companionBytes - total) continue;
         const read = await readFileWithinCap(handle, info.size);
         if (read.exceeded) continue;
@@ -888,6 +897,9 @@ export class ReportManager {
         await handle.close();
       }
     }
+    // A checkout replaced at any point during capture refuses the post, even when the swap only
+    // made the remaining files fail their own checks and nothing was read from the replacement.
+    await sameCheckout();
     return companions;
   }
 

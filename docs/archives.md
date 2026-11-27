@@ -426,7 +426,8 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   readable rather than stored without data that was there; so does a checkout that cannot be
   resolved for any reason other than being gone, and so does a checkout replaced at the same
   path between reading the document and collecting its linked files, which are only ever taken
-  from the checkout the document was read from. Paths that collide on a case-insensitive volume
+  from the checkout the document was read from (its identity is checked again for every file,
+  before any byte is read, and once capture ends). Paths that collide on a case-insensitive volume
   (the same path in another letter case or another Unicode normalization form, or a file where another linked path needs a directory,
   such as `Data` and `data/x.csv`) cannot all be stored or archived, so one is kept: the first, in
   sorted order, that names a file actually stored, so a spelling that names nothing never shuts

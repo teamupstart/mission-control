@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { REPORT_LIMITS, type ReportItem } from "../src/shared/reports.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
@@ -1045,6 +1045,40 @@ test("Unicode-equivalent companion spellings keep one, so the archive is written
   assert.equal(stored.length, 1);
   assert.equal(missing.length, 1);
   assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a checkout replaced at the same path partway through capture refuses the post; no file is taken from the replacement", async () => {
+  for (const links of [["a.csv", "b.csv"], ["a.csv"]]) {
+    const outer = join(home, `mid-swap-${links.length}-${Date.now()}`);
+    const checkout = join(outer, "checkout");
+    mkdirSync(checkout, { recursive: true });
+    for (const name of links) writeFileSync(join(checkout, name), `original ${name}\n`);
+    writeFileSync(join(checkout, "doc.html"), `<html><body>${links.map((name) => `<a href="${name}">${name}</a>`).join(" ")}</body></html>`);
+    const registry = new Registry();
+    let swapped = false;
+    const reports = new ReportManager(registry, {
+      stateDir: home,
+      // Just before the first linked file is opened, the checkout is moved aside and another
+      // directory, holding the same names with other bytes, takes its path.
+      beforeCompanionOpen: (path) => {
+        if (swapped || !path.endsWith(`${sep}a.csv`)) return;
+        swapped = true;
+        const real = realpathSync(checkout);
+        renameSync(real, `${real}-original`);
+        mkdirSync(real);
+        for (const name of links) writeFileSync(join(real, name), `replacement ${name}\n`);
+      },
+    });
+    after(() => reports.stop());
+    const session = mkSession({ id: `s-mid-swap-${links.length}-${serial}`, name: "Mid swap", repoRoot: "/repos/mid", cwd: checkout });
+    await assert.rejects(
+      reports.post(session, { title: "Swapped mid-capture", body: "b", file: "doc.html" }),
+      /the checkout was replaced while the report was being posted/,
+      `${links.length} linked file(s)`,
+    );
+    assert.equal(swapped, true);
+    assert.deepEqual(reports.listForSession(session.id), [], "nothing was posted");
+  }
 });
 
 test("a checkout replaced at the same path after the document is read refuses the post instead of mixing checkouts", async () => {

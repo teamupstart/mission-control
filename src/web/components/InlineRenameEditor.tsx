@@ -62,7 +62,7 @@ export function InlineRenameEditor({
   }
 
   return (
-    <div className="rename-edit" onClick={(event) => event.stopPropagation()}>
+    <div className="rename-edit" role="presentation" onClick={(event) => event.stopPropagation()}>
       <div className="rename-row">
         <input
           ref={inputRef}

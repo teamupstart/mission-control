@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 
 import { Markdown } from "../src/web/components/Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "../src/web/components/markdownDiagramRegistry.tsx";
@@ -49,8 +50,7 @@ function draw(
   options: { caseSensitive?: boolean; currentKey?: string | null; diagrams?: boolean } = {},
 ): Drawn {
   const html = renderToStaticMarkup(
-    createElement(Markdown, {
-      children: source,
+    withChildren(Markdown, {
       ...(options.diagrams ? { diagramRenderers: FILES_DIAGRAM_RENDERERS } : {}),
       find: {
         query,
@@ -58,7 +58,7 @@ function draw(
         currentKey: options.currentKey ?? null,
         onHits: () => {},
       },
-    }),
+    }, source),
   );
   const fragments = [...html.matchAll(/data-find-key="([^"]+)"/g)].map((match) => match[1]!);
   return { html, keys: [...new Set(fragments)], fragments };
@@ -170,12 +170,11 @@ test("the case flag reaches the drawn marks", () => {
 
 test("no find prop, and an empty query, render exactly the markup they always did", () => {
   const source = "The reconnect budget is bounded.\n";
-  const plain = renderToStaticMarkup(createElement(Markdown, { children: source }));
+  const plain = renderToStaticMarkup(createElement(Markdown, null, source));
   const searched = renderToStaticMarkup(
-    createElement(Markdown, {
-      children: source,
+    withChildren(Markdown, {
       find: { query: "", caseSensitive: false, currentKey: null, onHits: () => {} },
-    }),
+    }, source),
   );
   assert.equal(searched, plain, "an empty query installs no plugin");
   assert.doesNotMatch(plain, /find-hit/);

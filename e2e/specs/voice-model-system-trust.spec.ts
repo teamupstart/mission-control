@@ -23,24 +23,24 @@ type TrustRoot = "nowhere" | "system store";
 const test = base.extend<{ trustRoot: TrustRoot; authority: TestAuthority; models: ModelServer }>({
   trustRoot: ["nowhere", { option: true }],
   // eslint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
-  authority: async ({}, use) => {
+  authority: async ({}, provide) => {
     const authority = createTestAuthority();
     try {
-      await use(authority);
+      await provide(authority);
     } finally {
       authority.dispose();
     }
   },
-  models: async ({ authority }, use) => {
+  models: async ({ authority }, provide) => {
     const models = await startModelServer({ tls: { key: authority.key, cert: authority.chain } });
     try {
-      await use(models);
+      await provide(models);
     } finally {
       await models.close();
     }
   },
-  daemonEnv: async ({ models, authority, trustRoot }, use) => {
-    await use({
+  daemonEnv: async ({ models, authority, trustRoot }, provide) => {
+    await provide({
       ...models.env,
       // Empty is unset to Node: the proxy root never arrives the way a shell profile would put it.
       NODE_EXTRA_CA_CERTS: "",

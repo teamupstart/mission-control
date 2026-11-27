@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { explicitlyDisabledFeatureFlags, resolveFeatureFlag, type FeatureFlagDefinition, type FeatureFlagIntent, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -15,6 +15,7 @@ export function FeatureFlagsView({ definitions, config, pending = null, errors =
   const [filter, setFilter] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [confirm, setConfirm] = useState(false);
+  const enableAllDescId = useId();
   const query = filter.trim().toLowerCase();
   const matches = (flag: FeatureFlagDefinition) => [flag.id, flag.label, flag.description, ...flag.keywords].some(value => value.toLowerCase().includes(query));
   const previews = definitions.filter(flag => flag.stage === "preview");
@@ -53,12 +54,12 @@ export function FeatureFlagsView({ definitions, config, pending = null, errors =
     <div data-anchor="feature-flags/enable-all">
       <Tooltip label="Set the default for current and future previews, preserving individual choices.">
       <label className={`settings-toggle${config.enableAll ? " is-on" : ""}`}>
-        <input type="checkbox" checked={config.enableAll} disabled={busy} onChange={event => {
+        <input type="checkbox" checked={config.enableAll} disabled={busy} aria-label="Enable all feature flags" aria-describedby={enableAllDescId} onChange={event => {
           if (event.target.checked && disabled.length) setConfirm(true);
           else onSet({ kind: "master", enabled: event.target.checked });
         }} />
         <span className="settings-toggle-text"><span className="settings-toggle-label">Enable all feature flags</span>
-          <span className="settings-toggle-desc">Turns on every preview feature below, and any that a future update adds. Keeps your individual choices.</span>
+          <span className="settings-toggle-desc" id={enableAllDescId}>Turns on every preview feature below, and any that a future update adds. Keeps your individual choices.</span>
         </span>
       </label></Tooltip>
       <p className="settings-hint">Switching on Alpha updates also switches this on.</p>

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 
 import type {
   PipelineCommission,
@@ -302,7 +303,7 @@ test("a recoverable commission refusal reuses the accessible halted presentation
   );
 
   assert.match(html, /class="tpm-now workflow-failed">Engineer land refused</);
-  assert.match(html, /class="tpm-halt workflow-failed" tabindex="0"[^>]*>halted</);
+  assert.match(html, /class="tpm-halt workflow-failed"[^>]*tabindex="0"[^>]*>halted</);
   assert.ok(html.includes(reason));
   assert.ok(
     html.includes(
@@ -698,13 +699,12 @@ test("a phase the run's state file never mentioned says so rather than drawing e
 
 test("the rich Tooltip arm paints its content and keeps its description plain text", () => {
   const html = renderToStaticMarkup(
-    createElement(Tooltip, {
+    withChildren(Tooltip, {
       label: {
         content: createElement("span", { className: "rows" }, "two rows"),
         description: "Two rows, in a sentence.",
       },
-      children: createElement("button", null, "hover me"),
-    }),
+    }, createElement("button", null, "hover me")),
   );
   // The description node is what `aria-describedby` resolves to, so markup here would put
   // a tag name into an accessible name.
@@ -720,10 +720,9 @@ test("the string Tooltip arm is byte-for-byte what it was before the widening", 
   // Every existing call site passes a string. This is an additive widening, not a migration,
   // and the check is the markup rather than the intent.
   const html = renderToStaticMarkup(
-    createElement(Tooltip, {
+    withChildren(Tooltip, {
       label: "Open pull request",
-      children: createElement("button", null, "PR"),
-    }),
+    }, createElement("button", null, "PR")),
   );
   assert.match(html, /<span id="[^"]+" class="tt-desc">Open pull request<\/span>/);
   assert.match(html, /<button aria-describedby="[^"]+">PR<\/button>/);

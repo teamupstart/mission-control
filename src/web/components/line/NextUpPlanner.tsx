@@ -277,6 +277,7 @@ export function NextUpPlanner({
   return (
     <span
       className="bl-planner"
+      role="presentation"
       ref={anchor}
       // The layering, and the whole reason this is a React handler on the anchor rather
       // than another `document` listener: the fleet's Escape closes the DRAWER, from

@@ -112,12 +112,11 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
       className={`workflow-chip wf-pipeline-status workflow-${status.tone}${
         status.tooltip ? " wf-status-explained" : ""
       }`}
-      tabIndex={status.tooltip ? 0 : undefined}
     >
       {status.label}
     </span>
   );
-  return status.tooltip ? <Tooltip label={status.tooltip}>{chip}</Tooltip> : chip;
+  return status.tooltip ? <Tooltip label={status.tooltip} focusable>{chip}</Tooltip> : chip;
 }
 
 /**
@@ -207,7 +206,6 @@ export function Rung({
   const state = (
     <span
       className={`wf-ladder-state${status.tooltip ? " wf-status-explained" : ""}`}
-      tabIndex={status.tooltip ? 0 : undefined}
     >
       {status.label}
     </span>
@@ -229,7 +227,7 @@ export function Rung({
           {fixed && <span className="wf-ladder-fixed">Fixed</span>}
           {sub && <span className="wf-ladder-sub">{sub}</span>}
         </span>
-        {status.tooltip ? <Tooltip label={status.tooltip}>{state}</Tooltip> : state}
+        {status.tooltip ? <Tooltip label={status.tooltip} focusable>{state}</Tooltip> : state}
       </div>
       {children}
     </li>

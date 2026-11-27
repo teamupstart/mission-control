@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { SKIN_SETTING } from "@shared/session-settings-metadata.ts";
 import { SKINS, type Skin, type SkinId } from "@shared/skins.ts";
 import { useRichText } from "../lib/rich-text.ts";
@@ -85,6 +86,7 @@ function SkinPicker(): React.JSX.Element {
  */
 export function AppearancePanel(): React.JSX.Element {
   const [richText, setRichText] = useRichText();
+  const descId = useId();
   return (
     <section className="settings-section">
       <div className="settings-section-head">
@@ -99,11 +101,17 @@ export function AppearancePanel(): React.JSX.Element {
         data-anchor="display/format-messages"
       >
         <Tooltip label="Render agent and human turns as markdown rather than literal text">
-          <input type="checkbox" checked={richText} onChange={(e) => setRichText(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={richText}
+            aria-label="Format messages"
+            aria-describedby={descId}
+            onChange={(e) => setRichText(e.target.checked)}
+          />
         </Tooltip>
         <span className="settings-toggle-text">
           <span className="settings-toggle-label">Format messages</span>
-          <span className="settings-toggle-desc">
+          <span className="settings-toggle-desc" id={descId}>
             Render agent and human turns as markdown - headings, lists, tables, and code blocks
             with syntax highlighting. Turn this off to read the literal text an agent emitted,
             backticks and all.

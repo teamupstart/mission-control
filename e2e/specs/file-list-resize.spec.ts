@@ -45,7 +45,7 @@ async function sessionCwd(daemon: DaemonHandle): Promise<string> {
   return sessions[0]!.cwd!;
 }
 
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -84,7 +84,7 @@ test("file lists can be dragged narrower to give Files and Diff more reading roo
     "# Resizable file list\n\nThe document pane should gain the space the list gives up.\n",
   );
   writeFileSync(join(cwd, "src-long-file-name-for-pane-resizing.ts"), "export const width = 264;\n");
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
 
   await dashboard
     .getByRole("navigation", { name: "Sessions" })

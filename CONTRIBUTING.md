@@ -116,7 +116,7 @@ the FluidAudio download. Leave the `voice` preview off when working without voic
 | `npm run dev:desktop` | Daemon, dashboard, and Electron shell. |
 | `npm run build` | Production web, server, Electron, MCP, and hook bundles. |
 | `npm run typecheck` | TypeScript validation. |
-| `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations, plus repository policy rules. React/hooks and accessibility findings are warnings. |
+| `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations, plus repository policy rules, React/hooks rules, and JSX accessibility rules. |
 | `npm run konsistent` | Structural conventions from [konsistent.json](konsistent.json). Component export names are advisory. |
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
@@ -126,10 +126,13 @@ the FluidAudio download. Leave the `voice` preview off when working without voic
 | `npm run demo` | Starts a token-free demo. Build first. |
 | `npm run docs:screenshots` | Regenerates the committed README screenshots from the token-free demo. Build first. |
 
-`npm run lint` exits non-zero on correctness errors, including `debugger`, and leaves
-React/hooks and JSX accessibility findings advisory until their follow-up tasks promote them.
-`.oxlintrc.json` documents the disabled `prefer-tag-over-role` rule and narrowly scoped
-exceptions for intentional control-character sanitization and its tests. Console output is
+`npm run lint` exits non-zero on correctness errors, including `debugger`, and on any
+React/hooks or JSX accessibility finding. A genuine false positive takes a per-line
+`oxlint-disable-next-line <rule> -- <reason>` that says why the element or effect is right as
+written. `.oxlintrc.json` documents the disabled `prefer-tag-over-role` rule, the options that
+let labelled scroll regions keep a tab stop and let a cell's label sit inside its tooltip, and
+narrowly scoped exceptions for intentional control-character sanitization and its tests.
+A tooltip on a non-interactive trigger takes its tab stop from `<Tooltip focusable>`. Console output is
 allowed: CLI output, daemon diagnostics, and fixture logging are intentional, so redundant
 `no-console` suppressions should not be added.
 

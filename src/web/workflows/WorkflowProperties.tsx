@@ -618,6 +618,7 @@ export function WorkflowProperties({
           <ul>
             {workflow.draft.edges.map((edge) => (
               <li key={edge.id}>
+                {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- each connection is a deliberate keyboard stop with its own focus ring, so a read-only graph's edges can still be stepped through. */}
                 <span tabIndex={0}>
                   {labelOf(edge.source)} ({edge.sourcePort}) → {labelOf(edge.target)} ({edge.targetPort})
                 </span>

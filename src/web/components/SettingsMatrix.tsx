@@ -87,9 +87,12 @@ export function SettingsMatrix({
         <caption className="settings-matrix-caption">{caption}</caption>
         <thead>
           <tr>
-            {/* Empty rather than captioned: the row headings below name themselves, and a
-                word here ("Job", "Role") would be a third vocabulary for the same thing. */}
-            <th scope="col" className="settings-matrix-corner" />
+            {/* Visually empty rather than captioned: the row headings below name themselves,
+                and a printed word here ("Job", "Role") would be a third vocabulary for the
+                same thing. A screen reader still gets a column name instead of a blank. */}
+            <th scope="col" className="settings-matrix-corner">
+              <span className="sr-only">Setting</span>
+            </th>
             {columns.map((column) => (
               <th scope="col" key={column.key}>
                 {column.label}

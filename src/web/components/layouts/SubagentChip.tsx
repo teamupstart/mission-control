@@ -158,6 +158,7 @@ export function SubagentChip({ session }: { session: Pick<Session, "name" | "sub
       </Tooltip>
       {shown &&
         createPortal(
+          // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- The clicks only stop at the popover so the card underneath does not open; it must keep its dialog role.
           <div
             ref={popover}
             role="dialog"

@@ -30,16 +30,16 @@ test("lint rejects correctness defects and accepts valid console output", () => 
   assert.equal(lint('console.log("CLI output");').status, 0);
 });
 
-test("hooks and accessibility remain warnings, with noisy role preference excluded", () => {
+test("hooks and accessibility findings fail lint, with noisy role preference excluded", () => {
   const result = lint(`import { useEffect } from "react";
 export function Example({ enabled }: { enabled: boolean }) {
   if (enabled) useEffect(() => {}, []);
   return <div role="button"><img src="image.png" /></div>;
 }`, "tsx");
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 1);
   assert.ok(result.diagnostics.some((d) => d.code === "react-hooks(rules-of-hooks)"));
   assert.ok(result.diagnostics.some((d) => d.code === "jsx-a11y(alt-text)"));
-  assert.ok(result.diagnostics.every((d) => d.severity === "warning"));
+  assert.ok(result.diagnostics.every((d) => d.severity === "error"));
   assert.ok(result.diagnostics.every((d) => d.code !== "jsx-a11y(prefer-tag-over-role)"));
 });
 
@@ -47,4 +47,22 @@ test("control-byte exceptions do not disable the rule for other files", () => {
   const result = lint('export const accidentalControl = /\\x00/;');
   assert.equal(result.status, 1);
   assert.ok(result.diagnostics.some((d) => d.code === "eslint(no-control-regex)" && d.severity === "error"));
+});
+
+test("a labelled scroll region may keep its tab stop; a bare one may not", () => {
+  const region = lint('export const R = () => <div role="region" aria-label="Output" tabIndex={0}>x</div>;', "tsx");
+  assert.equal(region.status, 0);
+  const bare = lint("export const B = () => <span tabIndex={0}>x</span>;", "tsx");
+  assert.equal(bare.status, 1);
+  assert.ok(bare.diagnostics.some((d) => d.code === "jsx-a11y(no-noninteractive-tabindex)"));
+});
+
+test("an exhaustive-deps finding fails lint", () => {
+  const result = lint(`import { useEffect } from "react";
+export function Example({ id, load }: { id: string; load: (id: string) => void }) {
+  useEffect(() => load(id), []);
+  return null;
+}`, "tsx");
+  assert.equal(result.status, 1);
+  assert.ok(result.diagnostics.some((d) => d.code === "react-hooks(exhaustive-deps)" && d.severity === "error"));
 });

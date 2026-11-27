@@ -109,6 +109,7 @@ export function ContextMenuHost({
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nonce = useRef(0);
   const copyFeedback = useCopyFeedback();
+  const { copy: copyText, reset: resetCopyFeedback } = copyFeedback;
 
   const announce = useCallback((message: string, tone: "ok" | "error" = "ok"): void => {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
@@ -127,7 +128,7 @@ export function ContextMenuHost({
     selection,
     ...(point ? { point } : {}),
     copy: async (text) => {
-      const result = await copyFeedback.copy(text);
+      const result = await copyText(text);
       return result.copied && result.error === null;
     },
     readClipboard: async () => {
@@ -136,7 +137,7 @@ export function ContextMenuHost({
     },
     openExternal,
     announce,
-  }), [announce, copyFeedback.copy]);
+  }), [announce, copyText]);
 
   const openAt = useCallback((
     target: Element,
@@ -156,7 +157,7 @@ export function ContextMenuHost({
       noticeTimer.current = null;
     }
     setNotice(null);
-    copyFeedback.reset();
+    resetCopyFeedback();
     setPosition(anchor);
     setMenu({
       actions,
@@ -165,7 +166,7 @@ export function ContextMenuHost({
       nonce: ++nonce.current,
     });
     return true;
-  }, [contextInfo, copyFeedback.reset]);
+  }, [contextInfo, resetCopyFeedback]);
 
   const close = useCallback((restoreFocus = false): void => {
     setMenu((current) => {

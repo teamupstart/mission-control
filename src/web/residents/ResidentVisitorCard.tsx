@@ -69,6 +69,7 @@ export function ResidentVisitorCard({ session, mark, variant, selected, register
       ref={setRef}
       className={`resident-visitor resident-visitor-tile${selected ? " selected" : ""}`}
       style={residentAccentStyle(mark.colorId)}
+      role="presentation"
       onClick={open}
     >
       <Tooltip label={hint}>

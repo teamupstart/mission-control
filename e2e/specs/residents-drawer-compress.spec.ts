@@ -79,7 +79,7 @@ async function reportStatus(daemon: DaemonHandle, sessionId: string, activity: s
 }
 
 /** Opt this spec's dashboard into the Residents drawer, closed, on the Board, and land on the fleet. */
-async function useDrawer(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectResidentDrawer(page: Page, daemon: DaemonHandle): Promise<void> {
   const config = { residentPlacement: "drawer", residentDrawerPinned: false, layout: "board" };
   await request(daemon, "/api/ui/config", config, "PUT");
   await page.evaluate((next) => {
@@ -123,7 +123,7 @@ async function heightOf(card: Locator): Promise<number> {
 test("a click on a resident's title compresses its card to the live status line and its controls", async ({ dashboard: page, daemon }) => {
   await launch(daemon, FIRST);
   await launch(daemon, SECOND);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
 
   const drawer = await openDrawer(page);
   const first = cardOf(drawer, FIRST);
@@ -186,7 +186,7 @@ test("a click on a resident's title compresses its card to the live status line 
 
 test("a click anywhere between a card's title and its actions opens the resident's conversation", async ({ dashboard: page, daemon }) => {
   await launch(daemon, FIRST);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
 
   const drawer = await openDrawer(page);
   const first = cardOf(drawer, FIRST);

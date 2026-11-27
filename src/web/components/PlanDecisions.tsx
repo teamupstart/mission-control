@@ -299,6 +299,7 @@ export function DecisionForm({
                   type={d.multiSelect ? "checkbox" : "radio"}
                   name={`${namePrefix}-${d.id}`}
                   checked={get(d.id).chat === true}
+                  aria-label={CHAT_ABOUT_IT}
                   onChange={(e) => moveToChat(d.id, e.target.checked)}
                   onClick={() => clearOnReclick(d, get(d.id).chat === true, () => moveToChat(d.id, false))}
                   disabled={busy}

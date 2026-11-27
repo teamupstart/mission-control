@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 import {
   SettingsRestoredEventSchema,
   type SettingsBackupsListResponse,
@@ -81,15 +82,14 @@ const actions: SettingsRestoreActions = {
 };
 
 function renderPanel(state: SettingsRestoreState): string {
-  return renderToStaticMarkup(createElement(OverlayHost, {
+  return renderToStaticMarkup(withChildren(OverlayHost, {
     value: {
       openEntries: [],
       anyOpen: false,
       onlyOpen: () => true,
       register: () => () => {},
     },
-    children: createElement(RestoreSettingsPanelView, { state, actions }),
-  }));
+  }, createElement(RestoreSettingsPanelView, { state, actions })));
 }
 
 test("restore panel renders bounded metadata, compatibility, preview, and exact confirmation", () => {

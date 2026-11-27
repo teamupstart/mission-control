@@ -772,6 +772,11 @@ test("a long prompt trail is bounded to one scrollable ledger and collapses away
   await disclosure.click();
   await expect(disclosure).toHaveAttribute("aria-expanded", "true");
   await expect(promptContext.getByText("Original request")).toBeVisible();
+
+  // The one scroller is a named region, so a keyboard can reach it and hear what it holds.
+  const trail = promptContext.getByRole("region", { name: "Prompt trail" });
+  await trail.focus();
+  await expect(trail).toBeFocused();
 });
 
 test("a Scout report fragment link scrolls to and keeps rendering its target", async ({

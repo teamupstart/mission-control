@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { withChildren } from "./element.ts";
 import { OverlayHost, type OverlayHostValue } from "../../src/web/components/Overlay.tsx";
 
 /**
@@ -21,5 +21,5 @@ export const INERT_OVERLAY_HOST: OverlayHostValue = {
 };
 
 export function withOverlayHost(children: React.ReactNode): React.JSX.Element {
-  return createElement(OverlayHost, { value: INERT_OVERLAY_HOST, children });
+  return withChildren(OverlayHost, { value: INERT_OVERLAY_HOST }, children);
 }

@@ -1,6 +1,6 @@
 import { workflowCommandName } from "@shared/workflow.ts";
 import { useWorkflowCommandSlots } from "./useWorkflowCommandSlots.ts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   addableSessionActions,
   normalizeWorkflowName,
@@ -317,16 +317,20 @@ export function WorkflowLibrary({
     selectedWorkflowRemoved,
   );
   const workflow = draft.workflow;
+  // The graph memos below key on these two fields, not on the workflow object, so a rename
+  // or description edit does not re-walk the graph.
+  const workflowGraph = workflow?.draft;
+  const workflowCompletionPolicy = workflow?.completionPolicy;
   const validation = useMemo(
-    () => workflow
+    () => workflowGraph && workflowCompletionPolicy !== undefined
       ? validateWorkflowGraph({
-          graph: workflow.draft,
+          graph: workflowGraph,
           personas,
           sessionActions,
-          completionPolicy: workflow.completionPolicy,
+          completionPolicy: workflowCompletionPolicy,
         })
       : null,
-    [personas, sessionActions, workflow?.completionPolicy, workflow?.draft],
+    [personas, sessionActions, workflowCompletionPolicy, workflowGraph],
   );
   const currentVersion = draft.versions.find(version => version.id === workflow?.currentVersionId);
   const frozenReadIds = new Set(currentVersion?.readPersonaIds);
@@ -365,12 +369,12 @@ export function WorkflowLibrary({
   // the Pipeline can draw this graph at all. Passing the live Personas is what keeps a draft
   // reviewer's blocker from reading "Missing persona".
   const blockers = useMemo(
-    () => workflow ? stageBlockers(workflow.draft, personas, sessionActions) : [],
-    [personas, sessionActions, workflow?.draft],
+    () => workflowGraph ? stageBlockers(workflowGraph, personas, sessionActions) : [],
+    [personas, sessionActions, workflowGraph],
   );
   const pipeline = useMemo(
-    () => workflow ? projectStages(workflow.draft) : null,
-    [workflow?.draft],
+    () => workflowGraph ? projectStages(workflowGraph) : null,
+    [workflowGraph],
   );
   /*
    * The guided tour's four semantic handles on the builder: what exists and what adds to it,
@@ -459,6 +463,7 @@ export function WorkflowLibrary({
     if (!hasSnapshot && selectedId === null) return;
     onSelectionChange?.(selectedId);
   }, [hasSnapshot, onSelectionChange, selectedId]);
+  const { dirty: draftDirty, saving: draftSaving, showError: showDraftError } = draft;
   useEffect(() => {
     if (removalTarget === undefined) return;
     const next = workflowSelectionAfterRemoval(
@@ -466,14 +471,14 @@ export function WorkflowLibrary({
       selectedId,
       ordered,
       observedWorkflowIds.current,
-      draft.dirty || draft.saving,
+      draftDirty || draftSaving,
     );
     if (next === undefined) {
-      draft.showError(workflowLifecycleError(new Error(WORKFLOW_REMOVED_UNSAVED_ERROR)));
+      showDraftError(workflowLifecycleError(new Error(WORKFLOW_REMOVED_UNSAVED_ERROR)));
       return;
     }
     openWorkflow(next);
-  }, [draft.dirty, draft.saving, hasSnapshot, openWorkflow, ordered, removalTarget, selectedId]);
+  }, [draftDirty, draftSaving, hasSnapshot, openWorkflow, ordered, removalTarget, selectedId, showDraftError]);
   useEffect(() => {
     if (!activePersonas.some((persona) => persona.id === palettePersona)) setPalettePersona(activePersonas[0]?.id ?? "");
   }, [activePersonas, palettePersona]);
@@ -591,13 +596,14 @@ export function WorkflowLibrary({
   // `/new` hash with the created id as soon as the selection is reported, so a reload cannot
   // repeat it either.
   //
-  // `create` is deliberately not a dependency: it is rebuilt every render from live state,
-  // and the edge above is the whole control.
+  // `create` is rebuilt every render from live state, so it is read through an effect event
+  // rather than tracked: the edge above is the whole control.
   const newDraftAsked = useRef(false);
+  const createAsked = useEffectEvent(() => { void create(); });
   useEffect(() => {
     const asked = startNew && !newDraftAsked.current;
     newDraftAsked.current = startNew;
-    if (asked) void create();
+    if (asked) createAsked();
   }, [startNew]);
 
   const duplicate = async (): Promise<void> => {
@@ -825,8 +831,11 @@ export function WorkflowLibrary({
   };
 
   return (
+    // The undo/redo shortcut is delegated from whatever builder control has focus; the
+    // section has no name, so `presentation` leaves the accessibility tree unchanged.
     <section
       className="workflow-builder"
+      role="presentation"
       onKeyDown={(event) => {
         if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
         const target = event.target as HTMLElement;
@@ -1132,6 +1141,7 @@ export function WorkflowLibrary({
               <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><Tooltip label="Download your local draft before deciding how to resolve the conflict"><button onClick={downloadLocalDraft}>Download local draft</button></Tooltip><Tooltip label="Discard your unsaved edits and load the newer revision"><button onClick={() => void draft.reload()}>Reload latest</button></Tooltip><Tooltip label="Keep your edits by copying them into a new workflow"><button onClick={() => void duplicate()}>Duplicate my draft</button></Tooltip></div>
             )}
             {mode === "graph" && connectSource && (
+              // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape bubbles up from the form's own selects and buttons; the labelled group must keep its role.
               <form
                 className="workflow-connect-dialog"
                 role="group"

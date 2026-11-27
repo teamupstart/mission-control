@@ -68,7 +68,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Files TAB lives in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -210,7 +210,7 @@ async function prepare(
   mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
   writeFileSync(join(cwd, SOURCE), CONTENTS);
   for (const [path, text] of Object.entries(extra)) writeFileSync(join(cwd, path), text);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
   await openTheFile(page);
   await settled(daemon);
   return cwd;
@@ -414,7 +414,7 @@ test.describe("comments go to the agent as they are sent", () => {
     const cwd = await sessionCwd(daemon);
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
 
     await page
       .getByRole("navigation", { name: "Sessions" })

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type {
   TelemetryProfileId,
   TelemetryProfileSummary,
@@ -358,6 +358,7 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
   const { status, summary, busy, update } = state;
   const config = status?.config ?? null;
   const user = profile(state, "user");
+  const pauseId = useId();
   const [endpoint, setEndpoint] = useState("");
   const [headerName, setHeaderName] = useState("authorization");
   const [credential, setCredential] = useState("");
@@ -544,10 +545,11 @@ function UserDestination({ state }: { state: TelemetryState }): React.JSX.Elemen
           find. It appears only once there is something to pause.
         */}
         {(config?.user.enabled ?? false) && (
-          <label className="tele-toggle">
+          <label className="tele-toggle" htmlFor={pauseId}>
             <Tooltip label="Stop sending without stopping collection. The queue is kept.">
               <span className="skill-switch">
                 <input
+                  id={pauseId}
                   type="checkbox"
                   checked={config?.user.paused ?? false}
                   disabled={!config || busy === "config"}

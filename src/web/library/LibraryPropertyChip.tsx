@@ -130,8 +130,10 @@ export function LibraryPropertyChip({
   return (
     // The host wraps the trigger too, so a mouse click - which leaves focus on the chip -
     // still has Escape land here rather than on the page ladder behind it.
+    // `presentation`: the keys bubble up from the trigger and the popover's own controls.
     <div
       className={`lib-chip-host${align === "end" ? " is-trailing" : ""}`}
+      role="presentation"
       onKeyDown={popover.onKeyDown}
     >
       <Tooltip label={tooltip}>

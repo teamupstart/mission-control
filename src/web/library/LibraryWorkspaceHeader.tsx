@@ -113,8 +113,9 @@ export function LibraryOverflowMenu({
   }
 
   return (
-    // The host wraps the trigger too - see `useLibraryPopover`.
-    <div className="lib-menu" onKeyDown={onKeyDown}>
+    // The host wraps the trigger too - see `useLibraryPopover`. `presentation`: the keys
+    // bubble up from the trigger and the menu rows, which are the focusable controls.
+    <div className="lib-menu" role="presentation" onKeyDown={onKeyDown}>
       {/* The tooltip names what is inside rather than repeating the button's own label: a
           `⋯` whose only description is "more actions" tells you nothing you could not see. */}
       <Tooltip label={actions.map((action) => action.label).join(", ")}>

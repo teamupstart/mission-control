@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { FileCommentReview, FileCommentThread, Session } from "@shared/types.ts";
+import type { FileCommentReview, FileCommentThread, Session, SessionFileEntry } from "@shared/types.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import {
   hasUnwrittenEdits,
@@ -223,6 +223,9 @@ function previewHasFocus(preview: HTMLElement): boolean {
   return active === preview || (active instanceof HTMLElement && preview.contains(active));
 }
 
+/** One empty listing for every render with none, so memos keyed on `files` stay put. */
+const NO_FILES: SessionFileEntry[] = [];
+
 function focusCurrentFileRow(root: ParentNode): boolean {
   const row = root.querySelector<HTMLButtonElement>('.file-row[aria-selected="true"]');
   if (!row) return false;
@@ -320,6 +323,9 @@ function FileWorkspaceBody({
   const readOnlyWorkspace = isReadOnlyWorkspace(session);
   const fileNavRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
+  // Taken off the controller by name: each is `useCallback`-stable, while the controller object
+  // is rebuilt whenever any session's files change.
+  const { ensure, flush, setMode, probe, select, refresh } = controller;
   const [filter, setFilter] = useState("");
   const [manualPath, setManualPath] = useState("");
   const [comparing, setComparing] = useState(false);
@@ -345,12 +351,12 @@ function FileWorkspaceBody({
   const pendingThreadOpen = useRef<string | null>(null);
   const [showKeybindingHints] = useKeybindingHints();
 
-  useEffect(() => controller.ensure(session.id), [controller.ensure, session.id]);
+  useEffect(() => ensure(session.id), [ensure, session.id]);
   useEffect(
-    () => () => controller.flush(session.id),
-    [controller.flush, session.id],
+    () => () => flush(session.id),
+    [flush, session.id],
   );
-  const files = state?.files ?? [];
+  const files = state?.files ?? NO_FILES;
   const selectedPath = state?.selectedPath ?? null;
   const buffer = selectedPath ? state?.buffers[selectedPath] : null;
   const mode = state?.mode ?? "preview";
@@ -444,7 +450,7 @@ function FileWorkspaceBody({
       || fileCommentRequest.path !== selectedPath
     ) return;
     if (previewedCommentRequest.current !== fileCommentRequest.nonce) {
-      controller.setMode(session.id, "preview");
+      setMode(session.id, "preview");
       previewedCommentRequest.current = fileCommentRequest.nonce;
     }
     if (!commentable || honoredCommentRequest.current === fileCommentRequest.nonce) return;
@@ -452,11 +458,11 @@ function FileWorkspaceBody({
     honoredCommentRequest.current = fileCommentRequest.nonce;
   }, [
     commentable,
-    controller.setMode,
     enterCommentMode,
     fileCommentRequest,
     selectedPath,
     session.id,
+    setMode,
   ]);
   useEffect(() => {
     if (extracted) return;
@@ -495,9 +501,9 @@ function FileWorkspaceBody({
         if (commentsActive) setCommentMode(false);
         else enterCommentMode();
       } else if (event.key === "p") {
-        controller.setMode(session.id, "preview");
+        setMode(session.id, "preview");
       } else {
-        controller.setMode(session.id, "editor");
+        setMode(session.id, "editor");
       }
     }
     window.addEventListener("keydown", onKeyDown, true);
@@ -506,7 +512,6 @@ function FileWorkspaceBody({
     buffer?.document.editable,
     commentable,
     commentsActive,
-    controller.setMode,
     enterCommentMode,
     extracted,
     isOverlayOpen,
@@ -514,6 +519,7 @@ function FileWorkspaceBody({
     previewable,
     readOnlyWorkspace,
     session.id,
+    setMode,
   ]);
   /*
    * The conflict notice's "Copy local".
@@ -652,13 +658,13 @@ function FileWorkspaceBody({
       if (!frame || event.source !== frame.contentWindow) return;
       const path = workspaceAssetPath(data.href, previewPath);
       if (!path) return;
-      void controller.probe(session.id, path).then((exists) => {
-        if (exists) controller.select(session.id, path);
+      void probe(session.id, path).then((exists) => {
+        if (exists) select(session.id, path);
       });
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [controller.probe, controller.select, previewPath, session.id]);
+  }, [previewPath, probe, select, session.id]);
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return q ? files.filter((file) => file.path.toLowerCase().includes(q)) : files;
@@ -827,7 +833,7 @@ function FileWorkspaceBody({
     pendingThreadOpen.current = thread.id;
     if (thread.path !== selectedPath) controller.select(session.id, thread.path);
     else setOpenThreadId(thread.id);
-  }, [controller, selectedPath, session.id]);
+  }, [controller, selectedPath, session.id, setReviewError]);
 
   /** Open a history row and make its anchor the active target on every visible reader. */
   const openIndexedThread = useCallback((thread: FileCommentThread): void => {
@@ -843,7 +849,7 @@ function FileWorkspaceBody({
     }
     jumpNonce.current += 1;
     setThreadJump({ id: thread.id, line: thread.startLine, nonce: jumpNonce.current });
-  }, [draft, readOnlyWorkspace]);
+  }, [draft, readOnlyWorkspace, setThreadError]);
 
   /*
    * A comment belongs to the file and the session it was written on.
@@ -874,7 +880,7 @@ function FileWorkspaceBody({
     setThreadJump(null);
     setHtmlTarget(null);
     dismissDraft();
-  }, [dismissDraft, selectedPath, session.id]);
+  }, [dismissDraft, selectedPath, session.id, setThreadError]);
 
   /** Open a line's thread, cycling when the line carries more than one. */
   const openThreadOnLine = useCallback((line: number): void => {
@@ -895,7 +901,7 @@ function FileWorkspaceBody({
     // A draft IS its composer - it was never submitted, so there is nothing to read yet and
     // everything still to edit. Opening it any other way would strand it unqueueable.
     if (next.status === "draft" && !readOnlyWorkspace) draft.openDraft(next);
-  }, [draft, openThreadId, readOnlyWorkspace, threadLines]);
+  }, [draft, openThreadId, readOnlyWorkspace, threadLines, setThreadError]);
 
   const commentOnLine = useCallback((line: number): void => {
     if (threadLines.has(line)) {
@@ -911,7 +917,7 @@ function FileWorkspaceBody({
     // Only reachable on a file of nothing but blank lines: an ordinary blank line anchors to
     // the nearest line that says something, below it or above it.
     setThreadError("This file has no text to anchor a comment to.");
-  }, [buffer?.text, draft, openThreadOnLine, threadLines]);
+  }, [buffer?.text, draft, openThreadOnLine, threadLines, setThreadError]);
 
   /*
    * ---- commenting on the RENDERED document ----
@@ -969,7 +975,7 @@ function FileWorkspaceBody({
       return;
     }
     setThreadError("That block has no source text to anchor a comment to.");
-  }, [allThreadLines, commentable, dismissDraftForBlock, openIndexedThread, openRange]);
+  }, [allThreadLines, commentable, dismissDraftForBlock, openIndexedThread, openRange, setThreadError]);
 
   /**
    * A block of the rendered Markdown, anchored to the source it was rendered FROM.
@@ -1943,7 +1949,7 @@ function FileWorkspaceBody({
       live = false;
       window.removeEventListener("message", onMessage);
     };
-  }, [htmlCommenting, previewPath, session.id]);
+  }, [htmlCommenting, previewPath, session.id, setThreadError]);
 
   /** Answers whether the reply landed, so a rejected one keeps its text to retry. */
   const reply = useCallback(async (threadId: string, body: string): Promise<boolean> => {
@@ -1952,7 +1958,7 @@ function FileWorkspaceBody({
     setThreadBusy(false);
     setThreadError(result.ok ? null : result.error);
     return result.ok;
-  }, []);
+  }, [setThreadError]);
 
   const setThreadStatus = useCallback(async (
     threadId: string,
@@ -1969,7 +1975,7 @@ function FileWorkspaceBody({
     // Closing a thread stops it being drawn unless resolved ones are shown, so
     // leaving its panel open would leave a panel with no marker behind it.
     if (status === "resolved" && !showResolved) setOpenThreadId(null);
-  }, [showResolved]);
+  }, [showResolved, setThreadError]);
 
   const composer = draft.composer;
   // What Send will do, from the same queue and run state the daemon decides on. Held by VALUE:
@@ -2074,6 +2080,11 @@ function FileWorkspaceBody({
     threadLines,
   ]);
 
+  const choose = useCallback((path: string): void => {
+    setComparing(false);
+    select(session.id, path);
+  }, [select, session.id]);
+
   useImperativeHandle(ref, () => ({
     handleArrow: (direction, fromReader) => {
       const root = workspaceRef.current;
@@ -2109,17 +2120,12 @@ function FileWorkspaceBody({
       if (!preview || !previewHasFocus(preview)) return false;
       return focusCurrentFileRow(root);
     },
-  }), [mode, previewable, selectedPath, shown]);
-
-  function choose(path: string): void {
-    setComparing(false);
-    controller.select(session.id, path);
-  }
+  }), [choose, mode, previewable, selectedPath, shown]);
 
   const refreshStaleFile = useCallback((): void => {
     setThreadError(null);
-    controller.refresh(session.id);
-  }, [controller.refresh, session.id, setThreadError]);
+    refresh(session.id);
+  }, [refresh, session.id, setThreadError]);
 
   useEffect(() => {
     if (!focusSelectedFile.current) return;

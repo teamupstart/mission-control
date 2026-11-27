@@ -17,7 +17,7 @@ test.afterAll(() => { if (webDir) rmSync(webDir, { recursive: true, force: true 
 // Evaluated after beforeAll: the ordinary isolated daemon serves our private dashboard.
 // Playwright requires destructured fixture arguments even when this override needs none.
 // eslint-disable-next-line no-empty-pattern
-test.use({ daemonEnv: async ({}, use) => { await use({ MISSION_WEB_DIR: webDir }); } });
+test.use({ daemonEnv: async ({}, provide) => { await provide({ MISSION_WEB_DIR: webDir }); } });
 
 test("flag snapshots and live events update state and the resolved hook in two windows without reload", async ({ page, context, daemon }) => {
   const putMaster = async (enabled: boolean) => {

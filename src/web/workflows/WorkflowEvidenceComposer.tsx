@@ -214,10 +214,13 @@ export function useWorkflowEvidenceDraft(
     );
   }, [owner, requestPath]);
 
+  // Every load shares one counter, so unmount or an owner change retires whichever load is
+  // newest at that moment, including one a refresh started after this effect ran.
+  const retireStagedLoads = useCallback(() => { generation.current++; }, []);
   useEffect(() => {
     loadStaged();
-    return () => { generation.current++; };
-  }, [loadStaged]);
+    return retireStagedLoads;
+  }, [loadStaged, retireStagedLoads]);
   useEffect(() => {
     setDraftState((current) => {
       if (current.ownerKey === owner) return current;

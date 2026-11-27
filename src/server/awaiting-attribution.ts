@@ -71,7 +71,7 @@ export function nudgeContested(nudge: PendingNudge): boolean {
  * way. Null ends the wait now rather than one turn late, or never, when the automated delivery is
  * folded into the person's turn or never lands.
  */
-export function useUpNudge(
+export function consumeNudge(
   record: SessionAwaitingRecord,
   prompt: readonly string[],
   patch: Partial<Pick<SessionAwaitingRecord, "settledAt" | "undecidedTurn" | "redeclaredInTurn" | "judgedTurnAt">>,
@@ -120,7 +120,7 @@ export function judgeTurn(record: SessionAwaitingRecord, obs: TurnObservation): 
     if (record.pendingNudges.length === 0) return { next: record, wake: true };
     // Settled by the turn's prompt when it is already known (a prompt hook started the turn).
     if (obs.prompt) {
-      const used = useUpNudge(record, obs.prompt, { settledAt: null, undecidedTurn: false, redeclaredInTurn: false, judgedTurnAt });
+      const used = consumeNudge(record, obs.prompt, { settledAt: null, undecidedTurn: false, redeclaredInTurn: false, judgedTurnAt });
       return used ? { next: used, wake: false } : { next: record, wake: true };
     }
     // Otherwise decided when its prompt arrives, or when it ends without one. Stored, so a
@@ -151,7 +151,7 @@ export function judgeTurn(record: SessionAwaitingRecord, obs: TurnObservation): 
       // session's own: the wake. On one that never reports a prompt (no hooks, or a driver with no
       // prompt hook, though marked instrumented) no turn does, and the oldest delivery still
       // outstanding is the best reading of whose turn it was. A contested oldest delivery is not a
-      // nudge either (see `useUpNudge`).
+      // nudge either (see `consumeNudge`).
       // With no delivery left (the one pending when the turn started was withdrawn since), the
       // turn can only have been the session's own.
       const oldest = record.pendingNudges[0];
@@ -180,7 +180,7 @@ export function judgeTurn(record: SessionAwaitingRecord, obs: TurnObservation): 
  */
 export function judgeLatePrompt(record: SessionAwaitingRecord, prompt: readonly string[]): Judgement {
   if (!record.undecidedTurn) return { next: record, wake: false };
-  const used = useUpNudge(record, prompt, { undecidedTurn: false, redeclaredInTurn: false });
+  const used = consumeNudge(record, prompt, { undecidedTurn: false, redeclaredInTurn: false });
   if (used) return { next: used, wake: false };
   // The wake came and went inside a turn that re-declared: the turn is decided, and the wait it
   // re-declared settles at the turn's end.
@@ -224,7 +224,7 @@ export function recordAutomatedDelivery(
  * session, or, `released`, take that send back because it provably never landed.
  *
  * Every pending delivery in exactly the same words records the send as contesting it, which
- * `useUpNudge` reads as the wake. A send taken back withdraws its own claim and only its own:
+ * `consumeNudge` reads as the wake. A send taken back withdraws its own claim and only its own:
  * another send of the same words, even one made before a daemon restart, still contests the
  * delivery.
  */

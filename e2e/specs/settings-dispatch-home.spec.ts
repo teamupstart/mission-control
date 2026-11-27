@@ -33,13 +33,12 @@ import { expect, test } from "../fixtures/test.ts";
 const CHORD = "Meta+k";
 
 /**
- * The panel's checkbox, by the label it is wrapped in.
+ * The panel's checkbox, by its name.
  *
- * A prefix regex rather than an exact name: the `settings-toggle` vocabulary puts the label
- * AND its description inside one `<label>`, so the control's accessible name is the whole
- * paragraph. That is how the two shipped toggles (`display/format-messages`,
- * `keyboard/hints`) are already built, and matching the front of it selects this one without
- * pinning a sentence of prose into a selector.
+ * The `settings-toggle` vocabulary names the input with its printed label and points
+ * `aria-describedby` at the paragraph under it, the way `display/format-messages` and
+ * `keyboard/hints` are built. A prefix regex still selects it without pinning the label's
+ * exact wording into a selector.
  */
 const guidedCheckbox = (page: Page): Locator =>
   page.getByRole("checkbox", { name: /^Guided dispatch/ });

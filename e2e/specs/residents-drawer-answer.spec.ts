@@ -87,7 +87,7 @@ async function askResident(daemon: DaemonHandle): Promise<string> {
 }
 
 /** Opt this spec's dashboard into the Residents drawer, closed, on the Board, and land on the fleet. */
-async function useDrawer(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectResidentDrawer(page: Page, daemon: DaemonHandle): Promise<void> {
   const config = { residentPlacement: "drawer", residentDrawerPinned: false, layout: "board" };
   await request(daemon, "/api/ui/config", config, "PUT");
   await page.evaluate((next) => {
@@ -123,7 +123,7 @@ const reviewModal = (page: Page): Locator => page.getByRole("dialog", { name: "R
 
 test("a resident's question is a Needs you row on its card, and a click on it opens the review modal that answers it", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
   const reviewId = await askResident(daemon);
   await expect(visitorOf(page)).toBeVisible();
   await expect(edgeTab(page)).toHaveClass(/needs-you/);
@@ -193,7 +193,7 @@ test("a resident's question is a Needs you row on its card, and a click on it op
 
 test("Chat about it in the modal a drawer row opened moves the question to the resident's conversation", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
   const chatted = await askResident(daemon);
   await expect(visitorOf(page)).toBeVisible();
   await openDrawer(page);
@@ -235,7 +235,7 @@ const MENU_ROW_NAME = /^menu: Claude wants to run npm test/;
 
 test("a menu the resident is parked on is a Needs you row too, and a click opens the review modal that answers it", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
   const sessions = await request<Array<{ id: string; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
   const sessionId = sessions.find((s) => s.task?.kind === "resident")?.id;
   expect(sessionId, "the resident has a session to send the turn to").toBeTruthy();
@@ -281,7 +281,7 @@ test("a menu the resident is parked on is a Needs you row too, and a click opens
 
 test("a menu and a pending review are both rows on the card, and the review modal answers each in turn", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
   const sessions = await request<Array<{ id: string; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
   const sessionId = sessions.find((s) => s.task?.kind === "resident")?.id;
   expect(sessionId, "the resident has a session to send the turn to").toBeTruthy();

@@ -236,7 +236,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Files TAB lives in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -349,7 +349,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, MARKDOWN, MARKDOWN_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, MARKDOWN);
 
@@ -408,7 +408,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, MARKDOWN, MARKDOWN_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, MARKDOWN);
     await startCommenting(page);
@@ -434,7 +434,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
 
@@ -509,7 +509,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
     await startCommenting(page);
@@ -543,7 +543,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
     await startCommenting(page);
@@ -561,7 +561,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
     await startCommenting(page);
@@ -584,7 +584,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
     await startCommenting(page);
@@ -604,7 +604,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
     await startCommenting(page);
@@ -626,7 +626,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
     await startCommenting(page);
@@ -644,7 +644,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
     await startCommenting(page);
@@ -664,7 +664,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML_COMPACT);
     await startCommenting(page);
@@ -706,7 +706,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML_HISTORY, HTML_HISTORY_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML_HISTORY);
     await startCommenting(page);
@@ -764,7 +764,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML_COMPACT);
     await startCommenting(page);
@@ -791,7 +791,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML_COMPACT, HTML_COMPACT_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML_COMPACT);
     await startCommenting(page);
@@ -819,7 +819,7 @@ test.describe("commenting on a rendered document", () => {
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML_BLOCKS, HTML_BLOCKS_SOURCE);
     write(cwd, HTML_DIALOG, HTML_DIALOG_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
 
     // An OPEN dialog is a block, in its own document for the reason recorded on the fixture.
@@ -880,7 +880,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
 
@@ -918,7 +918,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
 
@@ -951,7 +951,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
 
@@ -973,7 +973,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
 
@@ -1016,7 +1016,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML_LONG, HTML_LONG_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML_LONG);
 
@@ -1062,7 +1062,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
 
@@ -1106,7 +1106,7 @@ test.describe("commenting on a rendered document", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, HTML, HTML_SOURCE);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openFiles(page);
     await choose(page, HTML);
 

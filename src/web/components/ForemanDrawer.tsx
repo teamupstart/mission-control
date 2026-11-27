@@ -89,6 +89,7 @@ export function ForemanDrawer({
   const detail = episodes.find((e) => e.id === selected) ?? null;
 
   return (
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- The click only keeps the card underneath from toggling; the drawer keeps its landmark role.
     <aside className="foreman-drawer" onClick={(e) => e.stopPropagation()}>
       <header className="fd-head">
         {detail ? (

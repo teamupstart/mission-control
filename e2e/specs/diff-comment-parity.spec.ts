@@ -84,7 +84,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Diff and Files TABS live in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -223,7 +223,7 @@ test("the diff reads, lists and answers comments the way the Files tab does", as
   notes[1] = "Note 2: the retry budget moved to RETRY_BUDGET_SECONDS.";
   writeFileSync(join(session.cwd, "notes.md"), `${notes.join("\n")}\n`);
   writeFileSync(join(session.cwd, "long.ts"), `${LONG.join("\n")}\n`);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiff(page);
   await select(diff, "README.md");
@@ -373,7 +373,7 @@ test("a thread closed from the diff's index stays in it, and the list counts it 
   await dispatch(page, daemon);
   const session = await theSession(daemon);
   writeFileSync(join(session.cwd, "README.md"), README);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiff(page);
   await select(diff, "README.md");
@@ -420,7 +420,7 @@ test("a queued comment on a file this diff does not hold opens that file in the 
   await dispatch(page, daemon);
   const session = await theSession(daemon);
   writeFileSync(join(session.cwd, "README.md"), README);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiff(page);
   await select(diff, "README.md");
@@ -494,7 +494,7 @@ test("the queue's file wins over the comment already out with the agent", async 
   await dispatch(page, daemon);
   const session = await theSession(daemon);
   writeFileSync(join(session.cwd, "README.md"), README);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiff(page);
   await select(diff, "README.md");
@@ -580,7 +580,7 @@ test("a long review queue in the diff scrolls on its own and reaches its last co
   // Far more comments than the pane has room for.
   const LINES = Array.from({ length: 16 }, (_, i) => 60 + i);
   for (const line of LINES) await queueOnNotes(daemon, session.id, line, file.revision);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiff(page);
   await select(diff, "notes.md");

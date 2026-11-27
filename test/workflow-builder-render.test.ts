@@ -334,8 +334,8 @@ test("workflow lifecycle refusals use the existing load error surface", () => {
 
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   assert.match(source, /catch \(caught\) \{\s*draft\.showError\(workflowLifecycleError\(caught\)\)/);
-  assert.match(source, /draft\.dirty \|\| draft\.saving/);
-  assert.match(source, /draft\.showError\(workflowLifecycleError\(new Error\(WORKFLOW_REMOVED_UNSAVED_ERROR\)\)\)/);
+  assert.match(source, /draftDirty \|\| draftSaving/);
+  assert.match(source, /showDraftError\(workflowLifecycleError\(new Error\(WORKFLOW_REMOVED_UNSAVED_ERROR\)\)\)/);
 });
 
 test("last workflow restoration excludes archived history unless a version link requested it", () => {

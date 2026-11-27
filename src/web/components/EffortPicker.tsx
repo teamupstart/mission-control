@@ -182,13 +182,16 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
       {open &&
         anchor &&
         createPortal(
+          // The portal moves the DOM but not the React tree, so a click in here would still
+          // bubble to the card that hosts the chip. The wrapper only stops it; the menu's
+          // items are buttons, and Escape closes it.
+          <div role="presentation" onClick={(e) => e.stopPropagation()}>
           <div
             ref={popRef}
             className="alert-pop mode-pop effort-pop"
             role="menu"
             aria-label="Reasoning effort"
             style={{ width: WIDTH, ...anchor }}
-            onClick={(e) => e.stopPropagation()}
           >
             {pending && (
               <p className="mode-pop-note">
@@ -226,6 +229,7 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
               );
             })}
             {error && <p className="mode-pop-err">{error}</p>}
+          </div>
           </div>,
           document.body,
         )}

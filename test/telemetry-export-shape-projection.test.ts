@@ -96,7 +96,7 @@ const EARLY_PLAN_PROJECTION: TelemetryProjection<Record<string, never>> = {
   id: "a-test.export-shape-plan",
 };
 
-function useProjections(...projections: TelemetryProjection<unknown>[]): void {
+function installProjections(...projections: TelemetryProjection<unknown>[]): void {
   resetTelemetryRegistrations();
   for (const projection of projections) registerTelemetryProjection(projection);
 }
@@ -213,7 +213,7 @@ function points(filter?: (generation: number) => boolean): MetricPointDto[] {
 // ---- the default stays exactly what it was ----
 
 test("a default destination's batches are byte-identical to the export before shapes existed", () => {
-  useProjections(CATALOG_PROJECTION);
+  installProjections(CATALOG_PROJECTION);
   const fixture = JSON.parse(
     readFileSync(new URL("./fixtures/telemetry-full-shape-batches.json", import.meta.url), "utf8"),
   ) as { cumulative: MetricsBatchPayload[]; delta: MetricsBatchPayload[] };
@@ -222,7 +222,7 @@ test("a default destination's batches are byte-identical to the export before sh
 });
 
 test("a default delta destination's batches are byte-identical too", () => {
-  useProjections(CATALOG_PROJECTION);
+  installProjections(CATALOG_PROJECTION);
   const fixture = JSON.parse(
     readFileSync(new URL("./fixtures/telemetry-full-shape-batches.json", import.meta.url), "utf8"),
   ) as { cumulative: MetricsBatchPayload[]; delta: MetricsBatchPayload[] };
@@ -236,7 +236,7 @@ test("a default delta destination's batches are byte-identical too", () => {
 // ---- what the lean shape sends ----
 
 test("a lean destination and a full one fed the same events receive different shapes", () => {
-  useProjections(CATALOG_PROJECTION, ANALYTICAL_PROJECTION);
+  installProjections(CATALOG_PROJECTION, ANALYTICAL_PROJECTION);
   scenario.pinScenarioIdentity();
   const applied = setTelemetryConfig(
     {
@@ -310,7 +310,7 @@ test("a lean destination and a full one fed the same events receive different sh
 // ---- the live-series budget ----
 
 test("the budget admits to exactly its ceiling, folds into paid-for overflow, and drops a new pair", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
 
   // Second resource: a distribution (9 + its reservation 9), a sum-and-count histogram (2 + 2)
@@ -352,7 +352,7 @@ test("the budget admits to exactly its ceiling, folds into paid-for overflow, an
 });
 
 test("a resumed series that does not fit folds into its pair's overflow and leaves its row untouched", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
   emitAt(T0, [{ emissions: [counter("s", 2), counter("keep")] }]);
 
@@ -389,7 +389,7 @@ test("a resumed series that does not fit folds into its pair's overflow and leav
 });
 
 test("a resumed series whose pair holds nothing is dropped and counted, then resumes with a reservation", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
   emitAt(T0, [{ emissions: [counter("s", 2)] }]);
   const t1 = T0 + 8 * DAY;
@@ -418,7 +418,7 @@ test("a resumed series whose pair holds nothing is dropped and counted, then res
 });
 
 test("idle series stop counting, and so does their pair's reservation", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
   emitAt(T0, [{ emissions: [counter("a"), distribution("a")] }]);
   assert.equal(committed(T0), 2 + 18);
@@ -427,7 +427,7 @@ test("idle series stop counting, and so does their pair's reservation", () => {
 });
 
 test("property: committed weight never exceeds the budget, with one overflow per pair", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
   let seed = 0x5eed;
   const random = (): number => {
@@ -471,7 +471,7 @@ test("property: committed weight never exceeds the budget, with one overflow per
 });
 
 test("the long-standing 2,000 and 10,000 series ceilings still apply beside the budget", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
   // Ten thousand rows in an earlier consent epoch: they are not live, so the budget ignores
   // them, but the per-profile ceiling has always counted every stored row.
@@ -509,7 +509,7 @@ function distinctPerHour(): Map<number, number> {
 }
 
 test("ledger: a shape change mid-hour grants no fresh allowance, and deferred deltas arrive whole", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", temporality: "delta", exportShape: "datadog-lean" }, T0);
   emitAt(T0 + MINUTE, [{ emissions: counters(1_000, "before") }]);
   assert.equal(ledgerWeight(T0), 1_000);
@@ -565,7 +565,7 @@ test("ledger: a shape change mid-hour grants no fresh allowance, and deferred de
 });
 
 test("ledger: withdrawing and re-giving consent mid-hour, and a restart, grant no fresh allowance", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", temporality: "delta", exportShape: "datadog-lean" }, T0);
   emitAt(T0 + MINUTE, [{ emissions: counters(1_000, "before") }]);
   const epoch = getDestination(openDb(), "user").policyEpoch;
@@ -592,7 +592,7 @@ test("ledger: withdrawing and re-giving consent mid-hour, and a restart, grant n
 });
 
 test("ledger: a deferred cumulative point goes out in a later hour, and that export keeps it live", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", exportShape: "datadog-lean" }, T0);
   emitAt(T0 + MINUTE, [{ emissions: counters(1_000, "before") }]);
   configure({ exportShape: "full" }, T0 + 2 * MINUTE);
@@ -634,7 +634,7 @@ test("ledger: a deferred cumulative point goes out in a later hour, and that exp
 });
 
 test("ledger: facts projected hours late are charged to their event hour, which is still on record", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", exportShape: "datadog-lean" }, T0);
   emitAt(T0 + MINUTE, [{ emissions: counters(1_000, "before") }]);
   configure({ exportShape: "full" }, T0 + 2 * MINUTE);
@@ -657,7 +657,7 @@ test("ledger: facts projected hours late are charged to their event hour, which 
 });
 
 test("ledger: a point from an hour the ledger no longer tracks is charged to the current hour", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", exportShape: "datadog-lean" }, T0);
   captureOnly(T0 + MINUTE, [{ emissions: counters(3, "ancient", 2) }]);
 
@@ -672,7 +672,7 @@ test("ledger: a point from an hour the ledger no longer tracks is charged to the
 });
 
 test("ledger: the horizon is exact: a point at it keeps its event hour, one a millisecond older is restamped", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", exportShape: "datadog-lean" }, T0 - HOUR);
   captureOnly(T0 - 1, [{ emissions: [counter("before-horizon", 2)] }]);
   captureOnly(T0, [{ emissions: [counter("at-horizon", 2)] }]);
@@ -693,7 +693,7 @@ test("ledger: the horizon is exact: a point at it keeps its event hour, one a mi
 });
 
 test("a full destination's late cumulative point keeps its event time", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com" }, T0);
   captureOnly(T0 + MINUTE, [{ emissions: counters(1, "ancient", 2) }]);
   runProjectionPass(T0 + TELEMETRY_LIMITS.exportLedgerRetentionMs + 2 * HOUR);
@@ -702,7 +702,7 @@ test("a full destination's late cumulative point keeps its event time", () => {
 });
 
 test("ledger: an hour is never charged for a batch that was not queued", () => {
-  useProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", temporality: "delta", exportShape: "datadog-lean" }, T0);
   // No single point fits the request limit, so the pass queues nothing at all.
   const limits = TELEMETRY_LIMITS as { maxRequestBytes: number };
@@ -722,7 +722,7 @@ test("ledger: an hour is never charged for a batch that was not queued", () => {
 });
 
 test("a deferred series that aged out is admitted to the live budget before it is exported", () => {
-  useProjections(CATALOG_PROJECTION, EARLY_PLAN_PROJECTION);
+  installProjections(CATALOG_PROJECTION, EARLY_PLAN_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", exportShape: "datadog-lean" }, T0);
   emitAt(T0 + MINUTE, [{ emissions: counters(1_000, "before") }]);
   configure({ exportShape: "full" }, T0 + 2 * MINUTE);
@@ -759,7 +759,7 @@ test("a deferred series that aged out is admitted to the live budget before it i
 // ---- changing shape ----
 
 test("a shape change from nonzero totals resets every series and counts pending facts exactly once", async () => {
-  useProjections(CATALOG_PROJECTION, ANALYTICAL_PROJECTION);
+  installProjections(CATALOG_PROJECTION, ANALYTICAL_PROJECTION);
   scenario.pinScenarioIdentity();
   configure({ endpoint: "https://otlp.example.com", temporality: "delta" }, 100);
   scenario.captureDaemonStart("user", "reset-start-1", 1_000, 250);
@@ -829,7 +829,7 @@ test("a shape change from nonzero totals resets every series and counts pending 
 // ---- the connection probe ----
 
 async function probeRequest(exportShape: "full" | "datadog-lean"): Promise<string> {
-  useProjections(CATALOG_PROJECTION);
+  installProjections(CATALOG_PROJECTION);
   configure({ endpoint: "https://otlp.example.com", exportShape }, T0);
   const bodies: Uint8Array[] = [];
   const result = await runTelemetryProbe("user", {
@@ -859,7 +859,7 @@ test("a full destination's probe request has no Datadog host attribute", async (
 // ---- pruning series nothing can contribute to ----
 
 test("retention prunes a budgeted destination's old-resource idle series, never the running resource's", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
   emitAt(T0, [{ emissions: [counter("current")] }, { environment: "retired", emissions: [counter("old")] }]);
   emitAt(T0 + 30 * DAY, [{ environment: "retired", emissions: [counter("recent")] }]);
@@ -871,7 +871,7 @@ test("retention prunes a budgeted destination's old-resource idle series, never 
 });
 
 test("the prune cutoff is exact: a retired series idle one millisecond past 30 days goes, one at 30 days stays", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({ exportShape: "datadog-lean" }, T0);
   // Last activity is the pass clock, so these two rows are one millisecond apart.
   emitAt(T0, [{ environment: "retired", emissions: [counter("before-cutoff")] }]);
@@ -886,7 +886,7 @@ test("the prune cutoff is exact: a retired series idle one millisecond past 30 d
 });
 
 test("a full destination keeps a retired version's series, so a rollback continues its cumulative stream", () => {
-  useProjections(PLAN_PROJECTION);
+  installProjections(PLAN_PROJECTION);
   configure({}, T0);
   emitAt(T0, [{ environment: "version-a", emissions: [counter("rollback", 4)] }]);
   const before = rows("mission.action.count").find((s) => s.dimensions.action === "rollback")!;

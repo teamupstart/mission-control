@@ -44,6 +44,7 @@ export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX
     <article
       className={`workflow-node workflow-node-${data.kind}`}
       data-node-kind={data.kind}
+      // oxlint-disable-next-line jsx-a11y/role-supports-aria-props -- aria-description is a global ARIA 1.3 attribute; the rule's role table predates it.
       aria-description={`${data.incomingCount ?? 0} incoming and ${data.outgoingCount ?? 0} outgoing connections`}
     >
       {data.kind === "session" && <Handle aria-label="Return for changes input" type="target" id="return_for_changes" position={Position.Left} isConnectable={!data.readOnly} />}

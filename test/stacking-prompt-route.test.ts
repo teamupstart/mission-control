@@ -20,7 +20,7 @@ import { decideReviewFollowup, followupPrs, followupSessionBlocker, foremanSettl
 import { stackPromptCandidate } from "../src/server/stacking/delivery.ts";
 import type { StackObservation } from "../src/shared/stacking.ts";
 import { openDb } from "../src/server/db.ts";
-import { useStackGitHub, type StackGitHub } from "../src/server/stacking/github.ts";
+import { replaceStackGitHub, type StackGitHub } from "../src/server/stacking/github.ts";
 import { reportBucket } from "../src/shared/session.ts";
 import type { PrRefs } from "../src/server/inspector/github.ts";
 
@@ -225,7 +225,7 @@ test("the operator's manual send: refused while the session works, delivered onc
 });
 
 test("a broken-stack action goes through the same route, only from the operator, only when offered", async (t) => {
-  t.after(useStackGitHub(parentReads(CLOSED_PARENT)));
+  t.after(replaceStackGitHub(parentReads(CLOSED_PARENT)));
   const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
   const move = { prKey: f.key, kind: "move-onto-main", tip: null };
   assert.equal((await f.post("foreman", move)).status, 409, "actions are the operator's");
@@ -400,12 +400,12 @@ test("a recovery action is refused, and nothing typed, when the parent changed s
   const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
   const move = { prKey: f.key, kind: "move-onto-main", tip: null };
   // The parent was reopened since the last check.
-  t.after(useStackGitHub(parentReads({ ...CLOSED_PARENT, state: "OPEN" })));
+  t.after(replaceStackGitHub(parentReads({ ...CLOSED_PARENT, state: "OPEN" })));
   const changed = await f.post("human", move);
   assert.equal(changed.status, 409);
   assert.match((await changed.json() as { error: string }).error, /#7 changed since it was last checked/);
   // GitHub cannot be read for it: refused too.
-  t.after(useStackGitHub(parentReads(null)));
+  t.after(replaceStackGitHub(parentReads(null)));
   const unreadable = await f.post("human", move);
   assert.equal(unreadable.status, 409);
   assert.match((await unreadable.json() as { error: string }).error, /could not be read from GitHub/);
@@ -445,7 +445,7 @@ test("saving Foreman's config refreshes the cached stack standings at once", asy
 });
 
 test("a recovery action is claimed: delivered once, never sent again for the same stack state", async (t) => {
-  t.after(useStackGitHub(parentReads(CLOSED_PARENT)));
+  t.after(replaceStackGitHub(parentReads(CLOSED_PARENT)));
   const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
   const move = { prKey: f.key, kind: "move-onto-main", tip: null };
   const first = await f.post("human", move);
@@ -462,7 +462,7 @@ test("a recovery action is claimed: delivered once, never sent again for the sam
   // The stack state changes (the parent was reopened, then closed under a new branch): a new
   // key, so the action is offered and accepted again.
   recordStackObservation(f.key, { ...getInspectorPr(f.key)!.stack!.observation!, parentHeadRefName: "feat/parent-v2" }, 2);
-  t.after(useStackGitHub(parentReads({ ...CLOSED_PARENT, headRefName: "feat/parent-v2" })));
+  t.after(replaceStackGitHub(parentReads({ ...CLOSED_PARENT, headRefName: "feat/parent-v2" })));
   f.refresh();
   assert.deepEqual(f.session.inspector?.stack?.sentActions, []);
   assert.equal((await f.post("human", move)).status, 200);
@@ -470,7 +470,7 @@ test("a recovery action is claimed: delivered once, never sent again for the sam
 });
 
 test("a recovery action whose parent changes while delivery waits for the lock is not typed", async (t) => {
-  t.after(useStackGitHub(parentReads(CLOSED_PARENT)));
+  t.after(replaceStackGitHub(parentReads(CLOSED_PARENT)));
   const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
   // The pre-send read saw #7 closed. While the delivery waits for the session's write lock, the
   // Inspector observes #7 reopened - the guard inside the lock refuses the stale instruction.

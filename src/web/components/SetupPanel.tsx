@@ -937,6 +937,7 @@ export function ExternalSessionsSetting({ terminals }: { terminals: TerminalsCon
             type="checkbox"
             checked={on}
             disabled={terminals.config === null}
+            aria-label="Show sessions started outside Mission Control"
             aria-describedby="setup-external-sessions-warning"
             onChange={(e) => { void terminals.update({ externalSessions: e.target.checked }); }}
           />

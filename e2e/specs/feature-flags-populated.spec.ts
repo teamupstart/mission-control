@@ -14,7 +14,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(() => build?.cleanup());
 // eslint-disable-next-line no-empty-pattern
-test.use({ daemonEnv: async ({}, use) => use({ MISSION_WEB_DIR: build.webDir, MC_E2E_FEATURE_FLAGS_BUNDLE: build.daemonBundle }) });
+test.use({ daemonEnv: async ({}, provide) => provide({ MISSION_WEB_DIR: build.webDir, MC_E2E_FEATURE_FLAGS_BUNDLE: build.daemonBundle }) });
 async function shoot(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(artifactsDir("feature-flags"), { recursive: true });

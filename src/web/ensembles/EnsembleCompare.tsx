@@ -64,9 +64,10 @@ export function EnsembleCompare({
     setPatchCache(new Map());
   }, [detail.run.id]);
 
+  const { artifacts } = detail;
   const eligibleIds = useMemo(
-    () => eligibleCompareArtifacts(detail).map((artifact) => artifact.id),
-    [detail.artifacts],
+    () => eligibleCompareArtifacts({ artifacts }).map((artifact) => artifact.id),
+    [artifacts],
   );
   const selectedIds = useMemo(
     () => capCompareSelection(compare?.artifactIds ?? [], eligibleIds),

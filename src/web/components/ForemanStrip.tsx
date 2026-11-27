@@ -69,6 +69,8 @@ export function ForemanStrip({
   return (
     <section
       className={`foreman-strip fs-${note.disposition}`}
+      // Only stops the click from reaching the card; every action here is a real button.
+      role="presentation"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="fs-row">

@@ -200,7 +200,7 @@ function keycap(tile: Locator): Locator {
 }
 
 /** The Console layout, whose rail prints the same twelve keys the Board's cards do. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(new URL("/api/ui/config", daemon.baseURL), {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -355,7 +355,7 @@ test("the Console rail prints the same keys beside its state words, and they ope
   await expect(keycap(askedTile)).toHaveText("⌘1");
   await expect(keycap(idleTile)).toHaveText("⌘2");
 
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
   const rail = dashboard.getByRole("navigation", { name: "Sessions" });
   const askedRow = rail.locator(".rail-row").filter({ hasText: ASKED_CARD.title });
   const idleRow = rail.locator(".rail-row").filter({ hasText: IDLE_CARD.title });
@@ -656,7 +656,7 @@ test("the shell is told the fleet owns the number row only on Fleet, and only wh
   // Still claimed on the CONSOLE, which is the change this branch makes to the rule: the rail
   // draws the same keycaps, so a claim that stood down here would leave three of them naming
   // keys the View menu had taken back for zoom.
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
   await expect(dashboard.locator(".rail-row")).toHaveCount(1);
   await expect.poll(latest, { message: "the Console rail claims the number row too" })
     .toBe(true);

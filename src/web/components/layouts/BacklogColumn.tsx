@@ -442,6 +442,7 @@ export function BacklogColumn({
       className={`board-col board-backlog${wide ? " is-wide" : ""}${
         inAir === null ? "" : " is-reordering"
       }${selectedTasks.length > 0 ? " has-selection" : ""}`}
+      role="presentation"
       inert={inert}
       // Keys for the selection, only while focus is inside this column, so neither one
       // reaches past it: Escape here does not also close the board's drill-in, and
@@ -930,6 +931,7 @@ function BacklogCard({
   });
 
   return (
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- The card-wide click is the pointer half; the title button and the select checkbox are its keyboard route, and the card keeps its article role.
     <article
       className={`bl-card${busy ? " is-busy" : ""}${blocked ? " is-blocked" : ""}${
         nextUp ? " is-next" : ""
@@ -1041,6 +1043,7 @@ function BacklogCard({
             past - the control would work, and look like it had done something else. */}
         <span
           className={`bl-prio${task.priority ? ` prio-${task.priority}` : " is-unset"}`}
+          role="presentation"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
@@ -1091,6 +1094,7 @@ function BacklogCard({
           way past. The group carries both once rather than each button carrying them. */}
       <span
         className="bl-move"
+        role="presentation"
         ref={moveGroup}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}

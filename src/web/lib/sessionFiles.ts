@@ -381,7 +381,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
       }));
       if (selected) void loadFile(sessionId, selected);
     });
-  }, [loadFile, update, updateExisting]);
+  }, [loadFile, publishPaths, update, updateExisting]);
 
   const save = useCallback(async (sessionId: string, filePath: string, forceRevision?: string) => {
     const key = `${sessionId}\0${filePath}`;
@@ -552,7 +552,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
       const buffer = selected ? sessionsRef.current[sessionId]?.buffers[selected] : null;
       if (selected && buffer?.saveState === "saved") void loadFile(sessionId, selected, true);
     });
-  }, [listings, loadFile, update, updateExisting]);
+  }, [listings, loadFile, publishPaths, update, updateExisting]);
 
   const recheck = useCallback((sessionId: string, filePath: string) => {
     const buffer = sessionsRef.current[sessionId]?.buffers[filePath];

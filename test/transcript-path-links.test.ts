@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 import { Markdown, markdownPropsEqual } from "../src/web/components/Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "../src/web/components/markdownDiagramRegistry.tsx";
 import { rehypeWorkspacePaths } from "../src/web/lib/rehypeWorkspacePaths.ts";
@@ -32,12 +32,11 @@ const CHECKOUT = new Set([
 ]);
 
 function render(md: string, paths: ReadonlySet<string> | null = CHECKOUT): string {
-  return renderToStaticMarkup(createElement(Markdown, {
-    children: md,
+  return renderToStaticMarkup(withChildren(Markdown, {
     breaks: true,
     onLinkClick: () => true,
     filePaths: paths,
-  }));
+  }, md));
 }
 
 /** The anchor, minus the `aria-describedby` Tooltip threads through every one of them. */
@@ -116,10 +115,9 @@ test("no listing and no handler each mean no path links at all", () => {
   // plans, Foreman briefs and the Markdown file preview - the prose renders as it always
   // has. Marking a path up in a plan would offer a file nothing there can open.
   assert.doesNotMatch(render("see src/App.tsx", null), /workspace-path/);
-  const noHandler = renderToStaticMarkup(createElement(Markdown, {
-    children: "see src/App.tsx",
+  const noHandler = renderToStaticMarkup(withChildren(Markdown, {
     filePaths: CHECKOUT,
-  }));
+  }, "see src/App.tsx"));
   assert.doesNotMatch(noHandler, /workspace-path/);
 });
 

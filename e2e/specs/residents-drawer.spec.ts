@@ -148,7 +148,7 @@ async function askResident(daemon: DaemonHandle): Promise<string> {
 }
 
 /** Opt this spec's dashboard into the drawer, in one layout, and land on the fleet. */
-async function useDrawer(page: Page, daemon: DaemonHandle, layout: "board" | "console"): Promise<void> {
+async function selectResidentDrawer(page: Page, daemon: DaemonHandle, layout: "board" | "console"): Promise<void> {
   await request(daemon, "/api/ui/config", { residentPlacement: "drawer", residentDrawerPinned: false, layout }, "PUT");
   await page.evaluate((next) => {
     const raw = JSON.parse(window.localStorage.getItem("mission-control.ui") ?? "{}") as Record<string, unknown>;
@@ -180,7 +180,7 @@ async function expectOffFleet(page: Page, name = NAME): Promise<void> {
 test("a listening resident card shows its quoted reference name with spoken names disabled", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   await launch(daemon, NAME, { referenceName: '"Marlowe"' });
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   const listener = await beListener(daemon);
   try {
     const indicator = page.locator("button.vi-status-line");
@@ -211,7 +211,7 @@ test("a listening resident card shows its quoted reference name with spoken name
 test("resident card titles follow listening mode and the current reference name", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const profile = await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await edgeTab(page).click();
   const drawer = drawerOf(page);
   const title = drawer.locator(".residents-drawer-name");
@@ -317,7 +317,7 @@ test("Board and drawer Open buttons distinguish residents sharing a listening ti
     for (const ordinaryName of [NAME, other.name]) {
       await expect(board.getByRole("button", { name: `Open "Marlowe" (${ordinaryName})`, exact: true })).toBeVisible();
     }
-    await useDrawer(page, daemon, "board");
+    await selectResidentDrawer(page, daemon, "board");
     await edgeTab(page).click();
     const drawer = drawerOf(page);
     for (const ordinaryName of [NAME, other.name]) {
@@ -337,7 +337,7 @@ test("listening titles identify a visitor card and filter residents in the drawe
   await askResident(daemon);
   const other = "Release sentinel";
   await launch(daemon, other);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   const listener = await beListener(daemon);
   try {
     await expect(page.locator("button.vi-status-line")).toHaveAccessibleName("Voice: listening. Mute");
@@ -385,7 +385,7 @@ test("the fleet filter searches resident card questions and loop text in the dra
   await launch(daemon);
   await askResident(daemon);
   await launch(daemon, other);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
 
   const drawer = drawerOf(page);
@@ -434,7 +434,7 @@ test("the fleet filter searches resident card questions and loop text in the dra
 
 test("the fleet filter searches a starting resident and the paused card's Resume action", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await page.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
   const drawer = drawerOf(page);
   const paused = cardOf(drawer);
@@ -473,7 +473,7 @@ test("the fleet filter searches queued and restart actions and resident control 
   const profile = await launch(daemon, NAME, { controlOtherSessions: true });
   const other = "Release sentinel";
   await launch(daemon, other);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
 
   const drawer = drawerOf(page);
@@ -561,7 +561,7 @@ test("the fleet filter searches a resident card's inline action alert", async ({
   const other = "Release sentinel";
   await launch(daemon);
   await launch(daemon, other);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();
 
   const drawer = drawerOf(page);
@@ -601,7 +601,7 @@ test("the fleet filter searches a resident card's inline action alert", async ({
 
 test("the drawer opens three ways as a column beside the Board, dims nothing, and stays beside the drill-in", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await expectOffFleet(page);
   const boardWidth = async (): Promise<number> => (await page.locator(".board").boundingBox())!.width;
   const before = await boardWidth();
@@ -678,7 +678,7 @@ test("in Console the drawer is a column beside the rail, and a resident opens in
   await request(daemon, "/api/tasks", {
     repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
   });
-  await useDrawer(page, daemon, "console");
+  await selectResidentDrawer(page, daemon, "console");
   const rail = page.locator(".console-rail");
   await expect(rail.getByRole("button", { name: /Fleet neighbour/ })).toBeVisible({ timeout: 60_000 });
   await expectOffFleet(page);
@@ -707,7 +707,7 @@ test("in Console the drawer is a column beside the rail, and a resident opens in
 
 test("Pin keeps the drawer open through a reload, and Unpin leaves it open until the next one", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   const storedPin = async (): Promise<boolean> => (await request<{ config: { residentDrawerPinned: boolean } }>(
     daemon, "/api/ui/config", undefined, "GET")).config.residentDrawerPinned;
 
@@ -758,7 +758,7 @@ test("Pin keeps the drawer open through a reload, and Unpin leaves it open until
 
 test("a resident that needs you is a visitor card while the drawer is closed, and a click opens its conversation", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   const reviewId = await askResident(daemon);
 
   const needsYou = page.locator(".board-col.tone-attention");
@@ -809,7 +809,7 @@ test("the fleet filter searches the Board visitor card's note", async ({ dashboa
   await request(daemon, "/api/tasks", {
     repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
   });
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
 
   const board = page.locator("main.board");
   const visitor = board.getByRole("button", { name: `${NAME} needs you - resident, opens its conversation`, exact: true });
@@ -831,7 +831,7 @@ test("the fleet filter searches the Board visitor card's note", async ({ dashboa
 
 test("Board and Console placement restores the fleet placement and the dock, live, and ⌥1 still opens", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await expectOffFleet(page);
 
   await page.goto(`${daemon.baseURL}/#/settings/display`);
@@ -856,7 +856,7 @@ test("Board and Console placement restores the fleet placement and the dock, liv
 
 test("the ⌘K palette finds a live resident by name or label and opens its full detail", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   const palette = page.getByRole("dialog").filter({ has: page.getByRole("combobox") }).first();
   const row = page.getByRole("option", { name: `${NAME}, resident` });
 
@@ -882,7 +882,7 @@ test("the arrow keys move the drawer's selection and Enter opens the selected re
   const SECOND = "Bravo keeper";
   await launch(daemon, FIRST);
   await launch(daemon, SECOND);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
 
   // Both residents have reached the dashboard before the drawer opens, so both cards are there
   // to walk from the first press.
@@ -931,7 +931,7 @@ test("the arrow keys move the drawer's selection and Enter opens the selected re
 
 test("Enter on a visitor card opens its resident's conversation, not the drawer", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await askResident(daemon);
   const visitorOpen = page.getByRole("button", { name: `${NAME} needs you - resident, opens its conversation` });
   await expect(visitorOpen).toBeVisible();
@@ -956,7 +956,7 @@ test("Enter on a visitor card opens its resident's conversation, not the drawer"
 });
 
 test("opened before any resident has arrived, the drawer puts the keyboard on the first card once it does", async ({ dashboard: page, daemon }) => {
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await expect(page.getByRole("button", { name: "Residents - 0 live", exact: true })).toBeVisible();
 
   await page.keyboard.press("Shift+KeyH");
@@ -972,7 +972,7 @@ test("opened before any resident has arrived, the drawer puts the keyboard on th
 });
 
 test("a click elsewhere while the drawer waits for its first resident keeps the keyboard where it went", async ({ dashboard: page, daemon }) => {
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await expect(page.getByRole("button", { name: "Residents - 0 live", exact: true })).toBeVisible();
 
   await page.keyboard.press("Shift+KeyH");
@@ -996,7 +996,7 @@ test("reopened after the selected resident has ended, the drawer puts the keyboa
   const SECOND = "Bravo keeper";
   await launch(daemon, FIRST);
   await launch(daemon, SECOND);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await expect(page.getByRole("button", { name: "Residents - 2 live", exact: true })).toBeVisible();
 
   // Alpha is selected, and the drawer is closed with that selection left on it.
@@ -1027,7 +1027,7 @@ for (const width of [1024, 900]) {
   test(`at ${width}px the Board drill-in stays whole beside the open drawer`, async ({ dashboard: page, daemon }) => {
     await page.setViewportSize({ width, height: 800 });
     await launch(daemon);
-    await useDrawer(page, daemon, "board");
+    await selectResidentDrawer(page, daemon, "board");
     await page.keyboard.press("Shift+KeyH");
     const drawer = drawerOf(page);
     await drawer.getByRole("button", { name: `Open ${NAME}` }).click();
@@ -1078,7 +1078,7 @@ for (const width of [1024, 900]) {
 
 test("asked for from a profile with unsaved edits, the drawer opens only if the operator leaves for Fleet", async ({ dashboard: page, daemon }) => {
   const profile = await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   const drawer = drawerOf(page);
   const gate = page.getByRole("dialog", { name: "Leave with unsaved changes" });
   const dirtyProfile = async (): Promise<void> => {
@@ -1115,7 +1115,7 @@ test("the drawer's footer launches a profile, and a profile with no repository l
   const NO_REPO = "Footer gardener";
   await createProfile(daemon, WITH_REPO);
   await createProfile(daemon, NO_REPO, { repo: false });
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
 
   await expect(edgeTab(page)).toHaveAccessibleName("Open the Residents drawer - 0 live");
   await expect(edgeTab(page).locator(".residents-edge-count")).toHaveCount(0);
@@ -1147,7 +1147,7 @@ test("behind its preview, the Profiles heading's chevron folds the launch list a
   const SPARE = "Spare launcher";
   await launch(daemon);
   await createProfile(daemon, SPARE);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await expect(page.getByRole("button", { name: "Residents - 1 live", exact: true })).toBeVisible();
   await page.keyboard.press("Shift+KeyH");
   const drawer = drawerOf(page);
@@ -1229,7 +1229,7 @@ test("Manage residents sits on its own row at the top, above the cards, and open
   const SECOND = "Bravo keeper";
   await launch(daemon, FIRST);
   await launch(daemon, SECOND);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
 
   // Both residents have reached the dashboard before the drawer opens, so the layout measured
   // below is the one with both cards in it.
@@ -1292,7 +1292,7 @@ test("the Keyboard panel refuses ⌥1 as macOS delivers it, and drops a binding 
 
 test("opening or pinning from another page lands on Fleet with the keyboard on a card", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   const drawer = drawerOf(page);
   await expect(page.getByRole("button", { name: "Residents - 1 live", exact: true })).toBeVisible();
 

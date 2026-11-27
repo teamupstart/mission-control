@@ -70,7 +70,7 @@ let active: StackGitHub = defaultStackGitHub;
 export function activeStackGitHub(): StackGitHub {
   return active;
 }
-export function useStackGitHub(github: StackGitHub): () => void {
+export function replaceStackGitHub(github: StackGitHub): () => void {
   const previous = active;
   active = github;
   return () => {

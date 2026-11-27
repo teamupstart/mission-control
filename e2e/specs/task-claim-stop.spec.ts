@@ -120,7 +120,11 @@ test("the task card shows Installing dependencies with Stop, and Stop lets the d
   const warnings = dashboard.getByRole("group", { name: "Dependency install warnings" });
   await expect(warnings).toContainText("Dependency install failed in demo-repo: step 1 of 1 was stopped.");
   await warnings.getByText(/^Dependency install failed/).click();
-  await expect(warnings.getByLabel("Dependency install output tail")).toContainText("resolving fixture packages");
+  // A scroll box a keyboard can reach, so it is a named region rather than a bare tab stop.
+  const tail = warnings.getByRole("region", { name: "Dependency install output tail" });
+  await expect(tail).toContainText("resolving fixture packages");
+  await tail.focus();
+  await expect(tail).toBeFocused();
   await expect(warnings.getByLabel(/^Failed command: /)).toContainText(`${process.execPath} -e`);
   await shoot(dashboard, warnings, "02-session-claim-warning");
 

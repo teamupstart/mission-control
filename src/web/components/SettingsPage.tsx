@@ -569,7 +569,7 @@ export function SettingsPage({
   // the FLAT registry, which is why the registry's order has to match the grouped render
   // order (see `SETTINGS_CATEGORIES`) - otherwise Down moves the selection somewhere the
   // eye is not. The stopPropagation keeps these keys inside the rail.
-  function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
+  function onTablistKey(e: React.KeyboardEvent<HTMLButtonElement>): void {
     const walk = visibleSettingsCategories(flags);
     const last = walk.length - 1;
     const idx = walk.findIndex((c) => c.id === shown);
@@ -824,7 +824,6 @@ export function SettingsPage({
           role="tablist"
           aria-orientation="vertical"
           aria-label="Settings categories"
-          onKeyDown={onTablistKey}
         >
           {SETTINGS_GROUPS.map((group) => (
             <div className="settings-nav-group" key={group.id}>
@@ -849,6 +848,8 @@ export function SettingsPage({
                       if (c.id === "trust") trustTabTourRef(el);
                     }}
                     onClick={() => onNavigate(c.id)}
+                    // On each tab rather than the tablist: only a tab holds focus here.
+                    onKeyDown={onTablistKey}
                   >
                     <span className="settings-nav-icon" aria-hidden>
                       {c.icon}

@@ -223,7 +223,7 @@ function PauseMenuRows({ session, close }: { session: Session; close: () => void
 /** Stops a click inside a card control from also opening the session. */
 function CardControl({ children, className = "" }: { children: React.ReactNode; className?: string }): React.JSX.Element {
   return (
-    <span className={`pause-card-control ${className}`} onClick={(event) => event.stopPropagation()}>
+    <span className={`pause-card-control ${className}`} role="presentation" onClick={(event) => event.stopPropagation()}>
       {children}
     </span>
   );

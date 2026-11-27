@@ -502,6 +502,7 @@ export function ActionBar({
             aria-describedby={voiceHint ? voiceHintId : undefined}
             placeholder="Message to send…"
             rows={1}
+            // oxlint-disable-next-line jsx-a11y/no-autofocus -- the box mounts only when the operator presses Send, so typing should start there.
             autoFocus
             // Cancel and Escape only close this box - they unmount the input, so
             // without these the text died with it and reopening Send showed a blank.

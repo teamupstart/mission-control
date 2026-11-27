@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { EnsembleArtifact } from "@shared/ensemble.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "./types.ts";
@@ -97,13 +97,16 @@ function ArtifactRow({
     if (next) void load();
   };
 
+  // Only react to an external open request, not to internal open toggles: the request reads
+  // the latest open state and loader without making them triggers.
+  const openOnRequest = useEffectEvent(() => {
+    if (open) return;
+    setOpen(true);
+    void load();
+    ref.current?.scrollIntoView({ block: "nearest" });
+  });
   useEffect(() => {
-    if (autoOpen && !open) {
-      setOpen(true);
-      void load();
-      ref.current?.scrollIntoView({ block: "nearest" });
-    }
-    // Only react to an external open request, not to internal open toggles.
+    if (autoOpen) openOnRequest();
   }, [autoOpen]);
 
   return (

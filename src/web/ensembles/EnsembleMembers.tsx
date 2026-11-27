@@ -235,11 +235,10 @@ function MemberCard({
     >
       <div className="ensemble-member-head">
         {sessionState && (
-          <Tooltip label={`Session ${sessionState.label}`}>
+          <Tooltip label={`Session ${sessionState.label}`} focusable>
             <span
               className={`ensemble-lane-tone ensemble-lane-tone-${sessionState.tone}`}
               aria-label={`Session ${sessionState.label}`}
-              tabIndex={0}
             />
           </Tooltip>
         )}

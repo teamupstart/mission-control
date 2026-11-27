@@ -11,12 +11,12 @@ import { createServer } from "node:http";
 // Give discovery and this test the same private socket so another fixture's retired pane
 // cannot receive this extension's hooks or review before its eviction timer expires.
 // oxlint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
-test.use({ daemonEnv: async ({}, use) => {
+test.use({ daemonEnv: async ({}, provide) => {
   const dir = mkdtempSync(join(tmpdir(), "mc-pi-tmux-"));
   const bin = join(dir, "tmux-private");
   writeFileSync(bin, `#!/bin/sh\nexec tmux -S ${quote(join(dir, "socket"))} "$@"\n`, { mode: 0o755 });
   try {
-    await use({ MISSION_TMUX_BIN: bin, MISSION_POLL_MS: "300", MISSION_USAGE_POLL_MS: "300" });
+    await provide({ MISSION_TMUX_BIN: bin, MISSION_POLL_MS: "300", MISSION_USAGE_POLL_MS: "300" });
   } finally {
     spawnSync(bin, ["kill-server"]);
     rmSync(dir, { recursive: true, force: true });

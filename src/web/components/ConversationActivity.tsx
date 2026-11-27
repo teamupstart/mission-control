@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { SubagentEntry, SubagentSummary, TranscriptMessage } from "@shared/types.ts";
 import { subagentCountLabel, subagentCounts, subagentElapsedMs } from "@shared/subagents.ts";
 import { observedActivity } from "../lib/conversation-activity.ts";
@@ -257,13 +257,17 @@ export function ConversationActivity({
    * Measured off `getBoundingClientRect` rather than `offsetTop`, which answers to
    * whichever ancestor happens to be positioned.
    */
-  function restOffset(el: HTMLDivElement): number {
-    // Agents puts its running agents first, so its resting place is the top.
-    if (agentsTab) return -el.scrollTop;
-    const anchor = yoursTab && injected.length > 0 ? lastOwnRef.current : null;
-    if (!anchor) return el.scrollHeight - el.scrollTop - el.clientHeight;
-    return anchor.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
-  }
+  const hasInjected = injected.length > 0;
+  const restOffset = useCallback(
+    (el: HTMLDivElement): number => {
+      // Agents puts its running agents first, so its resting place is the top.
+      if (agentsTab) return -el.scrollTop;
+      const anchor = yoursTab && hasInjected ? lastOwnRef.current : null;
+      if (!anchor) return el.scrollHeight - el.scrollTop - el.clientHeight;
+      return anchor.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom;
+    },
+    [agentsTab, yoursTab, hasInjected],
+  );
 
   useLayoutEffect(() => {
     const el = bodyRef.current;
@@ -280,7 +284,7 @@ export function ConversationActivity({
     const offset = restOffset(el);
     // Sub-pixel differences are not a scroll anyone asked for.
     if (Math.abs(offset) >= 1) el.scrollTop += offset;
-  }, [rows.length, yours.length, injected.length, agentCounts.listed, open, shown, collapsed]);
+  }, [rows.length, yours.length, injected.length, agentCounts.listed, open, shown, collapsed, restOffset]);
 
   // Folding swaps which of the two fold controls is drawn, so the one just pressed vanishes
   // from under the keyboard. Hand focus to its counterpart - but only after a press from

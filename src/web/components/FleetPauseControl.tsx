@@ -122,6 +122,7 @@ export function FleetPauseControl(): React.JSX.Element {
         </button>
       </Tooltip>
       {open && (
+        // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Tab bubbles up from the confirm's own controls; the popover must keep its dialog role.
         <div
           ref={popRef}
           className="fleet-pause-pop"

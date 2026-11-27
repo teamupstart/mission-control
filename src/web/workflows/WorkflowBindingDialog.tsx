@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
@@ -395,6 +395,8 @@ export function WorkflowBindingDialog({
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
+  // The effects below follow which binding is open, not each revision of it.
+  const existingId = existing?.id;
   /*
    * The chip's stall, read off the same binding summary and runs, and only while the dialog is
    * on THAT binding: the notice's submit is the footer's, which acts on `existing`, so a
@@ -448,7 +450,7 @@ export function WorkflowBindingDialog({
      * case this dialog exists to show, and the one hydration now reaches on open - never
      * resolved the version and left the sentence asserting the placeholder.
      */
-    const seedControls = !existing;
+    const seedControls = existingId === undefined;
     const apply = (resolved: WorkflowBindingDefaults): void => {
       setDefaults(resolved);
       if (!seedControls) return;
@@ -470,19 +472,24 @@ export function WorkflowBindingDialog({
     }).catch(() => {});
     return () => { current = false; };
   }, [
-    existing?.id,
+    existingId,
     selectedWorkflowId,
     sessionId,
     target.bindingDefaults,
     target.workflowVersionId,
     versionId,
   ]);
-  useEffect(() => {
+  // Hydrates when the binding or session changes identity, reading that binding's latest
+  // overrides; a revision of the same binding does not re-seed the controls.
+  const hydrateFromBinding = useEffectEvent(() => {
     if (!existing) return;
     if (!overridesTouchedRef.current.triggerMode) setTriggerMode(existing.triggerMode);
     if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(existing.deliveryMode);
     if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(existing.maxRepairRounds);
-  }, [existing?.id, sessionId]);
+  });
+  useEffect(() => {
+    hydrateFromBinding();
+  }, [existingId, sessionId]);
   const liveAllowed = Boolean(
     session
     && workflowConfig?.liveEnabled

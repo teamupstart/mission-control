@@ -247,8 +247,9 @@ export function PipelinePhaseMeter({
               ),
               description: `Halted - ${halt.label}. ${halt.reason}. ${halt.blurb}`,
             }}
+            focusable
           >
-            <span className="tpm-halt workflow-failed" tabIndex={0}>
+            <span className="tpm-halt workflow-failed">
               halted
             </span>
           </Tooltip>
@@ -256,8 +257,8 @@ export function PipelinePhaseMeter({
         {/* Only when a pile is non-empty. An empty marker, or a zero, would be a control that
             says nothing on the overwhelmingly common run that carries neither. */}
         {extraCount > 0 && (
-          <Tooltip label={extrasPopover(view.extras, view.total, meterRun.lastStep)}>
-            <span className="tpm-extras" tabIndex={0}>
+          <Tooltip label={extrasPopover(view.extras, view.total, meterRun.lastStep)} focusable>
+            <span className="tpm-extras">
               {`+${extraCount}`}
             </span>
           </Tooltip>

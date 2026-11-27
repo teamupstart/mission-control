@@ -27,7 +27,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { StackMergeWatch } = await import("../src/server/stacking/merges.ts");
-const { useStackGitHub } = await import("../src/server/stacking/github.ts");
+const { replaceStackGitHub } = await import("../src/server/stacking/github.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { observeStackLifecycle } = await import("../src/server/stacking/state.ts");
 const { stackStandingFor } = await import("../src/server/stacking/delivery.ts");
@@ -76,7 +76,7 @@ function github(refs: Record<string, Partial<PrRefs>>, over: Partial<StackGitHub
     },
     ...over,
   };
-  restoreGitHub = useStackGitHub(seam);
+  restoreGitHub = replaceStackGitHub(seam);
   return { reads, retargets };
 }
 

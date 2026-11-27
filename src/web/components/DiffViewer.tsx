@@ -242,6 +242,7 @@ function DiffViewerContent({
   }, [activeIdx]);
 
   return (
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- The viewer's shortcuts bubble up from its own controls; the labelled region must keep its role.
     <div
       ref={contentRef}
       className="diff-viewer-content diff-viewer-inline"

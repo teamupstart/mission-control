@@ -425,7 +425,7 @@ export function ScoutReader({
                 holds, and leaves exactly one place to scroll. Focusable because a scroll
                 container a mouse can reach and a keyboard cannot is a trap.
               */
-              <div className="scouts-prompt-scroll" tabIndex={0}>
+              <div className="scouts-prompt-scroll" role="region" aria-label="Prompt trail" tabIndex={0}>
                 <ol className="scouts-prompt-list">
                   {detail.prompts.entries.map((entry, index) => (
                     <li className="scouts-prompt-entry" key={`${entry.kind}-${index}`}>

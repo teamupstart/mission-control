@@ -63,12 +63,15 @@ export function ManagedPlanReader({ id, revision }: { id: string; revision: numb
       <nav aria-label="Plan revision files">{plan?.manifest.files.map((entry) => <Tooltip key={entry.name} label={`Read ${entry.name} from revision ${revision}`}><button className="btn" aria-current={file === entry.name ? "page" : undefined} onClick={() => setFile(entry.name)}>{entry.name}</button></Tooltip>)}</nav>
     </header>
     {error && <p role="alert">{error}</p>}
-    {text !== null && !error && (file.endsWith(".html") ? <iframe ref={frame} title={`Plan preview: ${file}`} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewSource(text)} /> : file.endsWith(".md") ? <article className="markdown" onClick={(event) => {
+    {text !== null && !error && (file.endsWith(".html") ? <iframe ref={frame} title={`Plan preview: ${file}`} sandbox={HTML_PREVIEW_SANDBOX} srcDoc={htmlPreviewSource(text)} /> : file.endsWith(".md") ? (
+      // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- Delegated link handling: Enter on a link fires the same click, and the document keeps its article role.
+      <article className="markdown" onClick={(event) => {
       const href = (event.target as Element).closest("a")?.getAttribute("href");
       if (!href || /^[a-z]+:|^\/\//i.test(href) || href.startsWith("#")) return;
       const name = new URL(href, "https://plan.invalid/").pathname.slice(1);
       if (plan?.manifest.files.some((f) => f.name === name)) { event.preventDefault(); setFile(name); }
-    }}><Markdown>{text}</Markdown></article> : <pre>{text}</pre>)}
+    }}><Markdown>{text}</Markdown></article>
+    ) : <pre>{text}</pre>)}
   </main>;
 }
 

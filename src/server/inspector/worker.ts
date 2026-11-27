@@ -52,7 +52,7 @@ import {
 import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
 import { reviewBaseChanged } from "@shared/shipping.ts";
-import { activeStackGitHub, useStackGitHub, type StackGitHub } from "../stacking/github.ts";
+import { activeStackGitHub, replaceStackGitHub, type StackGitHub } from "../stacking/github.ts";
 import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
 import { observeClosedStackChildren, observeStackLifecycle, type StackLifecycleContext } from "../stacking/state.ts";
 import { InspectorReplySchema, planReview } from "./verdict.ts";
@@ -316,8 +316,8 @@ export const DENY_SETTINGS = JSON.stringify({
  * supplies credentials and the reviewer's read scope, never the identity of the PR.
  */
 /** The GitHub seam stacking reads through. Replaced only by tests. */
-export function useInspectorStackGitHub(github: StackGitHub): () => void {
-  return useStackGitHub(github);
+export function replaceInspectorStackGitHub(github: StackGitHub): () => void {
+  return replaceStackGitHub(github);
 }
 
 /**
@@ -325,7 +325,7 @@ export function useInspectorStackGitHub(github: StackGitHub): () => void {
  * Inspector starts; a test sets its own. Without one, no lifecycle observation runs.
  */
 let stackLifecycle: StackLifecycleContext | null = null;
-export function useInspectorStackLifecycle(context: StackLifecycleContext | null): () => void {
+export function replaceInspectorStackLifecycle(context: StackLifecycleContext | null): () => void {
   const previous = stackLifecycle;
   stackLifecycle = context;
   return () => {
@@ -1688,7 +1688,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // insert. Gating it would mean a user who opens pull requests first and turns the
   // Inspector on afterwards can never review any of them, because the proof they were
   // ours went by while nobody was listening and cannot be recovered.
-  useInspectorStackLifecycle(registry);
+  replaceInspectorStackLifecycle(registry);
   const offPrOpened = registry.onPrOpened((e: PrOpened) => {
     const adopted = adoptOpenedPr(registry, e, Date.now());
     // Refresh NOW rather than waiting for the next tick. The chip is how anyone knows the

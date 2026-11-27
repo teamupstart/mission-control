@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { repoLeaf } from "../lib/format.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -270,7 +270,8 @@ export function RepoCombobox({
   const rootRef = useRef<HTMLDivElement>(null);
   const ownInputRef = useRef<HTMLInputElement>(null);
   const inputRef = externalInputRef ?? ownInputRef;
-  const listRef = useRef<HTMLUListElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
 
   const matches = filterRepos(repos, value);
   // Names, plus one disambiguating folder name on the rows a name alone cannot tell apart.
@@ -298,7 +299,9 @@ export function RepoCombobox({
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [showList]);
+    // `inputRef` is either the caller's ref object or this widget's own, both stable; it is
+    // listed so a caller swapping refs re-places the list against the new input.
+  }, [showList, inputRef]);
 
   // Collapse when focus/click leaves the widget. The list is portaled outside
   // rootRef, so it has to count as "inside" or picking an option would close
@@ -379,6 +382,7 @@ export function RepoCombobox({
         className="field-input mono"
         role="combobox"
         aria-expanded={showList}
+        aria-controls={listId}
         aria-autocomplete="list"
         placeholder={placeholder}
         disabled={disabled}
@@ -400,7 +404,8 @@ export function RepoCombobox({
       {showList &&
         pos &&
         createPortal(
-          <ul
+          <div
+            id={listId}
             className="combobox-list"
             role="listbox"
             ref={listRef}
@@ -408,8 +413,11 @@ export function RepoCombobox({
           >
             {options.map(({ repo, name, hint }, i) => (
               <Tooltip key={repo} label={repo}>
-                <li
+                <div
                   role="option"
+                  // Focus stays in the input while the arrow keys move the highlight; -1 keeps
+                  // the option out of the tab order, and its prevented mousedown never focuses it.
+                  tabIndex={-1}
                   aria-selected={i === active}
                   className={`combobox-option${i === active ? " is-active" : ""}`}
                   onMouseEnter={() => setActive(i)}
@@ -421,10 +429,10 @@ export function RepoCombobox({
                 >
                   <span className="combobox-option-name">{name}</span>
                   {hint && <span className="combobox-option-hint">{hint}</span>}
-                </li>
+                </div>
               </Tooltip>
             ))}
-          </ul>,
+          </div>,
           document.body,
         )}
     </div>

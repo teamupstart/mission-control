@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PIPELINE_INSTALLER_CHANGE_INFO,
   PIPELINE_LAUNCH_RUNTIMES,
@@ -205,7 +205,10 @@ function ConductorInstallerSetup({ state }: { state: ConductorState }): React.JS
   const terminals = useTerminalTargets();
   const [selectedCheckout, setSelectedCheckout] = useState<string | null>(null);
   const [terminalId, setTerminalId] = useState<TerminalBackendId | null>(null);
-  const candidates = state.installers?.candidates ?? [];
+  const installerCandidates = state.installers?.candidates;
+  // Memoized so the pruning effect below runs when the list changes, not on every render
+  // that falls back to an empty list.
+  const candidates = useMemo(() => installerCandidates ?? [], [installerCandidates]);
   const runtime = state.installers?.runtime ?? null;
   const runtimeReady = runtime?.supported === true;
   const selected = candidates.find((candidate) => candidate.checkout === selectedCheckout) ?? null;

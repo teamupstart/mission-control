@@ -36,7 +36,8 @@ export function FileWindow({
   const [maximized, setMaximized] = useState(() => window.innerWidth < 760);
   const restore = useRef(rect);
 
-  useEffect(() => () => controller.flush(session.id), [controller.flush, session.id]);
+  const { flush } = controller;
+  useEffect(() => () => flush(session.id), [flush, session.id]);
 
   function drag(event: React.PointerEvent<HTMLElement>): void {
     if (maximized || (event.target as HTMLElement).closest("button,input")) return;

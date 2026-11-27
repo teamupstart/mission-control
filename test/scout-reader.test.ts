@@ -120,8 +120,10 @@ test("the scout reader bounds the whole prompt ledger in one scroll container", 
   const html = render(detail());
 
   // The cap and the scroll live in `.scouts-prompt-scroll`; what the markup has to carry is
-  // the keyboard reach into that scroll container, which CSS cannot add.
-  const scrollers = html.match(/<div class="scouts-prompt-scroll" tabindex="0">/g) ?? [];
+  // the keyboard reach into that scroll container, which CSS cannot add, and the name a
+  // keyboard user hears on arriving there.
+  const scrollers =
+    html.match(/<div class="scouts-prompt-scroll" role="region" aria-label="Prompt trail" tabindex="0">/g) ?? [];
   assert.equal(scrollers.length, 1, "the ledger is one focusable scroll box, not one per prompt");
 
   const texts = html.match(/<p class="scouts-prompt-text">/g) ?? [];

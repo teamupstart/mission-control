@@ -180,6 +180,7 @@ export function ForemanRecommendationSidecar({
   const recommendation = note.recommendation?.trim();
 
   return createPortal(
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- The click only stops propagation (see below); the panel must keep its dialog role.
     <aside
       className="foreman-recommendation-sidecar"
       role="dialog"

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 import { EditorState } from "@codemirror/state";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
@@ -788,15 +789,14 @@ test("the builder and the Runs surface are both active, one home apart", () => {
   assert.match(workflows, /Build a review workflow/);
   assert.match(workflows, /New workflow/);
 
-  const runs = renderToStaticMarkup(createElement(ExecutionPage, {
+  const runs = renderToStaticMarkup(withChildren(ExecutionPage, {
     title: "Workflow runs",
     blurb: "Every review a workflow has run.",
-    children: createElement(WorkflowRuns, {
-      runs: [],
-      selectedRunId: null,
-      onSelectRun: () => {},
-    }),
-  }));
+  }, createElement(WorkflowRuns, {
+    runs: [],
+    selectedRunId: null,
+    onSelectRun: () => {},
+  })));
   assert.match(runs, /Loading workflow runs/);
   // The eyebrow is what tells an operator arriving on a bookmark which half of the product
   // they landed in, now that no tab strip above the page says it.

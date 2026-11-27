@@ -61,7 +61,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Files TAB lives in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -169,7 +169,7 @@ test.describe("a comment thread on text the agent rewrote", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(onDisk, file(ORIGINAL));
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     const editor = page.getByLabel(`Editor for ${SOURCE}`);
     await expect(editor).toContainText(ORIGINAL);
@@ -254,7 +254,7 @@ test.describe("a comment thread on text the agent rewrote", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(onDisk, file(ORIGINAL));
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     const editor = page.getByLabel(`Editor for ${SOURCE}`);
     await expect(editor).toContainText(ORIGINAL);

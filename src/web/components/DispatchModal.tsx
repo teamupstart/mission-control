@@ -4,7 +4,7 @@ import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useContext, useEffect, useEffectEvent, useId, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   AGENT_TYPES,
   TASK_KINDS,
@@ -203,6 +203,8 @@ export function pipelineAgentForKindTransition(
   }
   return agent;
 }
+
+const dependencyKey = dependencyInputKey;
 
 /**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
@@ -1534,7 +1536,10 @@ function DispatchModal({
    * hold the no-pass value even while the separate new-dispatch draft has saved progress.
    */
   const pass = guidedApplies ? (guidedPass ?? startGuidedPass()) : NO_GUIDED_PASS;
-  const setPass = (next: GuidedPass | null): void => onGuidedPassChange?.(next);
+  const setPass = useCallback(
+    (next: GuidedPass | null): void => onGuidedPassChange?.(next),
+    [onGuidedPassChange],
+  );
   const guidedRunning = isGuidedPassRunning(pass);
   const drop = useImageDrop({
     attachments: draft.attachments,
@@ -1605,7 +1610,6 @@ function DispatchModal({
   const planRequirementsProblem = hasPlanPins
     ? planRequirementsResult?.error ?? (planRequirementsResult ? null : "Checking pinned plan prerequisites…")
     : null;
-  const dependencyKey = dependencyInputKey;
   function removalReason(key: string): string | null {
     if (pinPreviewPending) return "Wait for the revision preview before editing dependencies.";
     if (busy) return "Wait for the current task action before editing dependencies.";
@@ -1937,6 +1941,16 @@ function DispatchModal({
     return agent === draft.agent ? {} : { model: "", effort: "", advisorModel: "" };
   }
 
+  // The two agent-following effects below answer a change of kind, runtime or defaults, not
+  // every render: these read the latest draft writer and agent list without becoming triggers.
+  const switchDraftAgent = useEffectEvent((agent: AgentType) => {
+    update({ agent, ...overridesForAgent(agent) });
+  });
+  const agentSelectable = useEffectEvent((agent: AgentType) => selectableAgents.includes(agent));
+  // The Agent label wraps its select through a Tooltip, which hides the nesting from a
+  // static check; the explicit id says the same association outright.
+  const agentSelectId = useId();
+
   // Pipeline host constraints can change while this modal stays open. Kind selection applies
   // the same rule immediately, while this effect preserves it when a live config refresh moves
   // an existing Pipeline draft between the managed SDK and Claude-only Terminal hosts.
@@ -1947,10 +1961,7 @@ function DispatchModal({
       draft.agent,
     );
     if (normalizedAgent === draft.agent) return;
-    update({
-      agent: normalizedAgent,
-      ...overridesForAgent(normalizedAgent),
-    });
+    switchDraftAgent(normalizedAgent);
   }, [draft.agent, draft.kind, pipelineLaunchRuntime]);
 
   /**
@@ -1980,8 +1991,8 @@ function DispatchModal({
     if (editing || tourDemo || draft.agentPinned || !defaults) return;
     if (!usesHarness) return;
     const wanted = taskKindAgent(defaults, draft.kind);
-    if (wanted === draft.agent || !selectableAgents.includes(wanted)) return;
-    update({ agent: wanted, ...overridesForAgent(wanted) });
+    if (wanted === draft.agent || !agentSelectable(wanted)) return;
+    switchDraftAgent(wanted);
   }, [defaults, draft.agent, draft.agentPinned, draft.kind, editing, tourDemo, usesHarness]);
 
   // ---- the guided pass ----------------------------------------------------------------
@@ -2216,7 +2227,7 @@ function DispatchModal({
   const guidedLeave = useCallback((): void => {
     setPass(endGuidedPass(pass));
     setHighlight(null);
-  }, [onGuidedPassChange, pass]);
+  }, [setPass, pass]);
 
   /**
    * The pass's keys, offered the event before the dialog's own ⌘↵ and reporting whether it
@@ -3243,7 +3254,7 @@ function DispatchModal({
                 under it. Always rendered, so the grid's items do not change shape when a
                 pass starts. */}
             <div className={`dispatch-crew-cell${guidedAnchor("harness")}`}>
-              <label className={`field${guidedDimUnless("harness")}`}>
+              <label className={`field${guidedDimUnless("harness")}`} htmlFor={agentSelectId}>
                 <span className="field-label">Agent</span>
                 <Tooltip label={AGENT_FIELD_TIP}>
                   <span
@@ -3251,6 +3262,7 @@ function DispatchModal({
                     style={{ ["--agent-accent" as string]: AGENT_IDENTITY[draft.agent].accent }}
                   >
                     <select
+                      id={agentSelectId}
                       className="field-input"
                       value={draft.agent}
                       disabled={!usesHarness && !managedPipeline}

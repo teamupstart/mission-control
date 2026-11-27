@@ -112,7 +112,7 @@ async function createComments(
   }
 }
 
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -251,7 +251,7 @@ test("comment index stays usable while Dispatch types and attaches under session
   const active = await activeSession(daemon);
   writeFileSync(join(active.cwd, SOURCE), SOURCE_LINES.join("\n"));
   await createComments(daemon, active.id);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const comments = await openCommentedFile(page, COMMENT_COUNT);
   await comments.click();
@@ -337,7 +337,7 @@ test("comment index keeps renderer CPU and Dispatch responsiveness near the clos
   const active = await activeSession(daemon);
   writeFileSync(join(active.cwd, SOURCE), SOURCE_LINES.join("\n"));
   await createComments(daemon, active.id, PROFILE_COMMENT_COUNT);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
   await openCommentedFile(page, PROFILE_COMMENT_COUNT);
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Performance.enable", { timeDomain: "timeTicks" });

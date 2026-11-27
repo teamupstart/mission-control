@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   pipelineRunKey,
   type PipelineProviderId,
@@ -72,23 +72,22 @@ export function usePipelineRunDetail(
   slug: string | null,
   updatedAt: number,
 ): PipelineRunDetailState {
-  const generation = useRef(0);
   const [stored, setStored] = useState<StoredDetailState | null>(null);
   const key = detailKey(provider, repoRoot, slug, updatedAt);
 
   useEffect(() => {
-    const current = ++generation.current;
     if (!provider || !repoRoot || !slug) return;
+    let superseded = false;
     setStored({ key, value: LOADING });
     void fetchPipelineRunDetail(provider, repoRoot, slug).then((detail) => {
       // The guard is what stops a slow answer for the run somebody just left being drawn
       // under the run that replaced it - the rail is one click per row, and the engine's
       // files sit on a disk that can be busy.
-      if (generation.current !== current) return;
+      if (superseded) return;
       setStored({ key, value: detail ? { state: "ready", detail } : { state: "missing" } });
     });
     return () => {
-      if (generation.current === current) generation.current++;
+      superseded = true;
     };
   }, [provider, repoRoot, slug, key]);
 

@@ -266,6 +266,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target ?? ""} command="{name}, answer" instruction="to reply to one." /></>}</>;
   }
+  // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Focus and blur only track focus within the card's own buttons; the card must stay a status live region.
   return <article ref={article} role="status" tabIndex={surface ? -1 : undefined} aria-label={pill && card.state === "pending" ? `To ${first?.target && spokenNameLabel(first.target)}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => { setFocused(true); onActivate?.(); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     data-pill={pill && ((card.state === "pending" && remaining > 0) || card.state === "sent" || card.state === "queued") || undefined}

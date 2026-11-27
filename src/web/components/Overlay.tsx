@@ -439,6 +439,9 @@ export function Overlay({
   return (
     <div
       className="modal-backdrop"
+      // The backdrop click is a pointer convenience: Escape and the panel's own controls
+      // are the keyboard path to the same dismissal.
+      role="presentation"
       data-overlay-top={isTop ? "true" : undefined}
       // Only a complete press AND release on the backdrop dismisses. A drag that crosses
       // the panel boundary in either direction - most often selecting text inside the panel

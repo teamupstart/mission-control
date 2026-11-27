@@ -97,7 +97,7 @@ async function askResident(daemon: DaemonHandle, session: LiveSession): Promise<
 }
 
 /** Opt this spec's dashboard into the Residents drawer, closed, on the Board, and land on the fleet. */
-async function useDrawer(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectResidentDrawer(page: Page, daemon: DaemonHandle): Promise<void> {
   const config = { residentPlacement: "drawer", residentDrawerPinned: false, layout: "board" };
   await request(daemon, "/api/ui/config", config, "PUT");
   await page.evaluate((next) => {
@@ -136,7 +136,7 @@ async function borderOf(card: Locator): Promise<string[]> {
 
 test("a working resident's card is edged in the Working color, and one that needs you in the Needs you color, in each skin", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
 
   await page.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
   const drawer = drawerOf(page);
@@ -182,7 +182,7 @@ test("the closed drawer's ⌂ tab lights blue while a resident works, amber whil
   const OTHER = "Bell keeper";
   await launch(daemon);
   await launch(daemon, OTHER);
-  await useDrawer(page, daemon);
+  await selectResidentDrawer(page, daemon);
 
   // The session ids, read off the cards, then the drawer is closed so only the tab shows.
   await page.getByRole("button", { name: "Residents - 2 live", exact: true }).click();

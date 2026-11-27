@@ -402,10 +402,9 @@ export function WorkflowLadder({
                           </span>
                           <span className="wf-ladder-member-name">{member.name}</span>
                           {member.status.tooltip ? (
-                            <Tooltip label={member.status.tooltip}>
+                            <Tooltip label={member.status.tooltip} focusable>
                               <span
                                 className="wf-ladder-member-state wf-status-explained"
-                                tabIndex={0}
                               >
                                 {member.status.label}
                               </span>
@@ -645,6 +644,9 @@ function WorkflowTileDisclosure({
   return (
     <section
       className={`tile-workflow-disclosure${expanded ? " is-expanded" : ""}`}
+      // A pointer convenience: the board's arrow keys move the cursor and the ladder's own
+      // "Open run" control follows the run, so the unnamed section stays presentational.
+      role="presentation"
       // The stop stays: this panel is the tallest thing on a tile, and letting a stray click
       // inside it bubble would make every miss open the console. What changes is that a miss
       // is no longer nothing - the host is asked what its own surface means, and only for
@@ -809,9 +811,11 @@ export function WorkflowLadderPanel({
 
   useEffect(() => {
     mounted.current = true;
+    // The barrier is created once and never replaced, so the one seen here is the one to release.
+    const commit = refreshCommit.current;
     return () => {
       mounted.current = false;
-      refreshCommit.current.release();
+      commit.release();
     };
   }, []);
   useEffect(() => {

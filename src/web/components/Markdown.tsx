@@ -43,6 +43,7 @@ export type WorkspacePaths = ReadonlySet<string> | null;
 function WorkspaceAnchor({
   href,
   onLink,
+  children,
   ...props
 }: React.AnchorHTMLAttributes<HTMLAnchorElement> & {
   onLink: WorkspaceLinkHandler;
@@ -95,7 +96,9 @@ function WorkspaceAnchor({
           }
           if (href && shouldOpen && handler.current(href) === true) event.preventDefault();
         }}
-      />
+      >
+        {children}
+      </a>
     </Tooltip>
   );
 }
@@ -276,7 +279,7 @@ function MarkdownBody({
   const findCurrentKey = find?.currentKey ?? null;
   const findHits = find?.onHits;
   const components = useMemo(() => {
-    const anchor = ({ node: _node, href, onClick: _onClick, ...props }: React.ComponentPropsWithoutRef<"a"> & {
+    const anchor = ({ node: _node, href, onClick: _onClick, children, ...props }: React.ComponentPropsWithoutRef<"a"> & {
       node?: unknown;
     }) =>
       linkable ? (
@@ -284,7 +287,9 @@ function MarkdownBody({
           {...props}
           href={href}
           onLink={(link, probe) => linkHandler.current?.(link, probe) ?? false}
-        />
+        >
+          {children}
+        </WorkspaceAnchor>
       ) : (
         <Tooltip label={href || "Blocked link"}>
           <a
@@ -292,7 +297,9 @@ function MarkdownBody({
             href={href}
             target={href?.startsWith("http") ? "_blank" : undefined}
             rel={href?.startsWith("http") ? "noreferrer noopener" : undefined}
-          />
+          >
+            {children}
+          </a>
         </Tooltip>
       );
     const fenced = diagramRenderers

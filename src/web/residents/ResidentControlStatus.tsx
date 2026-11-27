@@ -30,8 +30,9 @@ export function ResidentControlStatus({ session, name, badge = false }: {
         label={granted
           ? `${name} can read and steer your other live sessions. Turn it off from the session control menu.`
           : "Only a Launch click in the Mission Control desktop app gives a resident session control. The session control menu grants it for this conversation only."}
+        focusable
       >
-        <span className="resident-control-state" role="status" tabIndex={0} aria-label={badge ? status : undefined}>
+        <span className="resident-control-state" role="status" aria-label={badge ? status : undefined}>
           {badge ? <>
             <svg className="resident-control-shield" viewBox="0 0 16 16" aria-hidden="true">
               <path d="M8 1.5 2.5 3.6v4.1c0 3.2 2.3 5.9 5.5 6.8 3.2-.9 5.5-3.6 5.5-6.8V3.6L8 1.5Z" />

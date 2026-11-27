@@ -14,7 +14,7 @@ const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 type HerdrFixture = { env: Record<string, string>; cli: (...args: string[]) => string };
 const test = base.extend<{ realHerdr: HerdrFixture }>({
   // eslint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
-  realHerdr: async ({}, use) => {
+  realHerdr: async ({}, provide) => {
     if (!herdrBin || !isAbsolute(herdrBin)) throw new Error("Set MC_E2E_REAL_HERDR_BIN to an absolute Herdr binary path");
     const home = mkdtempSync(join(tmpdir(), "h-"));
     const env = {
@@ -34,7 +34,7 @@ const test = base.extend<{ realHerdr: HerdrFixture }>({
     try {
       await expect.poll(() => JSON.parse(cli("status", "server", "--json")).running).toBe(true);
       console.log(`REAL HERDR: ${cli("--version").trim()}; isolated server socket ${before.socket}`);
-      await use({ env, cli });
+      await provide({ env, cli });
     } finally {
       spawnSync(herdrBin, ["server", "stop"], { env: childEnv, stdio: "ignore", timeout: 10_000 });
       if (server.exitCode === null) server.kill("SIGTERM");
@@ -42,8 +42,8 @@ const test = base.extend<{ realHerdr: HerdrFixture }>({
       rmSync(home, { recursive: true, force: true });
     }
   },
-  daemonEnv: async ({ realHerdr }, use) => {
-    await use({ ...realHerdr.env, MISSION_HERDR_BIN: herdrBin!, MISSION_POLL_MS: "1500", MISSION_TMUX_BIN: "/nonexistent/mc-herdr-test-tmux" });
+  daemonEnv: async ({ realHerdr }, provide) => {
+    await provide({ ...realHerdr.env, MISSION_HERDR_BIN: herdrBin!, MISSION_POLL_MS: "1500", MISSION_TMUX_BIN: "/nonexistent/mc-herdr-test-tmux" });
   },
 });
 test.skip(!herdrBin, "Set MC_E2E_REAL_HERDR_BIN to exercise the installed Herdr server");

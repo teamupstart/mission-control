@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { LlmProviderView } from "@shared/types.ts";
 import { personaUpstreamLabel, personasForDisplay, WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import type {
@@ -255,13 +255,14 @@ export function PersonaLibrary({
   // `startNew` seeds the first paint (above) and is watched after it, on the EDGE of the
   // request: a route that asks for a blank draft while this surface is already up - a `/new`
   // link pasted into the address bar, a Back step onto one - is honoured too, and through
-  // `start`, so it still asks before discarding an unsaved draft. `start` is hoisted and
-  // deliberately not a dependency; the edge is the control.
+  // `start`, so it still asks before discarding an unsaved draft. `start` is read through an
+  // effect event rather than tracked; the edge is the control.
   const newDraftAsked = useRef(startNew);
+  const startAsked = useEffectEvent(() => start(EMPTY_SEED));
   useEffect(() => {
     const asked = startNew && !newDraftAsked.current;
     newDraftAsked.current = startNew;
-    if (asked) start(EMPTY_SEED);
+    if (asked) startAsked();
   }, [startNew]);
   useEffect(() => {
     // The first SSE snapshot can arrive after this page mounts. Adopt its first active row only

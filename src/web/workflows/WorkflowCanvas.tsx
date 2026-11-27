@@ -569,6 +569,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
     (_event: unknown, node: WorkflowCanvasNode) => handlersRef.current.nodeDragStop(node), []);
 
   return (
+    // oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- focus and Tab are delegated from React Flow's own focusable nodes; `presentation` would contradict the aria-label tests and specs find the canvas by.
     <div
       ref={canvas}
       className={`workflow-canvas${readOnly ? " is-readonly" : ""}${compact ? " is-compact" : ""}`}

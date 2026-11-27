@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 import { Markdown } from "../src/web/components/Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "../src/web/components/markdownDiagramRegistry.tsx";
 import { MERMAID_MAX_DIAGRAMS, MERMAID_MAX_SOURCE_LENGTH } from "../src/web/lib/mermaidPreview.ts";
@@ -13,15 +13,14 @@ import { hasTooltip, tooltipLabels } from "./helpers/markup.ts";
 // turning a string into HTML, and every claim below is about that HTML.
 
 function render(md: string, breaks = false): string {
-  return renderToStaticMarkup(createElement(Markdown, { children: md, breaks }));
+  return renderToStaticMarkup(withChildren(Markdown, { breaks }, md));
 }
 
 function renderFilesPreview(md: string): string {
-  return renderToStaticMarkup(createElement(Markdown, {
-    children: md,
+  return renderToStaticMarkup(withChildren(Markdown, {
     diagramRenderers: FILES_DIAGRAM_RENDERERS,
     diagramDocumentKey: "docs/example.md",
-  }));
+  }, md));
 }
 
 test("a fenced block becomes a highlighted <pre><code>, tagged with its language", () => {

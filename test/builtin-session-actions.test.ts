@@ -124,6 +124,10 @@ test("Pull Request ships with the skill and the proof Phase 4 will enforce", () 
   assert.match(action.promptMarkdown, /useful alt\s+text/i);
   assert.match(action.promptMarkdown, /signed-in web interface/i);
   assert.match(action.promptMarkdown, /render.*attachments/is);
+  // The action points at the skill's closing-line rule rather than restating it.
+  assert.match(action.promptMarkdown, /"Closing the issue the work came from" rule/);
+  assert.match(action.promptMarkdown, /`Closes #<n>`, or `Part of #<n>`/);
+  assert.match(action.promptMarkdown, /title's `\(#<n>\)` closes nothing/);
 });
 
 test("a shipped action never becomes a row, on a database that has opened", () => {

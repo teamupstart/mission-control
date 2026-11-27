@@ -108,7 +108,11 @@ async function publishOwner(metadataPath: string, owner: E2eLeaseOwner): Promise
 }
 
 async function tryListen(port: number, token: string): Promise<Server | null> {
-  const server = createServer((socket) => socket.end(`${LEASE_PROTOCOL}${token}\n`));
+  const server = createServer((socket) => {
+    // A waiter can disconnect during the write or reset after reading the reply.
+    socket.on("error", (error) => console.warn("[e2e] host lease probe socket failed:", error));
+    socket.end(`${LEASE_PROTOCOL}${token}\n`);
+  });
   return await new Promise((resolve, reject) => {
     server.once("error", (error) => {
       if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") resolve(null);

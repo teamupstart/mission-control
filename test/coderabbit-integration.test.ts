@@ -345,6 +345,21 @@ test("a runtime refusal proven before process start returns its allowance",async
  const r=await runCheck(i,{...deps(),execute:async()=>({kind:"infrastructure",started:false,reason:"no lease could be acquired"})});
  assert.equal(r.kind,"action_required");assert.equal(releases,1);
 });
+
+test("CodeRabbit hands a withheld verdict to automatic infrastructure recovery", async () => {
+ const i = input();
+ let refunds = 0;
+ i.reserveRun = () => ({ granted: true, spent: 0, release: () => { refunds++; } });
+ const reason = "the coderabbit check exited 2, but git ls-remote --symref origin HEAD was stopped during worktree hand-back";
+ const execution = {
+  kind: "infrastructure" as const, cleanupFailed: true as const, reason,
+  review: { ...summary, status: "incomplete" as const },
+ };
+ const result = await runCheck(i, { ...deps(), execute: async () => execution });
+ assert.equal(result.kind, "infrastructure");
+ assert.equal(result.reason, reason);
+ assert.equal(refunds, 1);
+});
 test("unexpected comparison and executor failures log classified secret-free diagnostics",async(t)=>{
  const logs:string[]=[];t.mock.method(console,"error",(...args:unknown[])=>logs.push(args.join(" ")));
  for(const stage of ["comparison","execution"]){

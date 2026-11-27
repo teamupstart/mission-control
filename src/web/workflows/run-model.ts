@@ -49,7 +49,7 @@ import {
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
-import { blockedPhaseClause, workflowCaptureFailure, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause, workflowCaptureFailure, workflowCheckCleanupBlock, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -2536,6 +2536,10 @@ export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
         ?? "This review is standing still. The path forward is yours to pick.");
     }
     case "blocked": {
+      if (workflowCheckCleanupBlock({ status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null })) {
+        return autoPosture("Mission Control retries worktree cleanup automatically."
+          + " The check can retry in this round once cleanup is confirmed.");
+      }
       const preparation = preparationRecoverySentence(detail);
       if (preparation) {
         const recovery = workflowPreparationRecovery({ status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null });

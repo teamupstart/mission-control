@@ -213,7 +213,17 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     chargeRun = execution.kind === "exited";
     // A review takes its tree without a dependency claim, so it is never decided by one.
     if (execution.kind === "unavailable" || execution.kind === "decided") return block(execution.note);
-    if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
+    if (execution.kind === "infrastructure") {
+      if (execution.cleanupFailed) {
+        // The engine owns the lease gate and retries even if reclamation has already
+        // settled the lease by the time it handles this result.
+        return {
+          kind: "infrastructure", reason: execution.reason, artifacts: execution.artifacts,
+          review: { ...(execution.review ?? summary("incomplete", execution.reason)), remainingRuns: remainingRuns() },
+        };
+      }
+      return block(execution.reason, execution.review, execution.artifacts);
+    }
     failureStage = "result";
     const review = execution.review;
     if (review?.status === "incomplete" && review.retryableConnection) {

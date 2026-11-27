@@ -57,6 +57,53 @@ async function start(page:Page,d:DaemonHandle, options:{group?:boolean;maxRuns?:
 const detail=(d:DaemonHandle,id:string)=>api<WorkflowRunDetail>(d,`/api/workflow-runs/${id}`);
 async function shot(page:Page,name:string){if(!process.env.MC_E2E_EVIDENCE)return;const dir=artifactsDir("coderabbit-workflows");mkdirSync(dir,{recursive:true});await page.screenshot({path:`${dir}${name}.png`,fullPage:true,mask:[page.locator(".wf-run-worklist-row-line").filter({hasText:/^\/(?:Users|home|private|tmp)\//})]});}
 
+test.describe("pooled CodeRabbit cleanup", () => {
+ test.use({ daemonEnv: {
+  MC_E2E_GIT_CHECK_HAND_BACK_TIMEOUT: "1",
+  MISSION_WORKTREE_SWEEP_MS: "30000",
+  MISSION_WORKFLOW_SWEEP_MS: "1000",
+ } });
+
+ test("reclaims a hand-back after a 30-second network probe timeout", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  yaml(daemon, "reviews: {}");
+  writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ mode: "findings", findingsOnFirstReview: true }));
+  const { id } = await start(dashboard, daemon, { maxRuns: 1 });
+  await expect.poll(async () => (await detail(daemon, id)).run.currentPhase,
+   { timeout: 90_000 }).toBe("check_cleanup_unresolved");
+  const blocked = await detail(daemon, id);
+  const first = blocked.attempts.find(a => a.nodeId === "cr")!;
+  expect(first.verdict).toBeNull();
+  expect(first.output).toMatchObject({ review: { status: "incomplete", remainingRuns: 1 } });
+  expect(first.error).toContain("exited 2");
+  const timeout = "network probe timeout: git ls-remote --symref origin HEAD timed out after 30 s";
+  expect(first.error).toContain(timeout);
+  expect(first.error).not.toContain("Settings > Setup");
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${id}`);
+  await expect(dashboard.getByRole("main")).toContainText("Mission Control retries worktree cleanup automatically");
+  await expect(dashboard.getByRole("main")).toContainText("No action needed");
+  await expect(dashboard.getByRole("link", { name: "Settings > Setup" })).toHaveCount(0);
+  await shot(dashboard, "hand-back-blocked");
+  const diagnostic = dashboard.getByText(timeout).first();
+  await expect(diagnostic).toBeVisible();
+  await diagnostic.scrollIntoViewIfNeeded();
+  await shot(dashboard, "hand-back-diagnostic");
+  await expect.poll(async () => (await detail(daemon, id)).run.status, { timeout: 150_000 }).toBe("completed");
+  const after = await detail(daemon, id);
+  expect(after.submissions.map(s => s.id)).toEqual(blocked.submissions.map(s => s.id));
+  expect(after.events.filter(event => event.kind === "check_cleanup_resolved")).toHaveLength(1);
+  expect(after.events.some(event => event.kind === "command_action_required")).toBe(false);
+  const attempts = after.attempts.filter(a => a.nodeId === "cr");
+  expect(attempts).toHaveLength(2);
+  expect(attempts.at(-1)?.output).toMatchObject({ status: "passed", review: { remainingRuns: 0 } });
+  const review = dashboard.getByText(/Complete CodeRabbit review/).first();
+  await expect(review).toBeVisible();
+  await review.scrollIntoViewIfNeeded();
+  await shot(dashboard, "hand-back-recovered");
+ });
+});
+
 test("Library typed tuning saves, reloads and removes without changing YAML enablement; policies are derived",async({dashboard,daemon})=>{
  yaml(daemon, "reviews: {}");
  await dashboard.goto(`${daemon.baseURL}/#/library/commands/coderabbit`);

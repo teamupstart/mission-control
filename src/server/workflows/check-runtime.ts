@@ -415,7 +415,7 @@ export class CheckRuntime {
     const review = this.retainReview(attempt, request, parser, artifacts, cleanup.ok,
       outcome.result.kind === "exited" ? outcome.result.exitCode : 1);
     if (!cleanup.ok) {
-      return { kind: "infrastructure",
+      return { kind: "infrastructure", cleanupFailed: true,
         reason: `the ${request.slot} check ran and ${describeResult(outcome.result)}, but its result is withheld because its pooled worktree could not be accounted for: ${cleanup.reason}`,
         artifacts, review };
     }

@@ -2505,11 +2505,15 @@ A check runs in a **pooled worktree**, and a check that times out is terminated 
 group. When that group cannot be proven gone, the worktree cannot be handed back, and the run
 blocks rather than reporting a result it cannot account for - something may still be writing
 into the tree the verdict came from. The run reads **Blocked**, phase `check_cleanup_unresolved`.
+The same phase covers a failed hand-back after the check process has exited. If
+`git ls-remote --symref origin HEAD` exceeds its 30-second deadline while refreshing the pool's
+default branch, the attempt reports a network probe timeout.
 
-That block is meant to clear itself, and now does. The pool's reclamation pass keeps asking
-whether the group has gone and hands the tree back when it can prove it; on the next sweep the
-run **resumes on its own** - the retry the block withheld is scheduled against the same
-evidence and the same round, and the timeline records **Check cleanup resolved**. A node that
+The pool's reclamation pass checks for remaining processes when their exit is uncertain and
+retries failed hand-backs with backoff. Once the lease is accounted for, the next workflow
+sweep schedules the retry against the same evidence and round, and the timeline records
+**Check cleanup resolved**. A CodeRabbit attempt withheld for worktree cleanup reports the
+hand-back diagnostic and returns its execution allowance before the retry. A node that
 had already spent every infrastructure attempt moves to `infrastructure_error` instead, which
 is the phase **Retry provider call** belongs to.
 

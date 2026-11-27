@@ -47,19 +47,18 @@ export const INSPECTOR_LIMITS = {
 // it too.
 
 /**
- * What the Inspector is currently able to do about one pull request.
+ * What the Inspector is able to do about one pull request, and what a reviewed head was
+ * recorded under. APPEND-ONLY: persisted beside a reviewed head.
  *
- * `live` is the only value that means "this review is real": it was published under the
- * operator's GitHub identity, in a repo they trusted, with the feature switched on.
- * Every other value names which switch is withholding that.
- */
-/**
- * APPEND-ONLY: persisted beside a reviewed head.
+ * `live` is the only value that means "this GitHub review is real": it was published under the
+ * operator's GitHub identity, in a repo they trusted, with the feature switched on. `off`,
+ * `dry-run` and `not-allowlisted` each name the switch that is withholding that.
  *
- * `local` is a recorded posture, never a current one: `inspectorPosture` cannot return it. The
- * worker records it for a head whose tree matches a passed Local Inspector review, and only
- * while the current posture is `live`, so Dry run never produces one. The merge predicate
- * refuses it until Shipping accepts local reviews.
+ * `local` is different: it withholds nothing. It records that a head's tree matched a passed
+ * Local Inspector review, so no GitHub review ran. It is a recorded posture, never a current
+ * one - `inspectorPosture` cannot return it - and the worker writes it only while the current
+ * posture is `live`, so Dry run never produces one. The merge predicate refuses it until
+ * Shipping accepts local reviews.
  */
 export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted", "local"] as const;
 export type InspectorPosture = (typeof INSPECTOR_POSTURES)[number];

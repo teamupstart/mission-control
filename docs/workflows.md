@@ -1757,9 +1757,13 @@ A Persona call that fails anyway while the host slept through it, for example be
 connection dropped, is recorded as `persona_host_suspended` and retried on the same frozen input
 about five seconds later without consuming a correction execution. Every such call is excused,
 however many sleeps a night brings, because each one needs a newly observed sleep. A token limit
-still pauses the run at once. The daemon sees a sleep as a heartbeat arriving more than 30 seconds late, so an event
-loop stalled that long counts as one. [Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep)
-prevents the sleep altogether.
+still pauses the run at once. Checks get the same treatment. A check command's timeout counts only
+awake time, and a check that fails while the host slept through it, including a CodeRabbit
+connection that dropped, is retried about five seconds later without spending one of the node's
+three infrastructure attempts. The daemon sees a sleep as a heartbeat arriving more than 30
+seconds late, so an event loop stalled that long counts as one. Session turns are run by the
+agent's own CLI, which Mission Control does not time out or retry.
+[Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep) prevents the sleep altogether.
 Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
 
 The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the

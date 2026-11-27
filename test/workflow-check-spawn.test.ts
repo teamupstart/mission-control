@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { spawnCheckProcess } from "../src/server/workflows/check-spawn.ts";
 import { checkGroupAnswers } from "../src/server/workflows/check-group.ts";
 import { onPath } from "../src/server/util/exec.ts";
+import { configureHostSuspendClock } from "../src/server/host-suspend.ts";
 
 // The streaming adapter, against REAL short-lived processes and no mocks.
 //
@@ -223,6 +224,40 @@ test("a timeout is infrastructure, never a non-zero exit", async () => {
     `unexpected timeout reason: ${reason}`,
   );
   // And the tree is provably safe to hand back afterwards.
+  assert.equal(emptiness, "empty");
+});
+
+/**
+ * Script a host that slept for `sleptMs` while the check ran, with a timer that kept counting
+ * (macOS), for the check's deadlines to read (issue #1734).
+ */
+function scriptSleep(sleptMs: number): () => void {
+  return configureHostSuspendClock({
+    mark: () => ({ at: Date.now(), suspendedMs: 0 }),
+    suspendedMsSince: (since) => Math.min(sleptMs, Date.now() - since.at),
+  });
+}
+
+test("a check the host slept through can still finish after its wall-clock deadline", async (t) => {
+  // A 600 ms deadline, 1.5 s of it asleep: the command needs 1.2 s, which a wall-clock timer
+  // would have killed at 600 ms and which fits easily in the awake time it was owed.
+  t.after(scriptSleep(1_500));
+  const started = Date.now();
+  const { result, emptiness } = await run(["sh", "-c", "sleep 1.2; echo finished"], { timeoutMs: 600 });
+  assert.ok(Date.now() - started >= 1_200, "the command ran its full length");
+  assert.deepEqual(result, { kind: "exited", exitCode: 0, output: "finished\n", truncatedBytes: 0 });
+  assert.equal(emptiness, "empty");
+});
+
+test("a check the host slept through still times out once its awake time is spent", async (t) => {
+  t.after(scriptSleep(1_500));
+  const started = Date.now();
+  const { result, emptiness } = await run(["sh", "-c", "sleep 30"], { timeoutMs: 600 });
+  const elapsed = Date.now() - started;
+  assert.equal(result.kind, "infrastructure");
+  assert.match(result.kind === "infrastructure" ? result.reason : "", /did not finish within 600ms/);
+  // Not at the 600 ms wall-clock deadline, but after the 600 ms of awake time the sleep left it.
+  assert.ok(elapsed >= 600 + 1_500 - 50, `timed out after ${elapsed} ms, before its awake budget`);
   assert.equal(emptiness, "empty");
 });
 

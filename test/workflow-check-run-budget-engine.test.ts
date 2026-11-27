@@ -1198,3 +1198,154 @@ test("typecheck, lint and test really execute in a lease of the snapshot and see
     assert.deepEqual(db.prepare("SELECT attempt_id FROM workflow_check_leases WHERE cleanup_state IN ('held', 'returning')").all(), []);
   } finally { await manager.stop(); setWorktreesConfig({ enabled: previousWorktrees }); }
 });
+
+/** A host-suspend clock a test flips: while `asleep`, every attempt overlapped a sleep. */
+function scriptedSleep(): { clock: { mark(): { at: number; suspendedMs: number }; suspendedMsSince(): number }; asleep: boolean } {
+  const state = {
+    asleep: false,
+    clock: {
+      mark: () => ({ at: 0, suspendedMs: 0 }),
+      suspendedMsSince: () => (state.asleep ? 17 * 60_000 : 0),
+    },
+  };
+  return state;
+}
+
+/** The engine over the one-run `test` Command, with the host's sleep and the clock scripted. */
+function sleepEngine(
+  store: InstanceType<typeof WorkflowStore>,
+  sleep: ReturnType<typeof scriptedSleep>,
+  now: () => number,
+  execute: () => Promise<unknown>,
+): InstanceType<typeof WorkflowEngine> {
+  return new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    now,
+    hostSuspend: sleep.clock,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({ execute: execute as never }),
+  });
+}
+
+const CHECK_TIMEOUT = "the check command did not finish within 600000ms and its process group was terminated";
+
+test("a check that times out across host sleeps is retried on the same budgets and passes (#1734)", async () => {
+  const store = seedSubmission("check-sleep");
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 5_000_000;
+  let runs = 0;
+  // More sleeps than the node has infrastructure attempts (3), on a Command allowed one run.
+  const sleeps = 4;
+  const engine = sleepEngine(store, sleep, () => clock, async () => {
+    runs++;
+    if (runs <= sleeps) return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT };
+    return { kind: "exited" as const, exitCode: 0, output: "42 passing\n", truncatedBytes: 0 };
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-sleep");
+    for (let excused = 1; excused <= sleeps; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-check-sleep", "gate");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      assert.equal(store.getRun("run-check-sleep")?.status, "running", `still running after sleep ${excused}`);
+      if (excused === sleeps) sleep.asleep = false;
+      clock = store.latestAttemptForNode("submission-check-sleep", "gate")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-check-sleep")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  // Every retry really ran the command, and the last one passed the gate.
+  assert.equal(runs, sleeps + 1);
+  const gate = store.latestAttemptForNode("submission-check-sleep", "gate")!;
+  assert.equal(gate.state, "completed");
+  assert.equal((gate.output as Record<string, unknown>).status, "passed");
+  const excuses = store.listEvents("run-check-sleep").filter((event) =>
+    event.kind === "persona_retry_scheduled" && (event.payload as { hostSuspended?: boolean }).hostSuspended === true);
+  assert.equal(excuses.length, sleeps);
+  assert.equal(store.hostSuspendedCheckRetries("submission-check-sleep", "gate"), sleeps);
+  assert.equal(store.listEvents("run-check-sleep").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+  assert.match(
+    store.listAttempts("submission-check-sleep").find((attempt) => attempt.nodeId === "gate" && attempt.attempt === 1)?.error ?? "",
+    /host was asleep during this check.*did not finish within/,
+  );
+});
+
+test("the same check timeouts with no host sleep still spend the three attempts and block", async () => {
+  const store = seedSubmission("check-awake");
+  const sleep = scriptedSleep();
+  let runs = 0;
+  const engine = sleepEngine(store, sleep, Date.now, async () => {
+    runs++;
+    return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT };
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-awake");
+    await waitFor(() => store.getRun("run-check-awake")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(runs, 3);
+  assert.equal(store.getRun("run-check-awake")?.currentPhase, "infrastructure_error");
+  assert.equal(store.hostSuspendedCheckRetries("submission-check-awake", "gate"), 0);
+  assert.equal(store.listEvents("run-check-awake").some((event) =>
+    event.kind === "persona_retry_scheduled" && (event.payload as { hostSuspended?: boolean }).hostSuspended === true), false);
+});
+
+test("a check failure with no sleep after an excused one still counts toward the three attempts", async () => {
+  const store = seedSubmission("check-stale");
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 6_000_000;
+  let runs = 0;
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    now: () => clock,
+    hostSuspend: sleep.clock,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({
+      execute: async () => {
+        runs++;
+        return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT, ranNothing: false };
+      },
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-stale");
+    await waitFor(() => {
+      const latest = store.latestAttemptForNode("submission-check-stale", "gate");
+      return latest?.attempt === 2 && latest.state === "retry_wait";
+    });
+    sleep.asleep = false;
+    for (;;) {
+      const latest = store.latestAttemptForNode("submission-check-stale", "gate")!;
+      if (store.getRun("run-check-stale")?.status === "blocked") break;
+      if (latest.state === "retry_wait") {
+        clock = Math.max(clock, latest.retryAt!);
+        engine.wake();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  } finally {
+    await engine.stop();
+  }
+  // One excused try, then the three real attempts the node is allowed.
+  assert.equal(runs, 4);
+  assert.equal(store.hostSuspendedCheckRetries("submission-check-stale", "gate"), 1);
+  assert.equal(store.getRun("run-check-stale")?.currentPhase, "infrastructure_error");
+  assert.equal(store.latestAttemptForNode("submission-check-stale", "gate")?.attempt, 4);
+});

@@ -1627,6 +1627,8 @@ export class WorkflowEngine {
     scheduledSlot: CheckSlot | undefined,
     signal: AbortSignal,
   ): Promise<void> {
+    // Taken before anything can fail, so a sleep anywhere in this attempt is seen.
+    const sleepMark = this.hostSuspend.mark();
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) {
       this.handleInfrastructureFailure(claimed, run.id, "This run's binding no longer exists");
@@ -1769,7 +1771,19 @@ export class WorkflowEngine {
     } catch (error) {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.
-      this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
+      const reason = error instanceof Error ? error.message : String(error);
+      if (this.hostSuspend.suspendedMsSince(sleepMark) > 0) {
+        this.scheduleHostSuspendedCheckRetry(claimed, run.id, reason);
+        return;
+      }
+      this.handleInfrastructureFailure(claimed, run.id, reason);
+      return;
+    }
+    // A check that could not finish because the host slept through it (its connection dropped,
+    // or a deadline passed while nothing ran) is evidence about the host, not the change.
+    if ((result.kind === "infrastructure" || result.kind === "retryable_connection")
+      && this.hostSuspend.suspendedMsSince(sleepMark) > 0) {
+      this.scheduleHostSuspendedCheckRetry(claimed, run.id, result.reason);
       return;
     }
     if (result.kind === "retryable_connection") {
@@ -2001,6 +2015,53 @@ export class WorkflowEngine {
     this.wake();
   }
 
+  /**
+   * The infrastructure attempts a node has spent in this submission. Attempt numbers count
+   * every try, and a try the host slept through is not one the node spent (issue #1734).
+   */
+  private infraAttemptsSpent(attempt: WorkflowNodeAttempt): number {
+    return attempt.attempt
+      - this.store.hostSuspendedCheckRetries(attempt.submissionId, attempt.nodeId);
+  }
+
+  /**
+   * Retry a check that could not finish because the host slept through it, without spending
+   * the node's infrastructure attempts. The durable record of the excuse is the
+   * `persona_retry_scheduled` event carrying `hostSuspended`, which `infraAttemptsSpent`
+   * subtracts. An unresolved lease still blocks first, as for any retry. The Command's run
+   * allowance needs nothing here: an errored attempt does not count against it, except a
+   * CodeRabbit run, whose vendor credit may really have been spent.
+   */
+  private scheduleHostSuspendedCheckRetry(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const error = `The host was asleep during this check, so it did not count against the retry budget: ${reason}`;
+    this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+    if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
+    const now = this.now();
+    const retryAt = now + HOST_SUSPENDED_RETRY_DELAY_MS;
+    this.store.transact(() => {
+      this.store.insertAttempt({
+        id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+        attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+        checkEvidence: attempt.checkEvidence, reviewInput: attempt.reviewInput,
+        inputFingerprint: attempt.inputFingerprint, retryAt,
+        error: `Retry scheduled after the host slept: ${reason}`, now,
+      });
+      this.store.appendEvent(runId, "persona_retry_scheduled", {
+        nodeId: attempt.nodeId, submissionId: attempt.submissionId, attempt: attempt.attempt + 1,
+        retryAt, hostSuspended: true, error: reason,
+      }, now);
+    });
+    this.onRunChanged(runId);
+    this.wake();
+  }
+
   private handleInfrastructureFailure(
     attempt: WorkflowNodeAttempt,
     runId: string,
@@ -2022,7 +2083,7 @@ export class WorkflowEngine {
       error: reason,
     }, this.now());
     if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
-    if (!exhausted && attempt.attempt < MAX_INFRA_ATTEMPTS) {
+    if (!exhausted && this.infraAttemptsSpent(attempt) < MAX_INFRA_ATTEMPTS) {
       const retryAt = this.now() + this.retryBaseMs * 4 ** (attempt.attempt - 1);
       this.store.insertAttempt({
         id: randomUUID(),
@@ -2076,7 +2137,7 @@ export class WorkflowEngine {
       this.onRunChanged(runId);
       return;
     }
-    if (attempt.attempt >= MAX_INFRA_ATTEMPTS) {
+    if (this.infraAttemptsSpent(attempt) >= MAX_INFRA_ATTEMPTS) {
       this.handleCheckActionRequired(attempt, runId,
         `${result.reason}. Automatic connection retry limit reached (${MAX_INFRA_ATTEMPTS} attempts). Review remains incomplete. Inspect retained output and retry after connectivity recovers. No additional credits were authorized.`, result);
       return;
@@ -2215,7 +2276,7 @@ export class WorkflowEngine {
     const failed = this.store.latestAttemptForNode(submission.id, gate.nodeId);
     if (!failed || failed.state !== "error") return;
     const now = this.now();
-    if (failed.attempt >= MAX_INFRA_ATTEMPTS) {
+    if (this.infraAttemptsSpent(failed) >= MAX_INFRA_ATTEMPTS) {
       // The cleanup cleared, but this node had already spent every infrastructure attempt.
       // Hand it to the phase that OWNS exhaustion rather than granting a fourth attempt here:
       // that phase is also the one an operator can retry by hand from the run header.
@@ -2324,7 +2385,7 @@ export class WorkflowEngine {
             this.blockProviderRetryExhausted(attempt, run.id, "Provider retry window ended during daemon restart");
             continue;
           }
-          if (attempt.reviewInput ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) < 2 : attempt.attempt < MAX_INFRA_ATTEMPTS) {
+          if (attempt.reviewInput ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) < 2 : this.infraAttemptsSpent(attempt) < MAX_INFRA_ATTEMPTS) {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: attempt.submissionId,
@@ -2361,7 +2422,7 @@ export class WorkflowEngine {
           if (code === "persona_provider_retryable" || code === "persona_token_exhausted") return false;
           return attempt.reviewInput
             ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) >= 2
-            : attempt.attempt >= MAX_INFRA_ATTEMPTS;
+            : this.infraAttemptsSpent(attempt) >= MAX_INFRA_ATTEMPTS;
         });
         if (exhausted) {
           const error = exhausted.error ?? "Infrastructure failure exhausted its retry budget";

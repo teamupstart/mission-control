@@ -10568,6 +10568,21 @@ export class WorkflowStore {
       .get(operationId) as { n: number }).n;
   }
 
+  /**
+   * Check retries a host suspension excused for one node of one submission. The excuse is
+   * recorded on the retry's own `persona_retry_scheduled` event, so it survives a restart with
+   * the attempt it explains.
+   */
+  hostSuspendedCheckRetries(submissionId: string, nodeId: string): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_events e
+      JOIN workflow_submissions s ON s.run_id = e.run_id AND s.id = ?
+      WHERE e.event_kind = 'persona_retry_scheduled'
+        AND json_extract(e.payload_json, '$.hostSuspended') = 1
+        AND json_extract(e.payload_json, '$.submissionId') = ?
+        AND json_extract(e.payload_json, '$.nodeId') = ?`)
+      .get(submissionId, submissionId, nodeId) as { n: number }).n;
+  }
+
   /** The first completed provider refusal is the durable origin of the retry deadline. */
   personaProviderRetryState(operationId: string): { firstFailureAt: number; failures: number } | null {
     const row = this.db.prepare(`SELECT MIN(c.finished_at) AS first_failure_at, count(*) AS failures

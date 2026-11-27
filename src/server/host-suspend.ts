@@ -14,9 +14,10 @@ import { performance } from "node:perf_hooks";
  *
  *   - `setAwakeTimeout`: has this work had its full budget of AWAKE time yet? A timeout that
  *     fires across a suspension re-arms for the time the host was asleep instead of failing
- *     work that never got to run.
- *   - The workflow engine: did this failed call overlap a suspension? Then the failure is
- *     evidence about the host, not about the call, and it must not spend the call's budget.
+ *     work that never got to run. The model runners and the workflow check spawner use it.
+ *   - The workflow engine: did this failed Persona call or check overlap a suspension? Then
+ *     the failure is evidence about the host, not about the work, and it must not spend the
+ *     work's retry budget.
  *
  * A gap is recorded only past `gapMs`, well above the heartbeat interval, so ordinary
  * scheduling jitter is never mistaken for sleep. An event loop blocked for that long is

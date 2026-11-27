@@ -471,7 +471,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   self-closing tag such as `<image width=10 href="gone.svg"/>` keeps the separator that stops the
   slash joining the unquoted value), so its text stays and the
   rest of the page keeps its bytes, and the bundle is `partial` with each such path listed as a missing
-  `report_companion`. The whole attribute goes, so a `srcset` or `style` attribute that also names
+  `report_companion`. Every such link is removed, but the manifest holds at most 64 missing
+  entries: past 64 paths, the first 63 in sorted order are listed and one last entry counts the
+  rest. The whole attribute goes, so a `srcset` or `style` attribute that also names
   a stored file loses that reference too; the stored file stays in the bundle and is listed with
   its evidence. An attribute that also carries a reference the checker refuses for another
   reason (a path that climbs out, a fetching scheme) is never removed, so it still refuses the

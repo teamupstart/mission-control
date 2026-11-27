@@ -2,12 +2,12 @@ import { expect, test as base } from "../fixtures/test.ts";
 
 // Observe before dashboard setup, so the measurement includes fixture navigation.
 const test = base.extend<{ dashboardBoots: () => number }>({
-  dashboardBoots: [async ({ page }, use) => {
+  dashboardBoots: [async ({ page }, provide) => {
     let boots = 0;
     page.on("request", (request) => {
       if (request.isNavigationRequest() && new URL(request.url()).pathname === "/") boots++;
     });
-    await use(() => boots);
+    await provide(() => boots);
   }, { auto: true }],
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import { ENSEMBLE_STATUSES, type EnsembleSummary } from "@shared/ensemble.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
@@ -125,13 +125,14 @@ export function EnsembleRuns({
 
   // Refetch when the selection changes, or when THIS run's SSE summary revises (a new
   // `updatedAt`). Aborted-by-generation, never polled.
+  // Every load shares one counter, so the cleanup retires whichever load is newest when the
+  // selection moves on, including an action's reload started after this effect ran.
+  const retireDetailLoads = useCallback(() => { loadGeneration.current++; }, []);
   useEffect(() => {
     load(selected, true);
-    return () => {
-      loadGeneration.current++;
-    };
+    return retireDetailLoads;
     // `selected` and `selectedRevision` are the only inputs that should re-fetch.
-  }, [selected, selectedRevision]);
+  }, [retireDetailLoads, selected, selectedRevision]);
 
   useEffect(() => {
     actionGeneration.current++;

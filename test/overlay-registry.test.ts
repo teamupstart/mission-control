@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 
 import { OVERLAY_IDS, Overlay, overlayGuards } from "../src/web/components/Overlay.tsx";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
@@ -340,13 +341,12 @@ test("the primitive gates dismissal on `closable`, both routes at once", () => {
   const host = (closable: boolean) =>
     renderToStaticMarkup(
       withOverlayHost(
-        createElement(Overlay, {
+        withChildren(Overlay, {
           id: OVERLAY_IDS.reset,
           onClose: () => {},
           className: "modal",
           closable,
-          children: "body",
-        }),
+        }, "body"),
       ),
     );
   // Both render the same markup - the guard is behavioral, not structural - so this only

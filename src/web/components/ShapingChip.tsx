@@ -200,8 +200,8 @@ export function ShapingViewer({
                   // Which definition ran: the manifest's bytes for a folder shaper, the stored entry for a registered one.
                   <span className="task-context-definition">
                     Definition{" "}
-                    <Tooltip label={`sha256 ${shaper.sha256}`}>
-                      <code tabIndex={0}>sha256 {shaper.sha256.slice(0, 12)}</code>
+                    <Tooltip label={`sha256 ${shaper.sha256}`} focusable>
+                      <code>sha256 {shaper.sha256.slice(0, 12)}</code>
                     </Tooltip>
                   </span>
                 )}
@@ -225,7 +225,7 @@ export function ShapingViewer({
           ) : delivered.kind === "text" ? (
             <section className="task-context-delivered" aria-label="Delivered in turn one">
               <span className="task-context-delivered-head">Delivered in turn one</span>
-              <pre className="task-context-delivered-text" tabIndex={0}>{delivered.text}</pre>
+              <pre className="task-context-delivered-text" role="region" aria-label="Delivered text" tabIndex={0}>{delivered.text}</pre>
             </section>
           ) : delivered.kind === "unavailable" ? (
             <p className="task-context-empty" role="note">
@@ -344,8 +344,8 @@ export function ShapingTileFlag({ session }: { session: Pick<Session, "id" | "ta
   const record = enabled ? sessionShaping(session) : null;
   if (record?.state !== "degraded") return null;
   return (
-    <Tooltip label={`Context degraded. ${shapingDegradedReason(record)}`}>
-      <span className="tile-flag tf-shaping" tabIndex={0}>context degraded</span>
+    <Tooltip label={`Context degraded. ${shapingDegradedReason(record)}`} focusable>
+      <span className="tile-flag tf-shaping">context degraded</span>
     </Tooltip>
   );
 }

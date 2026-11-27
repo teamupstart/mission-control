@@ -16,15 +16,15 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
  * shell is a stand-in that exports one before running the daemon's read.
  */
 const test = base.extend<{ loginShell: string }>({
-  loginShell: async ({ playwright: _playwright }, use) => {
+  loginShell: async ({ playwright: _playwright }, provide) => {
     const dir = await mkdtemp(join(tmpdir(), "mission-setup-gh-auth-"));
     const shell = join(dir, "login-shell");
     await writeFile(shell, '#!/bin/sh\nGITHUB_TOKEN=fixture-shell-token\nexport GITHUB_TOKEN\nexec /bin/sh -c "$2"\n', { mode: 0o755 });
-    try { await use(shell); }
+    try { await provide(shell); }
     finally { await rm(dir, { recursive: true, force: true }); }
   },
-  daemonEnv: async ({ loginShell }, use) => {
-    await use({ SHELL: loginShell, GH_TOKEN: "", GITHUB_TOKEN: "" });
+  daemonEnv: async ({ loginShell }, provide) => {
+    await provide({ SHELL: loginShell, GH_TOKEN: "", GITHUB_TOKEN: "" });
   },
 });
 

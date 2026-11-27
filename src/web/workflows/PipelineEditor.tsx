@@ -894,6 +894,7 @@ export function PipelineEditor({
         <label className="wf-pipeline-insert-picker">
           <span className="sr-only">{label}</span>
           <select
+            // oxlint-disable-next-line jsx-a11y/no-autofocus -- the picker only mounts when the operator presses an insert control, so focus follows that press.
             autoFocus
             value=""
             onKeyDown={(event) => {

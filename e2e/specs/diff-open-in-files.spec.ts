@@ -55,7 +55,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
  * Call this AFTER dispatching. An empty fleet renders "No agent sessions detected" in
  * place of the layout view, so on a fleet of zero there is no rail to wait for.
  */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -105,7 +105,7 @@ test("the default l shortcut opens the displayed HTML diff rendered in Files", a
   // line number and truncate to `notes`. A diff path is exact; see the third case.
   writeFileSync(join(cwd, "notes:12"), "colon named\n");
 
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
 
   await dashboard
     .getByRole("navigation", { name: "Sessions" })
@@ -202,7 +202,7 @@ test("a changed file whose name ends in a line-number suffix opens as itself", a
   await dispatch(dashboard, daemon);
   const cwd = await sessionCwd(daemon);
   writeFileSync(join(cwd, "notes:12"), "colon named\n");
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
 
   await dashboard
     .getByRole("navigation", { name: "Sessions" })
@@ -240,7 +240,7 @@ test("a deleted file offers the jump but disables it, and says why", async ({
   // deletion rather than an untracked file disappearing.
   rmSync(join(cwd, "README.md"));
 
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
 
   await dashboard
     .getByRole("navigation", { name: "Sessions" })

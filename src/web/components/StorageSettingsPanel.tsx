@@ -46,6 +46,11 @@ import {
 import { Tooltip } from "./Tooltip.tsx";
 import { ActionDialog } from "./WorktreeSettingsPanel.tsx";
 
+/** A total-row cell with nothing to total: read as such rather than as a blank. */
+function NotApplicableCell(): React.JSX.Element {
+  return <td><span className="sr-only">Not applicable</span></td>;
+}
+
 function when(at: number | null): string {
   if (at === null) return "Never";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" })
@@ -494,12 +499,12 @@ function OverviewTab({
               })}
               <tr className="storage-total">
                 <th scope="row">Total</th>
-                <td />
+                <NotApplicableCell />
                 <td className="storage-num">{formatBytes(usage.totalBytes)}</td>
                 <td className="storage-num storage-muted">100%</td>
-                <td />
-                <td />
-                <td />
+                <NotApplicableCell />
+                <NotApplicableCell />
+                <NotApplicableCell />
               </tr>
             </tbody>
           </table>
@@ -1246,7 +1251,7 @@ export function StorageSettingsPanelView({
       {state.loadError && <p className="settings-error" role="alert">{state.loadError}</p>}
       {state.error && <p className="settings-error" role="alert">{state.error}</p>}
       {state.notice && <p className="settings-hint" role="status">{state.notice}</p>}
-      <div className="storage-tabs" role="tablist" aria-label="Storage views" onKeyDown={onTabKey}>
+      <div className="storage-tabs" role="tablist" aria-label="Storage views">
         {STORAGE_TABS.map((entry) => (
           <Tooltip key={entry.id} label={entry.hint}>
           <button
@@ -1262,6 +1267,7 @@ export function StorageSettingsPanelView({
             tabIndex={tab === entry.id ? 0 : -1}
             className={`storage-tab${tab === entry.id ? " is-active" : ""}`}
             onClick={() => choose(entry.id)}
+            onKeyDown={onTabKey}
           >
             {entry.label}
             {badge(entry.id)}

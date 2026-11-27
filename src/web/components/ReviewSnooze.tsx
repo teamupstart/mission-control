@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import {
@@ -218,12 +218,21 @@ function MeanwhileRow({
   disabled: boolean;
   onPick: () => void;
 }): React.JSX.Element {
+  const detailId = useId();
   return (
     <label className={`decision-option snooze-meanwhile-option${checked ? " is-picked" : ""}`}>
-      <input type="radio" name={name} checked={checked} disabled={disabled} onChange={onPick} />
+      <input
+        type="radio"
+        name={name}
+        checked={checked}
+        disabled={disabled}
+        aria-label={label}
+        aria-describedby={detailId}
+        onChange={onPick}
+      />
       <span className="decision-option-body">
         <span className="decision-option-label">{label}</span>
-        <span className="decision-option-detail">{detail}</span>
+        <span className="decision-option-detail" id={detailId}>{detail}</span>
       </span>
     </label>
   );

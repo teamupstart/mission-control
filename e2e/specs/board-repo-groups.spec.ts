@@ -88,7 +88,7 @@ async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Console layout, whose rail draws the same grouping the Board's columns do. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -332,7 +332,7 @@ test("the Console rail groups its rows by repository, and a heading folds them",
   await dispatchInto(dashboard, daemon, daemon.repo, "rail first card", 1);
   await dispatchInto(dashboard, daemon, daemon.repo, "rail second card", 2);
   await dispatchInto(dashboard, daemon, daemon.secondRepo, "rail other repo", 3);
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
 
   const rail = dashboard.getByRole("navigation", { name: "Sessions" });
   const frames = rail.locator(".rail-repo");

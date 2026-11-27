@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { LAYOUTS, type LayoutMode } from "../lib/layout.ts";
 import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -50,6 +51,7 @@ export function LayoutPanel({
   onLayoutChange: (mode: LayoutMode) => void;
 }): React.JSX.Element {
   const { groupBoardByRepo: groupByRepo, boardSidebarAllSessions } = useUiConfig();
+  const descId = useId();
   return (
     <section className="settings-section">
       <div className="settings-section-head">
@@ -69,6 +71,8 @@ export function LayoutPanel({
                 name="layout"
                 value={l.id}
                 checked={layout === l.id}
+                aria-label={l.label}
+                aria-describedby={`${descId}-${l.id}`}
                 onChange={() => onLayoutChange(l.id)}
               />
             </Tooltip>
@@ -77,7 +81,7 @@ export function LayoutPanel({
                 <LayoutGlyph mode={l.id} />
                 {l.label}
               </span>
-              <span className="layout-option-desc">{l.description}</span>
+              <span className="layout-option-desc" id={`${descId}-${l.id}`}>{l.description}</span>
             </span>
           </label>
         ))}

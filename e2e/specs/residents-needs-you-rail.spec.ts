@@ -136,7 +136,7 @@ async function parkOnPermissionPrompt(daemon: DaemonHandle, profile: ResidentPro
 }
 
 /** Opt this spec's dashboard into the drawer, in one layout, and land on the fleet. */
-async function useDrawer(page: Page, daemon: DaemonHandle, layout: "board" | "console"): Promise<void> {
+async function selectResidentDrawer(page: Page, daemon: DaemonHandle, layout: "board" | "console"): Promise<void> {
   const config = { residentPlacement: "drawer", residentDrawerPinned: false, layout };
   await request(daemon, "/api/ui/config", config, "PUT");
   await page.evaluate((next) => {
@@ -166,7 +166,7 @@ async function threeResidentsBesidePinnedDrawer(page: Page, daemon: DaemonHandle
   const askB = await launch(daemon, ASK_B);
   await ask(daemon, askA);
   await ask(daemon, askB);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await page.keyboard.press("Shift+KeyH");
   const drawer = drawerOf(page);
   await expect(drawer).toBeVisible();
@@ -274,7 +274,7 @@ test("e focuses the resident's question when its conversation is open alongside 
     repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
   });
   const fleetReview = await askSession(daemon, await sessionOfTask(daemon, task.id), "Fleet neighbour");
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await page.keyboard.press("Shift+KeyH");
   const drawer = drawerOf(page);
   await drawer.getByRole("button", { name: "Pin", exact: true }).click();
@@ -302,7 +302,7 @@ test("e focuses the resident's question when its conversation is open alongside 
 
 test("a drawer resident waiting for input appears in the inbox before opening its conversation", async ({ dashboard: page, daemon }) => {
   const resident = await launch(daemon, ASK_A);
-  await useDrawer(page, daemon, "board");
+  await selectResidentDrawer(page, daemon, "board");
   await page.keyboard.press("Shift+KeyH");
   const drawer = drawerOf(page);
   await drawer.getByRole("button", { name: "Pin", exact: true }).click();
@@ -332,7 +332,7 @@ test("in Console, a resident that needs you joins the rail as a row once a conve
   await request(daemon, "/api/tasks", {
     repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
   });
-  await useDrawer(page, daemon, "console");
+  await selectResidentDrawer(page, daemon, "console");
   const rail = page.locator(".console-rail");
   await expect(railRowOf(rail, "Fleet neighbour")).toBeVisible({ timeout: 60_000 });
 

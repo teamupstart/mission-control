@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 
 import type { ResidentProfile, ResidentRunSummary } from "../src/shared/residents.ts";
 import type { ReviewItem, Session, SessionGoalSummary } from "../src/shared/types.ts";
@@ -535,15 +536,14 @@ function residentAsk(sessionId: string, over: Partial<ReviewItem> = {}): ReviewI
 
 /** The body as the drawer draws it, opening the conversation and the review modal. */
 function cardBodyMarkup(session: Session, reviews: ReviewItem[] = [], extra: { compressed?: boolean; status?: React.ReactNode } = {}): string {
-  return renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
+  return renderToStaticMarkup(withChildren(ResidentDrawerCardBody, {
     session,
     name: "Triage Bot",
     reviews,
     onOpen: () => {},
     onOpenReview: () => {},
     ...extra,
-    children: createElement("div", { className: "residents-drawer-actions" }, "actions"),
-  }));
+  }, createElement("div", { className: "residents-drawer-actions" }, "actions")));
 }
 
 test("a pending ask is a row in the Needs you color naming it, never the form that answers it", () => {
@@ -771,7 +771,7 @@ test("everything between a card's title and its actions is one way into the conv
   for (const compressed of [false, true]) {
     const html = cardBodyMarkup(session, [], { compressed, status: compressed ? null : status });
     // The body is the target - the region and the gap under it - and the region sits first in it.
-    assert.match(html, new RegExp(`^<div class="residents-drawer-card-body${compressed ? " is-compressed" : ""} is-openable"><div class="residents-drawer-card-main">`));
+    assert.match(html, new RegExp(`^<div class="residents-drawer-card-body${compressed ? " is-compressed" : ""} is-openable" role="presentation"><div class="residents-drawer-card-main">`));
     const main = html.indexOf('class="residents-drawer-card-main"');
     assert.ok(main >= 0, `the ${compressed ? "compressed" : "open"} card's body opens the conversation`);
     // The latest message sits inside the region, and the actions after it, outside.
@@ -786,9 +786,9 @@ test("everything between a card's title and its actions is one way into the conv
   }
 
   // Without a way to open the conversation, the region is not dressed as one.
-  const inert = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
-    session, name: "Triage Bot", reviews: [], children: null,
-  }));
+  const inert = renderToStaticMarkup(withChildren(ResidentDrawerCardBody, {
+    session, name: "Triage Bot", reviews: [],
+  }, null));
   assert.match(inert, /class="residents-drawer-card-main"/);
   assert.doesNotMatch(inert, /is-openable/);
   assert.doesNotMatch(inert, /Open Triage Bot&#x27;s conversation/);
@@ -797,7 +797,7 @@ test("everything between a card's title and its actions is one way into the conv
 test("a drawer card draws its loop facts inside the body that opens the conversation", () => {
   const { runs, sessions } = twoResidents();
   const card = cardMarkup(drawerMarkup(runs, sessions), "s1");
-  assert.match(card, /class="residents-drawer-card-body is-openable"><div class="residents-drawer-card-main">/);
+  assert.match(card, /class="residents-drawer-card-body is-openable" role="presentation"><div class="residents-drawer-card-main">/);
   const main = card.indexOf("residents-drawer-card-main");
   assert.ok(main >= 0);
   assert.ok(main < card.indexOf('aria-label="Resident loop status"'));

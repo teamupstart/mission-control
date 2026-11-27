@@ -66,7 +66,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Diff and Files TABS live in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -140,7 +140,7 @@ test("a comment written on a diff line is the Files tab's thread on that line", 
   writeFileSync(join(cwd, "README.md"), README);
   // A binary next to it: a changed file with no lines to point at.
   writeFileSync(join(cwd, "logo.bin"), Buffer.from([0, 1, 2, 3, 0, 255, 0, 7]));
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiffOn(page, "README.md");
   const changed = diff.getByRole("navigation", { name: "Changed files" });
@@ -288,7 +288,7 @@ test("a diff thread resolves and reopens, and a refused action keeps the thread 
   await dispatch(page, daemon);
   const cwd = await sessionCwd(daemon);
   writeFileSync(join(cwd, "README.md"), README);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiffOn(page, "README.md");
   await diff.getByRole("button", { name: "Comment mode" }).click();
@@ -416,7 +416,7 @@ test("a click re-reads the file: an untouched line anchors to it, an edited one 
   await dispatch(page, daemon);
   const cwd = await sessionCwd(daemon);
   writeFileSync(join(cwd, "README.md"), README);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiffOn(page, "README.md");
   await diff.getByRole("button", { name: "Comment mode" }).click();
@@ -458,7 +458,7 @@ test("a line re-read still in flight never opens a composer over a choice made s
   await dispatch(page, daemon);
   const cwd = await sessionCwd(daemon);
   writeFileSync(join(cwd, "README.md"), README);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiffOn(page, "README.md");
   const commentMode = diff.getByRole("button", { name: "Comment mode" });
@@ -509,7 +509,7 @@ test("a failed re-read starts no comment, says why, and the next click can succe
   await dispatch(page, daemon);
   const cwd = await sessionCwd(daemon);
   writeFileSync(join(cwd, "README.md"), README);
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   const diff = await openDiffOn(page, "README.md");
   await diff.getByRole("button", { name: "Comment mode" }).click();

@@ -182,6 +182,7 @@ export function InspectorFindingsTable({
                         className="btn btn-ghost wf-run-ledger-toggle"
                         aria-expanded={open}
                         aria-controls={`wf-run-finding-${finding.id}`}
+                        aria-label={open ? "Hide finding" : "Show finding"}
                         onClick={() => setOpenFinding(open ? null : finding.id)}
                       >
                         {open ? "Hide finding" : "Show finding"}

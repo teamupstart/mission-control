@@ -54,9 +54,10 @@ export function FilePicker({
   );
   const activeIndex = shown.length > 0 ? Math.min(active, shown.length - 1) : -1;
 
+  const { ensure } = controller;
   useEffect(() => {
-    controller.ensure(session.id);
-  }, [controller.ensure, session.id]);
+    ensure(session.id);
+  }, [ensure, session.id]);
   useEffect(() => {
     inputRef.current?.focus();
   }, []);

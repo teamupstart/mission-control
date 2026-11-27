@@ -236,6 +236,7 @@ function useOffscreenInFlight(
 ): boolean {
   const [offscreen, setOffscreen] = useState(false);
   const watching = useRef<{ observer: IntersectionObserver; rows: Element[] } | null>(null);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- Runs after every render on purpose (see above): row elements change without any dep changing. Its one direct setState writes false, which React bails out of once held, so it cannot loop.
   useEffect(() => {
     const root = logRef.current;
     const rows = root
@@ -1873,6 +1874,7 @@ export function TranscriptPanel({
     // the same harness, and the stylesheet then names no agent to colour them.
     <div
       className="transcript"
+      role="presentation"
       data-view={view}
       style={agentAccentStyle(agent)}
       onClick={(e) => e.stopPropagation()}

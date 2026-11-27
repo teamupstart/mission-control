@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   WorkflowRunDetail,
   WorkflowRunId,
@@ -22,7 +22,7 @@ interface StoredDetailState {
 /**
  * The one client path to a workflow run's detail, shared by the detail pane and Board preview.
  *
- * `updatedAt` is the compact SSE summary's refresh signal. The generation guard is equally
+ * `updatedAt` is the compact SSE summary's refresh signal. The superseded guard is equally
  * important on a session switch: a slower response for the session just left must not redraw
  * its workflow under the session that replaced it.
  */
@@ -30,23 +30,22 @@ export function useWorkflowRunDetail(
   runId: WorkflowRunId | null,
   updatedAt: number,
 ): WorkflowRunDetailState {
-  const generation = useRef(0);
   const [stored, setStored] = useState<StoredDetailState | null>(null);
 
   useEffect(() => {
-    const current = ++generation.current;
     if (runId === null) return;
+    let superseded = false;
 
     setStored({ runId, updatedAt, value: LOADING });
     void workflowRequest<WorkflowRunDetail>(
       `/api/workflow-runs/${encodeURIComponent(runId)}`,
     )
       .then((detail) => {
-        if (generation.current !== current) return;
+        if (superseded) return;
         setStored({ runId, updatedAt, value: { state: "ready", detail } });
       })
       .catch((caught) => {
-        if (generation.current !== current) return;
+        if (superseded) return;
         setStored({
           runId,
           updatedAt,
@@ -55,7 +54,7 @@ export function useWorkflowRunDetail(
       });
 
     return () => {
-      if (generation.current === current) generation.current++;
+      superseded = true;
     };
   }, [runId, updatedAt]);
 

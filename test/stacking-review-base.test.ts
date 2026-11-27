@@ -81,7 +81,7 @@ const { configureClaudeRunnerTransport } = await import("../src/server/llm/claud
 const restoreTransport = configureClaudeRunnerTransport(() => "print");
 const { openDb, getInspectorPr } = await import("../src/server/db.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
-const { adoptPr, startInspector, useInspectorStackGitHub } = await import("../src/server/inspector/worker.ts");
+const { adoptPr, startInspector, replaceInspectorStackGitHub } = await import("../src/server/inspector/worker.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
 
 const HEAD = "a".repeat(40);
@@ -116,7 +116,7 @@ const seam: StackGitHub = {
     return answer ? { ok: true, value: answer } : { ok: false, error: "compare failed" };
   },
 };
-const restoreSeam = useInspectorStackGitHub(seam);
+const restoreSeam = replaceInspectorStackGitHub(seam);
 
 after(() => {
   restoreSeam();

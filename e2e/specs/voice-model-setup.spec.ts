@@ -29,16 +29,16 @@ async function capture(window: Page, name: string): Promise<void> {
 // launch.
 const test = base.extend<{ models: ModelServer }>({
   // eslint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
-  models: async ({}, use) => {
+  models: async ({}, provide) => {
     const models = await startModelServer();
     try {
-      await use(models);
+      await provide(models);
     } finally {
       await models.close();
     }
   },
-  daemonEnv: async ({ models }, use) => {
-    await use(models.env);
+  daemonEnv: async ({ models }, provide) => {
+    await provide(models.env);
   },
 });
 

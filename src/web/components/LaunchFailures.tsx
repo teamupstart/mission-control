@@ -119,6 +119,7 @@ export function LaunchFailureActions({ group }: { group: LaunchFailureGroup }): 
   return (
     <div
       className="lf-actions"
+      role="presentation"
       // Clicks only: a keyboard press on a button arrives as its click, and the Backlog
       // column's Escape and select-all, and the app's shortcuts, must still hear keys.
       onClick={(event) => event.stopPropagation()}

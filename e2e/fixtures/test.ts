@@ -54,7 +54,7 @@ export const test = base.extend<{
   setupReminder: [false, { option: true }],
   outsideSessions: [false, { option: true }],
 
-  daemon: async ({ daemonEnv, startupPicker, setupReminder, outsideSessions }, use, info) => {
+  daemon: async ({ daemonEnv, startupPicker, setupReminder, outsideSessions }, provide, info) => {
     const daemon = await startDaemon(daemonEnv);
     try {
       if (!startupPicker) {
@@ -92,7 +92,7 @@ export const test = base.extend<{
         });
         if (!shown.ok) throw new Error("the daemon should accept showing outside sessions");
       }
-      await use(daemon);
+      await provide(daemon);
     } finally {
       if (info.status !== info.expectedStatus) {
         await info.attach("daemon.log", { body: daemon.readLog(), contentType: "text/plain" });
@@ -143,14 +143,14 @@ export const test = base.extend<{
    * next load; the cache write is what the FIRST PAINT reads, synchronously, before that
    * fetch has landed - and the first paint is early enough for a modal to be opened in it.
    */
-  dashboard: async ({ page, daemon }, use) => {
+  dashboard: async ({ page, daemon }, provide) => {
     // Off by default, so an ordinary suite pays nothing for it, and started before the first
     // navigation because V8 counts calls only in functions it compiled with counters in them.
     const stopCoverage = process.env.MC_COVERAGE ? await startBrowserCoverage(page) : null;
     /*
      * Everything after the collector starts is inside the `try`, not only the test body.
      *
-     * `use` runs the test, so an assertion that throws would otherwise skip the final drain and
+     * `provide` runs the test, so an assertion that throws would otherwise skip the final drain and
      * the write, and the coverage file would silently be missing every handler that test pressed
      * - a lower number with no error to explain it. The SETUP below belongs in here for the same
      * reason and one more: a preference pin or a navigation that throws leaves the sampling timer
@@ -191,7 +191,7 @@ export const test = base.extend<{
       // whatever agents the machine is running, and a rail row whose title merely mentions
       // "dispatch" would otherwise make this ready check a strict-mode violation.
       await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
-      await use(page);
+      await provide(page);
     } finally {
       if (stopCoverage) await stopCoverage();
     }

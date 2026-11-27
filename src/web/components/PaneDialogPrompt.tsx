@@ -195,6 +195,7 @@ export function PaneDialogPrompt({
         // Focusable only as a jump target - "Go to review" on a held queued message lands
         // here. Out of the tab order, so answering by keyboard still starts at the options.
         tabIndex={-1}
+        role="presentation"
         onClick={(e) => e.stopPropagation()}
       >
       <header className="pd-head">
@@ -442,6 +443,7 @@ function DriverForm({
         // Focusable only as a jump target - "Go to review" on a held queued message lands
         // here. Out of the tab order, so answering by keyboard still starts at the options.
         tabIndex={-1}
+        role="presentation"
         onClick={(e) => e.stopPropagation()}
       >
       <header className="pd-head">

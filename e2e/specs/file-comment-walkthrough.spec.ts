@@ -67,7 +67,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Files TAB lives in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -234,7 +234,7 @@ test.describe("the review walkthrough", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
@@ -364,7 +364,7 @@ test.describe("the review walkthrough", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
@@ -466,7 +466,7 @@ test.describe("the review walkthrough", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
     writeFileSync(join(cwd, OTHER), ["# The other file", "", "This one has its own problem.", ""].join("\n"));
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();

@@ -91,7 +91,7 @@ async function dispatch(page: Page, daemon: DaemonHandle, task = TASK): Promise<
 }
 
 /** See diff-open-in-files.spec.ts - the Files TAB lives in the Console layout. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -137,7 +137,7 @@ async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
   mkdirSync(join(cwd, "src"), { recursive: true });
   writeFileSync(join(cwd, "src", "reconnect.ts"), SOURCE_TS);
 
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
 
   await page
     .getByRole("navigation", { name: "Sessions" })
@@ -587,7 +587,7 @@ test("an oversized preview does not advertise or act on the unavailable Editor s
     `<!doctype html><html><body><h1>Large generated report</h1><!--${"x".repeat(2 * 1024 * 1024)}--></body></html>`
   );
 
-  await useConsoleLayout(dashboard, daemon);
+  await selectConsoleLayout(dashboard, daemon);
   await dashboard
     .getByRole("navigation", { name: "Sessions" })
     .getByRole("button", { name: /Preview a Large Generated Report/i })

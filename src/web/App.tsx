@@ -31,7 +31,7 @@ import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
 import { FleetPauseBanner } from "./components/FleetPauseControl.tsx";
 import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
 import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
   type Session,
@@ -386,6 +386,9 @@ interface TourBinding {
   mount: (props: { isTop: boolean; onFinish: () => Promise<void> }) => React.JSX.Element | null;
 }
 
+/** Shown in place of a disabled voice card. One object, so effects keyed on `route` hold still. */
+const VOICE_DISABLED_ROUTE: MissionRoute = { page: "fleet" };
+
 export function App(): React.JSX.Element {
   const desktopUpdates = useDesktopUpdates();
   // The updater's own questions. The banner reports state the operator can act on at their
@@ -449,7 +452,7 @@ export function App(): React.JSX.Element {
   const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
   // The initial flag defaults precede the snapshot, including on an enabled shell deep link.
   const disabledVoiceRoute = requestedRoute.page === "voice-card" && hasSnapshot && !spokenNames;
-  const route = disabledVoiceRoute ? { page: "fleet" as const } : requestedRoute;
+  const route = disabledVoiceRoute ? VOICE_DISABLED_ROUTE : requestedRoute;
   useEffect(() => {
     if (disabledVoiceRoute) replace({ page: "fleet" });
   }, [disabledVoiceRoute, replace]);
@@ -1038,15 +1041,18 @@ export function App(): React.JSX.Element {
   // it from the now-empty draft, matching how reset visibly clears the queue.
   const [resetNonces, setResetNonces] = useState<Record<string, number>>({});
   const files = useSessionFilesStore(connected);
+  // The controller object is rebuilt on every file change; its methods are `useCallback`-stable,
+  // so callbacks below depend on these rather than on `files`.
+  const { drop: dropFiles, ensure: ensureFiles, flush: flushFiles, probe: probeFile, select: selectFile } = files;
 
   // A session was reset: forget its half-written messages and conversation history,
   // then bump its nonce so open conversation state reseeds from the cleared stores.
   const onSessionReset = useCallback((id: string) => {
     dropMessageDrafts(id);
     dropHistory(id);
-    files.drop(id);
+    dropFiles(id);
     setResetNonces((m) => ({ ...m, [id]: (m[id] ?? 0) + 1 }));
-  }, [files.drop]);
+  }, [dropFiles]);
   // Which session title is being edited (its inline rename box is open). App owns
   // this so the rename shortcut and a title click drive the same session.
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -1486,6 +1492,7 @@ export function App(): React.JSX.Element {
   const featureFlagsSettings = useFeatureFlagsSettings(featureFlags, hasSnapshot && connected, subscribeFeatureFlags);
   // Owned here beside the flags' settings: its confirmed state is the event stream's, which App holds.
   const shapingSettings = useShapingSettings(shaping, hasSnapshot && connected, subscribeShaping);
+  const { status: costStatus, update: updateCost } = cost;
   const paletteBindings = useMemo(
     () =>
       buildSettingsBindings({
@@ -1494,11 +1501,11 @@ export function App(): React.JSX.Element {
         featureFlags: featureFlagsSettings,
         autoMode: null,
         skillsEnabled: null,
-        costTrack: cost.status
-          ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
+        costTrack: costStatus
+          ? { value: costStatus.config.enabled, set: (v) => void updateCost({ enabled: v }) }
           : null,
       }),
-    [richText, setRichText, guidedDispatch, setGuidedDispatch, cost.status, cost.update, featureFlagsSettings],
+    [richText, setRichText, guidedDispatch, setGuidedDispatch, costStatus, updateCost, featureFlagsSettings],
   );
   /**
    * Session names, for the run rows that are bound to one.
@@ -2058,7 +2065,7 @@ export function App(): React.JSX.Element {
       },
       closeComplete,
     };
-  }, [closeComplete, closeDispatch, navigate, openDispatch, seeWorkRun, setLayout]);
+  }, [closeComplete, closeDispatch, navigate, openDispatch, seeWorkRun, setLayout, setReviewSessionId]);
 
   /**
    * Reclaim everything a See the work run created, and forget the run once it has.
@@ -2265,7 +2272,7 @@ export function App(): React.JSX.Element {
       else if (!settled) land(exit?.focus ?? "setup:settings-gear");
     };
     requestAnimationFrame(restore);
-  }, [cancelPending, closeComplete, navigate, setLayout, tourTargets]);
+  }, [cancelPending, closeComplete, navigate, setLayout, setReviewSessionId, tourTargets]);
 
   /**
    * Perform one palette row.
@@ -2336,7 +2343,6 @@ export function App(): React.JSX.Element {
       navigate,
       openDispatch,
       openFeedback,
-      openResidentsDock,
       launchEnsemble,
       onOpenSchedule,
       paletteBindings,
@@ -2520,7 +2526,7 @@ export function App(): React.JSX.Element {
   const openResidentReview = useCallback((sessionId: string): void => {
     setResidentDrawerSelected(sessionId);
     setReviewSessionId(sessionId);
-  }, []);
+  }, [setReviewSessionId]);
   /** Close the drawer, pinned or not: a pinned drawer closed is no longer pinned. */
   const closeResidentDrawer = useCallback((): void => {
     setResidentDrawerOpen(false);
@@ -2661,14 +2667,14 @@ export function App(): React.JSX.Element {
     setRequeueSentFor(null);
   }, []);
   const closeFiles = useCallback(() => {
-    if (filesSessionId) files.flush(filesSessionId);
+    if (filesSessionId) flushFiles(filesSessionId);
     setFilesSessionId(null);
-  }, [filesSessionId, files.flush]);
+  }, [filesSessionId, flushFiles]);
   const closeFilePicker = useCallback(() => setFilePickerSessionId(null), []);
   const requestFilesTab = useCallback((sessionId: string) => {
-    files.ensure(sessionId);
+    ensureFiles(sessionId);
     setFileTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
-  }, [files.ensure]);
+  }, [ensureFiles]);
   const requestConversationTab = useCallback((sessionId: string) => {
     setConversationTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, []);
@@ -2828,8 +2834,8 @@ export function App(): React.JSX.Element {
     path: string,
     line?: number | null,
   ): void => {
-    files.ensure(sessionId);
-    files.select(sessionId, path);
+    ensureFiles(sessionId);
+    selectFile(sessionId, path);
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
     requestFilesTab(sessionId);
@@ -2844,7 +2850,7 @@ export function App(): React.JSX.Element {
         nonce: (request?.nonce ?? 0) + 1,
       }));
     }
-  }, [files.ensure, files.select, layout, requestFilesTab]);
+  }, [ensureFiles, layout, requestFilesTab, selectFile]);
 
   /**
    * Open one of a session's checkout files from the inbox, from wherever the operator was.
@@ -2888,10 +2894,10 @@ export function App(): React.JSX.Element {
       return true;
     }) : null;
     if (!target) return false;
-    if (probe) return ambiguousRoot ? files.probe(sessionId, target.path) : true;
+    if (probe) return ambiguousRoot ? probeFile(sessionId, target.path) : true;
     openSessionPath(sessionId, target.path, target.line);
     return true;
-  }, [files.probe, openSessionPath, sessions]);
+  }, [openSessionPath, probeFile, sessions]);
 
   /**
    * The overlays keyed on a session id, and how to drop that id.
@@ -4110,12 +4116,12 @@ export function App(): React.JSX.Element {
       if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
     }
     for (const id of Object.keys(files.sessions)) {
-      if (!sessions.some((session) => session.id === id)) files.drop(id);
+      if (!sessions.some((session) => session.id === id)) dropFiles(id);
     }
     if (renamingId && renamingId !== detailSession?.id && !visible.some((s) => s.id === renamingId)) {
       setRenamingId(null);
     }
-  }, [sessions, visible, detailSession, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
+  }, [sessions, visible, detailSession, sessionBoundOverlays, renamingId, files.sessions, dropFiles]);
 
   useEffect(() => {
     if (latestSessionTransfer?.state === "adopted" && selectedId === latestSessionTransfer.sourceSessionId
@@ -4208,6 +4214,12 @@ export function App(): React.JSX.Element {
   // (see useKeybindings): a keydown is normalized to a canonical chord and matched
   // against them. Esc and the arrow keys stay fixed as structural navigation.
   // Typing fields and the overlays keep their own keys.
+  //
+  // Read through effect events rather than listed below: `boardColumns` is rebuilt on every
+  // session event and `focusSession` on every render, so listing either would re-install the
+  // listener for each, and the key handler only needs their values at the moment a key lands.
+  const currentBoardColumns = useEffectEvent((): string[][] => boardColumns);
+  const focusSessionFromKey = useEffectEvent((sessionId: string): void => focusSession(sessionId));
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       const target = e.target as HTMLElement | null;
@@ -4699,7 +4711,7 @@ export function App(): React.JSX.Element {
             key: e.key as ArrowKey,
             ids,
             currentId: selectedId,
-            columns: boardColumns,
+            columns: currentBoardColumns(),
           });
           if (nextId) {
             setSelectedId(nextId);
@@ -4829,7 +4841,7 @@ export function App(): React.JSX.Element {
         const sel = selected;
         if (!sel?.cwd) return;
         e.preventDefault();
-        files.ensure(sel.id);
+        ensureFiles(sel.id);
         setFilePickerSessionId(sel.id);
         return;
       }
@@ -4866,7 +4878,7 @@ export function App(): React.JSX.Element {
           return;
         }
         if (target.kind === "resident") setResidentDrawerSelected(target.sessionId);
-        else if (target.refocus) focusSession(target.sessionId);
+        else if (target.refocus) focusSessionFromKey(target.sessionId);
         setReviewSessionId(target.sessionId);
         return;
       }
@@ -4969,11 +4981,8 @@ export function App(): React.JSX.Element {
     // is a fresh Map on every board reflow, so listing it re-installed this listener on every
     // session event AND left the handler a paint behind the keycaps it has to agree with. The
     // jump arm reads `cardShortcutsRef`, which a layout effect keeps in step with the commit.
-    // No `focusSession` entry: it is a plain function, so listing it would re-subscribe on
-    // every render. It is safe to close over because everything it reads that can go stale
-    // - `navigate` and `layout` - is already a dependency here, so the copy this listener
-    // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showFleetActionError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
+    // No `focusSession` or `boardColumns` entry: both are read through the effect events above.
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, ensureFiles, openDispatch, setReviewSessionId, requestFilesTab, requestConversationTab, requestWorkflowsTab, showFleetActionError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

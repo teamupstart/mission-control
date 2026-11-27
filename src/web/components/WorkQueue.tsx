@@ -130,7 +130,7 @@ export function WorkQueue({
   // nothing would ever heal this on its own.
   if (loadFailed && (summary?.totalCount ?? 0) > 0) {
     return (
-      <section className={cls} onClick={(e) => e.stopPropagation()}>
+      <section className={cls} role="presentation" onClick={(e) => e.stopPropagation()}>
         {head(summary?.openCount ?? 0)}
         <p className="wq-error">
           Couldn&apos;t load this queue. Its {summary?.totalCount}{" "}
@@ -173,7 +173,7 @@ export function WorkQueue({
     // which is precisely where re-attaching is refused. It was shown only when it
     // would fail, and hidden whenever it would work.
     return (
-      <section className={cls} onClick={(e) => e.stopPropagation()}>
+      <section className={cls} role="presentation" onClick={(e) => e.stopPropagation()}>
         {head(0)}
         {session.orphanedQueue && <ReattachHint session={session} onDone={() => void refresh()} />}
         {queue && queue.wrapupAskedAt !== null && (
@@ -366,7 +366,7 @@ export function WorkQueue({
   */
   if (blocked) {
     return (
-      <section className={cls} onClick={(e) => e.stopPropagation()}>
+      <section className={cls} role="presentation" onClick={(e) => e.stopPropagation()}>
         {head(0)}
         <p className="wq-blocked">{blocked}</p>
         {items.length > 0 && (
@@ -412,7 +412,7 @@ export function WorkQueue({
   }
 
   return (
-    <section className={cls} onClick={(e) => e.stopPropagation()}>
+    <section className={cls} role="presentation" onClick={(e) => e.stopPropagation()}>
       {head(open.length)}
 
       {/*
@@ -433,6 +433,7 @@ export function WorkQueue({
         {items.map((item) => {
           const isEditingThis = editing === item.id && isWaiting(item.state);
           return (
+            // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Drag is the pointer shortcut; each item's Move buttons are its keyboard route, and the row must stay a list item.
             <li
               key={item.id}
               className={`wq-item wq-${item.state}${dragId === item.id ? " dragging" : ""}`}
@@ -566,6 +567,7 @@ export function WorkQueue({
                   <textarea
                     className="field-input"
                     rows={3}
+                    // oxlint-disable-next-line jsx-a11y/no-autofocus -- the box only mounts when the operator presses this item's Edit, so focus follows that press.
                     autoFocus
                     value={editText}
                     onChange={(e) => setEditText(e.target.value)}

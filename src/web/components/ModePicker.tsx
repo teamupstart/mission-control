@@ -146,6 +146,10 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
       {open &&
         anchor &&
         createPortal(
+          // The portal moves the DOM but not the React tree, so a click in here would still
+          // bubble to the card that hosts the chip. The wrapper only stops it; the menu's
+          // items are buttons, and Escape closes it.
+          <div role="presentation" onClick={(e) => e.stopPropagation()}>
           <div
             ref={popRef}
             className="alert-pop mode-pop"
@@ -153,7 +157,6 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
             aria-label="Permission mode"
             // `left` plus exactly one of top/bottom; `.mode-pop` resolves the rest.
             style={{ width: WIDTH, ...anchor }}
-            onClick={(e) => e.stopPropagation()}
           >
             {pickableModes(session.agent).map((m) => {
               const d = permissionModeDisplay(m)!;
@@ -183,6 +186,7 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
               );
             })}
             {error && <p className="mode-pop-err">{error}</p>}
+          </div>
           </div>,
           document.body,
         )}

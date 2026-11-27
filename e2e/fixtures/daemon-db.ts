@@ -14,7 +14,7 @@ import type { DaemonHandle } from "./daemon.ts";
 const BUSY_TIMEOUT_MS = 5_000;
 
 /**
- * Run `use` against the daemon's own database, with a busy timeout, and close the handle.
+ * Run `callback` against the daemon's own database, with a busy timeout, and close the handle.
  *
  * Twelve call sites across ten specs reach the file directly, and they split two ways.
  *
@@ -46,15 +46,15 @@ const BUSY_TIMEOUT_MS = 5_000;
  * site this replaced was already `open; try { … } finally { db.close() }`, so the shape is
  * unchanged - it just cannot be got wrong now.
  *
- * `use` must be synchronous. `DatabaseSync` has no awaitable operation, and an `async`
+ * `callback` must be synchronous. `DatabaseSync` has no awaitable operation, and an `async`
  * callback would have its handle closed out from under it the moment it first suspended,
  * so returning a thenable is refused rather than left to fail later as a use-after-close.
  */
-export function withDaemonDb<T>(daemon: Pick<DaemonHandle, "home">, use: (db: DatabaseSync) => T): T {
+export function withDaemonDb<T>(daemon: Pick<DaemonHandle, "home">, callback: (db: DatabaseSync) => T): T {
   const db = new DatabaseSync(join(daemon.home, "harness.db"));
   try {
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);
-    const result = use(db);
+    const result = callback(db);
     if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
       throw new Error(
         "withDaemonDb: the callback returned a promise. It must be synchronous - the handle " +

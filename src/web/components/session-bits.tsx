@@ -689,6 +689,9 @@ export function WorkflowRailMark({
     <Tooltip label={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}>
       <span
         className={`rail-workflow workflow-${workflowRunTone(run)}`}
+        // A pointer shortcut inside the rail row's own button, where nothing may be interactive;
+        // the run stays reachable by keyboard from the session's card and console.
+        role="presentation"
         onClick={(event) => {
           event.stopPropagation();
           onOpen?.();
@@ -884,6 +887,7 @@ export function EnsembleRailMark({
   // phrase. Same decision, three densities.
   return (
     <Tooltip label={label}>
+      {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- A pointer shortcut inside the rail row's own button (see above), so it cannot be interactive; role="presentation" would drop the aria-label the marks share. */}
       <span
         className={`rail-ensemble ensemble-${ensembleMemberTone(link)}`}
         aria-label={label}
@@ -1429,6 +1433,7 @@ export function ScheduleOriginRailMark({
           button. stopPropagation keeps a click off the row it sits inside. */}
       <span
         className="rail-schedule"
+        role="presentation"
         onClick={(event) => {
           event.stopPropagation();
           onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
@@ -1703,6 +1708,7 @@ function BranchUpdateStatus({ session, url, detailed = false }: { session: Sessi
   const update = session.prBranchUpdates?.[url];
   useEffect(() => { setSent(false); setError(null); }, [url, update?.status, update?.reason]);
   if (!enabled || !update) return null;
+  // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- The click only keeps a press on the conflict button off the row underneath; the status must keep its live role.
   return <span className="pr-branch-update" role="status" onClick={e => e.stopPropagation()}>
     <Tooltip label={update.reason ?? branchUpdateLabel(update)}>
       <span>{branchUpdateLabel(update)}</span>
@@ -2144,7 +2150,7 @@ export function TaskClaimWarnings({
           </Tooltip>
           <code className="task-claim-command" aria-label={`Failed command: ${warning.command}`}>{warning.command}</code>
           {warning.tail ? (
-            <pre className="task-claim-tail" aria-label="Dependency install output tail" tabIndex={0}>
+            <pre className="task-claim-tail" role="region" aria-label="Dependency install output tail" tabIndex={0}>
               {warning.truncatedBytes > 0 ? `(${warning.truncatedBytes} earlier bytes dropped)\n` : ""}
               {warning.tail.replace(/\n+$/, "")}
             </pre>
@@ -2443,6 +2449,7 @@ export function DeadBlockerButton({
   return (
     <span
       className="bl-deadblock"
+      role="presentation"
       ref={ref}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
@@ -2632,6 +2639,7 @@ export function ColumnWidthControl({
     },
   ];
   return (
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- The double-click only stops at the control (see below); the labelled group must keep its role.
     <div
       className="board-col-width"
       role="group"

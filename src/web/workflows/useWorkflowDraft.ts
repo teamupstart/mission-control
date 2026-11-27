@@ -207,7 +207,12 @@ export function useWorkflowDraft(
   // submit the obsolete revision and manufacture a conflict.
   const history = useRef<WorkflowEditableSnapshot[]>([]);
   const future = useRef<WorkflowEditableSnapshot[]>([]);
-  const [historyVersion, setHistoryVersion] = useState(0);
+  // The refs are the stacks; this mirrors their depth into state so the returned object
+  // re-derives canUndo/canRedo on every push, pop or clear.
+  const [historyDepth, setHistoryDepth] = useState({ undo: 0, redo: 0 });
+  const syncHistoryDepth = useCallback((): void => {
+    setHistoryDepth({ undo: history.current.length, redo: future.current.length });
+  }, []);
   workflowRef.current = currentWorkflow;
   savedFingerprintRef.current = savedFingerprint;
   conflictRef.current = currentConflict;
@@ -244,7 +249,7 @@ export function useWorkflowDraft(
       setError(null);
       history.current = [];
       future.current = [];
-      setHistoryVersion((value) => value + 1);
+      syncHistoryDepth();
     }
     try {
       const detail = await workflowRequest<WorkflowDetail>(`/api/workflows/${requestedId}`);
@@ -271,7 +276,7 @@ export function useWorkflowDraft(
     } finally {
       if (loadGeneration.current === generation && workflowIdRef.current === requestedId) setLoading(false);
     }
-  }, [workflowId]);
+  }, [syncHistoryDepth, workflowId]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -295,8 +300,8 @@ export function useWorkflowDraft(
     future.current = [];
     workflowRef.current = next;
     setWorkflow(next);
-    setHistoryVersion((value) => value + 1);
-  }, []);
+    syncHistoryDepth();
+  }, [syncHistoryDepth]);
 
   const restoreHistory = useCallback((direction: "undo" | "redo"): void => {
     const current = workflowRef.current;
@@ -310,8 +315,8 @@ export function useWorkflowDraft(
     const restored = restoreWorkflowEditableSnapshot(current, next);
     workflowRef.current = restored;
     setWorkflow(restored);
-    setHistoryVersion((value) => value + 1);
-  }, []);
+    syncHistoryDepth();
+  }, [syncHistoryDepth]);
 
   const saveNow = useCallback(async (): Promise<boolean> => {
     if (inFlight.current) return inFlight.current;
@@ -534,10 +539,10 @@ export function useWorkflowDraft(
       setConflict(null);
     },
     clearError: () => setError(null),
-    showError: (message: string) => setError(message),
-    canUndo: history.current.length > 0,
-    canRedo: future.current.length > 0,
+    showError: setError,
+    canUndo: historyDepth.undo > 0,
+    canRedo: historyDepth.redo > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, pendingPublish, publish, publishRetryRevision, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyDepth, loading, pendingPublish, publish, publishRetryRevision, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
 }

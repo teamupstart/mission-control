@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 import { createElement } from "react";
 import type { WorkflowSummary, WorkflowVersionMetadata } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
@@ -103,7 +104,7 @@ function render(over: Partial<{
   const content = createElement(Harness);
   return renderToStaticMarkup(
     props.modelStore
-      ? createElement(ModelCatalogProvider, { store: props.modelStore, children: content })
+      ? withChildren(ModelCatalogProvider, { store: props.modelStore }, content)
       : content,
   );
 }

@@ -98,7 +98,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Files TAB lives in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -251,7 +251,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
 
     // ---- the control ----
@@ -393,7 +393,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
 
     const commentMode = page.getByRole("button", { name: "Comment mode" });
@@ -450,7 +450,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
 
     const preview = page.getByLabel(`Preview of ${SOURCE}`);
@@ -526,7 +526,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
@@ -560,7 +560,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
@@ -628,7 +628,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
@@ -713,7 +713,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
@@ -798,7 +798,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
@@ -896,7 +896,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
@@ -948,7 +948,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
     writeFileSync(join(cwd, HOLLOW), HOLLOW_CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
@@ -1019,7 +1019,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
@@ -1086,7 +1086,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
@@ -1122,7 +1122,7 @@ test.describe("line comments in the Files editor", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(join(cwd, SOURCE), CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 
@@ -1187,7 +1187,7 @@ test.describe("line comments in the Files editor", () => {
     writeFileSync(join(cwd, SOURCE), CONTENTS);
     writeFileSync(join(cwd, OTHER), OTHER_CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFileInEditor(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
 

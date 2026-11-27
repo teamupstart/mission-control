@@ -1286,7 +1286,7 @@ export class TaskManager {
   /**
    * Stacked pull requests: the readiness stamp on dependency edges and the revalidation a
    * stacked dispatch runs before it pins its prerequisite's head. See `stacking/readiness.ts`.
-   * Its GitHub and git seam is replaceable for tests through `useStackGitHub`.
+   * Its GitHub and git seam is replaceable for tests through `replaceStackGitHub`.
    */
   private stackReadiness: StackReadiness;
   private readonly stackDispatching = new Set<string>();
@@ -2015,7 +2015,7 @@ export class TaskManager {
    * settles every outstanding one with the reason `merged` inside the completion's own
    * transaction; `blockedInCall` says the agent is waiting inside a call the merge must close,
    * since it can never go idle on its own. A setter rather than a constructor argument,
-   * like `useStackGitHub`, because the review manager is the daemon's and every focused test
+   * like `replaceStackGitHub`, because the review manager is the daemon's and every focused test
    * that never asks a question constructs this class without one.
    */
   useMergeQuestions(questions: MergeQuestions): void {
@@ -3081,7 +3081,7 @@ export class TaskManager {
   }
 
   /** Replace the GitHub and git seam stacking reads through. For tests. */
-  useStackGitHub(github: StackGitHub): void {
+  replaceStackGitHub(github: StackGitHub): void {
     this.stackReadiness.stop();
     this.stackReadiness = new StackReadiness(this.registry, getShippingConfig, github);
   }

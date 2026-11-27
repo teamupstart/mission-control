@@ -66,7 +66,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 }
 
 /** The Files TAB lives in the Console layout. See diff-open-in-files.spec.ts. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -137,7 +137,7 @@ test.describe("reaching and reading a file comment", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, SOURCE, CONTENTS);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     await startCommenting(page);
 
@@ -176,7 +176,7 @@ test.describe("reaching and reading a file comment", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, SOURCE, CONTENTS);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     await page.getByRole("button", { name: "Editor", exact: true }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();
@@ -226,7 +226,7 @@ test.describe("reaching and reading a file comment", () => {
     await dispatch(page, daemon);
     const cwd = await sessionCwd(daemon);
     write(cwd, SOURCE, CONTENTS);
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     await page.getByRole("button", { name: "Editor", exact: true }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();

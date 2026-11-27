@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { useGuidedDispatch } from "../lib/guided-dispatch.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -22,6 +23,7 @@ import { Tooltip } from "./Tooltip.tsx";
  */
 export function DispatchSettingsPanel(): React.JSX.Element {
   const [guided, setGuided] = useGuidedDispatch();
+  const descId = useId();
   return (
     <section className="settings-section">
       <p className="settings-hint settings-blurb">
@@ -38,12 +40,14 @@ export function DispatchSettingsPanel(): React.JSX.Element {
           <input
             type="checkbox"
             checked={guided}
+            aria-label="Guided dispatch"
+            aria-describedby={descId}
             onChange={(e) => setGuided(e.target.checked)}
           />
         </Tooltip>
         <span className="settings-toggle-text">
           <span className="settings-toggle-label">Guided dispatch</span>
-          <span className="settings-toggle-desc">
+          <span className="settings-toggle-desc" id={descId}>
             Opening the dispatch form asks three questions first - what kind of run this is,
             which harness runs it, and what happens after the work - each answerable with a
             single key, and then hands over the ordinary form with those answers already

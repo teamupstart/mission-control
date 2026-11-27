@@ -41,6 +41,7 @@ export function StalledTileFacts(props: StalledFactsProps): React.JSX.Element | 
   const name = session.name || "this session";
 
   return (
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- The click only stops propagation (see above); the facts keep their labelled group role.
     <div
       className="stalled-facts"
       role="group"

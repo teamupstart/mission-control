@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { sessionActionsForDisplay } from "@shared/workflow.ts";
 import type {
   SessionAction,
@@ -181,10 +181,11 @@ export function SessionActionLibrary({
   useEffect(() => onSelectionChange?.(selectedId), [onSelectionChange, selectedId]);
   // The blank-draft request, honoured on its edge. `PersonaLibrary` carries the reasoning.
   const newDraftAsked = useRef(startNew);
+  const startAsked = useEffectEvent(() => start(EMPTY_SESSION_ACTION_SEED, false));
   useEffect(() => {
     const asked = startNew && !newDraftAsked.current;
     newDraftAsked.current = startNew;
-    if (asked) start(EMPTY_SESSION_ACTION_SEED, false);
+    if (asked) startAsked();
   }, [startNew]);
   useEffect(() => {
     if (selectedId === null && seed === null && !dirty && active[0]) setSelectedId(active[0].id);

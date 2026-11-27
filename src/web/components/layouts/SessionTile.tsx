@@ -397,6 +397,9 @@ export function SessionTile({
         residentMark ? " is-resident" : ""
       }${paused ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
       style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
+      // The pointer half of opening the session; the stretched `.tile-open` button below is
+      // the keyboard half, so the root itself has no role to announce.
+      role="presentation"
       onDragOver={(e) => {
         if (!droppable) return;
         e.preventDefault();
@@ -522,7 +525,7 @@ export function SessionTile({
           this tree, so without the stop every menu action would also open the session. */}
       {resident?.loop && <span className="resident-card-loop">
         <ResidentLoopStatusLine loop={resident.loop} session={session} />
-        <span className="resident-card-loop-menu" onClick={(event) => event.stopPropagation()}>
+        <span className="resident-card-loop-menu" role="presentation" onClick={(event) => event.stopPropagation()}>
           <SessionToolbarMenu label={RESIDENT_LOOP_CONTROLS_LABEL} title={RESIDENT_LOOP_CONTROLS_LABEL} icon={<span aria-hidden>⋯</span>}>
             {() => <ResidentLoopControls mark={resident} menu feedback={residentLoopFeedback} />}
           </SessionToolbarMenu>

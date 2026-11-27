@@ -10,7 +10,7 @@ import { expect, test as base } from "../fixtures/test.ts";
 // The placeholder must remain observable until the browser has inspected it. Hold the
 // real worktree setup boundary, then release it to exercise the real session handover.
 const test = base.extend<{ finishSetup: () => void }>({
-  finishSetup: async ({ daemon }, use) => {
+  finishSetup: async ({ daemon }, provide) => {
     const released = join(daemon.home, "release-placeholder-setup");
     const configured = await fetch(`${daemon.baseURL}/api/worktrees/config`, {
       method: "PUT",
@@ -32,7 +32,7 @@ const test = base.extend<{ finishSetup: () => void }>({
     expect(configured.ok).toBe(true);
     const finish = (): void => writeFileSync(released, "");
     try {
-      await use(finish);
+      await provide(finish);
     } finally {
       finish();
     }

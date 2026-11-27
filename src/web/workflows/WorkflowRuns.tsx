@@ -8,7 +8,7 @@ import { workflowHasUnpublishedChanges, workflowPublicationRetained } from "@sha
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { featureAction } from "../lib/experience.ts";
-import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type {
   EvidenceRef,
@@ -4864,12 +4864,19 @@ export function WorkflowRuns({
       if (generation === listGeneration.current) setListLoading(false);
     }
   };
+  // The filters are the trigger; `listPage` is read at its latest. Every page request shares
+  // one counter, so the cleanup retires whichever is newest, including a "load more".
+  const listFirstPage = useEffectEvent(() => { void listPage(null, false); });
+  const retireListPages = useCallback(() => { listGeneration.current++; }, []);
   useEffect(() => {
     setHistory([]);
     setNextCursor(null);
-    void listPage(null, false);
-    return () => { listGeneration.current++; };
-  }, [filterKey]);
+    listFirstPage();
+    return retireListPages;
+  }, [filterKey, retireListPages]);
+  const filterStatus = filters?.status;
+  const filterWorkflowId = filters?.workflowId;
+  const filterSession = filters?.session;
 
   useEffect(() => {
     const live = new Map(runs.map((run) => [run.id, run]));
@@ -4879,9 +4886,9 @@ export function WorkflowRuns({
         .map((run) => live.get(run.id) ?? run);
       for (const run of runs) {
         if (reconciled.some((item) => item.id === run.id)) continue;
-        const matches = (!filters?.status || run.status === filters.status)
-          && (!filters?.workflowId || run.workflowId === filters.workflowId)
-          && (!filters?.session || run.sessionId === filters.session || run.noteKey === filters.session);
+        const matches = (!filterStatus || run.status === filterStatus)
+          && (!filterWorkflowId || run.workflowId === filterWorkflowId)
+          && (!filterSession || run.sessionId === filterSession || run.noteKey === filterSession);
         if (
           matches
           && !["completed", "cancelled", "failed"].includes(run.status)
@@ -4889,7 +4896,7 @@ export function WorkflowRuns({
       }
       return reconciled;
     });
-  }, [runs, filterKey]);
+  }, [runs, filterKey, filterSession, filterStatus, filterWorkflowId]);
   useEffect(() => {
     const index = selectedRunId
       ? ordered.findIndex((run) => run.id === selectedRunId)
@@ -4975,14 +4982,19 @@ export function WorkflowRuns({
   useEffect(() => {
     loadCommit.current.commit(committedLoadGeneration);
   }, [committedLoadGeneration]);
+  // Every detail load shares one counter, so retiring bumps whichever load is newest at that
+  // moment, including an action's reload started after the effect ran.
+  const retireDetailLoads = useCallback(() => { loadGeneration.current++; }, []);
   useEffect(() => {
     mounted.current = true;
+    // The barrier is created once and never replaced, so the one seen here is the one to release.
+    const commit = loadCommit.current;
     return () => {
       mounted.current = false;
-      loadGeneration.current++;
-      loadCommit.current.release();
+      retireDetailLoads();
+      commit.release();
     };
-  }, []);
+  }, [retireDetailLoads]);
   /**
    * `keepError` is what makes a refused action VISIBLE.
    *
@@ -5026,12 +5038,13 @@ export function WorkflowRuns({
   };
   // A DIFFERENT run is being read: drop the previous one's detail and round in the same commit,
   // because a submission id from the old run must not survive one render into the new one.
+  const loadSelected = useEffectEvent(() => { void load(true); });
   useEffect(() => {
     setRoundId(null);
     setConfirm(null);
-    void load(true);
-    return () => { loadGeneration.current++; };
-  }, [selected]);
+    loadSelected();
+    return retireDetailLoads;
+  }, [retireDetailLoads, selected]);
   /**
    * The SAME run's summary moved. Refresh IN PLACE.
    *
@@ -5047,9 +5060,14 @@ export function WorkflowRuns({
    * the run already on screen, so first mount (no detail yet) is left to the effect above and
    * does not fetch twice.
    */
-  useEffect(() => {
-    if (!selectedSummary || selectedSummary.id !== detail?.run.id) return;
+  // The summary is the trigger; the detail on screen and `load` are read at their latest.
+  const refreshInPlace = useEffectEvent((summaryId: string) => {
+    if (summaryId !== detail?.run.id) return;
     void load();
+  });
+  useEffect(() => {
+    if (!selectedSummary) return;
+    refreshInPlace(selectedSummary.id);
   }, [selectedSummary]);
   const actionController = useRunActions(selected ?? "", () => load());
 

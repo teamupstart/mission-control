@@ -1,5 +1,5 @@
 import { TaskSourceSync } from "./TaskSourceSync.tsx";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
   type AgentType,
@@ -1485,7 +1485,10 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
     void fetchRepos().then(setRepos);
   }, []);
 
-  const sources = view?.sources ?? [];
+  const viewSources = view?.sources;
+  // Memoized so the selection effects below follow the list, not every render before the
+  // first poll answers.
+  const sources = useMemo(() => viewSources ?? [], [viewSources]);
   const kinds = view?.kinds ?? [];
   // Same stale-closure guard as the Foreman panel's: `add` does a server round-trip while
   // the view polls underneath it, so the write must extend whatever is in force when it

@@ -31,12 +31,12 @@ class TmuxFixture {
 const test = base.extend<{ terminal: TmuxFixture }>({
   // Playwright requires fixture dependencies to use an object pattern.
   // oxlint-disable-next-line no-empty-pattern
-  terminal: async ({}, use) => {
+  terminal: async ({}, provide) => {
     const fixture = new TmuxFixture();
-    try { await use(fixture); } finally { fixture.cleanup(); }
+    try { await provide(fixture); } finally { fixture.cleanup(); }
   },
-  daemonEnv: async ({ terminal }, use) => {
-    await use({
+  daemonEnv: async ({ terminal }, provide) => {
+    await provide({
       MISSION_POLL_MS: "400",
       TMUX: `${terminal.socket},${terminal.cmd("display-message", "-p", "#{pid}")},0`,
     });

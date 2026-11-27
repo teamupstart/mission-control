@@ -74,7 +74,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -173,7 +173,7 @@ test.describe("a comment whose text the agent deleted", () => {
     mkdirSync(join(cwd, dirname(SOURCE)), { recursive: true });
     writeFileSync(onDisk, CONTENTS);
 
-    await useConsoleLayout(page, daemon);
+    await selectConsoleLayout(page, daemon);
     await openTheFile(page);
     await page.getByRole("button", { name: "Comment mode" }).click();
     await expect(page.getByLabel(`Editor for ${SOURCE}`)).toBeVisible();

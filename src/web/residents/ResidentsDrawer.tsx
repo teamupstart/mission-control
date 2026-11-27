@@ -321,6 +321,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
     />
   );
   return (
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the arrow and Enter keys are delegated from the focusable cards and buttons inside; the labelled landmark must keep its role.
     <aside
       ref={setRoot}
       className="residents-drawer"
@@ -597,8 +598,10 @@ export function ResidentDrawerCardBody({ session, name, compressed = false, stat
   return (
     // The whole body is the way in - the loop facts, the asks, the latest message and the gap
     // above the actions - and only the actions (`children`) keep their clicks to themselves.
+    // A pointer shortcut: the keyboard opens the card with Enter or its Open button.
     <div
       className={`residents-drawer-card-body${compressed ? " is-compressed" : ""}${onOpen ? " is-openable" : ""}`}
+      role="presentation"
       onClick={onOpen ? (e) => {
         if (bodyClickOpens(e)) onOpen();
       } : undefined}

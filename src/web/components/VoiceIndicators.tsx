@@ -202,8 +202,8 @@ export function VoiceIndicatorButton({ id, mode, chord, onClick, pending, showHo
     content: id === "floating" ? null : <>{tip}{shortcut && <> {shortcut}. Tap the shortcut to toggle mute.</>}</>,
   }}><button type="button" className={cls} aria-label={name} aria-disabled={pending || undefined} onClick={pending ? undefined : onClick}>{face}</button></Tooltip>
     : showHoldHint && !inlineHoldHint
-      ? <Tooltip label={holding ? "Release to finish" : `Hold ${chord ? formatChord(chord) : "the hotkey"} to talk`}>
-        <span className={cls} role="status" aria-label={`Voice: ${stateLabel}`} tabIndex={0}>{face}</span>
+      ? <Tooltip focusable label={holding ? "Release to finish" : `Hold ${chord ? formatChord(chord) : "the hotkey"} to talk`}>
+        <span className={cls} role="status" aria-label={`Voice: ${stateLabel}`}>{face}</span>
       </Tooltip>
       : <span className={cls} role={showHoldHint ? "status" : undefined}>{face}</span>;
   return id === "edge" ? <div className={`vi-edge-line vi-${mode}`}>{button}</div> : button;

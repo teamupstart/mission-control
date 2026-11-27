@@ -10713,7 +10713,7 @@ export class Registry extends EventEmitter {
    * own. It does when the words are byte-for-byte those of an automated delivery still pending
    * on the wait: the prompt then matches that nudge, and the person's turn would be used up as
    * Mission Control's. So every pending delivery of the same words records this send as
-   * contesting it (`contestedBy`), stored on the wait, which `useUpNudge` reads as the
+   * contesting it (`contestedBy`), stored on the wait, which `consumeNudge` reads as the
    * wake. The send is also remembered for a couple of minutes, for an automated delivery of the
    * same words claimed after it.
    *

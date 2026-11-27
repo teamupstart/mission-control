@@ -8,18 +8,18 @@ import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
 
 const test = base.extend<{ selectedNode: { path: string; version(value: string): Promise<void> } }>({
-  selectedNode: async ({ playwright: _playwright }, use) => {
+  selectedNode: async ({ playwright: _playwright }, provide) => {
     const dir = await mkdtemp(join(tmpdir(), "mission-setup-node-"));
     const path = join(dir, "node");
     const version = async (value: string) => {
       await writeFile(path, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(value)});\n`, { mode: 0o755 });
     };
     await version("22.0.0");
-    try { await use({ path, version }); }
+    try { await provide({ path, version }); }
     finally { await rm(dir, { recursive: true, force: true }); }
   },
-  daemonEnv: async ({ selectedNode }, use) => {
-    await use({ MISSION_NODE_BIN: selectedNode.path });
+  daemonEnv: async ({ selectedNode }, provide) => {
+    await provide({ MISSION_NODE_BIN: selectedNode.path });
   },
 });
 

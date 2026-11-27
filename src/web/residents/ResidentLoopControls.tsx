@@ -103,7 +103,8 @@ export function ResidentLoopControls({ mark, menu = false, feedback }: {
     catch (err) { failure = err instanceof Error ? err.message : String(err); }
     finally { setFeedback({ busy: false, error: failure }); }
   };
-  return <span className="resident-loop-controls" onClick={(event) => event.stopPropagation()}>
+  // The click only stops propagation so a press does not also open the row beneath.
+  return <span className="resident-loop-controls" role="presentation" onClick={(event) => event.stopPropagation()}>
     {residentLoopActions(mark).map(({ label, action }, index) => (
       <Tooltip key={index} label={actionDescriptions[action]}>
         <button type="button" role={menu ? "menuitem" : undefined} className="btn btn-ghost" disabled={busy}

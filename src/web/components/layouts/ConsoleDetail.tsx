@@ -178,7 +178,9 @@ function useIntent(
   useEffect(() => {
     if (!open) return;
     const mine = ++generation.current;
-    const current = () => generation.current === mine;
+    // Torn down means stale too: a reply for a closed drawer or a previous session never lands.
+    let live = true;
+    const current = () => live && generation.current === mine;
     setIntent(null);
     void api
       .goal(sessionId)
@@ -189,7 +191,7 @@ function useIntent(
         if (current()) setIntent(null);
       });
     return () => {
-      if (current()) generation.current++;
+      live = false;
     };
   }, [sessionId, refreshStamp, open]);
   const applyWritten = useCallback((goal: SessionGoal) => {
@@ -274,9 +276,10 @@ export function ConsoleDetail({
   const [inviteError, setInviteError] = useState<string | null>(null);
   const transcriptRef = useRef<TranscriptHandle>(null);
   const filesRef = useRef<FileWorkspaceHandle>(null);
+  const { onOpenFiles, registerDetailScroll, onQueueTabOpened, registerReaderTab } = view;
   const extractFiles = useCallback(
-    () => view.onOpenFiles(session.id),
-    [session.id, view.onOpenFiles],
+    () => onOpenFiles(session.id),
+    [session.id, onOpenFiles],
   );
   const paneRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLElement>(null);
@@ -355,9 +358,9 @@ export function ConsoleDetail({
       }
       return true;
     };
-    view.registerDetailScroll(session.id, scroll);
-    return () => view.registerDetailScroll(session.id, null);
-  }, [session.id, tab, view.registerDetailScroll]);
+    registerDetailScroll(session.id, scroll);
+    return () => registerDetailScroll(session.id, null);
+  }, [session.id, tab, registerDetailScroll]);
 
   // Console and Board have a session-owned Diff tab. An action-bar
   // shortcut or a commit-specific request therefore lands here instead of opening a modal.
@@ -486,9 +489,9 @@ export function ConsoleDetail({
   useEffect(() => {
     if (view.queueTabSession === session.id) {
       setTab("queue");
-      view.onQueueTabOpened?.();
+      onQueueTabOpened?.();
     }
-  }, [view.queueTabSession, view.onQueueTabOpened, session.id]);
+  }, [view.queueTabSession, onQueueTabOpened, session.id]);
 
   const queueCount = session.queue?.openCount ?? 0;
   const invited = session.foremanInvite !== null;
@@ -549,9 +552,9 @@ export function ConsoleDetail({
       setTab(nextTab);
       return "moved";
     };
-    view.registerReaderTab(session.id, nav);
-    return () => view.registerReaderTab(session.id, null);
-  }, [session.id, tab, tabs, view.registerReaderTab]);
+    registerReaderTab(session.id, nav);
+    return () => registerReaderTab(session.id, null);
+  }, [session.id, tab, tabs, registerReaderTab]);
 
   // Fit the tab strip to one row. After EVERY render, not once on mount, for the reason
   // App's topbar fit gives: this row's width requirement is a function of its content, and
@@ -816,8 +819,8 @@ export function ConsoleDetail({
                 </Tooltip>
               ) : (
                 // The outcome ellipsises, so the hover is the only place a long one is whole.
-                <Tooltip label={`Outcome: ${session.task.outcome}`}>
-                  <span className="task-outcome" tabIndex={0}>{session.task.outcome}</span>
+                <Tooltip label={`Outcome: ${session.task.outcome}`} focusable>
+                  <span className="task-outcome">{session.task.outcome}</span>
                 </Tooltip>
               ))}
           </div>

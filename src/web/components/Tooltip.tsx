@@ -57,6 +57,11 @@ import { createPortal } from "react-dom";
  * `test/tooltip-coverage.test.ts` deliberately leaves no escape hatch for a lookalike. The
  * bubble is `pointer-events: none` either way, so a rich bubble cannot steal the hover from
  * the trigger that opened it - which is also why its content must stay non-interactive.
+ *
+ * A trigger that is not interactive on its own - a status badge, an outcome chip, a `<code>`
+ * digest - passes `focusable`, and the tooltip gives it the tab stop a keyboard needs to open
+ * the same bubble a pointer does. The tooltip owns that stop because the tooltip is the only
+ * thing there is to interact with: the element itself still has nothing to activate.
  */
 
 type Placement = "above" | "below" | "right" | "left";
@@ -220,6 +225,7 @@ export const TooltipDocument = createContext<Document | null>(null);
 export function Tooltip({
   label,
   children,
+  focusable = false,
 }: {
   /**
    * A string, which is what almost every call site passes, or rich content plus its own
@@ -228,6 +234,8 @@ export function Tooltip({
    */
   label: string | TooltipContent;
   children: ReactElement;
+  /** Add a tab stop to a trigger that has none of its own, so focus can open the tooltip. */
+  focusable?: boolean;
 }): React.JSX.Element {
   // Derived once, and named for the two jobs above rather than for their types.
   const owner = useContext(TooltipDocument) ?? (typeof document === "undefined" ? null : document);
@@ -311,6 +319,7 @@ export function Tooltip({
       : childProps.children;
   const describedTrigger = cloneElement(children, {
     "aria-describedby": mergeDescription(childProps, id),
+    ...(focusable ? { tabIndex: 0 } : {}),
     ...(children.type === "label" ? { children: describedChildren } : {}),
   } as Partial<typeof childProps>);
   const props = describedTrigger.props as Record<string, unknown> & {

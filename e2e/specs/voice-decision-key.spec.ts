@@ -30,16 +30,16 @@ const test = base.extend<{ decisions: DecisionServer; environmentKey: string | n
   environmentKey: [null, { option: true }],
   // The stand-in exists before the daemon starts: the daemon reads its address at launch.
   // eslint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
-  decisions: async ({}, use) => {
+  decisions: async ({}, provide) => {
     const server = await startDecisionServer();
     try {
-      await use(server);
+      await provide(server);
     } finally {
       await server.close();
     }
   },
-  daemonEnv: async ({ decisions, environmentKey }, use) => {
-    await use({ ...decisions.env, ...(environmentKey ? { OPENAI_API_KEY: environmentKey } : {}) });
+  daemonEnv: async ({ decisions, environmentKey }, provide) => {
+    await provide({ ...decisions.env, ...(environmentKey ? { OPENAI_API_KEY: environmentKey } : {}) });
   },
 });
 

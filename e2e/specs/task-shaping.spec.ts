@@ -152,6 +152,10 @@ test("a shaped dispatch shows Shaping context, then the context its session rece
   await expect(delivered).toContainText("## Task context");
   const deliveredText = await delivered.locator("pre").innerText();
   expect(deliveredText.trim()).toBe(sentSection.trim());
+  // The text scrolls on its own, so it is a named region a keyboard can tab into.
+  const deliveredScroll = delivered.getByRole("region", { name: "Delivered text" });
+  await deliveredScroll.focus();
+  await expect(deliveredScroll).toBeFocused();
   await expectContentClearsBorder(viewer);
   await shoot(dashboard, "context-viewer", viewer);
   await viewer.getByRole("button", { name: "Close" }).click();
@@ -174,6 +178,8 @@ test("a slow shaper still launches and shows Context degraded, and a redispatch 
   await expect(tile).toBeVisible({ timeout: 60_000 });
   const marker = tile.getByText("context degraded");
   await expect(marker).toBeVisible({ timeout: 30_000 });
+  // The flag is only a tooltip trigger, and the tooltip gives it the tab stop a keyboard needs.
+  await expect(marker).toHaveAttribute("tabindex", "0");
   // The whole board: a live tile re-renders as its session reports, so a frame of the element
   // alone can be taken from a node that was just replaced.
   await shoot(dashboard, "degraded-board-marker");

@@ -463,7 +463,7 @@ export function ForemanSettingsPanel({
   // `on` both record null because neither has a second opinion to compare against.
   const showShadow = triage === "shadow";
 
-  function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
+  function onTablistKey(e: React.KeyboardEvent<HTMLButtonElement>): void {
     const last = FOREMAN_SETTINGS_TABS.length - 1;
     const idx = FOREMAN_SETTINGS_TABS.findIndex((candidate) => candidate.id === tab);
     let next: number;
@@ -583,7 +583,6 @@ export function ForemanSettingsPanel({
             className="sc-tabs"
             role="tablist"
             aria-label="Foreman configuration groups"
-            onKeyDown={onTablistKey}
           >
             {FOREMAN_SETTINGS_TABS.map((group) => {
               const selected = tab === group.id;
@@ -604,6 +603,8 @@ export function ForemanSettingsPanel({
                       else tabRefs.current.delete(group.id);
                     }}
                     onClick={() => setTab(group.id)}
+                    // On each tab rather than the tablist: only a tab holds focus here.
+                    onKeyDown={onTablistKey}
                   >
                     {group.label}
                     {/* Out of the accessible name - "Models 5" announces as a nonsense

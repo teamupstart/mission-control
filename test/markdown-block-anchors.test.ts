@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 
 import {
   Markdown,
@@ -48,12 +49,11 @@ const DOC = [
 
 /** The Files preview: both opt-ins on, which is the only configuration that passes either. */
 function renderCommenting(md: string): string {
-  return renderToStaticMarkup(createElement(Markdown, {
-    children: md,
+  return renderToStaticMarkup(withChildren(Markdown, {
     diagramRenderers: FILES_DIAGRAM_RENDERERS,
     diagramDocumentKey: "docs/spec.md",
     blockAnchor: () => {},
-  }));
+  }, md));
 }
 
 /** Every anchor host in render order, as the line range it declares. */
@@ -116,7 +116,7 @@ test("a bare Markdown renders exactly what it rendered before the opt-in existed
   // `<Markdown>` bare - conversations, plans, Foreman notes and episodes, recommendations,
   // scout reports, three Library editors - and a wrapper appearing in any of them would be a
   // silent layout change nobody asked for.
-  const bare = renderToStaticMarkup(createElement(Markdown, { children: DOC }));
+  const bare = renderToStaticMarkup(createElement(Markdown, null, DOC));
   assert.doesNotMatch(bare, /md-block-anchor/);
   assert.doesNotMatch(bare, /md-block-comment/);
   assert.doesNotMatch(bare, /data-start-line/);
@@ -126,13 +126,12 @@ test("a bare Markdown renders exactly what it rendered before the opt-in existed
 test("the Files preview WITHOUT comment mode is also unchanged", () => {
   // Comment mode is a state, not a mount: turning it off has to give the diagram-rendering
   // preview back exactly, or the document reflows every time the reader toggles `m`.
-  const off = renderToStaticMarkup(createElement(Markdown, {
-    children: DOC,
+  const off = renderToStaticMarkup(withChildren(Markdown, {
     diagramRenderers: FILES_DIAGRAM_RENDERERS,
     diagramDocumentKey: "docs/spec.md",
-  }));
+  }, DOC));
   assert.doesNotMatch(off, /md-block-anchor/);
-  const bare = renderToStaticMarkup(createElement(Markdown, { children: DOC }));
+  const bare = renderToStaticMarkup(createElement(Markdown, null, DOC));
   // The two differ only where a fence becomes a diagram, and this document has none.
   assert.equal(off, bare);
 });

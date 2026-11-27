@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement, createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 
 import {
   LibraryPropertyChip,
@@ -23,14 +24,15 @@ import { PipelineFrame } from "../src/web/workflows/pipeline-bits.tsx";
  */
 
 const chips = (withRef: boolean): string =>
-  renderToStaticMarkup(createElement(LibraryPropertyChips, {
-    children: createElement(LibraryPropertyChip, {
+  renderToStaticMarkup(withChildren(
+    LibraryPropertyChips,
+    withRef ? { containerRef: createRef<HTMLDivElement>() } : {},
+    createElement(LibraryPropertyChip, {
       name: "provider",
       value: "Claude",
       tooltip: "Which runner answers for this Persona",
     }),
-    ...(withRef ? { containerRef: createRef<HTMLDivElement>() } : {}),
-  }));
+  ));
 
 const header = (withRef: boolean): string =>
   renderToStaticMarkup(createElement(LibraryWorkspaceHeader, {
@@ -46,11 +48,10 @@ const header = (withRef: boolean): string =>
   }));
 
 const frame = (withRef: boolean): string =>
-  renderToStaticMarkup(createElement(PipelineFrame, {
+  renderToStaticMarkup(withChildren(PipelineFrame, {
     ariaLabel: "Workflow run pipeline",
-    children: createElement("p", null, "one stage"),
     ...(withRef ? { stripRef: createRef<HTMLDivElement>() } : {}),
-  }));
+  }, createElement("p", null, "one stage")));
 
 test("the chip row is the same element, class, and content with or without a tour ref", () => {
   assert.equal(chips(true), chips(false));

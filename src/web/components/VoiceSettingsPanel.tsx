@@ -642,7 +642,6 @@ export function VoiceSettingsPanel({
                 <label className={`display-choice-option${unsure === choice.id ? " is-on" : ""}`}>
                   <input type="radio" name="voice-when-unsure" value={choice.id}
                     aria-label={choice.id === "ask" ? "Ask aloud" : "Show on screen"}
-                    aria-description={choice.id === "ask" ? askReason ?? undefined : undefined}
                     checked={unsure === choice.id} disabled={!config || (choice.id === "ask" && !!askReason)}
                     onChange={() => void update({ whenUnsure: choice.id })} />
                   {choice.label}
@@ -687,31 +686,31 @@ export function VoiceSettingsPanel({
   const screen = <>
     <div className="settings-group" role="group" aria-labelledby="voice-transcript-heading" data-anchor="voice/transcript">
       <p className="settings-group-label" id="voice-transcript-heading">Live transcript</p>
-      <label className="kb-row">
+      <label className="kb-row" htmlFor="voice-show-transcript">
         <span className="kb-row-text kb-row-label">Show live transcript</span>
         <span className="kb-row-controls skill-switch">
           <Tooltip label="Show recognized words while the microphone is listening">
-            <input type="checkbox" disabled={!config} checked={config?.showTranscript ?? true}
+            <input type="checkbox" id="voice-show-transcript" disabled={!config} checked={config?.showTranscript ?? true}
               onChange={e => void update({ showTranscript: e.target.checked })} />
           </Tooltip>
         </span>
       </label>
-      <label className="kb-row">
+      <label className="kb-row" htmlFor="voice-transcript-style">
         <span className="kb-row-text kb-row-label">Transcript style</span>
         <span className="kb-row-controls">
           <Tooltip label="Choose a wrapping corner card or a bottom-center capsule">
-            <select className="settings-select" disabled={!config} value={config?.transcriptStyle ?? "card"}
+            <select className="settings-select" id="voice-transcript-style" disabled={!config} value={config?.transcriptStyle ?? "card"}
               onChange={e => void update({ transcriptStyle: e.target.value === "capsule" ? "capsule" : "card" })}>
               <option value="card">Corner card</option><option value="capsule">Floating capsule</option>
             </select>
           </Tooltip>
         </span>
       </label>
-      <label className="kb-row">
+      <label className="kb-row" htmlFor="voice-transcript-words">
         <span className="kb-row-text kb-row-label">Maximum transcript words</span>
         <span className="kb-row-controls sc-number">
           <Tooltip label={`Show the latest 1 to ${TRANSCRIPT_WORD_LIMIT} words`}>
-            <input type="number" disabled={!config} min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
+            <input type="number" id="voice-transcript-words" disabled={!config} min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
               defaultValue={config?.transcriptWords ?? 20} onBlur={e => {
                 if (e.target.validity.valid) void update({ transcriptWords: e.target.valueAsNumber });
                 else e.target.value = String(config?.transcriptWords ?? 20);
@@ -719,11 +718,11 @@ export function VoiceSettingsPanel({
           </Tooltip>
         </span>
       </label>
-      {config?.transcriptStyle !== "capsule" && <label className="kb-row">
+      {config?.transcriptStyle !== "capsule" && <label className="kb-row" htmlFor="voice-transcript-corner">
         <span className="kb-row-text kb-row-label">Corner card placement</span>
         <span className="kb-row-controls">
           <Tooltip label="Choose which bottom corner shows the transcript">
-            <select className="settings-select" disabled={!config} value={config?.transcriptCorner ?? "bottom-right"}
+            <select className="settings-select" id="voice-transcript-corner" disabled={!config} value={config?.transcriptCorner ?? "bottom-right"}
               onChange={e => void update({ transcriptCorner: e.target.value === "bottom-left" ? "bottom-left" : "bottom-right" })}>
               <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
             </select>
@@ -747,7 +746,7 @@ export function VoiceSettingsPanel({
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />
       {error && <p className="settings-error">{error}</p>}
-      <div className="settings-tabs voice-tabs" role="tablist" aria-label="Voice settings" onKeyDown={onTabKey}>
+      <div className="settings-tabs voice-tabs" role="tablist" aria-label="Voice settings">
         {VOICE_SETTINGS_TABS.map((entry) => (
           <Tooltip key={entry.id} label={entry.hint}>
             <button
@@ -763,6 +762,7 @@ export function VoiceSettingsPanel({
               tabIndex={tab === entry.id ? 0 : -1}
               className={`settings-tab${tab === entry.id ? " is-active" : ""}`}
               onClick={() => choose(entry.id)}
+              onKeyDown={onTabKey}
             >
               {entry.label}
             </button>

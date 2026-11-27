@@ -8,12 +8,12 @@ import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 const test = base.extend<{ models: ModelServer }>({
   // eslint-disable-next-line no-empty-pattern -- Playwright requires a destructured fixture argument.
-  models: async ({}, use) => {
+  models: async ({}, provide) => {
     const models = await startModelServer();
-    try { await use(models); } finally { await models.close(); }
+    try { await provide(models); } finally { await models.close(); }
   },
-  daemonEnv: async ({ models }, use) => {
-    await use({ ...fixtureSupervisorEnv, ...models.env,
+  daemonEnv: async ({ models }, provide) => {
+    await provide({ ...fixtureSupervisorEnv, ...models.env,
       MISSION_VOICE_SPEECH_MODEL_MANIFEST: models.env.MISSION_VOICE_MODEL_MANIFEST!,
       NODE_OPTIONS: "--import=" + new URL("../fixtures/voice-picker-synth.mjs", import.meta.url).href });
   },

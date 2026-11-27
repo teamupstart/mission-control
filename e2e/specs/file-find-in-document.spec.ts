@@ -143,7 +143,7 @@ async function dispatch(page: Page, daemon: DaemonHandle, task = TASK): Promise<
 }
 
 /** See diff-open-in-files.spec.ts - the Files TAB lives in the Console layout. */
-async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+async function selectConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -179,7 +179,7 @@ async function openFilesTab(page: Page, daemon: DaemonHandle): Promise<void> {
   writeFileSync(join(cwd, REPORT), REPORT_HTML);
   writeFileSync(join(cwd, COUNTED), COUNTED_HTML);
 
-  await useConsoleLayout(page, daemon);
+  await selectConsoleLayout(page, daemon);
   await page
     .getByRole("navigation", { name: "Sessions" })
     .getByRole("button", { name: /Read the Reconnect Plan/i })

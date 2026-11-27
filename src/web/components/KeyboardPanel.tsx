@@ -1,5 +1,5 @@
 import { useChordCapture } from "../lib/useChordCapture.ts";
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   ACTIONS,
   type ActionId,
@@ -39,6 +39,7 @@ function labelOf(id: ActionId): string {
 export function KeyboardPanel(): React.JSX.Element {
   const { bindings, isCustom, hasCustom, previewReset } = useKeybindings();
   const [hints, setHints] = useKeybindingHints();
+  const hintsDescId = useId();
   const [recording, setRecording] = useState<ActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const conflicts = findConflicts(bindings);
@@ -88,12 +89,14 @@ export function KeyboardPanel(): React.JSX.Element {
           <input
             type="checkbox"
             checked={hints}
+            aria-label="Show keybindings on buttons"
+            aria-describedby={hintsDescId}
             onChange={(e) => setHints(e.target.checked)}
           />
         </Tooltip>
         <span className="settings-toggle-text">
           <span className="settings-toggle-label">Show keybindings on buttons</span>
-          <span className="settings-toggle-desc">
+          <span className="settings-toggle-desc" id={hintsDescId}>
             Buttons a shortcut also drives - Terminal, Codex / Claude, Send, Focus,
             Conversation, Queue, Diff, Files, Delete, Reset, Complete, Kill, Dispatch, Fleet,
             Library and Runs - carry its key on their face. Small icon buttons and the

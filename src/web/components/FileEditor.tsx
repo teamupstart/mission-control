@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
@@ -506,14 +506,19 @@ export function FileEditor({
     }`
     : "";
 
+  // The view is built from the text current when it mounts, but a new text alone never
+  // rebuilds it: the effect below this one dispatches value changes into the live view.
+  const mountedValue = useEffectEvent((): string => value);
+
   useEffect(() => {
     if (!host.current) return;
     const language = new Compartment();
     const editable = new Compartment();
+    const doc = mountedValue();
     const editor = new EditorView({
       parent: host.current,
       state: EditorState.create({
-        doc: value,
+        doc,
         extensions: [
           basicSetup,
           commentExtension(() => commentsRef.current, () => panelHost.current),
@@ -553,7 +558,7 @@ export function FileEditor({
         ],
       }),
     });
-    exactValue.current = value;
+    exactValue.current = doc;
     view.current = editor;
     /*
      * The panel host is sized from the SCROLLPORT, not from its containing block: it is a

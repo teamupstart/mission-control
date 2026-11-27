@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withChildren } from "./helpers/element.ts";
 import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
 import type { ModelChoiceSpec } from "../src/shared/model-choice.ts";
 import {
@@ -269,12 +270,12 @@ test("bounded degraded notices expose retry without leaking discovery output", (
 
   const failed = snapshot(catalogs(), "failed");
   const html = renderToStaticMarkup(
-    createElement(
+    withChildren(
       ModelCatalogProvider,
       {
         store: storeAt(failed),
-        children: createElement(ModelCatalogNotice, { agent: "pi" }),
       },
+      createElement(ModelCatalogNotice, { agent: "pi" }),
     ),
   );
   assert.match(html, /Showing the last known Pi model list/);
@@ -316,12 +317,12 @@ test("an empty live catalog is reported as a signed-out harness, with the sign-i
   assert.doesNotMatch(codex?.remedy ?? "", /\/login/);
 
   const html = renderToStaticMarkup(
-    createElement(
+    withChildren(
       ModelCatalogProvider,
       {
         store: storeAt(snapshot(signedOut)),
-        children: createElement(ModelCatalogNotice, { agent: "pi" }),
       },
+      createElement(ModelCatalogNotice, { agent: "pi" }),
     ),
   );
   assert.match(html, /not signed in to a model provider/);
@@ -363,28 +364,28 @@ test("settings and headless model fields consume the same live Pi snapshot", () 
   };
   const sharedStore = storeAt(snapshot(catalogs()));
   const html = renderToStaticMarkup(
-    createElement(
+    withChildren(
       ModelCatalogProvider,
       {
         store: sharedStore,
-        children: createElement(
-          "div",
-          null,
-          createElement(HarnessesPanel, {
-            state: { config, update: async () => {}, error: null },
-          }),
-          createElement(ModelField, {
-            id: "headless-pi-model",
-            anchor: null,
-            spec,
-            value: selected,
-            resolved: { id: selected, source: "config" },
-            runner: "pi",
-            disabled: false,
-            onCommit: () => {},
-          }),
-        ),
       },
+      createElement(
+        "div",
+        null,
+        createElement(HarnessesPanel, {
+          state: { config, update: async () => {}, error: null },
+        }),
+        createElement(ModelField, {
+          id: "headless-pi-model",
+          anchor: null,
+          spec,
+          value: selected,
+          resolved: { id: selected, source: "config" },
+          runner: "pi",
+          disabled: false,
+          onCommit: () => {},
+        }),
+      ),
     ),
   );
 
@@ -397,19 +398,19 @@ test("settings and headless model fields consume the same live Pi snapshot", () 
 test("recurring dispatch retains and offers the same live provider-qualified Pi models", () => {
   const selected = LIVE_CHOICES[1].id;
   const html = renderToStaticMarkup(
-    createElement(
+    withChildren(
       ModelCatalogProvider,
       {
         store: storeAt(snapshot(catalogs())),
-        children: createElement(ScheduleEditor, {
-          workflowSummaries: [],
-          schedule: mkSchedule({
-            template: mkScheduleTemplate({ agent: "pi", model: selected }),
-          }),
-          onSaved: () => {},
-          onCancel: () => {},
-        }),
       },
+      createElement(ScheduleEditor, {
+        workflowSummaries: [],
+        schedule: mkSchedule({
+          template: mkScheduleTemplate({ agent: "pi", model: selected }),
+        }),
+        onSaved: () => {},
+        onCancel: () => {},
+      }),
     ),
   );
 

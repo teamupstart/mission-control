@@ -78,16 +78,16 @@ async function startCollector(): Promise<Collector> {
 // organization endpoint the daemon reads at launch.
 const test = base.extend<{ collector: Collector }>({
   // eslint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
-  collector: async ({}, use) => {
+  collector: async ({}, provide) => {
     const collector = await startCollector();
     try {
-      await use(collector);
+      await provide(collector);
     } finally {
       await collector.close();
     }
   },
-  daemonEnv: async ({ collector }, use) => {
-    await use({
+  daemonEnv: async ({ collector }, provide) => {
+    await provide({
       MISSION_ORGANIZATION: "upstart",
       MISSION_ORGANIZATION_ENDPOINT: collector.endpoint,
     });

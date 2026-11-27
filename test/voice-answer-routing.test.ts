@@ -682,6 +682,36 @@ test("an unnamed reply asks the sole live dashboard after a missed confirmation 
   assert.deepEqual(router.openCards.reportingWindows(), [windowId]);
 });
 
+test("an unnamed reply asks a suspended focused dashboard while another window still reports", async t => {
+  mockCaptureClock(t);
+  const router = registry.voiceRouter!;
+  const q = question();
+  const focused = "suspended-focused";
+  const other = "still-reporting";
+  t.after(router.openCards.connect(focused, true));
+  t.after(router.openCards.connect(other, true));
+  const observed = String(Math.floor(performance.now()));
+  assert.equal((await put("/api/voice/open-cards", { windowId: focused, focused: true, cards: [{ kind: "question", id: q.id, focused: true }] },
+    { "x-voice-focus-at-us": "100", "x-voice-report-revision": "1", "x-voice-observation-id": "1",
+      "x-voice-cards-observed-at-ms": observed, "x-voice-cards-earliest-at-ms": observed })).status, 200);
+  const background = (sequence?: number) => put("/api/voice/open-cards", { windowId: other, focused: false, cards: [] },
+    sequence ? { "x-voice-confirm-focus": String(sequence) } : {});
+  assert.equal((await background()).status, 200);
+  t.mock.timers.tick(50);
+  // The background window answers a companion check; the focused dashboard misses it under load.
+  const missed: number[] = [];
+  await router.openCards.confirmCompanion("another-card", (windowId, sequence) => {
+    if (windowId === other) void background(sequence);
+    else missed.push(sequence);
+  }, new AbortController().signal);
+  assert.equal(missed.length, 2);
+  assert.deepEqual(router.openCards.reportingWindows(), [other]);
+  assert.deepEqual(router.openCards.replyWindows().sort(), [other, focused].sort());
+  await say("reply, option B", "focused-while-suspended");
+  assert.deepEqual(answers().map(a => [a.id, a.reviewId, a.footerWindowId]), [["focused-while-suspended", q.id, focused]]);
+  assert.deepEqual(router.openCards.reportingWindows().sort(), [other, focused].sort());
+});
+
 test("spoken option numbers select their position or give a notice without sending a message", async () => {
   const question = "How many?";
   const q = reviews.create("sdk:Steve", "input", question, question, [{ id: "q", question, allowOther: true,

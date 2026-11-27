@@ -268,12 +268,11 @@ export class VoiceOpenCards {
   }
 
   /** A suspended window missed one confirmation deadline, perhaps only under load, and is
-   * still a live dashboard. A reply with no other reporting window asks it instead of
-   * dropping the speech. Its fresh confirmation resumes it; without one the reply has no target. */
+   * still a live dashboard, possibly the one showing the focused question. A reply asks it
+   * alongside every reporting window. Only its fresh confirmation resumes it and restores
+   * its report, so a stale one still cannot claim the reply. */
   replyWindows(): string[] {
-    const reporting = this.reportingWindows();
-    return reporting.length ? reporting
-      : [...this.streams].filter(([id, stream]) => stream.resume && (stream.browser || this.reports.has(id))).map(([id]) => id);
+    return [...this.streams].filter(([id, stream]) => stream.browser || this.reports.has(id)).map(([id]) => id);
   }
 
   /** A late report from a suspended window must not reclaim a footer or a reply target. */

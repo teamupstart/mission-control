@@ -1929,8 +1929,8 @@ checks the question that was drawn at capture against the newly confirmed report
 The daemon asks each connected reporting window, so a dashboard can confirm a reply after gaining focus or while its first card report is still in transit.
 A confirmed foreground reply gives background windows 400 milliseconds to respond.
 A suspended window must report its current state again before it can take over. Answering that
-request, or any later one, resumes it. When a suspended window is the only live dashboard, an
-unnamed reply asks it for that report instead of being ignored.
+request, or any later one, resumes it. An unnamed reply asks every live dashboard, including a
+suspended one, so a dashboard that missed one deadline can still receive the reply after it confirms.
 A reply waiting for calibration stays bound to the observed question and can be cancelled.
 Focusing a manual-only question prevents a reply from filling its neighbor. If speech falls within the
 remaining timing uncertainty, it asks the operator to repeat the reply. Without a clock sample,

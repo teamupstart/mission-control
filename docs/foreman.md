@@ -388,6 +388,8 @@ finished work never reaches an automatic completion action:
 
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
+A retirement takes no handoff action, so it also applies when the Goal records an
+[operator-only handoff](sessions.md#goal). The hold keeps an otherwise eligible completion pending.
 
 When you authorize implementing a selected mockup, the reconciled [Goal](sessions.md#goal)
 describes the product change. Foreman applies the same artifact-only diff safeguard and then

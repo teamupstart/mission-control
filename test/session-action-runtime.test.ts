@@ -2520,7 +2520,8 @@ const ciScenarios = ["unchanged", "changed checkout", "new intent", "failing CI"
   "skipped poll before first handoff", "legacy recovery with an accepted check budget epoch",
   "legacy recovery with a gap in claim generations", "legacy recovery with overridden duplicate evidence readiness",
   "legacy recovery after explicit Run again", "legacy recovery with a disabled node on the accepted review",
-  "legacy recovery after an accepted full repair round", "legacy recovery with task reassignment during the probe"] as const;
+  "legacy recovery after an accepted full repair round", "legacy recovery with task reassignment during the probe",
+  "pending first observed during the checkout probe"] as const;
 for (const [index, scenario] of ciScenarios.entries()) {
   test(`Foreman publication CI across restart: ${scenario}`, async t => {
     const legacy = scenario.startsWith("legacy");
@@ -2557,7 +2558,8 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
         else process.env.MISSION_GH_BIN = previous;
       });
     }
-    const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+    const { humanTranscriptDecisions, readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+    const { toMessage } = await import("../src/server/harness/claude/transcript.ts");
     const { freezeWorkflowRunIntent } = await import("../src/server/workflows/intent-fingerprint.ts");
     let afterProbe: (() => void) | undefined;
     let historicalMessage: { id: string; text: string } | null = null;
@@ -2576,15 +2578,26 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
       readIntentSnapshot: (...args) => {
         const intent = readWorkflowIntentSnapshot(...args);
         if (!intent || !historicalMessage) return intent;
-        return freezeWorkflowRunIntent({ ...intent, decisions: [...intent.decisions, {
-          decision: scenario === "legacy message id collision" ? "Also update the export format." : historicalMessage.text.trim(), rationale: null,
-          source: { kind: "transcript", id: scenario === "legacy human decision" ? "operator-message" : historicalMessage.id },
-        }] });
+        const message = toMessage({ type: "user", uuid: scenario === "legacy human decision" ? "operator-message" : historicalMessage.id,
+          message: { role: "user", content: scenario === "legacy message id collision" ? "Also update the export format." : historicalMessage.text } });
+        assert.ok(message);
+        return freezeWorkflowRunIntent({ ...intent, decisions: [...intent.decisions, ...humanTranscriptDecisions([message])] });
       },
       reobservePullRequest: prKey => reobserveInspectorPr(h.registry, prKey),
       probeEvidence: true, trackCiFailures: () => trackCi, evidenceReadinessPolicy: legacy && !overrideDuplicateReadiness ? "off" : "criterion_mapped_v1" });
     try {
       const taskId = `task-${h.sessionId}`;
+      if (legacy && !noPriorConsent) {
+        // Before the packet formatter changed, the daemon persisted and sent three newlines
+        // between these contracts. Replay those bytes through delivery and Claude's reader.
+        const prepare = h.store.prepareDelivery.bind(h.store);
+        t.mock.method(h.store, "prepareDelivery", (input: Parameters<typeof prepare>[0], now?: number) => {
+          if (input.kind !== "session_action") return prepare(input, now);
+          const payload = input.payload.replace("\n\n## Pull request creation policy", "\n\n\n## Pull request creation policy");
+          assert.notEqual(payload, input.payload);
+          return prepare({ ...input, payload, payloadSha256: createHash("sha256").update(payload).digest("hex") }, now);
+        });
+      }
       h.registry.upsertTask(mkTask({ id: taskId, kind: "bugfix", status: "running", sessionId: h.sessionId, branch: "feature",
         worktreePath: "/repo", dispatchedAt: Date.now(), workflowId: h.store.getWorkflowVersionById(h.versionId)!.workflowId }));
       h.registry.bindTaskToWorkEpisode(taskId, h.sessionId);
@@ -2657,7 +2670,11 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
         if (checks === "passing" && scenario === "same-tree head race") {
           afterProbe = () => { h.head.sha = "other-commit-with-identical-tree"; afterProbe = undefined; };
         }
-        if (!stale) observe(observedChecks);
+        const pendingDuringProbe = scenario === "pending first observed during the checkout probe" && claims.length === 0;
+        if (pendingDuringProbe) {
+          observe(null);
+          afterProbe = () => { afterProbe = undefined; observe("pending"); };
+        } else if (!stale) observe(observedChecks);
         if (skippedBeforeHandoff && checks === "pending") {
           assert.equal(h.registry.prObservationFor(h.sessionId)?.checks, "pending");
           h.registry.reconcilePrs(new Map(), new Set([h.sessionId]));
@@ -2670,7 +2687,7 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
             resolvedPromptRevision: 2, pendingPrompts: [], source: "heuristic" }, Date.now());
         }
         const session = h.registry.getSession(h.sessionId)!;
-        assert.equal(session.prChecks, observedChecks);
+        assert.equal(session.prChecks, pendingDuringProbe ? null : observedChecks);
         const evaluate = () => processPromptedWrapup(client, cfg, session, [session], h.registry.getQueue(h.sessionId), new Set());
         if (checks === "passing" && scenario === "legacy recovery after explicit Run again") {
           const again = h.manager.enqueueSubmit(h.store.getRun(runId)!.bindingId, { requestId: "operator-run-again" });
@@ -2762,11 +2779,16 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
             assert.ok(h.registry.getSession(newOwner));
             const task = h.registry.getTask(taskId)!;
             assert.equal(task.sessionId, h.sessionId);
+            const requestId = "task-reassigned-during-probe";
+            const heldResults = () => h.store.listEvents(latest.id)
+              .filter(e => e.kind === "duplicate_publication_recovery_held").map(e => e.payload);
             afterProbe = () => {
               afterProbe = undefined;
+              assert.deepEqual(heldResults(), []);
               h.registry.upsertTask({ ...task, sessionId: newOwner, updatedAt: Date.now() });
             };
-            await recheck("task-reassigned-during-probe");
+            await recheck(requestId);
+            assert.deepEqual(heldResults(), [{ prKey: key, requestId }]);
             const reassigned = h.registry.getTask(taskId);
             assert.equal(reassigned?.sessionId, newOwner);
             assert.equal(reassigned.status, "running");

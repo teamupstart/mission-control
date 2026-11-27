@@ -3900,7 +3900,8 @@ export class WorkflowManager {
     if (gate?.prKey && ((run.status === "blocked" && run.currentPhase === "inspector_pr_closed")
         || retiredWait
         || (run.status === "waiting_for_new_head" && grant && !grant.verifiedHeadSha))) {
-      void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt, run.currentPhase === "inspector_pr_closed");
+      void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt,
+        run.currentPhase === "inspector_pr_closed" ? requestId : undefined);
     }
     return { ok: true, value: run };
   }
@@ -3914,7 +3915,7 @@ export class WorkflowManager {
    * gate evaluation that signal starts lifts the block if it said open. A read that failed is
    * recorded on the run, so a block that stayed put says why.
    */
-  private reobserveGatePullRequest(runId: string, prKey: string, afterGrant?: number, recoverDuplicate = false): Promise<boolean> {
+  private reobserveGatePullRequest(runId: string, prKey: string, afterGrant?: number, recoveryRequestId?: string): Promise<boolean> {
     const reobserve = this.options.reobservePullRequest;
     if (!reobserve) return Promise.resolve(false);
     // A read started in the same millisecond as a grant cannot prove ordering after restart.
@@ -3926,11 +3927,17 @@ export class WorkflowManager {
       }))
       .then(async (result) => {
         if (result.ok) {
-          if (recoverDuplicate && result.state === "MERGED" && result.mergedCiWitness) {
-            await this.recoverMergedDuplicate(runId, prKey, result.mergedCiWitness).catch((error: unknown) => {
-              this.store.appendEvent(runId, "inspector_pr_reobserve_failed", { prKey, error: String(error) });
+          if (recoveryRequestId && result.state === "MERGED" && result.mergedCiWitness) {
+            try {
+              await this.recoverMergedDuplicate(runId, prKey, result.mergedCiWitness);
+              if (this.store.getRun(runId)?.currentPhase === "inspector_pr_closed") {
+                this.store.appendEvent(runId, "duplicate_publication_recovery_held", { prKey, requestId: recoveryRequestId });
+                this.publishRun(runId);
+              }
+            } catch (error) {
+              this.store.appendEvent(runId, "inspector_pr_reobserve_failed", { prKey, requestId: recoveryRequestId, error: String(error) });
               this.publishRun(runId);
-            });
+            }
           }
           return true;
         }
@@ -4662,7 +4669,9 @@ export class WorkflowManager {
         || observation.observedAt <= handoff.lastCiObservation)) return null;
       return observation;
     };
-    const ciHead = (handoff.ciOnly || checks()?.checks === "pending") && before && handoff.repoId && deliveredCiAction(this.store, handoff.actionId)
+    // A pending check can arrive while the checkout probe is in flight. Identify the head
+    // independently so the store can use its current observation when consuming the claim.
+    const ciHead = before && handoff.repoId && gate?.targetHeadSha && deliveredCiAction(this.store, handoff.actionId)
       ? (this.options.readRepositoryHead ?? readWorkflowRepositoryHead)(checkout).then(head =>
           !!head && head.repositoryId === handoff.repoId && head.branch === context.data.session.branch
           && head.headOid === gate?.targetHeadSha, () => false)

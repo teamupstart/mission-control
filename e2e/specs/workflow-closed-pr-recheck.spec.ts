@@ -76,7 +76,7 @@ async function api<T>(
 interface RunProbe {
   run: { status: string; currentPhase: string };
   summary: { recovery?: { operations: string[]; primary: string | null } };
-  events: Array<{ kind: string }>;
+  events: Array<{ kind: string; payload?: { requestId?: string } | null }>;
 }
 
 const probe = (daemon: DaemonHandle, runId: string): Promise<RunProbe> =>
@@ -413,9 +413,14 @@ test("a run waiting on a pull request that merged before its gate opened holds a
 
   // Recheck the explicit block as well. Green CI without a preceding accepted run
   // and its publication claim leaves this manually initiated review held.
-  const observedAt = ledgerRow(daemon).observed_at;
-  await checkAgain.click();
-  await expect.poll(() => ledgerRow(daemon).observed_at).not.toBe(observedAt);
+  const [recheck] = await Promise.all([
+    dashboard.waitForResponse(r => r.url().endsWith(`/api/workflow-runs/${runId}/recheck-inspector`) && r.ok()),
+    checkAgain.click(),
+  ]);
+  const { requestId } = recheck.request().postDataJSON();
+  expect(requestId).toBeTruthy();
+  await expect.poll(async () => (await probe(daemon, runId)).events.some(event =>
+    event.kind === "duplicate_publication_recovery_held" && event.payload?.requestId === requestId)).toBe(true);
   await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
   expect(await eventCount(daemon, runId, "duplicate_publication_recovered")).toBe(0);
 

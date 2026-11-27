@@ -405,6 +405,8 @@ export interface TranscriptSpec {
   passiveRead(path: string): TranscriptPassiveRead;
   /** Conversation reading, or null when the file carries metadata but no messages. */
   messages: TranscriptMessages | null;
+  /** How the reader presents a submitted user message when its text differs from the sent bytes. */
+  userMessageText?: (raw: string) => string;
   /**
    * Drop cached per-session state for sessions that are no longer live; `null` when
    * `locate` keeps none.

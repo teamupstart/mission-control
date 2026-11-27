@@ -5,6 +5,8 @@ import { workflowRunIntentFingerprint } from "./intent-fingerprint.ts";
 import { workflowPullRequestCiContract } from "./agent-contract.ts";
 import { sanitizeWorkflowFeedback } from "./packet-text.ts";
 import { workflowPublicationTree } from "@shared/workflow-publication.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
+import { transcriptFor } from "../harness/index.ts";
 import type { MergedCiWitness } from "../inspector/github.ts";
 import type { WorkflowStore } from "./store.ts";
 
@@ -51,7 +53,7 @@ function publishedReview(store: WorkflowStore, run: WorkflowRun, binding: Workfl
   if (!evidence.headSha || !evidence.contentTreeOid || evidence.workingTreeDirty || evidence.workingTreeStatusTruncated
     || evidence.publication?.pathsTruncated || evidence.publication?.unpublishedPaths.length
     || evidence.publication?.artifactProblems?.length || workflowPublicationTree(evidence) !== expected.acceptedContentTreeOid) return null;
-  return { terminal, actionId: action.id, evidence, expected };
+  return { terminal, actionId: action.id, evidence, expected, agent: parsed.data.session.agent };
 }
 
 export function duplicatePublicationProof(store: WorkflowStore, run: WorkflowRun, binding: WorkflowBinding,
@@ -88,8 +90,11 @@ export function duplicatePublicationProof(store: WorkflowStore, run: WorkflowRun
         && p.deliveryId === delivery.id && p.submitVerified === true;
     })?.payload;
     if (!delivered || Array.isArray(delivered) || typeof delivered !== "object" || typeof delivered.clientMessageId !== "string") return null;
+    const agent = AGENT_TYPES.find(type => type === duplicate.agent);
+    const transcriptText = agent && transcriptFor({ agent })?.userMessageText?.(delivery.payload);
+    const sentText = delivery.payload.trim();
     const decisions = intent.decisions.filter(d => !(d.source.kind === "transcript" && d.source.id === delivered.clientMessageId
-      && d.rationale === null && d.decision === delivery.payload.trim()));
+      && d.rationale === null && (d.decision === sentText || d.decision === transcriptText)));
     if (workflowRunIntentFingerprint({ ...intent, decisions }) !== earlier.fingerprint
       || !isDeepStrictEqual(earlier.decisions, decisions)) return null;
   }

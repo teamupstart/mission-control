@@ -79,9 +79,13 @@ const word = (text: string) => {
   return first === "ok" ? "okay" : first;
 };
 
-/** What one run put on screen, window by window, against what was in each window. */
-function score(windows: PreviewWindow[], shown: Shown[], fedAt: number) {
+/**
+ * What one run put on screen, window by window, against what was in each window. `finals` are the run's final
+ * transcripts, one per speech window in playlist order, or empty when they do not line up one to one.
+ */
+function score(windows: PreviewWindow[], shown: Shown[], fedAt: number, finals: string[]) {
   const changes = shown.map(entry => ({ ms: entry.t - fedAt, text: entry.text }));
+  const speech = windows.filter(window => window.kind !== "non-speech");
   return windows.map(window => {
     const inside = changes.filter(change => change.ms >= window.startMs && change.ms < window.endMs);
     // Words left on screen from earlier are not this window's; only what it added counts.
@@ -99,10 +103,24 @@ function score(windows: PreviewWindow[], shown: Shown[], fedAt: number) {
     // window's last change, so a useful text that another change follows can only be a live preview.
     const live = window.finalInWindow
       ? added.slice(0, -1).find(change => word(change.text) === expected && change.ms >= window.onsetMs! - 100) : undefined;
+    // Latency to a useful live preview, kept apart from the final. A useful text is a live preview when another change
+    // follows it in its window (order), when it is not the final transcript (text), or when it appeared before the
+    // phrase could have closed: the end-of-speech delay after the onset, 500 ms for the spoken Cancel that the cancel
+    // window shortens and 2000 ms otherwise (timing). Otherwise it is the final, or a preview identical to it.
+    const final = finals[speech.indexOf(window)]?.trim();
+    const delayMs = window.kind === "cancel" ? 500 : 2000;
+    const proof = (change: { ms: number; text: string }) =>
+      window.finalInWindow && change !== added.at(-1) ? "order" : final !== undefined && change.text !== final ? "text"
+        : change.ms < window.onsetMs! + delayMs ? "timing" : null;
+    const usefulTexts = added.filter(change => word(change.text) === expected && change.ms >= window.onsetMs! - 100);
+    const livePreview = usefulTexts.find(change => proof(change));
     return { id: window.id, kind: window.kind, expected: window.expected, phantomLead: leading.length > 0,
       firstShownMs: added[0] ? added[0].ms - window.onsetMs! : null,
       firstUsefulMs: useful ? useful.ms - window.onsetMs! : null,
-      provenLiveUsefulMs: live ? live.ms - window.onsetMs! : null, shown: added.map(change => change.text) };
+      provenLiveUsefulMs: live ? live.ms - window.onsetMs! : null,
+      firstUsefulLiveMs: livePreview ? livePreview.ms - window.onsetMs! : null,
+      firstUsefulLiveProof: livePreview ? proof(livePreview) : useful ? "final-or-identical" : "none",
+      shown: added.map(change => change.text) };
   });
 }
 
@@ -114,6 +132,7 @@ const median = (values: number[]) => {
 function summarize(rows: ReturnType<typeof score>) {
   const speech = rows.filter(row => row.kind !== "non-speech") as Extract<(typeof rows)[number], { firstUsefulMs: unknown }>[];
   const latency = (kind?: string) => median(speech.filter(row => !kind || row.kind === kind).flatMap(row => row.firstUsefulMs ?? []));
+  const liveLatency = (kind?: string) => median(speech.filter(row => !kind || row.kind === kind).flatMap(row => row.firstUsefulLiveMs ?? []));
   return {
     nonSpeechWindows: rows.length - speech.length,
     nonSpeechWindowsShowingWords: rows.filter(row => "phantom" in row && row.phantom).length,
@@ -121,7 +140,10 @@ function summarize(rows: ReturnType<typeof score>) {
     speechWindowsWithUsefulPreview: speech.filter(row => row.firstUsefulMs !== null).length,
     speechWindowsWithProvenLiveUsefulPreview: speech.filter(row => row.provenLiveUsefulMs !== null).length,
     speechWindows: speech.length,
-    medianMsToFirstUsefulPreview: { all: latency(), oneWord: latency("one-word"), callSign: latency("call-sign"), cancel: latency("cancel") },
+    // The first useful text may be the final itself; the live-preview figures below count only established previews.
+    medianMsToFirstUsefulText: { all: latency(), oneWord: latency("one-word"), callSign: latency("call-sign"), cancel: latency("cancel") },
+    speechWindowsWithUsefulLivePreview: speech.filter(row => row.firstUsefulLiveMs !== null).length,
+    medianMsToFirstUsefulLivePreview: { all: liveLatency(), oneWord: liveLatency("one-word"), callSign: liveLatency("call-sign"), cancel: liveLatency("cancel") },
   };
 }
 
@@ -188,7 +210,9 @@ test("native Always-on with synthesized speech and noise: fewer non-speech previ
     const playlist = synthesizedPlaylist(daemon.home);
     const runs = await offThenOn(page, daemon, models!, playlist.wav, 4);
     const scored = (["off", "on"] as const).map(variant => {
-      const rows = score(playlist.windows, runs[variant].shown, runs[variant].fedAt);
+      const speechWindows = playlist.windows.filter(window => window.kind !== "non-speech").length;
+      const finals = runs[variant].heard.length === speechWindows ? runs[variant].heard.map(entry => entry.text) : [];
+      const rows = score(playlist.windows, runs[variant].shown, runs[variant].fedAt, finals);
       const summary = summarize(rows);
       console.log(`synthesized flag ${variant}: ${JSON.stringify(summary)}`);
       return { rows, summary, heard: runs[variant].heard, timeline: timeline(runs[variant]) };

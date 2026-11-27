@@ -99,6 +99,8 @@ final class ContinuousSpeechTests: XCTestCase {
             feeds.append(Task {
                 let clock = ContinuousClock.now
                 let origin = AVAudioTime.seconds(forHostTime: mach_absolute_time())
+                // The wall-clock time of the first fed sample, so a browser spec can date what the overlay showed.
+                if first { print("Desktop capture feed started at Unix ms \(Int64(Date().timeIntervalSince1970 * 1000))") }
                 var position = 0
                 func play(_ audio: [Float]) async throws {
                     for offset in stride(from: 0, to: audio.count, by: 1024) {

@@ -67,6 +67,9 @@ struct Segment {
     let startNs: Int64
     let capturedAt: Int64 // Unix milliseconds fixed when speech starts
     let firstVoicedSample: Int
+    /// Samples of this phrase in frames the classifier marked voiced, counted from the phrase's own
+    /// onset. Only the live preview reads it, to hold a phrase's first words (`Directive.firstPreviewVoicedMs`).
+    var voicedSamples = 0
     // Capture and release boundaries use milliseconds since the monotonic host-clock origin.
     var startedAtHostMs: Int64 { startNs / 1_000_000 }
     var startedAtHostUs: Int64 { startNs / 1000 }
@@ -87,7 +90,8 @@ struct Segment {
     }
 
     func prefix(_ count: Int) -> Segment {
-        Segment(samples: Array(samples.prefix(count)), startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample)
+        Segment(samples: Array(samples.prefix(count)), startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample,
+                voicedSamples: min(voicedSamples, count))
     }
 }
 
@@ -114,6 +118,8 @@ struct SpeechGate {
     private var startNs: Int64 = 0
     private var capturedAt: Int64 = 0
     private var firstVoicedSample = 0
+    // Voiced samples in the open phrase. Every phrase boundary starts it again from zero.
+    private var voicedSamples = 0
     private var discarding = false
     private let held: Bool
     private var overflowPrefix: Segment?
@@ -161,7 +167,8 @@ struct SpeechGate {
     }
 
     private func segment(_ pcm: [Float]) -> Segment {
-        Segment(samples: pcm, startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample)
+        Segment(samples: pcm, startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample,
+                voicedSamples: voicedSamples)
     }
 
     // Key-up is an explicit end of speech. Silence alone or a discarded prefix
@@ -199,6 +206,7 @@ struct SpeechGate {
             firstVoicedSample = lead.count + (frame.firstIndex { abs($0) > Self.activityFloor } ?? frame.count)
             onSpeechStart((startNs + Int64(firstVoicedSample) * Segment.sampleNs) / 1000)
             samples = lead
+            voicedSamples = 0
         }
         if active { lead.removeAll(keepingCapacity: true) }
         // Keep only enough trailing quiet to reach the configured silence boundary.
@@ -215,8 +223,9 @@ struct SpeechGate {
         let capacity = limit.samples + (limit == .oneMinute ? firstVoicedSample : 0)
         if !discarding && ((limit == .oneMinute && !active) || count <= capacity - samples.count) {
             samples.append(contentsOf: frame.prefix(count))
+            if active { voicedSamples += count }
             if ended {
-                defer { samples.removeAll() }
+                defer { samples.removeAll(); voicedSamples = 0 }
                 return segment(samples)
             }
             if limit == .oneMinute || samples.count < capacity { return nil }
@@ -231,6 +240,7 @@ struct SpeechGate {
             }
         }
         samples.removeAll()
+        voicedSamples = 0
         discarding = !ended
         return nil
     }

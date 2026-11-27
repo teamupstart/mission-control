@@ -1,6 +1,6 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
 import { INBOX_FLAG } from "./inbox.ts";
-import { VOICE_FLAG } from "./voice.ts";
+import { VOICE_FIRST_PREVIEW_HOLD_FLAG, VOICE_FLAG } from "./voice.ts";
 
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
@@ -270,6 +270,17 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "Controls availability of workstation microphone capture.",
     keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "reference name", "mute"],
+  },
+  {
+    id: VOICE_FIRST_PREVIEW_HOLD_FLAG,
+    label: "Voice first-preview hold",
+    description:
+      "In Always-on listening, wait until a phrase holds 300 ms of voiced audio before showing its first live words, " +
+      "so room noise and typing stop flashing words like \"Okay\" or \"Mm-hmm\". What is sent, and to whom, is unchanged. " +
+      "Applies to the macOS listener.",
+    stage: "preview",
+    sessionSetting: "read-write",
+    keywords: ["voice", "transcript", "preview", "live words", "phantom", "filler", "noise", "always-on"],
   },
   {
     id: MACOS_TERMINAL_FLAG_ID,

@@ -1442,6 +1442,83 @@ to an input gap or to a later phrase passing the capture limit, with the hold's 
 for the hold and posts nothing, and `test/voice-state.test.ts` that each hold's live transcript starts
 empty, keeps its words through a pause and clears at key-up.
 
+### First-preview hold measurements
+
+[`e2e/specs/voice-first-preview-hold.spec.ts`](../e2e/specs/voice-first-preview-hold.spec.ts) checks
+that the flag starts off, that its toggle changes the Always-on directive live without a new capture
+grant, and then measures the hold through the real overlay. Each native test drives the release Swift
+listener loop with a 16 kHz playlist at microphone callback pace, into an isolated daemon with three
+call-signed sessions. It plays the playlist once with the flag off and once with it on, and records
+every text the dashboard's live transcript overlay shows with its time. Both native tests require
+that the final transcripts, their routes and their outcomes are identical in the two runs.
+
+The synthesized test, whose windows are labeled, also requires in each run that Carol's confirmation
+is cancelled and that the spoken "Cancel." after it is recorded as a control action. It then compares
+two whole-run counts: the number of non-speech windows that showed words may not be higher with the
+flag on, and the number of utterances that reached a useful preview, meaning a preview whose first
+word is the word spoken, must be the same in both runs. Because the overlay draws finals too, it
+also requires live previews on their own: in each run, at least 3 of the 9 utterances whose final
+lands in their window must show the spoken word before that final. A final shows once, as its
+window's last change, so a correct text that another change follows is a live preview. It asserts
+nothing per window or per utterance; the per-window results below are measurements. Each run writes its counts, timings and
+recognized text, never audio, to `e2e/.artifacts/voice-preview-hold/`. With `MC_E2E_EVIDENCE` set it
+also films the overlay corner and writes captioned GIFs of the "Okay." reply and the "Yes." after
+typing, with the flag off and on, for review, each with a single-frame sheet of the frames around
+speech onset and every change of the overlay's text.
+
+The synthesized playlist mixes macOS `say` speech with a synthesized room floor of about -44 dBFS.
+It has 6 non-speech windows (room only, fast and slow typing, a knock, a breath, a knock and a
+breath) and 11 utterances: five one-word replies ("Yes.", "No.", "Okay.", "Stop.", and "Yes." after
+typing), five call signs ("Max, stop.", "Steve, check the build.", "Steve, stop." after a knock, a
+quiet "Max, run the tests." and "Carol, run the tests."), and a spoken "Cancel.". On November 26,
+2026, four off and on pairs on a Mac mini with the installed
+`parakeet-v2-ee09c569-ctc110m-accdafd8` models gave:
+
+| Summed over 4 pairs | Flag off | Flag on |
+| --- | --- | --- |
+| Non-speech windows that showed words | 15 of 24 | 3 of 24 (-80%) |
+| Utterances that showed other words first ("Yeah." before "Yes.", "Mm-hmm." before "Okay.") | 18 of 44 | 4 of 44 (-78%) |
+| Utterances that reached a useful preview | 44 of 44 | 44 of 44 |
+| Median ms from speech onset to the first useful preview, all utterances | 906 | 938 |
+| Same, call signs | 987 | 917 |
+| Same, spoken Cancel | 780 | 1002 |
+| Finals, routes and outcomes identical | | every pair |
+
+The preview loop samples every 800 ms from wherever the capture started, so a single window's
+latency moves by up to 800 ms between runs. The overall median did not measurably change. Spoken
+Cancel's first useful preview came later in 3 of the 4 pairs, by 67 to 337 ms; its final and its
+effect did not change. A short synthesized "Yes." sometimes reaches the overlay only as its final,
+about 2.1 to 2.6 s after onset, with the flag either off or on; with the flag off its earlier preview
+was "Yeah.".
+
+The operator also recorded about 90 seconds of their own speech, with consent, on the room's webcam
+microphone: room silence, typing, one-word replies, call signs, two Cancels and a quiet call sign. The
+recording stays on that machine and is not in the repository. The test reads it from
+`MISSION_PREVIEW_HOLD_HUMAN_WAV` and is skipped without it. It has no timed labels, so its test asserts
+only that the finals, routes and outcomes are identical, and keeps each run's raw overlay timeline.
+The readings below were taken from those timelines by hand. In three off and on pairs the finals,
+routes and outcomes were identical, 8 captures per run, including Carol's confirmation cancelled by
+voice. With the flag off the overlay showed 4, 5 and 4 fillers per run ("Okay.", "'Kay.",
+"Mm-hmm.", "Yeah."), during room noise and just before "Carol" and both Cancels. With the flag on it
+showed none of those. It showed one filler per run: a room-noise phrase that stayed open from about
+7.5 s to 30 s finished as the final "Okay.", and the overlay showed that final, routed as ignored.
+With the flag off the same final was not shown, because its earlier preview had already expired and
+an expired phrase cannot reopen the overlay. That final then stayed as the overlay's first word while
+the operator kept speaking.
+
+What these runs did not establish:
+
+- One room, one webcam microphone and one speaker. No headset, no other voices and no background conversation.
+- In the noisy room, phrases stayed open through short pauses, so the operator's one-word replies
+  merged into longer phrases and could not be measured on their own. That end-of-speech behavior,
+  and noise that a final decodes into words, are outside this preview.
+- The hold does not stop a noise phrase that builds up 300 ms of voiced frames, such as sustained
+  typing: 3 of the 24 synthesized non-speech windows still showed a word.
+- The 300 ms threshold was chosen on the scout's set, and these playlists are small.
+- Push-to-talk and dictation into a focused editor were not measured; the Swift tests cover that
+  Push-to-talk is never held and that an editor preview is held exactly like the overlay.
+- The Linux listener does not read the hold.
+
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.
 - `test/voice-routing.test.ts`: each routing rule, an exact first word with a later name asking
@@ -1896,3 +1973,40 @@ transcript rises above the toast's cards and returns to its place when they clos
 too short for both, the toast stack also gives up height and scrolls, so every countdown,
 Cancel and Send now stays reachable. The floating pill and the tray popover are separate
 desktop windows above the dashboard and do not move the transcript.
+
+#### First-preview hold (preview)
+
+Room noise, typing and a desk knock can open a phrase with no speech in it. The listener decodes
+every open phrase every 800 ms for the live transcript, and the speech model tends to fill a short,
+near-silent snapshot with a filler such as “Okay.”, “Yeah.” or “Mm-hmm.”. The final decode of the
+same phrase is usually empty, so nothing is routed, but the filler flashes on screen.
+
+The **Voice first-preview hold** preview flag (`voice-first-preview-hold`, in Settings > Feature
+flags, off by default) holds back a phrase's first live words until that phrase holds 300 ms of
+audio the voice activity detector marked voiced. From then on its words update on every pass as
+before. The count belongs to one phrase: a new phrase, after an end-of-speech pause, an input
+interruption or a live delay edit that closes the open one, starts again from zero.
+
+The hold changes only what the live preview publishes: the transcript overlay and the dictation
+preview in a focused editor. It does not change:
+
+- the final decode, the roster priming, or what is posted to `/voice/utterances`;
+- routing, call signs, the separator word or spoken Cancel;
+- the audio heartbeat and the focus check the listener sends while a phrase is open;
+- Push-to-talk holds, which preview as before;
+- the overlay's five-second expiry once words are shown.
+
+The daemon sends `firstPreviewVoicedMs: 300` in the Always-on listener directive while the flag is
+on, and omits it otherwise, so with the flag off the directive and the listener behave exactly as
+before. Turning the flag on or off is a live directive edit: it keeps the open microphone and its
+capture grant, like a separator edit, and applies from the next preview pass. A phrase whose words
+are already on screen keeps showing them; one whose earlier passes showed no words, because the
+hold was off but its decode found nothing or failed, or neither the overlay nor a focused editor took
+its words, is held like a new one. The macOS listener reads the field. The Linux listener
+ignores it and previews as before.
+
+The 300 ms threshold comes from a scout that replayed synthesized speech and noise through a copy
+of the listener's speech gate with a simulated preview loop. It reduced the non-speech phrases
+that showed words by 72%, with no change in the median time to the first correct preview on its
+room-microphone set. See [Tests](#first-preview-hold-measurements) for the measurements taken
+against this build.

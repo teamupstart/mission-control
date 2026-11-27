@@ -101,6 +101,10 @@ type RmOutcome =
   | { kind: "error"; message: string };
 
 function runRm(executable: string, exact: string, timeoutMs: number, signal: AbortSignal | undefined): Promise<RmOutcome> {
+  // Checked at the last moment before the spawn: the listener below hears only aborts that come
+  // after it, so a Stop that landed during an earlier await (the `allowMissing` lstat) would
+  // otherwise let a full delete run.
+  if (signal?.aborted) return Promise.resolve({ kind: "ended", ended: "stopped" });
   return trackOwnWorktreeProcess((onSpawn) => new Promise<RmOutcome>((settle) => {
     let ending: "stopped" | "timedOut" | null = null;
     let stderr = "";

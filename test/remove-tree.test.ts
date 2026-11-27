@@ -242,6 +242,22 @@ test("a Stop kills the delete and is reported as stopped", async (t) => {
   assert.ok(existsSync(path), "a removal stopped before it started touches nothing");
 });
 
+test("a Stop that lands while the pre-delete check is pending ends the removal and launches nothing", async (t) => {
+  const root = scratch(t);
+  const path = tree(root);
+  const started = join(root, "started");
+  const marking = join(root, "marking-rm");
+  writeFileSync(marking, `#!/bin/sh\n: > ${JSON.stringify(started)}\nexec /bin/rm "$@"\n`, { mode: 0o755 });
+  const controller = new AbortController();
+  // `allowMissing: false` awaits an lstat first; the Stop arrives while that is pending.
+  const pending = removeTree(path, { allowMissing: false, signal: controller.signal, executable: marking });
+  controller.abort();
+  await assert.rejects(pending, (error: unknown) => error instanceof TreeRemovalError && error.ended === "stopped");
+  assert.equal(existsSync(started), false, "no delete was launched after the Stop");
+  assert.ok(existsSync(join(path, "node_modules", "pkg", "index.js")), "the tree is untouched");
+  assert.equal(ownWorktreeProcesses().size, 0);
+});
+
 test("the delete counts as the daemon's own process while it runs, so occupancy never blames it", async (t) => {
   const root = scratch(t);
   const path = tree(root);

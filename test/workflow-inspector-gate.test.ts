@@ -5172,6 +5172,45 @@ test("a newer owner that decides during the tree lookup takes the decision back 
   assert.equal(decideDuringLookup, null, "the decision did land during the lookup");
 });
 
+test("the matched run cancelled during the tree lookup vouches for nothing", async (t) => {
+  let duringLookup: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (duringLookup) { const apply = duringLookup; duringLookup = null; apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the run's pass matches");
+  // Cancelling keeps the completed attempts, so only the run's own status can say no.
+  duringLookup = () => {
+    db.prepare(`UPDATE workflow_runs SET status = 'cancelled', current_phase = 'cancelled' WHERE id = ?`).run(seeded.ids.run);
+  };
+  assert.equal(await ask(), null, "a run cancelled during the lookup no longer matches");
+  assert.equal(duringLookup, null, "the cancellation did land during the lookup");
+});
+
+test("a newer owner that appears during the tree lookup takes the decision from an older pass", async (t) => {
+  let duringLookup: (() => Promise<void>) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (duringLookup) { const apply = duringLookup; duringLookup = null; await apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the only owner's pass matches");
+  // A newer run pins the same pull request while the older pass's tree is being resolved, and it
+  // has already been cancelled. It was never asked, so the older pass must not stand in for it.
+  duringLookup = async () => { await newerRunOnSamePullRequest(seeded, { stage: true, status: "cancelled" }); };
+  assert.equal(await ask(), null, "an owner that appeared during the lookup decides");
+  assert.equal(duringLookup, null, "the newer owner did appear during the lookup");
+});
+
 test("a pull request retargeted during the tree lookup is evaluated on its new base, not completed locally", async (t) => {
   let retargetOnce: (() => void) | null = null;
   const seeded = await seedLocal({

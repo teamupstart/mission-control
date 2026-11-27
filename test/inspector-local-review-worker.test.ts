@@ -433,3 +433,27 @@ test("a matching local pass never merges while the Inspector is in Dry run", asy
   assert.equal(getInspectorPr(key)?.mergeBlock, "inspector-dry-run");
   assert.equal(modelCalls(), 0);
 });
+
+test("consent switched to Dry run after the sweep read its config stops the merge", async () => {
+  live();
+  yolo();
+  const key = adopt(914);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.reviewPosture, "local");
+
+  // The sweep's config snapshot still says Live, as it would after the awaits on GitHub and the
+  // workflow manager; the operator switched to Dry run in the meantime.
+  const snapshot = getInspectorConfig();
+  dryRun();
+  const { fetchPr } = await import("../src/server/inspector/github.ts");
+  const { maybeMerge } = await import("../src/server/shipping/merge.ts");
+  const read = await fetchPr(project, "mission", "control", 914);
+  assert.ok(read.ok && read.value, "the fake GitHub answered");
+  const merged = await maybeMerge(snapshot, getInspectorPr(key)!, project, read.value!, new Map(), Date.now(), () => "none",
+    { headSha: "head-1" });
+  assert.equal(merged, false);
+  assert.deepEqual(github().merges, [], "no merge was requested under Dry run");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "inspector-dry-run");
+});

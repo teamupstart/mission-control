@@ -3467,7 +3467,14 @@ export class WorkflowManager {
       if (review.kind === "none") return null;
       const match = await this.matchLocalReview(run, version, head,
         this.store.getBinding(run.bindingId)?.sessionRepoRoot || adopted.repoRoot);
-      return match && pending.every(stillPending) ? match : null;
+      if (!match || !pending.every(stillPending)) return null;
+      // An owner that appeared during the lookup was never asked. Read the owner set again: every
+      // run newer than the matched one must be one already seen pending, still pending above.
+      const owners = this.localReviewOwners(adopted.key);
+      const matched = owners.findIndex((owner) => owner.id === run.id);
+      if (matched < 0) return null;
+      const seen = new Set(pending.map((owner) => owner.run.id));
+      return owners.slice(0, matched).every((owner) => seen.has(owner.id)) ? match : null;
     }
     return null;
   }
@@ -3503,6 +3510,10 @@ export class WorkflowManager {
     // gate and the worker pass through: Local review switched off or the run's review superseded
     // meanwhile both mean no match, and the GitHub review stays.
     if (!getInspectorConfig().localReview) return null;
+    // A run cancelled, failed or sent to repair GitHub findings during the lookup keeps its
+    // completed attempts, so its own status is read again too: such a run vouches for nothing.
+    const status = this.store.getRun(run.id)?.status;
+    if (!status || ["cancelled", "failed", "waiting_for_new_head"].includes(status)) return null;
     const after = this.localReviewState(run.id, version);
     if (after.kind !== "passed" || after.match.attemptId !== review.match.attemptId
       || after.match.treeOid !== review.match.treeOid) return null;

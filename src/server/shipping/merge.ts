@@ -1,12 +1,13 @@
 import { getInspectorPr, updateInspectorPr } from "../db.ts";
 import { mergePr } from "../inspector/github.ts";
 import { mergeVerdict } from "@shared/shipping.ts";
-import type { WorkflowGateStanding } from "@shared/shipping.ts";
+import type { MergeInput, WorkflowGateStanding } from "@shared/shipping.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import type { PrSnapshot } from "../inspector/github.ts";
 import type { InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
 import { getShippingConfig } from "./config.ts";
+import { getInspectorConfig } from "../inspector/config.ts";
 
 // YOLO mode's one action: land a pull request that the Inspector reviewed clean, CI
 // passed, and nobody objected to inside the soak window.
@@ -83,7 +84,7 @@ export async function maybeMerge(
   localMatch: { headSha: string } | null = null,
 ): Promise<boolean> {
   const cfg = getShippingConfig();
-  const verdict = mergeVerdict({
+  const input: MergeInput = {
     cfg,
     // Current consent is a separate veto from the posture stored with the reviewed SHA.
     // Both must be live: changing a setting now cannot rewrite how an earlier review ran.
@@ -116,10 +117,25 @@ export async function maybeMerge(
     openFindings: openFindings(rows),
     workflowGate: workflowGate(pr.key),
     now,
-  });
+  };
+  const verdict = mergeVerdict(input);
 
   if (!verdict.merge) {
     recordBlock(pr, verdict.block, now);
+    return false;
+  }
+
+  // `inspector` is the config this sweep started with, and the sweep has awaited GitHub and the
+  // workflow manager since. Consent switched off, to Dry run, or Local review off in that time
+  // must stop this merge, so the same gate is asked again with the setting as it is right now.
+  const current = getInspectorConfig();
+  const consent = mergeVerdict({
+    ...input,
+    inspector: inspectorPosture(current, pr.cwd, pr.repoRoot),
+    localReview: { ...input.localReview, enabled: current.localReview },
+  });
+  if (!consent.merge) {
+    recordBlock(pr, consent.block, now);
     return false;
   }
 

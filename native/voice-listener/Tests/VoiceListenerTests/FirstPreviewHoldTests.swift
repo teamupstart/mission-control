@@ -165,6 +165,38 @@ final class FirstPreviewHoldTests: XCTestCase {
         }
     }
 
+    @MainActor func testWordsThatReachedNoSurfaceLeaveTheUtteranceHeldWhenTheHoldTurnsOn() async {
+        // The overlay is not accepting words and the focused editor's first update fails, with the hold off.
+        // Nothing appeared anywhere, so once the hold turns on the same utterance still waits for 300 ms.
+        let passes = [phrase(onset: 1, voicedMs: 100), phrase(onset: 1, voicedMs: 120), phrase(onset: 1, voicedMs: 300)]
+        var tick = 0
+        var settled = 0
+        var on = false
+        var editor: [String] = []
+        var spoken: [String] = []
+        await runTranscriptPreview(isRunning: { tick < passes.count }, snapshot: { tick < passes.count ? passes[tick] : nil },
+            pendingOnset: { nil }, decode: { "\($0.onset):\($0.voicedSamples)" },
+            report: { phase, _, text in
+                if phase == "words", let text { spoken.append(text) }
+                return false
+            }, editorFocused: { _ in true },
+            updateEditor: { _, text in
+                defer { settled += 1 }
+                if tick == 0 { throw URLError(.cannotConnectToHost) }
+                editor.append(text)
+            }, firstPreviewReady: { phrase in
+                defer { on = true }
+                let ready = !on || phrase.voicedSamples >= 300 * 16
+                if !ready { settled += 1 }
+                return ready
+            }, pause: {
+                while settled <= tick { await Task.yield() }
+                tick += 1
+            })
+        XCTAssertEqual(editor, ["1:4800"], "no words reach the editor before 300 ms after a failed first update")
+        XCTAssertEqual(spoken, [], "an overlay that accepts no words is never sent any")
+    }
+
     @MainActor func testCaptureHoldFollowsLiveDirectiveEditsWithoutReopeningTheMicrophone() throws {
         let token = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("test".utf8).write(to: token)

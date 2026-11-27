@@ -95,9 +95,14 @@ function score(windows: PreviewWindow[], shown: Shown[], fedAt: number) {
     const expected = word(window.expected ?? "");
     const useful = added.find(change => word(change.text) === expected && change.ms >= window.onsetMs! - 100);
     const leading = added.filter(change => change !== useful && (!useful || change.ms < useful.ms) && word(change.text) !== expected);
+    // The overlay draws live previews and the final alike. A final shows once, after its phrase closes, and is the
+    // window's last change, so a useful text that another change follows can only be a live preview.
+    const live = window.finalInWindow
+      ? added.slice(0, -1).find(change => word(change.text) === expected && change.ms >= window.onsetMs! - 100) : undefined;
     return { id: window.id, kind: window.kind, expected: window.expected, phantomLead: leading.length > 0,
       firstShownMs: added[0] ? added[0].ms - window.onsetMs! : null,
-      firstUsefulMs: useful ? useful.ms - window.onsetMs! : null, shown: added.map(change => change.text) };
+      firstUsefulMs: useful ? useful.ms - window.onsetMs! : null,
+      provenLiveUsefulMs: live ? live.ms - window.onsetMs! : null, shown: added.map(change => change.text) };
   });
 }
 
@@ -114,6 +119,7 @@ function summarize(rows: ReturnType<typeof score>) {
     nonSpeechWindowsShowingWords: rows.filter(row => "phantom" in row && row.phantom).length,
     speechWindowsWithPhantomLead: speech.filter(row => row.phantomLead).length,
     speechWindowsWithUsefulPreview: speech.filter(row => row.firstUsefulMs !== null).length,
+    speechWindowsWithProvenLiveUsefulPreview: speech.filter(row => row.provenLiveUsefulMs !== null).length,
     speechWindows: speech.length,
     medianMsToFirstUsefulPreview: { all: latency(), oneWord: latency("one-word"), callSign: latency("call-sign"), cancel: latency("cancel") },
   };
@@ -154,12 +160,18 @@ async function offThenOn(page: Page, daemon: DaemonHandle, models: string, wav: 
     const known = new Set((await heard(page, daemon)).map(entry => entry.id));
     overlay();
     const film = process.env.MC_E2E_EVIDENCE ? filmOverlay(page) : null;
-    const fedAt = await nativeListener(daemon, models, wav);
-    // Every confirmation's countdown ends, so each outcome is the delivered one.
-    await expect.poll(async () => (await heard(page, daemon)).filter(entry => !known.has(entry.id) && entry.outcome === "pending").length,
-      { timeout: 30_000 }).toBe(0);
-    await page.waitForTimeout(1000);
-    const frames = film ? await film() : [];
+    let fedAt: number;
+    let frames: Frame[] = [];
+    try {
+      fedAt = await nativeListener(daemon, models, wav);
+      // Every confirmation's countdown ends, so each outcome is the delivered one.
+      await expect.poll(async () => (await heard(page, daemon)).filter(entry => !known.has(entry.id) && entry.outcome === "pending").length,
+        { timeout: 30_000 }).toBe(0);
+      await page.waitForTimeout(1000);
+    } finally {
+      // Stop filming whether the run passed or failed.
+      if (film) frames = await film();
+    }
     runs[variant] = { fedAt, shown: await overlay(), heard: (await heard(page, daemon)).filter(entry => !known.has(entry.id)).toReversed(), frames };
   }
   return runs;
@@ -205,6 +217,12 @@ test("native Always-on with synthesized speech and noise: fewer non-speech previ
     // utterances reach a preview whose first word is the word spoken.
     expect(on.summary.nonSpeechWindowsShowingWords).toBeLessThanOrEqual(off.summary.nonSpeechWindowsShowingWords);
     expect(on.summary.speechWindowsWithUsefulPreview).toBe(off.summary.speechWindowsWithUsefulPreview);
+    // Those counts include finals, so require live previews on their own: in each run, at least 3 of the 9
+    // utterances whose final lands in their window show the spoken word before their final (4 or 5 in every
+    // recorded run). A listener that stopped publishing live previews would show none.
+    for (const [variant, run] of [["off", off], ["on", on]] as const) {
+      expect(run.summary.speechWindowsWithProvenLiveUsefulPreview, `${variant}: useful live previews before the final`).toBeGreaterThanOrEqual(3);
+    }
 
     if (!process.env.MC_E2E_EVIDENCE) return;
     // Review evidence: the real overlay around a one-word reply and around a reply after typing, off and on.

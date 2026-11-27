@@ -19,7 +19,7 @@ export function filmOverlay(page: Page): () => Promise<Frame[]> {
   // The bottom-right corner card, where the overlay starts.
   const clip = { x: viewport.width / 2, y: viewport.height / 2, width: viewport.width / 2, height: viewport.height / 2 };
   const loop = (async () => {
-    while (filming) {
+    while (filming && !page.isClosed()) {
       const started = Date.now();
       try {
         const png = await page.screenshot({ clip });

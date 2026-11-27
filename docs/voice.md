@@ -1456,8 +1456,11 @@ The synthesized test, whose windows are labeled, also requires in each run that 
 is cancelled and that the spoken "Cancel." after it is recorded as a control action. It then compares
 two whole-run counts: the number of non-speech windows that showed words may not be higher with the
 flag on, and the number of utterances that reached a useful preview, meaning a preview whose first
-word is the word spoken, must be the same in both runs. It asserts neither per window or per
-utterance; the per-window results below are measurements. Each run writes its counts, timings and
+word is the word spoken, must be the same in both runs. Because the overlay draws finals too, it
+also requires live previews on their own: in each run, at least 3 of the 9 utterances whose final
+lands in their window must show the spoken word before that final. A final shows once, as its
+window's last change, so a correct text that another change follows is a live preview. It asserts
+nothing per window or per utterance; the per-window results below are measurements. Each run writes its counts, timings and
 recognized text, never audio, to `e2e/.artifacts/voice-preview-hold/`. With `MC_E2E_EVIDENCE` set it
 also films the overlay corner and writes captioned GIFs of the "Okay." reply and the "Yes." after
 typing, with the flag off and on, for review, each with a single-frame sheet of the frames around
@@ -1998,7 +2001,8 @@ on, and omits it otherwise, so with the flag off the directive and the listener 
 before. Turning the flag on or off is a live directive edit: it keeps the open microphone and its
 capture grant, like a separator edit, and applies from the next preview pass. A phrase whose words
 are already on screen keeps showing them; one whose earlier passes showed no words, because the
-hold was off but its decode found nothing or failed, is held like a new one. The macOS listener reads the field. The Linux listener
+hold was off but its decode found nothing or failed, or neither the overlay nor a focused editor took
+its words, is held like a new one. The macOS listener reads the field. The Linux listener
 ignores it and previews as before.
 
 The 300 ms threshold comes from a scout that replayed synthesized speech and noise through a copy

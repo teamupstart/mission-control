@@ -17,6 +17,8 @@ export interface PreviewWindow {
   onsetMs: number | null;
   /** What was said, for the first useful preview: its first word must match. */
   expected: string | null;
+  /** False when the window ends before its phrase's final can show: the next window follows within the end-of-speech delay. */
+  finalInWindow: boolean;
 }
 
 export interface PreviewPlaylist { wav: string; windows: PreviewWindow[] }
@@ -156,7 +158,8 @@ export function synthesizedPlaylist(directory: string): PreviewPlaylist {
     const startMs = Math.round(at * 1000);
     const duration = fixture.samples.length / RATE + tail.length / RATE;
     windows.push({ id: fixture.id, kind: fixture.kind, startMs, endMs: Math.round((at + duration) * 1000),
-      onsetMs: fixture.kind === "non-speech" ? null : startMs + Math.round((fixture.onsetS ?? 0) * 1000), expected: fixture.expected ?? null });
+      onsetMs: fixture.kind === "non-speech" ? null : startMs + Math.round((fixture.onsetS ?? 0) * 1000), expected: fixture.expected ?? null,
+      finalInWindow: !fixture.after });
     parts.push(fixture.samples, tail);
     at += duration;
   }

@@ -365,12 +365,14 @@ struct HeldPreview: PreviewSnapshot {
                     if released != onset { guard firstPreviewReady(segment) else { return } }
                     guard let words = try? await decode(segment), !Task.isCancelled, isRunning(),
                           snapshot()?.onset == onset else { return }
-                    // Released only once words reach the screen: a pass that decoded none, or failed, leaves the
-                    // utterance held, so a hold turned on later still waits for its voiced audio.
-                    if !words.allSatisfy(\.isWhitespace) { released = onset }
+                    // Released only once words reach a surface: a pass that decoded none, failed, or whose words
+                    // neither the editor nor the overlay took leaves the utterance held, so a hold turned on
+                    // later still waits for its voiced audio.
+                    let hasWords = !words.allSatisfy(\.isWhitespace)
                     if editor {
                         do {
                             try await updateEditor(onset, words)
+                            if hasWords { released = onset }
                         } catch {
                             guard !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
                             fputs("Voice listener could not deliver a dictation preview.\n", stderr)
@@ -378,7 +380,7 @@ struct HeldPreview: PreviewSnapshot {
                     }
                     guard overlay else { return }
                     let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
-                    if !tail.isEmpty { _ = await report("words", onset, tail) }
+                    if !tail.isEmpty, await report("words", onset, tail) { released = onset }
                 }
             }
         } else if let onset = pendingOnset() {

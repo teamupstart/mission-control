@@ -309,6 +309,7 @@ export function reportRelativeReferences(html: string): string[] {
 export function unlinkMissingCompanions(
   html: string,
   targets: ReadonlySet<string>,
+  aliases: ReadonlyMap<string, string> = new Map(),
 ): { html: string; unlinked: string[] } {
   let document: DefaultTreeAdapterTypes.Document;
   try {
@@ -349,6 +350,23 @@ export function unlinkMissingCompanions(
     for (const attr of node.attrs) {
       const name = attributeName(attr);
       const values = referenceValues(name, attr.value);
+      // A single-URL attribute naming an alias (the page's own name in another spelling) is
+      // rewritten to the name it has in the archive, keeping any query or fragment, so the link
+      // still resolves. Only that attribute's text changes.
+      if (aliases.size > 0 && name !== "style" && values.length === 1 && values[0] === attr.value) {
+        const aliased = aliasedReference(attr.value, aliases);
+        const location = locations?.[attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name] ?? locations?.[attr.name];
+        if (aliased !== null && location) {
+          const source = html.slice(location.startOffset, location.endOffset);
+          const written = source.slice(0, source.indexOf("=") < 0 ? source.length : source.indexOf("=")).trimEnd();
+          spans.push({
+            start: location.startOffset,
+            end: location.endOffset,
+            replacement: `${written}="${aliased.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`,
+          });
+          continue;
+        }
+      }
       const missing = values
         .map(inReportReference)
         .filter((path): path is string => path !== null && !targets.has(path));
@@ -594,6 +612,19 @@ function urlProblem(raw: string, context: UrlContext): ArchiveHtmlProblem | null
     };
   }
   return null;
+}
+
+/**
+ * `raw` with its path replaced by the alias target when the path it names is an alias, keeping
+ * the query and fragment; null when it names no alias.
+ */
+function aliasedReference(raw: string, aliases: ReadonlyMap<string, string>): string | null {
+  const value = raw.trim();
+  const path = inReportReference(value);
+  const target = path === null ? undefined : aliases.get(path);
+  if (target === undefined) return null;
+  const cut = value.search(/[?#]/);
+  return cut < 0 ? target : `${target}${value.slice(cut)}`;
 }
 
 /** The reference values one attribute carries, as the checker reads them. */

@@ -177,3 +177,14 @@ test("canonically equivalent Unicode spellings collide like case variants", () =
   assert.equal(caseDistinctPaths([nfd, nfc]).size, 1);
   assert.equal(caseDistinctPaths([`d/${nfc}`, `D/${nfd}`]).size, 1);
 });
+
+test("an alias rewrites only that attribute's path, keeping its query and fragment and every other byte", () => {
+  const html = page(`<a class="x" href='Report.html?v=1#top'>self</a> <a href="Report.html">plain</a> <a href="gone.csv">gone</a>`);
+  const result = unlinkMissingCompanions(html, new Set(["report.html"]), new Map([["Report.html", "report.html"]]));
+  assert.deepEqual(result.unlinked, ["gone.csv"]);
+  assert.equal(
+    result.html,
+    html.replace(`href='Report.html?v=1#top'`, `href="report.html?v=1#top"`).replace(`href="Report.html"`, `href="report.html"`).replace(' href="gone.csv"', ""),
+  );
+  assert.deepEqual(validateStaticReportHtml(result.html, new Set(["report.html"])), { ok: true });
+});

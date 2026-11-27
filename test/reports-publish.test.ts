@@ -1109,6 +1109,23 @@ test("a report whose <style> element names an unstored file publishes with that 
   assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
 });
 
+test("a report posted as Report.html keeps its self-link: it resolves to the archived page", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><h1 id=\"top\">Top</h1><a href=\"Report.html#top\">back to top</a> <a href=\"kept.csv\">k</a></body></html>";
+  const report = await post("Report.html", html, "Capitalised page");
+  assert.equal(report.document?.name, "Report.html");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const written = manifest(archiveId);
+  assert.deepEqual(companionsOf(written), { stored: ["report/kept.csv"], missing: [] }, "the self-link is not listed as missing");
+  assert.equal(written.archive.capture_status, "complete");
+  assert.equal(archivedPage(archiveId).toString("utf8"), html.replace('href="Report.html#top"', 'href="report.html#top"'),
+    "only the self-link changes, to the page's archive name");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
 test("a link that climbs out of the document's directory is neither stored nor unlinked, and still refuses the page", async () => {
   const { post, publish, bundles, checkout } = setup();
   mkdirSync(join(checkout, "sub"), { recursive: true });

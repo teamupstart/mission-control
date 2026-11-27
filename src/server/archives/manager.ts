@@ -1053,14 +1053,22 @@ export class ArchiveManager {
       seen.add(companion.path);
       return true;
     });
+    // The page links to itself by its stored document's name. That name is the page's archive
+    // name when it folds to `report.html` (`Report.html` names the page on a case-insensitive
+    // volume): `report.html` is then a target, and a link spelled as the document's own name is
+    // rewritten to `report.html`, so it resolves in the archive instead of being unlinked.
+    const documentIsPage = input.documentName.toLowerCase() === primaryName;
     const targets = new Set([
-      ...(input.documentName === primaryName ? [primaryName] : []),
+      ...(documentIsPage ? [primaryName] : []),
       ...companions.map((companion) => companion.path),
     ]);
-    const unlinked = unlinkMissingCompanions(html, targets);
+    const aliases = documentIsPage && input.documentName !== primaryName
+      ? new Map([[input.documentName, primaryName]])
+      : undefined;
+    const unlinked = unlinkMissingCompanions(html, targets, aliases);
     const checked = validateStaticReportHtml(unlinked.html, targets);
     if (!checked.ok) return { ok: false, status: 422, problems: checked.problems.map((problem) => problem.message) };
-    const page = unlinked.unlinked.length > 0 ? Buffer.from(unlinked.html, "utf8") : input.page;
+    const page = unlinked.html !== html ? Buffer.from(unlinked.html, "utf8") : input.page;
     const missing = reportMissingCompanions(unlinked.unlinked);
 
     const identity: ArchiveIdentity = {

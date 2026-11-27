@@ -455,7 +455,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   page's own path), the name the page itself takes in the archive, nor any path beneath it
   (`report.html/data.csv`): from a document with any
   other name, a link to it is unlinked and listed as missing rather than left pointing at the
-  page.
+  page. A document whose own name is `report.html` in another case (`Report.html`) is the page:
+  its link to itself, spelled as its own name, is rewritten to `report.html` (query and fragment
+  kept), so it still resolves in the archive.
 
 - **The daemon builds the page.** `POST /api/reports/:id/publish` takes nothing but the id in
   its path. A body that names a page, a path or anything else is refused, and no checkout is

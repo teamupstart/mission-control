@@ -889,7 +889,8 @@ return holds on any ignored file, because it has no cache-disposal policy. An or
 recovered any other way, so it tolerates ignored entries inside directories named
 `node_modules`, `dist`, `test-results`, `.evidence` or `.pipeline`, or whose name starts with
 `.tmp`, at any depth, after walking each such directory without following links: a nested
-repository inside one is not regenerable output and holds the checkout. Every other ignored
+repository inside one, whether a `.git` entry or a bare repository's own `HEAD`, `objects` and
+`refs`, is not regenerable output and holds the checkout. Every other ignored
 entry, such as `.env`, still holds it. As for registered checkouts, ignored content never moves
 the retention clock; it holds the delete.
 
@@ -902,8 +903,9 @@ reach it by the slot path any more, and requires that what moved is the very dir
 proved rather than a byte-identical copy swapped in. On that set-aside directory it checks
 occupancy, re-reads the content against the claimed digest and the ignored-file rule, and
 requires the same `.git` link naming the same administrative directory. It then computes the
-local-only files from those bytes, holds their archive as described above, checks occupancy
-once more as the last step, and deletes the directory. The task then releases the checkout and
+local-only files from those bytes and holds their archive as described above. Under that hold
+it checks occupancy, re-reads the content and the ignored-file rule once more, checks occupancy
+a final time, and deletes the directory. The task then releases the checkout and
 the ledger row finishes through the ordinary claim and complete flow. A checkout that is
 already gone, for example removed by hand, completes the same way with nothing to delete.
 
@@ -913,6 +915,10 @@ tracking whatever remains. If even that rename fails, the directory stays beside
 its private name, and the slot is not treated as already gone while it is there: the task and
 its ledger row are held with that blocker until the operator resolves it. Manual **Clean up**,
 **Cancel** and **Delete** keep their own rules.
+
+One residual is accepted: a writer that process occupancy cannot see - one holding a descriptor
+it opened before the rename, or one that writes and exits during the final occupancy sample -
+inside a directory reachable only by its private name.
 
 **Terminal homes proved absent.** Retention also holds a terminal task while its terminal home
 is present or its absence cannot be verified. A home with no `terminal_resource_id`, or one

@@ -430,21 +430,33 @@ async function runCheckAttr(scratch: Scratch, worktreePath: string, paths: strin
   return [...out];
 }
 
-/** Whether a directory holds a `.git` entry at any depth; null when the walk cannot finish. */
+/** The entries whose presence together marks a bare repository's own directory. */
+const BARE_REPOSITORY_ENTRIES = ["HEAD", "objects", "refs"] as const;
+
+/**
+ * Whether a directory holds a repository at any depth - a `.git` entry, or a bare repository
+ * whose metadata sits at its root - or null when the walk cannot finish.
+ */
 async function containsNestedRepository(directory: string): Promise<boolean | null> {
   const pending = [directory];
   let visited = 0;
   try {
-    const top = await lstat(directory);
-    if (!top.isDirectory()) return null;
     while (pending.length > 0) {
       const current = pending.pop()!;
+      // `opendir` follows links, so each queued path is re-checked right before it is read: a
+      // path replaced by a link since it was listed fails the walk closed instead of reading
+      // wherever the link points. This narrows the window; it cannot close it entirely.
+      const info = await lstat(current);
+      if (info.isSymbolicLink() || !info.isDirectory()) return null;
+      const names = new Set<string>();
       for await (const entry of await opendir(current)) {
         if (++visited > NESTED_WALK_LIMIT) return null;
         if (entry.name === ".git") return true;
+        names.add(entry.name);
         // Dirent types come from the directory itself and never follow a link.
         if (entry.isDirectory()) pending.push(join(current, entry.name));
       }
+      if (BARE_REPOSITORY_ENTRIES.every((name) => names.has(name))) return true;
     }
     return false;
   } catch {
@@ -627,8 +639,10 @@ export type OrphanRemovalGuard = (aside: string, commonDir: string, finish: () =
  *     content against the claimed digest and the ignored-file rule, and require the link to
  *     name the proven administrative directory.
  *  5. Hand it to `guard`, which computes the local-only files from these very bytes and holds
- *     their archive. Inside the guard, occupancy is checked once more as the last step, and the
- *     directory is deleted.
+ *     their archive. Inside the guard: occupancy, the content and ignored-file re-read, and
+ *     occupancy once more as the last step, then the delete. The residual is a writer that is
+ *     invisible to occupancy (an open descriptor, or a write-and-exit during that last sample)
+ *     inside a directory reachable only by its private name.
  *  6. Any refusal, and a delete that fails part-way, renames it back to the slot first, so the
  *     task keeps tracking whatever is left. If even that rename fails, the slot is never
  *     classified absent while the set-aside directory remains (see `classifyTaskCheckout`).
@@ -698,6 +712,13 @@ export async function removeOrphanedTaskCheckout(
     await guard(aside, before.commonDir, async () => {
       if (finished) throw new Error("orphaned checkout removal was attempted twice");
       finished = true;
+      // The guard's own work (its proof, the archive lock) took time. Sample occupancy, re-read
+      // the content - tracked, untracked and the ignored-file rule - so nothing written in the
+      // meantime is deleted unseen, and sample occupancy once more as the last step.
+      const inside = await occupied(aside);
+      if (inside) throw new Error(inside);
+      const content = unchanged(await compareOrphanedCheckout(aside, before.commonDir, ref.baseSha ?? ""));
+      if (content) throw new Error(content);
       const last = await occupied(aside);
       if (last) throw new Error(last);
       try {

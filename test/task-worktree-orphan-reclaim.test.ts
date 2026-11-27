@@ -1178,6 +1178,8 @@ test("local-only files under dot-prefixed directories are archived, keeping thei
     [".envrc", ".github/workflows/ci.yml"]);
 });
 
+const RAW_IDENT = "$Id: private notes nobody committed $\n";
+
 test("a tracked file whose ident conversion hides local text is archived, not trusted to a clean status", async (t) => {
   enable(t);
   let base = "";
@@ -1189,15 +1191,23 @@ test("a tracked file whose ident conversion hides local text is archived, not tr
       gitIn(path, "commit", "-qm", "ident notes");
       base = gitIn(path, "rev-parse", "HEAD");
       // Git collapses `$Id: ... $` to `$Id$` before comparing, so status reports this clean.
-      writeFileSync(join(path, "notes.txt"), "$Id: private notes nobody committed $\n");
+      writeFileSync(join(path, "notes.txt"), RAW_IDENT);
+      // Git's own view of the edited file is the committed blob: no content difference at all.
+      assert.equal(gitIn(path, "hash-object", "notes.txt"), gitIn(path, "rev-parse", "HEAD:notes.txt"),
+        "Git cleans the edited file to exactly the committed blob");
+      assert.equal(gitIn(path, "diff", "--stat"), "", "and reports no content change");
     },
   });
   w.registry.upsertTask({ ...w.task(), baseSha: base });
   const pass = await w.runToDeadline();
   assert.deepEqual(pass.cleanups, { reclaimed: 1 });
+  const raw = { path: "notes.txt", sha256: createHash("sha256").update(RAW_IDENT).digest("hex") };
   assert.ok(w.state.preserved.length > 0, "the raw bytes were archived as local-only work");
-  for (const entry of w.state.preserved) assert.deepEqual(entry.files.map((file) => file.path), ["notes.txt"]);
   assert.ok(w.state.held.length > 0, "and deleted only while that archive was held");
+  for (const entry of [...w.state.preserved, ...w.state.held]) {
+    assert.deepEqual((entry.files as readonly { path: string; sha256: string }[])
+      .map((file) => ({ path: file.path, sha256: file.sha256 })), [raw], "every call names the raw bytes");
+  }
 });
 
 test("a nested repository inside a regenerable ignored directory holds the orphan", async (t) => {
@@ -1258,4 +1268,53 @@ test("local-only files are not deleted by a daemon whose archive library cannot 
   assert.match(w.row()?.lastError ?? "", /need the archive library/);
   assert.equal(readFileSync(join(w.path, "notes.md"), "utf8"), "keep me\n");
   assert.equal(w.task().worktreePath, w.path);
+});
+
+test("a bare repository inside a regenerable ignored directory holds the orphan", async (t) => {
+  enable(t);
+  let base = "";
+  const w = world(t, {
+    prepare: (path) => {
+      writeFileSync(join(path, ".gitignore"), "dist\n");
+      gitIn(path, "add", ".gitignore");
+      gitIn(path, "commit", "-qm", "ignore dist");
+      base = gitIn(path, "rev-parse", "HEAD");
+    },
+  });
+  w.registry.upsertTask({ ...w.task(), baseSha: base });
+  // No `.git` entry anywhere: a bare repository keeps its metadata at its own root.
+  mkdirSync(join(w.path, "dist"), { recursive: true });
+  gitIn(join(w.path, "dist"), "init", "-q", "--bare", "mirror.git");
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, { "validation-unknown": 1 });
+  assert.match(w.row()?.lastError ?? "", /nested repository inside an ignored directory/);
+  assert.ok(existsSync(join(w.path, "dist", "mirror.git", "HEAD")));
+});
+
+test("an ignored file written after the guard's proof is caught before the delete", async (t) => {
+  let base = "";
+  const w = world(t, {
+    prepare: (path) => {
+      writeFileSync(join(path, ".gitignore"), ".env\n");
+      gitIn(path, "add", ".gitignore");
+      gitIn(path, "commit", "-qm", "ignore rules");
+      base = gitIn(path, "rev-parse", "HEAD");
+    },
+  });
+  const ref = { repoRoot: w.clone, worktreePath: w.path, branch: w.branch, provider: "git" as const,
+    worktreeLeaseId: null, baseSha: base, role: "primary" as const, position: 0 };
+  const claimed = await orphanedCheckoutFingerprint(ref, w.path);
+  const digest = claimed?.kind === "known" ? claimed.digest : "";
+  const order: string[] = [];
+  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async (at) => {
+    order.push(at === w.path ? "slot" : "aside");
+    return null;
+  }, async (aside, _commonDir, finish) => {
+    // After the guard's proof - here, while the archive lock would be held - a process writes
+    // an ignored file and exits. The re-read inside `finish` sees it.
+    writeFileSync(join(aside, ".env"), "TOKEN=late\n");
+    await finish();
+  }), /ignored files outside regenerable directories/);
+  assert.deepEqual(order, ["slot", "aside", "aside"], "refused before the last occupancy sample");
+  assert.equal(readFileSync(join(w.path, ".env"), "utf8"), "TOKEN=late\n", "restored to its slot");
 });

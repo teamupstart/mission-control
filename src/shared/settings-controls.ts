@@ -708,10 +708,10 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "voice-spoken-replies",
     label: "Spoken replies",
-    description: "Choose a voice and play a sample of an ask.",
+    description: "Turn spoken replies on or off, choose a voice and play a sample of an ask.",
     category: "voice",
     anchor: "voice/spoken-replies",
-    keywords: ["voice picker", "automatic", "play sample", "Apple", "system voice", "download", "Supertonic", "OpenRAIL-M"],
+    keywords: ["voice picker", "automatic", "play sample", "speak aloud", "playback", "mute speech", "Apple", "system voice", "download", "Supertonic", "OpenRAIL-M"],
     kind: "jump",
     backup: backupDomains("voice"),
   },

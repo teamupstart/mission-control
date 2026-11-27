@@ -4895,3 +4895,31 @@ test("a newer run still mid-review does not hide a head an earlier run passed lo
   const match = await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
   assert.equal(match?.submissionId, seeded.ids.submission, "the earlier run's passed review still vouches for the head");
 });
+
+for (const later of ["skipped", "failed"] as const) {
+  test(`a later ${later} Local Inspector attempt supersedes an earlier pass on the same node`, async (t) => {
+    const seeded = await seedLocal();
+    t.after(localTeardown(seeded));
+    // A retry of the same node on the same submission, recorded after the pass. The node's
+    // current answer is the later attempt, so the earlier pass must not vouch for any head.
+    const at = Date.now();
+    seeded.store.insertAttempt({ id: `local-attempt-${serial}-retry`, submissionId: seeded.ids.submission,
+      nodeId: "local-inspector", attempt: 2, state: "running", persona: null, inputFingerprint: `local-${serial}-retry`, now: at });
+    seeded.store.finishAttempt(`local-attempt-${serial}-retry`, { state: "completed", output: workflowJson({
+      slot: "inspector", status: later, command: null, exitCode: null, output: "", truncatedBytes: 0,
+      artifacts: [], timeoutMs: null, note: `Local Inspector ${later}.`,
+      localInspector: { status: later, publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main",
+        mergeBase: "m".repeat(40), blockingSeverity: "major", findingCount: later === "failed" ? 1 : 0 },
+    }) }, at);
+    const attempts = seeded.store.listAttempts(seeded.ids.submission).filter((row) => row.nodeId === "local-inspector");
+    assert.deepEqual(attempts.map((row) => row.attempt), [1, 2], "the pass is first and the retry is the node's latest");
+
+    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null,
+      "the earlier pass does not match once a later attempt did not pass");
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "the gate did not stay on the GitHub review path");
+    assert.equal(gateOf(seeded).localReview, undefined);
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+  });
+}

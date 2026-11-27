@@ -109,6 +109,10 @@ html.voice-window, html.voice-window body, html.voice-window #root { background:
 .voice-card[data-pill] .btn { padding: 1px 7px; font-size: 11px; }
 .vc-pill-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .vc-pill-hint,.voice-card[data-pill] > .spoken-hint { position: absolute; left: 50%; top: calc(100% + 2px); transform: translateX(-50%); color: var(--muted); font: 11.5px var(--sans); }
+/* A delivered receipt is one control: the transparent button spans the whole card body. */
+.voice-card:has(> .vc-dismiss) { position: relative; }
+.vc-dismiss { position: absolute; inset: 0; margin: 0; padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
+.vc-dismiss:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
 .voice-card[data-pill]:is(.vc-sent,.vc-queued) { border-color: color-mix(in oklab,var(--idle) 45%,var(--border)); }
 .vc-ring { flex: none; border: 0; width: 22px; height: 22px; border-radius: 50%; padding: 2.5px; font: 700 10px var(--mono); color: var(--working); cursor: pointer; }
 .vc-ring span { display: grid; place-items: center; height: 100%; border-radius: 50%; background: var(--panel); }

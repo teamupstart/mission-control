@@ -200,8 +200,9 @@ resumption, evidence readiness and binding defaults are version 22's. A digest t
 A head with a different tree or base, a skipped or failed stage, Local review off, a version
 without the stage (every binding pinned to version 22 or earlier), a pull request opened outside a
 workflow, and every head in a repository holding the merge grant all keep today's GitHub review.
-On the gate a different head waits on `head_mismatch` as before. On the worker a `local` head that
-stops matching is reviewed on GitHub once the posture is Live.
+On the gate a different head waits on `head_mismatch` as before. On the worker a head recorded from
+a local match that stops matching is reviewed on GitHub in every posture: posted in Live, recorded
+without posting in Dry run. That review clears the local record.
 
 ### Surfaces
 

@@ -43,19 +43,16 @@ struct SpeechHello: Encodable {
     struct Voice: Encodable {
         let id, name, language, quality: String
     }
-    // The delayed speaker check still yielded words after Samantha finished.
-    // Requalify both output paths on hardware before advertising either one.
-    private static let passedSpeakerCheck = false
-    let audio: Bool
+    // A supervised listener always advertises both output paths. Whether anything is spoken
+    // is the operator's choice, which the daemon applies through `speech.playback`.
+    let audio = true
     let systemVoices: [Voice]
 
-    init(passedSpeakerCheck: Bool = SpeechHello.passedSpeakerCheck) {
-        self.init(passedSpeakerCheck: passedSpeakerCheck, installedVoices: AVSpeechSynthesisVoice.speechVoices)
+    init() {
+        self.init(installedVoices: AVSpeechSynthesisVoice.speechVoices)
     }
 
-    init<V: InstalledSpeechVoice>(passedSpeakerCheck: Bool, installedVoices: () -> [V]) {
-        audio = passedSpeakerCheck
-        guard audio else { systemVoices = []; return }
+    init<V: InstalledSpeechVoice>(installedVoices: () -> [V]) {
         systemVoices = installedVoices().filter {
             $0.language.split(separator: "-").first?.lowercased() == "en"
         }.prefix(256).map {

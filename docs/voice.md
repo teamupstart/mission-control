@@ -885,7 +885,7 @@ search result opens the tab that holds its control before highlighting it.
 | --- | --- |
 | **Listening** | **Microphone**: Listening mode, Input device, Mute hotkey (Push-to-talk hotkey in Push-to-talk), Auto-mute on calls. **Ending a message**: End-of-speech delay, Separator word, Cancel window |
 | **Names & routing** | **Who you can address**, the [roster](#who-can-be-addressed). **When a sentence is unclear**: When unsure (Ask or Show), then the [decision model](#faster-routing) and its keys |
-| **Spoken replies** | **Spoken replies**: the [voice picker](#mission-control-voices), Play sample and the voice download. **Answering by voice**: Plan forms by voice |
+| **Spoken replies** | **Spoken replies**: Speak replies aloud, the [voice picker](#mission-control-voices), Play sample and the voice download. **Answering by voice**: Plan forms by voice |
 | **On screen** | **Live transcript**, **Confirmation card**, **In the window** (the indicators) |
 | **Recently heard** | The utterances voice heard, how each was matched and what happened, and Clear |
 
@@ -915,6 +915,7 @@ the utterance and the word is ordinary speech.
 | Separator word | Listening | `separatorWord` | `bagel` |
 | Cancel window (duration or Off) | Listening | `cancelWindow { enabled, seconds }` | on, 4 seconds |
 | When unsure (Ask or Show) | Names & routing | `whenUnsure` | `show` |
+| Speak replies aloud | Spoken replies | `speech.playback` | on |
 | Plan forms by voice | Spoken replies | `planFormsByVoice` | on |
 
 ### Faster routing
@@ -969,7 +970,7 @@ never wrote needs no migration.
 | `endOfSpeechMs` | `2000` | Silence before automatic submission, in milliseconds (500, 800, 1000, 1500, 2000, 3000 or 5000) |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
 | `whenUnsure` | `show` | `show` the candidates, or `ask` aloud |
-| `speech` | `{ voice: null }` | Automatic voice, or a saved engine and voice ID |
+| `speech` | `{ voice: null, playback: true }` | `voice` is Automatic (null) or a saved engine and voice ID. `playback` false keeps every sample and question silent |
 | `planFormsByVoice` | `true` | Whether speech may fill a plan-decision form |
 | `inputDevice` | `built-in` | `built-in`, `system-default`, or a device id from a listener |
 | `decisionProvider` | `null` | Null for automatic, or `off`, `openai`, `jev` |
@@ -1008,10 +1009,14 @@ In **Settings > Voice > Spoken replies**, Automatic uses F4 once downloaded on a
 listener that can play it. Until then it uses the best installed English voice
 the Mac listener offers, preferring Premium, then Enhanced, then standard.
 Without a playable voice, Mission Control shows the question on screen.
-The shipping Mac listener advertises no audio playback and no system voices.
-You can still save a voice choice or download the model while on Automatic.
-With this helper, questions appear on screen and both Play sample and Ask
-aloud stay disabled.
+The supervised Mac listener advertises audio playback and its installed English
+system voices.
+
+**Speak replies aloud** (`speech.playback`, on by default) is the operator's switch for
+all spoken output. Turn it off if the microphone picks up the spoken voice. While it
+is off the daemon reports `speech-output` unavailable with the `speech_playback_off`
+code, stops any sample or question already playing, and keeps questions on screen.
+The picker still lists voices, so you can choose one or download the model first.
 
 Choose any Mission Control voice to save the choice and start the shared
 download, or stay on Automatic and press **Download**. Cancel keeps your
@@ -1029,7 +1034,8 @@ the picker is waiting for the reply to its play request.
 checkout’s release helper (`dist/native/voice-listener`). It started each helper
 against a disposable loopback server and recorded its first hello.
 The recorded command `python3 /tmp/f35-voice-hello.py` exited 0 and printed
-this line for both helpers.
+this line for both helpers. That 2.3.0 helper predates playback shipping on; current
+helpers advertise `"audio": true` with their installed English voices.
 
 ```text
 Protocol 4.1 backend fluidaudio speech {"audio": false, "systemVoices": []}
@@ -1042,7 +1048,7 @@ Artifact IDs are specific to each snapshot. In round 8, segment 0, this transcri
 results, see the [November 25 quiet-room trial](#november-25-2026-quiet-room-trial).
 
 **Pending on hardware.** These picker checks require a signed listener that
-has passed the speaker and microphone check and advertises playback. On that
+advertises playback, with Speak replies aloud on. On that
 build, select Always-on and Ask aloud with two named agents. Run each check
 with downloaded F4 and an installed Apple voice.
 
@@ -1297,7 +1303,9 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
 absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
-Its `speech_playback_unsupported` code keeps questions on screen. The
+Its `speech_playback_off` code means Speak replies aloud is off and takes precedence
+over every listener reason except an unconfirmed stop. Its `speech_playback_unsupported`
+code means the listener cannot play audio. Both keep questions on screen. The
 `speech_voice_unavailable` code means the listener supports playback but voice
 selection found no match. The picker uses the choice and download state to
 offer the appropriate remedy.
@@ -1633,9 +1641,12 @@ Capture waits for the player to confirm silence. Asking requires Always-on liste
 its saved value when unavailable and the usual on-screen choices still work.
 A sample requested through the audition route can play while muted.
 
-**Mac playback is currently unavailable.** The supervised FluidAudio helper sends
-`speech.audio: false` and an empty system voice list. Ask aloud falls back to the
-on-screen candidate rows. Answering by name remains available after capture resumes.
+**Mac playback is on by default.** The supervised FluidAudio helper sends
+`speech.audio: true` and its installed English system voices. The trials below never
+showed the spoken question itself being recognized after the capture pause, but stray
+words appeared after some playbacks and in silent controls alike. Turn off **Speak
+replies aloud** in Settings > Voice > Spoken replies if a room's speakers and microphone
+pick up the voice. Ask aloud then falls back to the on-screen candidate rows.
 
 The macOS playback implementation consumes neural WAV bytes in memory and speaks system
 voices live. Its voice catalog reads the installed English voices and their quality tiers,
@@ -1682,8 +1693,9 @@ At 500 ms, the remaining F4 open control recognized the second clause. The resum
 listener recognized neither clause in any paused trial. It returned “Yeah” after
 two of three Samantha playbacks and in all three matching silent controls. The
 word can occur with no playback. Its source in the original trials remains unknown,
-and the default setting missed too many controls to establish silence. Mac playback
-therefore remains unavailable.
+and the default setting missed too many controls to establish silence. Playback was
+held back after these trials. It now ships on, with Speak replies aloud as the operator's
+switch to turn it off.
 
 <a id="november-25-2026-quiet-room-trial"></a>
 

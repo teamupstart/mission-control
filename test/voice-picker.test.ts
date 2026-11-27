@@ -6,9 +6,9 @@ import { VOICE_CONFIG_DEFAULTS, voiceStateOff } from "../src/shared/voice.ts";
 import type { VoiceSpeechVoice } from "../src/shared/voice-speech.ts";
 import { SpokenReplies } from "../src/web/components/SpokenReplies.tsx";
 
-function render(voice = voiceStateOff(), selected: VoiceSpeechVoice | null = null) {
+function render(voice = voiceStateOff(), selected: VoiceSpeechVoice | null = null, playback = true) {
   return renderToStaticMarkup(createElement(SpokenReplies, { voice, state: {
-    config: { ...VOICE_CONFIG_DEFAULTS, speech: { voice: selected } }, update: async () => true,
+    config: { ...VOICE_CONFIG_DEFAULTS, speech: { voice: selected, playback } }, update: async () => true,
   } }));
 }
 
@@ -46,7 +46,21 @@ test("unavailable reasons and stored choices survive rendering with an empty cat
   assert.match(html, /Download the Mission Control voices to enable speech/);
 });
 
-test("a verified download never enables a sample on the shipping capture-only listener", () => {
+test("spoken replies switched off keep the picker but disable the sample and say how to turn them back on", () => {
+  const voice = voiceStateOff();
+  voice.speech.reason = "Spoken replies are off.";
+  voice.capabilities["speech-output"] = { available: false, code: "speech_playback_off", reason: "Spoken replies are off." };
+  voice.speech.catalog.system = [{ id: "ava", name: "Ava", detail: "premium" }];
+  const off = render(voice, null, false);
+  const toggle = (html: string) => html.match(/<input type="checkbox" aria-label="Speak replies aloud"[^>]*>/)?.[0] ?? "";
+  assert.doesNotMatch(toggle(off), /checked/);
+  assert.match(off, /<button[^>]*disabled=""[^>]*>Play sample<\/button>/);
+  assert.match(off, /Spoken replies are off\. Questions appear on screen\. Turn on Speak replies aloud to hear them\./);
+  assert.match(off, /Automatic: Ava/);
+  assert.match(toggle(render(voice)), /checked=""/);
+});
+
+test("a verified download never enables a sample on a capture-only listener", () => {
   const voice = voiceStateOff();
   voice.speech.model.status = "ready";
   const reason = "Playback is disabled in this listener.";

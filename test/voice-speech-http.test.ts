@@ -571,6 +571,79 @@ test("auditions have two waiting places and receive terminal failures if the hol
   assert.equal(store.speech.live, null);
 });
 
+test("turning spoken replies off stops the live sample and refuses another until they are turned back on", async t => {
+  const playback = (enabled: boolean) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ speech: { playback: enabled } }) });
+  t.after(() => playback(true));
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const playing = await audition();
+  await holder.event(playing, "started");
+  assert.equal((await playback(false)).status, 200);
+  assert.deepEqual((await holder.poll()).speak, { id: playing, stop: true });
+  assert.deepEqual(store.state().capabilities["speech-output"],
+    { available: false, code: "speech_playback_off", reason: "Spoken replies are off." });
+  await holder.event(playing, "ended");
+  const refused = await post("/api/voice/speech/audition");
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).reason, "Spoken replies are off.");
+  assert.equal((await playback(true)).status, 200);
+  assert.deepEqual(store.state().capabilities["speech-output"], { available: true, reason: null });
+  assert.equal(typeof await audition(), "string");
+});
+
+test("turning spoken replies off stops a spoken question that is playing and asks no more aloud", async t => {
+  const configure = async (data: object) => assert.equal((await app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(data) })).status, 200);
+  t.after(() => configure({ whenUnsure: "show", speech: { playback: true } }));
+  const p = player();
+  await p.announce(); await p.hello();
+  await configure({ whenUnsure: "ask" });
+  const { revision } = await p.poll();
+  const words = capture("Steve tell Will about CI");
+  await p.request("/voice/utterances?revision=" + revision, words);
+  await registry.voiceRouter!.resolution(words.id);
+  const ask = store.speech.live!;
+  assert.equal(ask.purpose, "ask", "the unclear sentence is asked aloud");
+  assert.equal((await p.pickup()).speak.id, ask.id);
+  assert.equal((await p.event(ask.id, "started")).status, 200);
+  assert.equal(ask.state, "speaking");
+
+  await configure({ speech: { playback: false } });
+  assert.equal(ask.state, "stopping");
+  const directive = await p.poll();
+  assert.deepEqual(directive.speak, { id: ask.id, stop: true }, "the listener is told to stop the question");
+  assert.equal(directive.capture, false, "capture stays paused until the player confirms silence");
+  assert.deepEqual(store.state().capabilities["speech-output"],
+    { available: false, code: "speech_playback_off", reason: "Spoken replies are off." });
+  assert.equal((await p.event(ask.id, "ended")).status, 200);
+  assert.equal(ask.state, "stopped");
+  assert.equal((await p.poll()).capture, true);
+  assert.equal(store.speech.open("ask", "Steve or Will?", crypto.randomUUID())?.state, "failed",
+    "no later question is spoken while spoken replies are off");
+});
+
+test("an unconfirmed stop keeps its recovery code while spoken replies are off", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const playback = (enabled: boolean) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ speech: { playback: enabled } }) });
+  t.after(() => playback(true));
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const playing = await audition();
+  await holder.event(playing, "started");
+  await playback(false);
+  assert.deepEqual((await holder.poll()).speak, { id: playing, stop: true });
+  const output = () => store.state().capabilities["speech-output"];
+  assert.equal(output()?.code, "speech_playback_off", "the stop is still within its confirmation deadline");
+  t.mock.timers.tick(5000); // The holder never confirms silence.
+  const unconfirmed = { available: false, code: "speech_stop_unconfirmed", reason: "the listener did not confirm that speech had stopped" };
+  assert.deepEqual(output(), unconfirmed, "the recovery code outranks the operator's switch");
+  assert.deepEqual(store.state().capabilities.listener, unconfirmed);
+  assert.equal((await holder.event(playing, "ended")).status, 200);
+  assert.equal(output()?.code, "speech_playback_off", "once silence is confirmed, the switch is the reason again");
+});
+
 test("delayed utterances are logged within the playback history window and discarded after it", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   t.mock.method(performance, "now", Date.now);

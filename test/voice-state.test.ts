@@ -84,7 +84,7 @@ test("the config schema holds every contract A field with its default", () => {
     separatorWord: "bagel",
     showTranscript: true, transcriptWords: 20, transcriptStyle: "card", transcriptCorner: "bottom-right",
     cancelWindow: { enabled: true, seconds: 4 },
-    whenUnsure: "show", speech: { voice: null },
+    whenUnsure: "show", speech: { voice: null, playback: true },
     planFormsByVoice: true,
     inputDevice: "built-in",
     decisionProvider: null,
@@ -608,6 +608,13 @@ test("speech output belongs to the daemon and needs a supervised, capable listen
   assert.equal(capability()?.code, "speech_voice_unavailable");
   h.store.acceptHello(listenerId, { ...HELLO, speech: { audio: false, systemVoices: [] } }, instance);
   assert.equal(capability()?.code, "speech_playback_unsupported");
+  h.store.acceptHello(listenerId, { ...HELLO, speech }, instance);
+  h.setConfig({ speech: { voice: null, playback: false } });
+  assert.deepEqual(capability(), { available: false, code: "speech_playback_off", reason: "Spoken replies are off." });
+  assert.equal(h.store.state().speech.voice, null, "no voice is offered while spoken replies are off");
+  assert.deepEqual(h.store.state().speech.catalog.system.map(v => v.id), ["speaker"], "the picker still lists the listener's voices");
+  h.setConfig({ speech: { voice: null, playback: true } });
+  assert.deepEqual(capability(), { available: true, reason: null });
   assert.equal(JSON.stringify(h.published).includes(instance), false);
 });
 

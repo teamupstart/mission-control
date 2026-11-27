@@ -26,9 +26,9 @@ test("automatic prefers F4 then the best English system voice; an explicit voice
   assert.equal(resolve([], system.slice(0, 2)), "enhanced");
   assert.equal(resolve([], []), undefined);
   const selected = { engine: "system", id: "enhanced" } as const;
-  assert.deepEqual(resolveSpeechVoice({ ...VOICE_CONFIG_DEFAULTS, speech: { voice: selected } }, catalog),
+  assert.deepEqual(resolveSpeechVoice({ ...VOICE_CONFIG_DEFAULTS, speech: { ...VOICE_CONFIG_DEFAULTS.speech, voice: selected } }, catalog),
     { voice: selected, reason: null });
-  assert.equal(resolveSpeechVoice({ ...VOICE_CONFIG_DEFAULTS, speech: { voice: { engine: "system", id: "missing" } } }, catalog).voice, null);
+  assert.equal(resolveSpeechVoice({ ...VOICE_CONFIG_DEFAULTS, speech: { ...VOICE_CONFIG_DEFAULTS.speech, voice: { engine: "system", id: "missing" } } }, catalog).voice, null);
   const state = { ...voiceStateOff(), capabilities: { "speech-output": { available: true, reason: null } } };
   const ask = { ...VOICE_CONFIG_DEFAULTS, whenUnsure: "ask" as const };
   assert.equal(askAloudPossible(ask, { ...state, mode: "listening" }), true);

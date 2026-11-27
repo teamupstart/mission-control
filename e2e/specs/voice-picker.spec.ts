@@ -147,7 +147,7 @@ test("a Linux player omits the Mac group and keeps a restored missing system voi
   } finally { await speaker.exit(); }
 });
 
-test("the shipping Mac listener keeps questions on screen even with F4 downloaded", async ({ dashboard: page, daemon }) => {
+test("a listener without playback keeps questions on screen even with F4 downloaded", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { audio: false, systemVoices: [] });
   try {
@@ -166,6 +166,43 @@ test("the shipping Mac listener keeps questions on screen even with F4 downloade
     await expect(group.locator("optgroup[label=\"This Mac's voices\"]")).toHaveCount(0);
     expect((await speaker.poll()).speak).toBeNull();
     await capture(group, "shipping-fallback");
+  } finally { await speaker.exit(); }
+});
+
+test("Speak replies aloud stops a playing sample, keeps samples off until turned back on, and is saved", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const speaker = await beSpeaker(daemon, { holdPlayback: true });
+  try {
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
+    const group = page.getByRole("region", { name: "Spoken replies" });
+    const toggle = group.getByRole("checkbox", { name: "Speak replies aloud" });
+    const play = group.getByRole("button", { name: "Play sample" });
+    const status = group.getByRole("status");
+    const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config.speech.playback;
+    await expect(toggle).toBeChecked();
+    await expect(status).toHaveText("Fixture will speak.");
+    await play.click();
+    await expect.poll(() => speaker.playing).toBe(true);
+    await expect(group.getByRole("button", { name: "Stop" })).toBeVisible();
+
+    await toggle.uncheck();
+    await expect.poll(saved).toBe(false);
+    await expect.poll(() => speaker.playing, { message: "turning spoken replies off stops the playing sample" }).toBe(false);
+    await expect(play).toBeDisabled();
+    await expect(status).toHaveText("Spoken replies are off. Questions appear on screen. Turn on Speak replies aloud to hear them.");
+    await expect(play).toHaveAccessibleDescription(/Spoken replies are off/);
+    await expect(group.getByRole("combobox"), "the voice can still be chosen while spoken replies are off").toBeEnabled();
+    await expect(group.getByRole("combobox").locator("option:checked")).toHaveText("Automatic: Fixture");
+    await capture(group, "spoken-replies-off");
+
+    await page.reload();
+    await openVoiceTab(page, "Spoken replies");
+    await expect(toggle, "the switch reads back the saved value").not.toBeChecked();
+    await toggle.check();
+    await expect.poll(saved).toBe(true);
+    await expect(status).toHaveText("Fixture will speak.");
+    await expect(play).toBeEnabled();
+    await capture(group, "spoken-replies-on");
   } finally { await speaker.exit(); }
 });
 

@@ -3259,7 +3259,10 @@ request is a check, not a review: it completes the run when the submission's Loc
 attempt **passed** (not skipped) and the open pull request's head has the Git tree that review
 read, on the base branch it compared against. The match is by tree and base, not by commit, so a
 re-created commit with the same tree still matches. No remote model call runs and nothing is
-posted, so the change reaches GitHub with one push and runs CI once. The Completion tab says
+posted, so no Inspector findings send the session back to push a repair. In the end-to-end spec
+`e2e/specs/local-review-gate.spec.ts`, run against a fake GitHub that starts one CI run per new
+pull request head, the reviewed change reached GitHub with one push and one CI run; a later push
+with different content started a second run and took the GitHub path. The Completion tab says
 **Reviewed locally** and lists the Local Inspector's findings, and the gate's
 `inspector_gate_clean` event records `path: "local"` (or `"github"` on the GitHub path).
 
@@ -3277,10 +3280,12 @@ Every other head keeps today's GitHub review, so no pull request silently loses 
   `head_mismatch` for a full workflow round as it always has;
 - a run whose Local Inspector stage skipped, failed or blocked, and any workflow version
   without the stage, including bindings pinned to version 22 or earlier;
-- a pull request opened outside a workflow;
-- every head in a repository holding the Shipping merge grant. Shipping does not yet accept a
-  local review as merge provenance and refuses the `local` posture, so those repositories keep
-  the GitHub review until it does.
+- a pull request opened outside a workflow.
+
+A repository holding the Shipping merge grant takes the local path like any other. Shipping
+accepts a head recorded `local` as merge provenance while the GitHub Inspector is Live, Local
+review is on, and the match still holds for that exact head. See
+[It needs the GitHub Inspector, fully on](inspector-and-shipping.md#it-needs-the-github-inspector-fully-on).
 
 A run whose repair budget ends while the Local Inspector still fails stops at `round_limit`
 before the Pull Request action, so the gate is never reached and no GitHub review starts for

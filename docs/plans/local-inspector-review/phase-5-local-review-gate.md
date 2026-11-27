@@ -140,9 +140,11 @@ passed local review". The completion gate and the Inspector worker both reach th
 `matchLocalReview`, and nothing else decides it. A head matches only when all of these hold:
 
 - `InspectorConfig.localReview` is on (it reads as off while the `local-inspector` flag is off).
-- The repository does not hold the Shipping merge grant (`repositoryHoldsMergeGrant` in
-  `src/server/shipping/config.ts`: on Shipping's allowlist, whether or not YOLO is armed; an
-  unreadable setting counts as holding it).
+- As built in Phase 5 (historical): the repository does not hold the Shipping merge grant
+  (`repositoryHoldsMergeGrant` in `src/server/shipping/config.ts`: on Shipping's allowlist,
+  whether or not YOLO is armed; an unreadable setting counts as holding it). Phase 6 removed this
+  condition and the helper; see its implementation record in
+  `phase-6-shipping-local-provenance.md` for current behavior.
 - The run's version has at least one `inspector` check node, and on the run's latest submission
   (a Pull Request continuation segment reads its parent segment's attempts) every such node's
   latest attempt completed with check status `passed` and Local Inspector status `passed`, all on
@@ -186,7 +188,9 @@ The gate asks only about its own run.
   matching it is reviewed on GitHub in every posture, Dry run included, and that review clears
   the local record.
 - `local` is appended to `INSPECTOR_POSTURES`, and the gate state schema now reads its posture
-  from that list. The merge predicate is unchanged and refuses `local` as an unpublished review.
+  from that list. In Phase 5 the merge predicate was unchanged and refused `local` as an
+  unpublished review. Phase 6 replaced that rule: the predicate now accepts a matching `local`
+  record; see the implementation record in `phase-6-shipping-local-provenance.md`.
 
 ### Built-in version
 
@@ -201,7 +205,9 @@ resumption, evidence readiness and binding defaults are version 22's. A digest t
 
 A head with a different tree or base, a skipped or failed stage, Local review off, a version
 without the stage (every binding pinned to version 22 or earlier), a pull request opened outside a
-workflow, and every head in a repository holding the merge grant all keep today's GitHub review.
+workflow, and, until Phase 6 removed the exception, every head in a repository holding the merge
+grant all keep today's GitHub review. Since Phase 6 a merge-grant repository takes the local path
+like any other; see `phase-6-shipping-local-provenance.md`.
 On the gate a different head waits on `head_mismatch` as before. On the worker a head recorded from
 a local match that stops matching is reviewed on GitHub in every posture: posted in Live, recorded
 without posting in Dry run. That review clears the local record.

@@ -154,6 +154,12 @@ export interface ReportPagePublication {
    * listed as missing.
    */
   companions: ReadonlyArray<{ path: string; bytes: Buffer }>;
+  /**
+   * The stored document's own file name. A link to `report.html` names the page itself only when
+   * the document was `report.html`; from any other document it names a different file, which is
+   * never stored (the page takes that name in the archive), so it is unlinked like any other.
+   */
+  documentName: string;
   /** The session that posted the report, recorded as the archive's source session. */
   session: { id: string; name: string; taskId: string | null };
   /** A label for the report's repository, when it recorded one. Informational. */
@@ -1034,7 +1040,10 @@ export class ArchiveManager {
     const primaryName = ARCHIVE_PRIMARY_REPORT_PATH.slice(ARCHIVE_REPORT_DIR.length + 1);
     const companions = input.companions.filter((companion) =>
       companion.path !== primaryName && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${companion.path}`) !== null);
-    const targets = new Set([primaryName, ...companions.map((companion) => companion.path)]);
+    const targets = new Set([
+      ...(input.documentName === primaryName ? [primaryName] : []),
+      ...companions.map((companion) => companion.path),
+    ]);
     const unlinked = unlinkMissingCompanions(html, targets);
     const checked = validateStaticReportHtml(unlinked.html, targets);
     if (!checked.ok) return { ok: false, status: 422, problems: checked.problems.map((problem) => problem.message) };

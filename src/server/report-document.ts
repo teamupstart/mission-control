@@ -59,7 +59,8 @@ export function linkedCompanionPaths(kind: ReportDocumentKind, bytes: Buffer): s
  * The companions stored with `report`, sorted by path, so a page published twice lists them in
  * the same order. A report posted before companions were stored has none. Entries that are not
  * regular files, or whose path an archive could not hold, are skipped, and reads stop at the
- * bounds the post enforced.
+ * bounds the post enforced. A stored file that cannot be opened or read throws: it was stored, so
+ * publishing without it would lose it.
  */
 export async function readStoredReportCompanions(
   report: Pick<ReportItem, "id">,
@@ -86,7 +87,13 @@ export async function readStoredReportCompanions(
   for (const path of paths.sort()) {
     if (companions.length >= REPORT_LIMITS.companionFiles) break;
     const handle = await open(join(root, ...path.split("/")), constants.O_RDONLY | constants.O_NOFOLLOW)
-      .catch(() => null);
+      .catch((error: NodeJS.ErrnoException) => {
+        // Gone since it was listed, or a symlink put in its place: it is not a stored companion,
+        // so its link is unlinked as missing. Any other failure (permissions, I/O) is thrown, so
+        // Publish answers 500 rather than archiving, for ever, a page without a file it holds.
+        if (error.code === "ENOENT" || error.code === "ELOOP") return null;
+        throw error;
+      });
     if (!handle) continue;
     try {
       const info = await handle.stat();

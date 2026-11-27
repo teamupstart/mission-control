@@ -421,7 +421,10 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   `<state home>/reports/<id>/companions/`, up to 128 files and 16 MiB in all. A Markdown
   document's links are read from its rendered page. A linked file that is missing, outside the
   checkout, not a regular file or past those bounds is left out; it never refuses the report.
-  A link that climbs out of the document's directory is not a companion.
+  A link that climbs out of the document's directory is not a companion. Neither is a sibling
+  named `report.html`, the name the page itself takes in the archive: from a document with any
+  other name, a link to it is unlinked and listed as missing rather than left pointing at the
+  page.
 
 - **The daemon builds the page.** `POST /api/reports/:id/publish` takes nothing but the id in
   its path. A body that names a page, a path or anything else is refused, and no checkout is

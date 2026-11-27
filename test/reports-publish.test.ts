@@ -187,6 +187,7 @@ test("a bundle at the report's key that this report did not publish is a conflic
     title: "Someone else's page",
     page: Buffer.from("<html><body><p>Not this report</p></body></html>"),
     companions: [],
+    documentName: "report.html",
     session: { id: "s-someone-else", name: "Other", taskId: null },
     repositoryLabel: null,
   });
@@ -637,6 +638,63 @@ test("a Markdown document's relative links travel the same way", async () => {
   assert.deepEqual((written.missing as Array<{ expected_source: string }>).map((entry) => entry.expected_source), ["gone.csv"]);
 });
 
+test("a link to a sibling named report.html is unlinked and listed as missing, never pointed at the published page", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const SIBLING = "<html><body><p>The sibling page, a different file</p></body></html>";
+  writeFileSync(join(checkout, "report.html"), SIBLING);
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const findings = "<html><body><a href=\"report.html\">earlier report</a> <a href=\"data.csv\">data</a></body></html>";
+  const report = await post("findings.html", findings, "Links a sibling report.html");
+  assert.equal(existsSync(join(reportDocumentDir(report.id, home), "companions", "report.html")), false);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.equal(page, findings.replace(" href=\"report.html\"", ""), "only the sibling's link is removed");
+  assert.doesNotMatch(page, /The sibling page/, "the sibling's content is not in the archived page");
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/data.csv"]);
+  assert.deepEqual(missing, ["report.html"]);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+
+  // A document that IS report.html linking to itself keeps the link: it names the page.
+  const self = "<html><body><a href=\"report.html#top\">top</a></body></html>";
+  const selfReport = await post("report.html", self, "Links itself");
+  const selfPublished = await publish(selfReport.id);
+  assert.equal(selfPublished.status, 200, JSON.stringify(selfPublished.body));
+  const selfId = reportArchiveId(PRODUCER, selfReport.id, selfReport.createdAt);
+  assert.equal(archivedPage(selfId).toString("utf8"), self);
+  assert.deepEqual(manifest(selfId).missing, []);
+});
+
+test("a same-directory link to a symlink that resolves outside the checkout is not stored, and is unlinked as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = mkdtempSync(join(tmpdir(), "mission-report-outside-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "outside-the-checkout-secret-bytes\n";
+  writeFileSync(join(outside, "secret.csv"), SECRET);
+  symlinkSync(join(outside, "secret.csv"), join(checkout, "secret.csv"));
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><a href=\"secret.csv\">secret</a> <a href=\"kept.csv\">kept</a></body></html>";
+  const report = await post("leak.html", html, "Links a symlink out");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "posting succeeds and stores only the file inside the checkout");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/kept.csv"]);
+  assert.deepEqual(missing, ["secret.csv"]);
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>secret<\/a> <a href="kept\.csv">kept<\/a>/);
+  const bundleDir = join(root, PRODUCER, archiveId);
+  const bundleFiles = readdirSync(bundleDir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(bundleFiles.every((text) => !text.includes(SECRET.trim())), "the external bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
 test("a link that climbs out of the document's directory is neither stored nor unlinked, and still refuses the page", async () => {
   const { post, publish, bundles, checkout } = setup();
   mkdirSync(join(checkout, "sub"), { recursive: true });
@@ -737,6 +795,40 @@ test("a manifest lists up to 64 unlinked paths; past that, 63 are listed and one
     assert.doesNotMatch(page, /href=/, "every link to an unstored file is removed, listed or counted");
     assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
   }
+});
+
+test("one stored companion that cannot be opened answers 500, and is never unlinked into a partial archive", { skip: asRoot }, async () => {
+  const { post, publish, bundles, reports, checkout, manifest } = setup();
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "notes.txt"), "kept\n");
+  const report = await post("one-locked.html", "<html><body><a href=\"data.csv\">data</a> <a href=\"notes.txt\">notes</a></body></html>", "One locked companion");
+  const locked = join(reportDocumentDir(report.id, home), "companions", "data.csv");
+  assert.equal(existsSync(locked), true);
+  chmodSync(locked, 0o000);
+  try {
+    const refused = await publish(report.id);
+    assert.equal(refused.status, 500, JSON.stringify(refused.body));
+    assert.match(refused.body.problems!.join(" "), /^could not read the files stored with this report: .*EACCES/);
+    assert.deepEqual(bundles(), [], "no partial archive is written without the stored file");
+    assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+  } finally {
+    chmodSync(locked, 0o600);
+  }
+  // Readable again, the same press publishes it whole.
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const written = manifest(reportArchiveId(PRODUCER, report.id, report.createdAt));
+  assert.deepEqual(companionsOf(written), { stored: ["report/data.csv", "report/notes.txt"], missing: [] });
+});
+
+test("a stored companion that is gone by publish time is unlinked as missing, as before", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("gone-companion.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Companion gone");
+  unlinkSync(join(reportDocumentDir(report.id, home), "companions", "data.csv"));
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  assert.deepEqual(companionsOf(manifest(reportArchiveId(PRODUCER, report.id, report.createdAt))), { stored: [], missing: ["data.csv"] });
 });
 
 test("stored companions that cannot be read answer 500 with the error, and nothing is archived", { skip: asRoot }, async () => {
@@ -909,7 +1001,7 @@ test("a press against a library that cannot be read answers 500 and writes nothi
   after(() => archives.stop());
   const page = Buffer.from(STATIC_HTML);
   const publication = (reportId: string) => ({
-    reportId, reportCreatedAt: 1, title: "Locked library", page, companions: [],
+    reportId, reportCreatedAt: 1, title: "Locked library", page, companions: [], documentName: "report.html",
     session: { id: "s-locked", name: "Locked", taskId: null }, repositoryLabel: null,
   });
 

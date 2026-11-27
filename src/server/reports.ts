@@ -1252,6 +1252,7 @@ export class ReportManager {
       title: report.title,
       page: built.page,
       companions,
+      documentName: report.document.name,
       session: { id: report.sessionId, name: report.author.name, taskId: report.taskId },
       repositoryLabel: report.repository ? basename(report.repository) : null,
     });

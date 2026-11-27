@@ -54,6 +54,23 @@ test("never follows a symbolic link, at the path or inside the tree", async (t) 
   assert.ok(existsSync(join(outside, "kept.txt")), "the link's target is untouched");
 });
 
+test("a trailing backslash is part of the name, so its sibling without one is never the target", async (t) => {
+  const root = scratch(t);
+  const named = join(root, "deps\\");
+  const sibling = join(root, "deps");
+  for (const path of [named, sibling]) {
+    mkdirSync(join(path, "pkg"), { recursive: true });
+    writeFileSync(join(path, "pkg", "index.js"), "module.exports = 1;\n");
+  }
+  await removeTree(named);
+  assert.equal(existsSync(named), false, "the exact path named is removed");
+  assert.ok(existsSync(join(sibling, "pkg", "index.js")), "the sibling without the backslash is untouched");
+
+  // A trailing `/` is still only a separator.
+  await removeTree(`${sibling}/`);
+  assert.equal(existsSync(sibling), false);
+});
+
 test("a missing path is removed by default and an ENOENT when the caller proved it was there", async (t) => {
   const root = scratch(t);
   await removeTree(join(root, "absent"));

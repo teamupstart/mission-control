@@ -77,7 +77,9 @@ async function absent(path: string): Promise<boolean> {
 /** The exact path to remove: absolute, never a filesystem root, no trailing separator. */
 function target(path: string): string {
   if (!path || !isAbsolute(path)) throw new TreeRemovalError(`refusing to remove a path that is not absolute: ${path}`, "failed");
-  const trimmed = path.length > 1 ? path.replace(/[/\\]+$/, "") : path;
+  // Only `/` separates on the platforms the daemon runs on. A trailing `\` is part of the file
+  // name, so stripping it would aim the delete at a different sibling (`deps\` -> `deps`).
+  const trimmed = path.length > 1 ? path.replace(/\/+$/, "") : path;
   if (!trimmed || resolve(trimmed) === parse(resolve(trimmed)).root) {
     throw new TreeRemovalError("refusing to remove a filesystem root", "failed");
   }

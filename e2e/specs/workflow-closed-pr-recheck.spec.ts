@@ -222,7 +222,7 @@ function strandAsClosed(daemon: DaemonHandle, runId: string): void {
 }
 
 /** Script what GitHub answers when the daemon reads this pull request. */
-function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED", head = FAILED_HEAD): void {
+function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED" | "MERGED", head = FAILED_HEAD): void {
   writeGhPullRequests(daemon.home, [{
     cwd: daemon.repo,
     url: PR_URL,
@@ -316,6 +316,109 @@ test("a run blocked as closed offers Check again, which lifts the block only for
   await shoot(dashboard, header, "02-open-pull-request-restores-the-repair-wait");
 });
 
+
+/**
+ * Leave the run where the reported merged pull request left it: the PR merged while the
+ * workflow's Pull Request action was still settling, GitHub Inspector read it MERGED and retired
+ * the row, and the gate opened afterwards to wait for an observation nothing would ever send.
+ */
+function strandAwaitingMergedRow(daemon: DaemonHandle, runId: string): void {
+  const now = Date.now();
+  withDaemonDb(daemon, (db) => {
+    const run = db.prepare("SELECT workflow_version_id FROM workflow_runs WHERE id = ?")
+      .get(runId) as { workflow_version_id: string } | undefined;
+    if (!run) throw new Error(`missing run ${runId}`);
+    db.prepare("UPDATE workflow_versions SET completion_policy_json = ? WHERE id = ?").run(
+      JSON.stringify({ kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" }),
+      run.workflow_version_id,
+    );
+    db.prepare(
+      `UPDATE workflow_runs
+          SET status = 'waiting_for_inspector', current_phase = 'inspector_awaiting_fresh_observation',
+              inspector_pr_key = ?, inspector_head_sha = NULL, gate_state_json = ?, completed_at = NULL,
+              updated_at = ?
+        WHERE id = ?`,
+    ).run(
+      PR_KEY,
+      JSON.stringify({
+        prKey: PR_KEY, prUrl: PR_URL, targetHeadSha: null, failedHeadSha: null,
+        enteredAt: now - 30_000, lastObservedAt: null, observedHeadSha: null, reviewPosture: null,
+        waitReason: "awaiting_fresh_observation", findingFingerprints: [],
+      }),
+      now,
+      runId,
+    );
+    db.prepare(
+      `INSERT INTO inspector_prs
+         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+          head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at,
+          last_error, fail_count, last_fail_kind, next_attempt_at, last_attempt_sha, merged_at,
+          merge_block, observed_head_sha, observed_state, observed_at, head_ref_name, title,
+          adopted_at, updated_at)
+       VALUES (?, ?, 'owner', 'repo', ?, ?, ?, NULL, 'hook', 'closed',
+               ?, 'live', 1, ?, 1, ?, NULL, 0, NULL, NULL, ?, NULL, NULL,
+               ?, 'MERGED', ?, 'feat/closed-pr', 'Merged pull request', ?, ?)`,
+    ).run(
+      PR_KEY, PR_URL, PR_NUMBER, daemon.repo, daemon.repo,
+      FAILED_HEAD, FAILED_HEAD, now - 90_000, FAILED_HEAD,
+      FAILED_HEAD, now - 45_000, now - 120_000, now - 45_000,
+    );
+  });
+}
+
+test("a run waiting on a pull request that merged before its gate opened holds as closed and never completes", async ({
+  dashboard,
+  daemon,
+}) => {
+  const runId = await seedRun(dashboard, daemon, "E2E merged before gate");
+  await api(
+    daemon,
+    "/api/inspector/config",
+    { enabled: true, mode: "live", repoAllowlist: [daemon.repo] },
+    "PUT",
+  );
+  strandAwaitingMergedRow(daemon, runId);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  await expect(header.getByText("Waiting for GitHub Inspector", { exact: true })).toBeVisible();
+  const checkAgain = header.getByRole("button", { name: "Check again" });
+  await expect(checkAgain).toBeVisible();
+  await shoot(dashboard, header, "11-stranded-merged-wait-offers-check-again");
+
+  // GitHub still says merged. The click holds the run as the ordinary closed-PR block, reads
+  // GitHub again, and passes nothing: no completion, no clean verdict, the row stays retired.
+  scriptGitHub(daemon, "MERGED");
+  const before = ledgerRow(daemon).observed_at;
+  await checkAgain.click();
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  await expect.poll(() => ledgerRow(daemon).observed_at, {
+    message: "the recheck should read the merged pull request from GitHub",
+  }).not.toBe(before);
+  await dashboard.waitForTimeout(500);
+  expect(ledgerRow(daemon)).toMatchObject({ state: "closed", observed_state: "MERGED" });
+  const held = await probe(daemon, runId);
+  expect(held.run).toMatchObject({ status: "blocked", currentPhase: "inspector_pr_closed" });
+  expect(held.events.filter((event) => event.kind === "inspector_pr_closed")).toHaveLength(1);
+  expect(held.events.filter((event) => event.kind === "inspector_gate_clean")).toHaveLength(0);
+  await expect(header.getByRole("button", { name: "Check again" })).toBeVisible();
+  await dashboard.getByRole("tab", { name: /^Completion/ }).click();
+  const pane = dashboard.getByRole("tabpanel", { name: /^Completion/ });
+  await expect(pane).toContainText("The adopted pull request was closed or switched.");
+  await shoot(dashboard, header, "12-merged-before-gate-holds-as-closed");
+
+  // Reopened on GitHub: the same button lifts the hold, and the gate's ordinary exact-head check
+  // takes over. GitHub's head is not the one this run reviewed, so it waits on the session -
+  // still never completed on the strength of the earlier merge.
+  scriptGitHub(daemon, "OPEN");
+  await header.getByRole("button", { name: "Check again" }).click();
+  await expect(header.getByText("Waiting for the session", { exact: true })).toBeVisible();
+  expect(ledgerRow(daemon)).toMatchObject({ state: "open", observed_state: "OPEN" });
+  const reopened = await probe(daemon, runId);
+  expect(reopened.run).toMatchObject({ status: "waiting_for_session", currentPhase: "inspector_head_mismatch" });
+  expect(reopened.events.filter((event) => event.kind === "inspector_pr_seen_open")).toHaveLength(1);
+  expect(reopened.events.filter((event) => event.kind === "inspector_gate_clean")).toHaveLength(0);
+});
 
 // Issue #1549: seed the historical unsent delivery block, then let a real session
 // resume event reconcile the current Inspector ledger and repaint the open run page.

@@ -201,6 +201,8 @@ interface HarnessOptions {
   onInject?: (payload: string, clientMessageId?: string) => void | Promise<void>;
   beforeInjectWrite?: (payload: string) => void;
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
+  /** The GitHub re-read a Recheck makes of a closed or retired pull request. */
+  reobservePullRequest?: WorkflowManagerOptions["reobservePullRequest"];
 }
 
 async function harness(sessionId: string, options: HarnessOptions = {}) {
@@ -244,6 +246,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const managerOptions: WorkflowManagerOptions = {
     trackCiFailures: options.trackCiFailures,
+    reobservePullRequest: options.reobservePullRequest,
     publicationCheckoutRevision: options.publicationCheckoutRevision ?? (() => contentTree.oid),
     resumptionSettleMs: options.resumptionSettleMs,
     sessionActionSessionGraceMs: options.sessionActionSessionGraceMs,
@@ -4498,3 +4501,137 @@ for (const prompt of ["pane", "review"] as const) for (const outcome of ["comple
     } finally { release?.(); await pending; await h.stop(); }
   });
 }
+
+// ---- a pull request that merged before its publication reached the Inspector gate ------------
+//
+// Observed live: the author's pull request merged while the workflow's Pull Request action was
+// still settling. GitHub Inspector's sweep read it MERGED and retired the row, so it never reads it
+// again; the action then completed with its merged-state warning and entered the Inspector gate,
+// which waited for a fresh observation nothing would ever supply. This drives that whole order
+// through the real Inspector worker and the real publication follow-through, with GitHub scripted.
+test("a pull request merged before publication reaches its Inspector gate holds the run, never completes it", async (t) => {
+  const { chmodSync, existsSync, mkdirSync } = await import("node:fs");
+  const { adoptInspectorPr, getInspectorPr, loadOpenInspectorPrs } = await import("../src/server/db.ts");
+  const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+  const { reobserveInspectorPr, startInspector } = await import("../src/server/inspector/worker.ts");
+  const number = 1785;
+  const key = `owner/repo#${number}`;
+  const url = `https://github.com/owner/repo/pull/${number}`;
+  const checkout = join(home, "merged-before-gate-checkout");
+  mkdirSync(checkout, { recursive: true });
+  const github = join(home, "merged-before-gate-github.json");
+  const reads = join(home, "merged-before-gate-reads");
+  const gh = join(home, "merged-before-gate-gh");
+  writeFileSync(gh, `#!${process.execPath}
+const fs = require("node:fs");
+if (!process.argv.includes("graphql") || !process.argv.includes("number=${number}")) process.exit(2);
+fs.appendFileSync(${JSON.stringify(reads)}, "read\\n");
+const pr = JSON.parse(fs.readFileSync(${JSON.stringify(github)}, "utf8"));
+process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: {
+  state: pr.state, headRefOid: pr.head, headRefName: "feature", baseRefName: "main", isDraft: false,
+  title: "The voice picker",
+  reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+  reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+} } } }));
+`);
+  chmodSync(gh, 0o755);
+  const priorGh = process.env.MISSION_GH_BIN;
+  process.env.MISSION_GH_BIN = gh;
+  const { enabled, mode, repoAllowlist } = getInspectorConfig();
+  setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
+  t.after(() => {
+    if (priorGh === undefined) delete process.env.MISSION_GH_BIN;
+    else process.env.MISSION_GH_BIN = priorGh;
+    setInspectorConfig({ enabled, mode, repoAllowlist });
+  });
+  const githubReads = () => existsSync(reads) ? readFileSync(reads, "utf8").split("\n").filter(Boolean).length : 0;
+
+  let registryOf: () => InstanceType<typeof Registry> = () => { throw new Error("no harness yet"); };
+  const h = await harness("merged-before-gate", {
+    pullRequest: true, inspector: true, realLedger: true,
+    reobservePullRequest: (prKey) => reobserveInspectorPr(registryOf(), prKey),
+  });
+  registryOf = () => h.registry;
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action packet");
+    // A head no other test in this file publishes, so only this pull request can prove it.
+    h.head.sha = "voice-picker";
+    const head = h.full(h.head.sha);
+    h.commitTrees.set(head, h.contentTree.oid);
+    // The action turn opens the pull request, and GitHub Inspector adopts it.
+    h.reportWorking();
+    const adoptedAt = Date.now();
+    adoptInspectorPr({ key, url, owner: "owner", repo: "repo", number, repoRoot: "/repo", cwd: checkout,
+      sessionId: h.sessionId, source: "hook", state: "open", headSha: head, reviewPosture: "live", round: 1,
+      lastReviewedAt: adoptedAt, lastError: null, failCount: 0, lastFailKind: null, nextAttemptAt: null,
+      lastAttemptSha: head, mergedAt: null, mergeBlock: null, observedHeadSha: head, observedState: "OPEN",
+      observedAt: adoptedAt, headRefName: "feature", title: "The voice picker", adoptedAt, updatedAt: adoptedAt });
+    h.registry.applyHook({ agent: "claude", event: "PostToolUse", sessionId: `agent-${h.sessionId}`, cwd: "/repo",
+      transcriptPath: null, env: { tmuxPane: `%${h.sessionId.length}` }, prUrl: url, prCreated: true });
+    h.reportIdle();
+
+    // It merges before the action settles. The real sweep reads MERGED and retires the row.
+    writeFileSync(github, JSON.stringify({ state: "MERGED", head }));
+    const stopInspector = startInspector(h.registry, { workflowGate: (prKey) => h.manager.mergeGate(prKey) });
+    try {
+      await waitFor(() => getInspectorPr(key)?.state === "closed", "the sweep did not retire the merged pull request");
+    } finally { stopInspector(); }
+    const retired = getInspectorPr(key)!;
+    assert.equal(retired.observedState, "MERGED");
+    assert.equal(loadOpenInspectorPrs().some((pr) => pr.key === key), false, "the sweep will not read it again");
+    const sweepReads = githubReads();
+    assert.ok(sweepReads >= 1);
+
+    // The publication follow-through completes the action and opens the gate afterwards.
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => h.store.listEvents(runId).some(event => event.kind === "inspector_gate_entered"),
+      "publication must reach the Inspector gate");
+    const action = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
+    assert.equal(action.state, "completed");
+    assert.equal(action.verdict, null, "the merged-state warning is never a verdict");
+    const warnings = (action.output as { warnings?: Array<{ detail: string }> }).warnings ?? [];
+    assert.ok(warnings.some(warning => /merged/i.test(warning.detail)), JSON.stringify(warnings));
+    await h.settle();
+    const gate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+    assert.ok(retired.observedAt! < gate.enteredAt, "the closure preceded gate entry, as in the live case");
+
+    // Held as the ordinary closed-PR block, with nothing invented and nothing passed.
+    const held = () => {
+      const run = h.store.getRun(runId)!;
+      assert.equal(`${run.status}/${run.currentPhase}`, "blocked/inspector_pr_closed");
+      const state = WorkflowInspectorGateStateSchema.parse(run.gateState);
+      assert.equal(state.prKey, key);
+      assert.equal(state.lastObservedAt, null);
+      assert.equal(state.waitReason, "pr_closed");
+      const events = h.store.listEvents(runId);
+      assert.equal(events.filter(event => event.kind === "inspector_pr_closed").length, 1);
+      assert.equal(events.filter(event => event.kind === "inspector_gate_clean").length, 0);
+      assert.equal(h.store.runSummary(runId)?.round, 1, "no repair round was spent");
+    };
+    held();
+    const closed = h.store.listEvents(runId).find(event => event.kind === "inspector_pr_closed")!;
+    assert.deepEqual(closed.payload, {
+      prKey: key, source: "retired_ledger", observedState: "MERGED", observedHeadSha: head,
+      closedAt: retired.observedAt, closedBeforeGateEntry: true,
+    });
+    const submissions = h.store.listSubmissions(runId).length;
+
+    // A restart neither releases nor repeats it.
+    await h.restartWorkflowManager();
+    await h.settle();
+    held();
+    assert.equal(h.store.listSubmissions(runId).length, submissions);
+
+    // Recheck asks GitHub, which still says merged: the hold stays and the row stays retired.
+    assert.equal(h.manager.recheckInspector(runId, "merged-recheck").ok, true);
+    await waitFor(() => githubReads() > sweepReads, "Recheck did not read GitHub");
+    await h.settle();
+    held();
+    assert.equal(getInspectorPr(key)?.state, "closed");
+    assert.equal(h.store.getRun(runId)?.status, "blocked", "a merge never completes the workflow");
+    assert.equal(h.injected.length, 1, "nothing more was typed into the session");
+  } finally {
+    await h.stop();
+  }
+});

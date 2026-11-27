@@ -33,6 +33,31 @@ function monitorAt(start: number) {
   };
 }
 
+test("a started monitor's own heartbeat detects a gap, on real timers", async () => {
+  // No injected tick: `start()` schedules the heartbeat and nothing else drives it. Freezing
+  // the event loop past the gap threshold is what a sleep does to the process, so the next
+  // scheduled heartbeat arrives late, and that lateness is the only thing that can record it.
+  const monitor = new HostSuspendMonitor({ intervalMs: 10, gapMs: 100 }).start();
+  try {
+    const mark = monitor.mark();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(monitor.suspendedMsSince(mark), 0, "regular heartbeats record nothing");
+    const frozeAt = Date.now();
+    while (Date.now() - frozeAt < 400) {
+      // Hold the event loop, as a suspended process cannot run its timers.
+    }
+    // Let the overdue heartbeat run and record the gap.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const seen = monitor.suspendedMsSince(mark);
+    assert.ok(seen >= 300, `the heartbeat recorded ${seen} ms of a 400 ms freeze`);
+    // Recorded, not merely pending: more on-time heartbeats leave the total where it is.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(monitor.suspendedMsSince(mark), seen);
+  } finally {
+    monitor.stop();
+  }
+});
+
 test("regular heartbeats record no suspension", () => {
   const host = monitorAt(1_000_000);
   const since = host.monitor.mark();

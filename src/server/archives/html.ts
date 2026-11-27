@@ -297,8 +297,8 @@ export function reportRelativeReferences(html: string): string[] {
  *
  * The rest of the document keeps its bytes: each attribute is cut out by its source location,
  * never by re-serializing the tree. In a `<style>` element, a reference to an unstored file is
- * rewritten token by token instead (a `url(...)` becomes `none`, an `@import` target `""`), and
- * the rest of the stylesheet keeps its bytes.
+ * rewritten token by token instead (a `url(...)` becomes `none`, an `@import` rule is removed
+ * whole), and the rest of the stylesheet keeps its bytes.
  *
  * The unit is the attribute, never one value inside it. A `srcset` or `style` attribute that
  * names one unstored file and one stored file loses both references. That is deliberate: rewriting
@@ -326,8 +326,8 @@ export function unlinkMissingCompanions(
     const tag = node.tagName.toLowerCase();
     if (tag === "style") {
       // A `<style>` element's reference to a file that was not stored is rewritten in place: a
-      // `url(...)` becomes `none` and an `@import` target becomes `""`, so the declaration or
-      // rule stays well formed and fetches nothing. Every other byte of the stylesheet stays.
+      // `url(...)` becomes `none` and an `@import` rule is removed whole, so nothing is fetched.
+      // Every other byte of the stylesheet stays.
       for (const child of childrenOf(node)) {
         if (!isText(child)) continue;
         const location = child.sourceCodeLocation;
@@ -338,11 +338,11 @@ export function unlinkMissingCompanions(
           if (token.kind === "literal" || token.start < 0) continue;
           const path = inReportReference(token.value);
           if (!path || targets.has(path)) continue;
-          spans.push({
-            start: location.startOffset + token.start,
-            end: location.startOffset + token.end,
-            replacement: token.kind === "url" ? "none" : '""',
-          });
+          // A missing `url(...)` becomes `none`. A missing `@import` loses its whole rule: an empty
+          // target (`@import "";`) would resolve to the page's own URL and still be fetched.
+          spans.push(token.kind === "import" && token.ruleStart !== undefined && token.ruleEnd !== undefined
+            ? { start: location.startOffset + token.ruleStart, end: location.startOffset + token.ruleEnd, replacement: "" }
+            : { start: location.startOffset + token.start, end: location.startOffset + token.end, replacement: "none" });
           unlinked.add(path);
         }
       }
@@ -729,6 +729,24 @@ interface CssReferenceToken {
   kind: "url" | "import" | "literal";
   start: number;
   end: number;
+  /**
+   * For an `@import`, the whole rule: from `@import` through its closing `;` (or the end of the
+   * stylesheet when it has none). Rewriting removes the rule, never just its target.
+   */
+  ruleStart?: number;
+  ruleEnd?: number;
+}
+
+/** The end of the `@import` rule whose target ends at `from`: just past its `;`. */
+function importRuleEnd(css: string, from: number): number {
+  for (let i = from; i < css.length; i += 1) {
+    const char = css[i]!;
+    if (char === ";") return i + 1;
+    // A block opener or closer before any `;` means the rule was never terminated: stop at the
+    // target so nothing beyond it is touched.
+    if (char === "{" || char === "}") return from;
+  }
+  return css.length;
 }
 
 /** Every reference value `cssProblems` checks, in order, with its span in `css`. */
@@ -764,13 +782,13 @@ function cssReferenceTokens(css: string): CssReferenceToken[] {
       while (j < css.length && /\s/.test(css[j]!)) j += 1;
       if (startsWithAt(css, j, "url(")) {
         const value = readCssFunctionArgument(css, j + 4);
-        tokens.push({ value: value.value, kind: "import", start: j, end: value.end });
+        tokens.push({ value: value.value, kind: "import", start: j, end: value.end, ruleStart: i, ruleEnd: importRuleEnd(css, value.end) });
         i = value.end;
         continue;
       }
       if (css[j] === '"' || css[j] === "'") {
         const literal = readCssString(css, j, css[j]!);
-        tokens.push({ value: literal.value, kind: "import", start: j, end: literal.end });
+        tokens.push({ value: literal.value, kind: "import", start: j, end: literal.end, ruleStart: i, ruleEnd: importRuleEnd(css, literal.end) });
         i = literal.end;
         continue;
       }

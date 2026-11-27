@@ -1143,6 +1143,24 @@ test("a report whose <style> element names an unstored file publishes with that 
   assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
 });
 
+test("a report whose <style> element imports an unstored stylesheet publishes with no import left to fetch", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  writeFileSync(join(checkout, "kept.css"), "p{margin:0}\n");
+  const css = "@import \"gone.css\"; @import url(gone2.css) screen; @import \"kept.css\"; body{color:red}";
+  const html = `<html><head><style>${css}</style></head><body><p>x</p></body></html>`;
+  const report = await post("imports.html", html, "Style imports");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.css"], missing: ["gone.css", "gone2.css"] });
+  const page = archivedPage(archiveId).toString("utf8");
+  // An empty `@import "";` would resolve to the page's own URL and be fetched when it opens: the
+  // missing rules are gone whole, and the stored import and the other rule keep their bytes.
+  assert.equal(page, html.replace(css, "  @import \"kept.css\"; body{color:red}"));
+  assert.deepEqual([...page.matchAll(/@import\s*([^;]*);/g)].map((match) => match[1]), ['"kept.css"']);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
 test("a report posted as Report.html keeps its self-link: it resolves to the archived page", async () => {
   const { post, publish, manifest, archivedPage, root, checkout } = setup();
   writeFileSync(join(checkout, "kept.csv"), "kept\n");

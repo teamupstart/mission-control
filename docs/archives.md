@@ -476,8 +476,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   its evidence. An attribute that also carries a reference the checker refuses for another
   reason (a path that climbs out, a fetching scheme) is never removed, so it still refuses the
   page. In a `<style>` element, a reference to a file that was not stored is
-  rewritten in place: a `url(...)` becomes `none` and an `@import` target becomes `""`, and the
-  rest of the stylesheet keeps its bytes. Anything else the checker
+  rewritten in place: a `url(...)` becomes `none`, and an `@import` rule is removed from
+  `@import` through its `;`, because an empty import target would resolve to the page's own URL
+  and still be fetched. The rest of the stylesheet keeps its bytes. Anything else the checker
   refuses (a link that leaves the report directory, anything that runs or fetches) still refuses
   the page: it is answered with every problem named, shown on the card, and nothing is written.
 - **One archive per report.** The archive id is derived from this machine's producer id, the

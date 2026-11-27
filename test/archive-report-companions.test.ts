@@ -120,8 +120,20 @@ test("a <style> element's references to unstored files are rewritten in place, a
   assert.equal(validateStaticReportHtml(html, targets).ok, false);
   const result = unlinkMissingCompanions(html, targets);
   assert.deepEqual(result.unlinked, ["gone.css", "gone.png", "gone2.css"]);
-  const rewritten = ".x{background:none} .y{background:url('kept.png')} /* url(commented.png) */ @import \"\"; @import \"\";";
+  const rewritten = ".x{background:none} .y{background:url('kept.png')} /* url(commented.png) */  ";
   assert.equal(result.html, html.replace(css, rewritten), "only the missing tokens change; the stored link and the comment keep their bytes");
+  assert.doesNotMatch(result.html, /@import/, "a missing import leaves no rule behind: an empty target would fetch the page's own URL");
+  assert.deepEqual(validateStaticReportHtml(result.html, targets), { ok: true });
+});
+
+test("a missing @import is removed through its media list and semicolon, and a stored one keeps every byte", () => {
+  const css = "@import url(\"gone.css\") screen and (min-width: 1px);@import 'kept.css' print; @import \"gone2.css\"\nbody{color:red}";
+  const html = page("<p>x</p>", `<style>${css}</style>`);
+  const targets = new Set(["report.html", "kept.css"]);
+  const result = unlinkMissingCompanions(html, targets);
+  assert.deepEqual(result.unlinked, ["gone.css", "gone2.css"]);
+  // The unterminated last import stops at the `{` that follows it, so the rule after it is kept.
+  assert.equal(result.html, html.replace(css, "@import 'kept.css' print; \nbody{color:red}"));
   assert.deepEqual(validateStaticReportHtml(result.html, targets), { ok: true });
 });
 

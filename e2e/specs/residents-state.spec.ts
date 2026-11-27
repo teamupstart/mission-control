@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -72,6 +72,16 @@ test("View state opens the profile's state files in a viewer with a rendered pre
   await expect(files.getByRole("button")).toHaveText(["ledger.md", "MEMORY.md", "watermark.txt"]);
   await expect(watermark.locator("pre")).toHaveText("last-seen: 1700000000");
 
+  // When the file being read is gone, Refresh opens the auto-memory index instead, and nothing
+  // of the deleted file stays on screen.
+  rmSync(join(directory, "watermark.txt"));
+  await viewer.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(files.getByRole("button")).toHaveText(["ledger.md", "MEMORY.md"]);
+  await expect(files.getByRole("button", { name: "MEMORY.md" })).toHaveAttribute("aria-current", "true");
+  await expect(memory.getByRole("heading", { name: "Ledger" })).toBeVisible();
+  await expect(watermark).toHaveCount(0);
+  await expect(viewer).not.toContainText("last-seen: 1700000000");
+
   await page.keyboard.press("Escape");
   await expect(viewer).toBeHidden();
   await expect(panel.getByRole("button", { name: "View state", exact: true })).toBeVisible();
@@ -122,6 +132,34 @@ test("a state file that cannot be read says why in its preview, and reading it a
   await file.click();
   await expect(preview.getByRole("alert")).toHaveCount(0);
   await expect(preview).toContainText("Handled reply 42.");
+});
+
+test("a reset confirmed while the viewer is open reloads it with the cleared state", async ({ dashboard: page, daemon }) => {
+  const { profile, directory } = await profileWithState(page.request, daemon.baseURL, "Reset behind viewer");
+  const memory = join(directory, "MEMORY.md");
+  writeFileSync(memory, "Handled reply 42.");
+  await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+  const panel = page.getByRole("region", { name: "Durable resident state" });
+  await panel.getByRole("button", { name: "View state", exact: true }).click();
+  const viewer = page.getByRole("dialog", { name: "Durable state: Reset behind viewer" });
+  await expect(viewer.getByRole("region", { name: "State file MEMORY.md" })).toContainText("Handled reply 42.");
+
+  // Reach Reset state behind the open viewer from the keyboard, then confirm it.
+  const reset = panel.getByRole("button", { name: "Reset state", exact: true });
+  await reset.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Reset resident state" });
+  await dialog.getByRole("button", { name: "Delete saved state" }).click();
+  await expect(dialog).toBeHidden();
+
+  // The viewer shows the cleared state rather than waiting on a listing nothing fetches.
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toContainText("No saved state files.");
+  await expect(viewer.getByRole("status")).toHaveCount(0);
+  await expect(viewer).not.toContainText("Handled reply 42.");
+  await expect(panel.getByRole("status")).toHaveText("Saved state cleared.");
+  expect(existsSync(memory)).toBe(false);
+  await capture(page, "reset-behind-open-viewer", viewer);
 });
 
 for (const resetFails of [false, true]) {

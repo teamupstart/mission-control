@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { fetchResidentState, fetchResidentStateFile, resetResidentState, type ResidentStateView } from "./api.ts";
 import { WorkflowConfirmModal } from "../workflows/WorkflowConfirmModal.tsx";
@@ -78,19 +79,31 @@ export function ResidentState({ profileId, profileName }: { profileId: string; p
       onRefresh={() => void read((live) => readList(preview?.path ?? null, live))}
       onClose={closeViewer}
     />}
-    {confirm && <WorkflowConfirmModal onClose={() => setConfirm(false)} request={{
+    {/* Portaled like the viewer, and opened after it, so a reset reached from the keyboard while
+        the viewer is up stacks above it instead of rendering, unclickable, beneath it. */}
+    {confirm && createPortal(<WorkflowConfirmModal onClose={() => setConfirm(false)} request={{
       title: "Reset resident state", body: "Permanently delete this profile’s saved notes, watermarks and auto-memory. Complete and close all its runs first; pausing is not enough. Profile settings and run history are kept.",
       confirmLabel: "Delete saved state", confirmHint: "Permanently clear this profile’s durable state", danger: true,
       onConfirm: () => {
         setConfirm(false);
         if (busy) return;
         generation.current++;
+        // A viewer left open behind the confirmation is reloaded with the cleared state rather
+        // than left waiting on a listing nothing will fetch.
+        const reload = open;
         setError(""); setNotice(""); setBusy(true);
-        void resetResidentState(profileId)
-          .then(() => { setView(null); setPreview(null); setNotice("Saved state cleared."); })
-          .catch((err: unknown) => setError(failure(err, "State reset failed")))
-          .finally(() => setBusy(false));
+        void (async () => {
+          try {
+            await resetResidentState(profileId);
+          } catch (err) {
+            setError(failure(err, "State reset failed"));
+            setBusy(false);
+            return;
+          }
+          setView(null); setPreview(null); setNotice("Saved state cleared."); setBusy(false);
+          if (reload) await read((live) => readList(null, live));
+        })();
       },
-    }} />}
+    }} />, document.body)}
   </section>;
 }

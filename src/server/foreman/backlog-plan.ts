@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { PLANNABLE_LIMIT } from "@shared/backlog.ts";
 import type { BacklogPlanInput } from "@shared/protocol.ts";
-import type { Task } from "@shared/types.ts";
+import type { Task, ThinkingLevel } from "@shared/types.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import { runStructured, parseModelReply } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 
@@ -320,6 +320,7 @@ export async function planBacklog(
   backlog: Task[],
   model = process.env.FOREMAN_BACKLOG_MODEL || DEFAULT_BACKLOG_MODEL,
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
+  effort?: ThinkingLevel,
 ): Promise<BacklogPlanResult> {
   // A single-item backlog has nothing to relate it to, so the answer is knowable
   // without a model: it depends on nothing. Worth the branch - a human who queues one
@@ -340,12 +341,13 @@ export async function planBacklog(
     (p) =>
       runner.run(p, {
         model,
+        effort,
         timeoutMs: backlogTimeoutMs(backlog.length),
         role: "foreman:backlog",
         schema: BACKLOG_REPORT_JSON_SCHEMA,
       }),
     buildBacklogPrompt(backlog),
-    (raw) => parseModelJson(raw, BacklogReportSchema),
+    (raw) => parseModelReply(raw, BacklogReportSchema),
     "The backlog planner",
     undefined,
     { shapeGuaranteed: runner.structuredOutput?.guaranteesInputShape === true },

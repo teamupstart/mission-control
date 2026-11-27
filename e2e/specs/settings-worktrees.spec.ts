@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeActionPreview, WorktreeInventory } from "../../src/shared/worktrees.ts";
 import type { Page } from "@playwright/test";
@@ -26,7 +26,6 @@ async function shoot(page: Page, name: string, fullPage = false): Promise<void> 
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-worktrees/${name}.png`);
 }
 
@@ -538,6 +537,72 @@ test("Destroy empties a slot Git no longer recognizes after the main checkout wa
   await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
   await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
   await shoot(dashboard, "09b-orphaned-destroy-complete");
+});
+
+/**
+ * The field failure from 2026-11-26: Destroy on an orphaned slot with dependencies installed
+ * failed three times on `ENOTEMPTY ... Electron.app/Contents/Resources`, because `fs.rm` under
+ * Electron could not delete `default_app.asar`, and the slot stayed quarantined. This daemon runs
+ * on plain Node, so the asar layer itself is proven in `test/remove-tree-electron.test.ts`; here
+ * the operator's path is: the slot holding Electron's own tree is destroyed from the panel, its
+ * row goes, and the pool's capacity comes back.
+ */
+test("Destroy removes an orphaned slot that holds Electron's node_modules tree and frees its capacity", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(120_000);
+  const acquired = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
+    data: { repositoryPath: daemon.repo, label: "electron dependencies destroy" },
+  });
+  expect(acquired.status()).toBe(201);
+  const lease = await acquired.json() as { path: string; leaseId: string };
+  withDaemonDb(daemon, (db) => {
+    const changed = db.prepare(
+      `UPDATE worktree_slots
+          SET state = 'quarantined', version = version + 1,
+              quarantine_reason = 'Git worktree registrations are unknown: git worktree list failed',
+              quarantine_category = 'observation', quarantined_at = ?
+        WHERE active_lease_id = ? AND state = 'leased'`,
+    ).run(Date.now(), lease.leaseId);
+    expect(Number(changed.changes)).toBe(1);
+  });
+  // Installed dependencies: Electron's app bundle, with the real archive this checkout ships
+  // when it is there (macOS) and a stand-in at the same path otherwise.
+  const resources = join(lease.path, "node_modules/electron/dist/Electron.app/Contents/Resources");
+  mkdirSync(resources, { recursive: true });
+  const shipped = join(process.cwd(), "node_modules/electron/dist/Electron.app/Contents/Resources/default_app.asar");
+  if (existsSync(shipped)) copyFileSync(shipped, join(resources, "default_app.asar"));
+  else writeFileSync(join(resources, "default_app.asar"), "asar stand-in\n");
+  writeFileSync(join(lease.path, "node_modules/electron/package.json"), "{\"name\":\"electron\"}\n");
+  const admin = readFileSync(join(lease.path, ".git"), "utf8").trim().replace(/^gitdir: /, "");
+  rmSync(admin, { recursive: true, force: true });
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+  const repo = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+  const disclosure = repo.getByRole("button", { name: /demo-repo/ });
+  if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+  await expect(repo.getByText("1 of 16 slots", { exact: true })).toBeVisible();
+  const slot = repo.locator(".wt-slot", { hasText: lease.path });
+  await expect(slot.getByText("not a Git worktree", { exact: true })).toBeVisible();
+  await repo.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "09c-electron-dependencies-orphaned-slot");
+  await slot.getByRole("button", { name: "Destroy", exact: true }).click();
+
+  const preview = dashboard.getByRole("dialog", { name: "destroy worktree preview" });
+  await expect(preview.getByText(lease.path)).toBeVisible();
+  await preview.getByRole("checkbox", { name: /Git no longer recognizes a target slot/ }).check();
+  await preview.getByRole("button", { name: "Execute" }).click();
+
+  await expect(preview).toHaveCount(0);
+  await expect.poll(() => existsSync(lease.path), { timeout: EXECUTES_MS }).toBe(false);
+  await expect(repo.getByText("0 of 16 slots", { exact: true })).toBeVisible({ timeout: EXECUTES_MS });
+  await expect(repo.locator(".wt-slot", { hasText: lease.path })).toHaveCount(0);
+  await expect(dashboard.getByText(/orphaned slot removal failed/)).toHaveCount(0);
+  const inventory = await (await dashboard.request.get(`${daemon.baseURL}/api/worktrees`)).json() as WorktreeInventory;
+  expect(inventory.repositories.flatMap((pool) => pool.slots).some((entry) => entry.path === lease.path)).toBe(false);
+  await repo.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "09d-electron-dependencies-destroy-complete");
 });
 
 /**

@@ -90,7 +90,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   // A hovered control's tooltip would cover what the shot is for.
   await ("mouse" in target ? target : target.page()).mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/session-blocker/${name}.png`);
 }
 
@@ -155,6 +154,9 @@ test("a reported blocker draws a red card in the Blocked lane, a detail band, su
   // Collapsed, the band is one complete row beside a long transcript: the reason and both
   // controls lie inside the band's own box, and nothing is hidden in a scrollport.
   const conversationLog = dashboard.locator(".detail-conv > .transcript .transcript-log");
+  // The transcript loads after the detail opens; measure it once the whole goal is in it, or a
+  // log that has not rendered yet reads as short.
+  await expect(conversationLog).toContainText("Paragraph 59:");
   expect(await conversationLog.evaluate((el) => el.scrollHeight > el.clientHeight * 2),
     "the transcript is long enough to squeeze the band").toBe(true);
   await expectInside(band, toggle.getByText(BLOCKER.reason, { exact: true }), "the reason");

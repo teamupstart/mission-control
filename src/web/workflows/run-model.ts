@@ -49,7 +49,7 @@ import {
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
-import { blockedPhaseClause, workflowCaptureFailure, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause, workflowCaptureFailure, workflowCheckCleanupBlock, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -1430,8 +1430,29 @@ export function inspectorGateHeadLabel(detail: WorkflowRunDetail): string | null
   return head ? `head ${shortSha(head)}` : null;
 }
 
+/**
+ * The Local Inspector review a gate completed on, with the attempt's recorded outcome, or
+ * null when the gate took - or is still on - the GitHub path.
+ */
+export function localReviewGate(detail: WorkflowRunDetail): {
+  headSha: string;
+  treeOid: string;
+  outcome: WorkflowCheckOutcome | null;
+} | null {
+  const local = detail.inspectorGate?.state.localReview;
+  if (!local) return null;
+  const attempt = detail.attempts.find((row) => row.id === local.attemptId);
+  return { headSha: local.headSha, treeOid: local.treeOid, outcome: attempt ? checkOutcomeOf(attempt) : null };
+}
+
 /** The current-truth sentence for a spent gate, with live-gate wording left unchanged. */
 export function inspectorGateSentence(detail: WorkflowRunDetail): string {
+  const local = localReviewGate(detail);
+  if (local) {
+    return `Reviewed locally: pull request head ${shortSha(local.headSha) ?? local.headSha} has the tree `
+      + `${shortSha(local.treeOid) ?? local.treeOid} the Local Inspector passed before the pull request opened, `
+      + "so no GitHub review ran and nothing was posted.";
+  }
   const condition = spentInspectorGateCondition(detail);
   if (!condition) {
     if (detail.inspectorGate?.state.waitReason === "reviewed_tree_changed") {
@@ -1835,7 +1856,6 @@ function runRecordCompletionSummary(detail: WorkflowRunDetail): RunRecordComplet
     blocking,
   };
 }
-
 
 /**
  * Whether the run is standing still on THIS submission's readiness result.
@@ -2309,7 +2329,6 @@ export function readinessActionLabel(
   return busy === "override" ? "Continuing…" : "Continue to review";
 }
 
-
 /**
  * How many decisions, and how much prose, the collapsed list is standing in for.
  *
@@ -2538,11 +2557,23 @@ export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
         ?? "This review is standing still. The path forward is yours to pick.");
     }
     case "blocked": {
+      if (workflowCheckCleanupBlock({ status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null })) {
+        return autoPosture("Mission Control retries worktree cleanup automatically."
+          + " The check can retry in this round once cleanup is confirmed.");
+      }
       const preparation = preparationRecoverySentence(detail);
       if (preparation) {
         const recovery = workflowPreparationRecovery({ status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null });
         return recovery?.state === "pending" && detail.binding.state === "active" && detail.binding.deliveryMode === "live"
           ? autoPosture(preparation) : yoursPosture(preparation);
+      }
+      // A session action blocked only because its session was away is NOT stopped for good:
+      // the daemon re-checks it when the session is running again, and offers the same
+      // re-check now as a round-free `retry`. Saying "will not restart on its own" over it is
+      // the false instruction that gets a recoverable run cancelled.
+      if (sessionActionRecheckOffered(detail)) {
+        return yoursPosture("This action stopped because its session was away. It is checked again"
+          + " on its own when the session is running, or check it again now. No repair round was spent.");
       }
       return yoursPosture("This review is stopped and will not restart on its own."
         + " The path forward is yours to pick.");
@@ -2893,8 +2924,35 @@ const ACTION_BLOCK_SENTENCES: Record<SessionActionBlockCode, string> = {
     + "finish against it.",
 };
 
-export function actionBlockSentence(code: SessionActionBlockCode): string {
-  return ACTION_BLOCK_SENTENCES[code];
+/**
+ * The sentence for a blocked action, with the recovery clause only when the daemon offers it.
+ *
+ * `recheckOffered` must come from `sessionActionRecheckOffered`, never from the block code
+ * alone: a `session_lost` block whose binding was orphaned is not re-checked on its own, and
+ * promising that it is leaves an operator waiting instead of reattaching or cancelling.
+ */
+export function actionBlockSentence(code: SessionActionBlockCode, recheckOffered = false): string {
+  return code === "session_lost" && recheckOffered
+    ? "The bound session was away before the turn finished. It is checked again when the session"
+      + " is running, without spending a repair round."
+    : ACTION_BLOCK_SENTENCES[code];
+}
+
+/**
+ * Whether the daemon offers the round-free re-check for this blocked action attempt.
+ *
+ * The one reading of the projected capability the banner, the ladder and the tile peek share:
+ * the run is blocked on THIS attempt as `session_lost`, and the daemon's recovery projection
+ * (`recoverableLostSessionAction`, which requires an active binding that still reaches the
+ * delivery's session) lists `retry`.
+ */
+export function sessionActionRecheckOffered(detail: WorkflowRunDetail, attemptId?: string | null): boolean {
+  const gate = detail.run.gateState as { code?: unknown; attemptId?: unknown } | null | undefined;
+  return detail.run.status === "blocked"
+    && detail.run.currentPhase === "session_action_blocked"
+    && gate?.code === "session_lost"
+    && (attemptId == null || gate.attemptId === attemptId)
+    && detail.summary.recovery?.operations.includes("retry") === true;
 }
 
 /**
@@ -3684,7 +3742,7 @@ export function eventLine(
     if (typeof value === "boolean" && !value) continue;
     const text = typeof value === "boolean"
       ? key.replaceAll("_", " ")
-      : /Sha$/.test(key) && typeof value === "string"
+      : key.endsWith('Sha') && typeof value === "string"
         ? `${label(key)} ${shortSha(value)}`
         : `${label(key)} ${String(value).replaceAll("_", " ")}`;
     facts.push(text.slice(0, 160));
@@ -3982,12 +4040,13 @@ export function runRemedy(
     };
   }
 
-
   if (recovery.triage === "retry") {
     return {
       kind: "retry",
       label: "Retry",
-      tooltip: "Run the failed provider call again from where it stopped",
+      tooltip: run.phase === "session_action_blocked"
+        ? "Check the session action again now that its session is back - no repair round is spent"
+        : "Run the failed provider call again from where it stopped",
       path: runPath("retry"),
       body: {},
       confirm: null,

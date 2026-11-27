@@ -6,7 +6,7 @@
 import type { PaneDialog, Session, Task } from "./types.ts";
 import { byBacklogRank } from "./task.ts";
 import { canInterrupt, capabilitiesFor } from "./harness-capabilities.ts";
-import { canWriteTo } from "./pane.ts";
+import { canWriteTo, innermostPane } from "./pane.ts";
 import { WAITING_ON_ANSWER_REASON, waitingOnOpenQuestion } from "./async-input.ts";
 
 /** The checkout inspected by Files and Diff, with a mixed-version fallback to process cwd. */
@@ -57,6 +57,7 @@ export function canCycleMode(session: Session): boolean {
  * finished is a no-op both drivers document tolerating.
  */
 export function canInterruptSession(session: Session): boolean {
+  if (session.runtime !== "sdk" && innermostPane(session) && !canWriteTo(session)) return false;
   return agentActive(session) && canInterrupt(session.agent, session.runtime);
 }
 
@@ -175,6 +176,26 @@ export function finishedTasks(tasks: Task[]): Task[] {
  */
 export function hasBlocker(s: Pick<Session, "blocker">): boolean {
   return s.blocker != null;
+}
+
+/**
+ * Whether this session declared a wait on a background process that is still inside its
+ * deadline. Every idle-triggered automation that holds on `hasBlocker` holds on this too.
+ *
+ * Past `expectedBy` it answers false on purpose, and that is the safety net: a watcher that
+ * died must not keep a stalled session out of the stuck-session alerts forever, so from the
+ * deadline on the normal idle handling applies again. `awaitingOverdue` names that state.
+ *
+ * Like `hasBlocker`, deliberately not folded into `reportBucket`: an awaiting session is not
+ * asking you, so it must not reach Foreman triage or count as work the operator owes.
+ */
+export function isAwaiting(s: Pick<Session, "awaiting">, now = Date.now()): boolean {
+  return s.awaiting != null && now < s.awaiting.expectedBy;
+}
+
+/** Whether this session's declared wait has passed its deadline without the session waking. */
+export function awaitingOverdue(s: Pick<Session, "awaiting">, now = Date.now()): boolean {
+  return s.awaiting != null && now >= s.awaiting.expectedBy;
 }
 
 /**

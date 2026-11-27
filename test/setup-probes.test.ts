@@ -14,9 +14,12 @@ import {
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupReadingFlags,
   type SetupDependencyId,
 } from "../src/shared/setup-catalog.ts";
-import { SETUP_PROBES, setupChecksView, setupProbeResult } from "../src/server/setup/index.ts";
+import { SETUP_PROBES, setupChecksView, setupProbeResult, voicePreviewsStatus } from "../src/server/setup/index.ts";
+import { VOICE_MODEL_STATE_NONE, type VoiceModelState } from "../src/shared/voice.ts";
+import { VOICE_MICROPHONE_NOT_CHECKED, type VoiceMicrophoneReading } from "../src/shared/voice-models.ts";
 import type { SetupDeps } from "../src/server/setup/types.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -61,7 +64,10 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     }),
     skills: () => ({ enabled: true, readable: true, configured: 2, directories: ["/home/operator/.claude/skills"], problems: [] }),
     conductorProbe: async () => conductor(),
-    terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
+    terminalTargets: () => [
+      { id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null },
+      { id: "macos-terminal", label: "macOS Terminal", glyph: "", blurb: "New window.", detail: null, unavailable: null },
+    ],
     repositoryIndex: async () => ({ repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] }),
     environmentChecks: async () => [],
     readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),
@@ -69,6 +75,19 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     // Every probe is under test here, ai-conductor's included, though the shipped build hides
     // it. `conductor-integration-switch.test.ts` pins the hidden reading.
     conductorIntegration: () => true,
+    // And every flag-gated family (Voice), with every flag on.
+    flagEnabled: () => true,
+    voiceModel: () => ({
+      status: "ready",
+      backend: "fluidaudio",
+      revision: "fixture-revision",
+      totalBytes: 10,
+      doneBytes: 10,
+      bytesPerSecond: null,
+      directory: "/home/operator/.mission-control/voice/models/fluidaudio/fixture-revision",
+      error: null,
+    }),
+    voiceMicrophone: () => ({ permission: "granted", source: "listener" }),
     ...overrides,
   };
 }
@@ -188,6 +207,45 @@ test("missing, needs-setup, and unknown stay distinct", async () => {
     installedPlugins: async () => ({ ok: false, missing: false, reason: "EACCES", recordPath: "/record" }),
   });
   assert.deepEqual(plugin, { state: "unknown", why: "Claude Code's plugin record could not be read.", evidence: "EACCES" });
+});
+
+test("gh auth names a token the login shell sets but the desktop launch did not inherit", async () => {
+  const loggedOut = async () => stubRun({ stdout: "", stderr: "You are not logged into any GitHub hosts. To log in, run: gh auth login", code: 1 });
+  const asked: string[][] = [];
+  const shellSets = (set: string[]) => async (names: readonly string[]) => {
+    asked.push([...names]);
+    return set.filter((name) => names.includes(name));
+  };
+  const hinted = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames: shellSets(["GITHUB_TOKEN"]) });
+  assert.equal(hinted.state, "needs-setup");
+  assert.equal(
+    hinted.state === "needs-setup" && hinted.why,
+    "The GitHub CLI is installed but is not authenticated to github.com. Your login shell sets GITHUB_TOKEN, but Mission Control was not started from that shell, so the gh it runs cannot see it. Store the login in gh itself: in a terminal, run `env -u GITHUB_TOKEN gh auth login`, then press Re-check.",
+  );
+  assert.deepEqual(asked, [["GH_TOKEN", "GITHUB_TOKEN"]]);
+
+  const both = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames: shellSets(["GH_TOKEN", "GITHUB_TOKEN"]) });
+  assert.match(both.state === "needs-setup" ? both.why : "", /sets GH_TOKEN and GITHUB_TOKEN.*cannot see them.*`env -u GH_TOKEN -u GITHUB_TOKEN gh auth login`/);
+
+  // A token the daemon already has, under either name, is one gh rejected rather than the
+  // launch gap, so the login shell is not asked. Unsetting only the shell's name would leave
+  // the daemon's token in place.
+  for (const processEnv of [{ GH_TOKEN: "x", GITHUB_TOKEN: "y" }, { GH_TOKEN: "x" }, { GITHUB_TOKEN: "y" }]) {
+    asked.length = 0;
+    const inherited = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => processEnv, loginShellVariableNames: shellSets(["GH_TOKEN", "GITHUB_TOKEN"]) });
+    assert.equal(inherited.state === "needs-setup" && inherited.why, "The GitHub CLI is installed but is not authenticated to github.com.", JSON.stringify(processEnv));
+    assert.deepEqual(asked, [], JSON.stringify(processEnv));
+  }
+
+  for (const loginShellVariableNames of [shellSets([]), async () => { throw new Error("login shell failed"); }]) {
+    const plain = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames });
+    assert.equal(plain.state === "needs-setup" && plain.why, "The GitHub CLI is installed but is not authenticated to github.com.");
+  }
+
+  // A signed-in gh never consults the login shell.
+  asked.length = 0;
+  assert.equal((await probe("gh-auth", { processEnv: () => ({}), loginShellVariableNames: shellSets(["GITHUB_TOKEN"]) })).state, "satisfied");
+  assert.deepEqual(asked, []);
 });
 
 test("an unsupported Herdr host is actionable without probing installation", async () => {
@@ -698,4 +756,123 @@ test("several other configured sites are all named, with the first one's switch 
     "acli is signed in to example.atlassian.net, but Jira sources read first.atlassian.net, second.atlassian.net. Run `acli jira auth switch --site first.atlassian.net`, or sign in to that site.",
   );
   assert.equal("evidence" in status ? status.evidence : null, "Signed in to example.atlassian.net");
+});
+
+test("voice-previews names which flags are on and off, and its Fix turns on exactly the ones that are off", () => {
+  const only = (...on: string[]) => (id: string) => on.includes(id);
+  assert.deepEqual(voicePreviewsStatus(only("async-input", "inbox", "filed-plan-decisions")), {
+    status: { state: "satisfied", evidence: "Ask without stopping, Reports and inbox upgrades and File plan decisions are on" },
+  });
+  const two = voicePreviewsStatus(only("async-input"));
+  assert.deepEqual(two.status, {
+    state: "needs-setup",
+    why: "Ask without stopping is on. Reports and inbox upgrades and File plan decisions are off.",
+    evidence: null,
+  });
+  assert.equal(two.remedy?.kind, "feature-flags");
+  if (two.remedy?.kind === "feature-flags") {
+    assert.deepEqual(two.remedy.flags, ["inbox", "filed-plan-decisions"]);
+    assert.equal(two.remedy.label, "Turn on the two that are off");
+  }
+  const none = voicePreviewsStatus(only());
+  assert.equal(none.status.state === "needs-setup" ? none.status.why : "", "Ask without stopping, Reports and inbox upgrades and File plan decisions are off.");
+  assert.equal(none.remedy?.kind === "feature-flags" ? none.remedy.label : "", "Turn on all three");
+  const one = voicePreviewsStatus(only("async-input", "filed-plan-decisions"));
+  assert.equal(one.remedy?.kind === "feature-flags" ? one.remedy.label : "", "Turn on Reports and inbox upgrades");
+  assert.deepEqual(one.remedy?.kind === "feature-flags" ? one.remedy.flags : null, ["inbox"]);
+});
+
+test("the Voice family is probed and listed only while the voice flag is on", async () => {
+  const off = await setupChecksView(deps({ flagEnabled: (id) => id !== "voice" }));
+  assert.equal(off.rows.some((row) => row.family === "voice"), false);
+  // With the Voice family off the reading carries no flags stamp, so the response is unchanged.
+  assert.equal("flagsKey" in off, false);
+  const on = await setupChecksView(deps({
+    flagEnabled: (id) => id === "voice",
+    voiceModel: () => ({ ...VOICE_MODEL_STATE_NONE, backend: "fluidaudio", revision: "r1", totalBytes: 10 }),
+    voiceMicrophone: () => null,
+  }));
+  // With it on, the reading names the flags it was taken under, as the dashboard computes them.
+  assert.equal(on.flagsKey, setupReadingFlags((id) => id === "voice"));
+  assert.equal(on.flagsKey, "1000");
+  const rows = on.rows.filter((candidate) => candidate.family === "voice");
+  assert.deepEqual(rows.map((row) => row.rowId), [
+    { source: "dependency", id: "voice-previews" },
+    { source: "dependency", id: "voice-microphone" },
+    { source: "dependency", id: "voice-model" },
+  ], "previews, then microphone beneath them, then the model");
+  assert.deepEqual(rows.map((row) => row.label), ["Voice previews", "Microphone access", "Voice speech model"]);
+  assert.ok(rows.every((row) => row.requirement === "optional"), "optional rows never raise the Setup banner");
+  assert.deepEqual(rows.map((row) => row.status.state), ["needs-setup", "unknown", "missing"]);
+  assert.equal(on.banner.attentionRowIds.some((id) => id.source === "dependency" && id.id.startsWith("voice-")), false);
+});
+
+test("voice-model reads the manager: missing, each stage, a refusal with its reason, and ready", async () => {
+  const model = (overrides: Partial<VoiceModelState>): VoiceModelState => ({
+    ...VOICE_MODEL_STATE_NONE, backend: "fluidaudio", revision: "r1", totalBytes: 100, ...overrides,
+  });
+  const read = (state: VoiceModelState) => probed("voice-model", { voiceModel: () => state });
+  assert.deepEqual((await read(model({ status: "missing" }))).status, { state: "missing" });
+  assert.deepEqual((await read(model({ status: "downloading", doneBytes: 40 }))).status, {
+    state: "needs-setup", why: "Downloading the speech model.", evidence: null,
+  });
+  assert.deepEqual((await read(model({ status: "verifying", doneBytes: 40 }))).status, {
+    state: "needs-setup", why: "Checking the speech model on disk against its pinned checksums.", evidence: null,
+  });
+  const failed = await read(model({ status: "failed", error: "The download of a.bin did not match its checksum and was deleted." }));
+  assert.deepEqual(failed.status, {
+    state: "needs-setup", why: "The download of a.bin did not match its checksum and was deleted.", evidence: null,
+  });
+  assert.equal(failed.remedy, undefined, "the catalog's download remedy stands; the panel draws Retry from the live state");
+  assert.deepEqual((await read(model({ status: "ready", doneBytes: 100, directory: "/state/voice/models/fluidaudio/r1" }))).status, {
+    state: "satisfied", evidence: "/state/voice/models/fluidaudio/r1 · checksum verified",
+  });
+  // A backend with no published model has nothing to download, and says so instead of "Missing".
+  const none = await read({ ...VOICE_MODEL_STATE_NONE, backend: "sherpa-onnx", error: "No speech model for sherpa-onnx is available in this build yet." });
+  assert.deepEqual(none.status, { state: "needs-setup", why: "No speech model for sherpa-onnx is available in this build yet.", evidence: null });
+});
+
+test("voice-microphone reads the latest report, and reads not checked yet until one arrives", async () => {
+  const read = (reading: VoiceMicrophoneReading | null) => probe("voice-microphone", { voiceMicrophone: () => reading });
+  assert.deepEqual(await read(null), { state: "unknown", why: VOICE_MICROPHONE_NOT_CHECKED, evidence: null });
+  assert.ok(VOICE_MICROPHONE_NOT_CHECKED.startsWith("Not checked yet"));
+  assert.deepEqual(await read({ permission: "granted", source: "shell" }), { state: "satisfied", evidence: "Allowed, as the desktop app reports" });
+  assert.deepEqual(await read({ permission: "denied", source: "listener" }), {
+    state: "needs-setup", why: "macOS denied the microphone to Mission Control.", evidence: "As the voice listener reports",
+  });
+  assert.equal((await read({ permission: "not-determined", source: "shell" })).state, "needs-setup");
+  assert.equal((await read({ permission: "restricted", source: "shell" })).state, "needs-setup");
+  assert.deepEqual(await read({ permission: "unknown", source: "listener" }), {
+    state: "unknown", why: "The voice listener could not read the microphone permission.", evidence: null,
+  });
+});
+
+test("a reading uses the flags as they were when it started, even if one switches while probes run", async () => {
+  // Voice is off when the reading starts and switches on while the repository index is read.
+  let voiceOn = false;
+  const view = await setupChecksView(deps({
+    flagEnabled: (id) => (id === "voice" ? voiceOn : false),
+    repositoryIndex: async () => {
+      voiceOn = true;
+      return { repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] };
+    },
+  }));
+  assert.equal(voiceOn, true, "the switch happened mid-reading");
+  // One consistent reading: no Voice rows and no stamp, so the dashboard sees a mismatch with its
+  // live flags and reads again, rather than Voice rows missing under a Voice-on stamp.
+  assert.equal(view.rows.some((row) => row.family === "voice"), false);
+  assert.equal("flagsKey" in view, false);
+
+  // And the other way: Voice on at the start, off by the end, keeps its rows, its probe and its stamp.
+  voiceOn = true;
+  const on = await setupChecksView(deps({
+    flagEnabled: (id) => (id === "voice" ? voiceOn : false),
+    repositoryIndex: async () => {
+      voiceOn = false;
+      return { repoCount: 2, directories: [{ path: "~/workspace", status: "ok", repoCount: 2 }] };
+    },
+  }));
+  assert.equal(on.rows.some((row) => row.family === "voice"), true);
+  assert.equal(on.flagsKey, "1000");
+  assert.equal(on.rows.find((row) => row.family === "voice")?.status.state, "needs-setup");
 });

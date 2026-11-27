@@ -36,7 +36,12 @@ test("an unset key reads as the shipped defaults", () => {
   assert.equal(config.layout, "board");
   assert.equal(config.conversationView, "terminal");
   assert.equal(config.richText, true);
-  assert.deepEqual(config.alerts, { notifications: false, sound: true });
+  assert.deepEqual(config.alerts, {
+    notifications: false,
+    sound: true,
+    notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+    reportsInInbox: true,
+  });
   assert.deepEqual(config.keybindings, {});
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
@@ -140,22 +145,25 @@ test("a malformed field elsewhere cannot abort startup or fail the page, and a v
   assert.equal(color(), "#0a0c0f");
 });
 
-test("a launch colour that cannot be written never fails the skin write or startup", async (t) => {
+test("a failed launch colour write is retried by the same skin without a second notification", async (t) => {
   // The launch colour is a convenience for the next desktop launch; the skin choice is the
   // setting. A failed write - a full disk, a read-only state home, something in the way - must
   // leave the skin saved and the caller unharmed. A non-empty directory where the file belongs
   // makes the atomic rename fail on every platform, with no permission trick root would ignore.
-  const { mkdirSync, writeFileSync: write, rmSync: remove, statSync } = await import("node:fs");
-  const { syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const { mkdirSync, readFileSync, writeFileSync: write, rmSync: remove, statSync } = await import("node:fs");
+  const { onUiSkinChanged, syncWindowBackground } = await import("../src/server/ui-config.ts");
   const launch = join(home, "state", "window-background.json");
   remove(launch, { recursive: true, force: true });
   mkdirSync(launch, { recursive: true });
   write(join(launch, "occupied"), "");
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => void warnings.push(args));
+  let notifications = 0;
+  const unsubscribe = onUiSkinChanged(() => { notifications++; });
   try {
     setUiConfig({ skin: "default" });
     warnings.length = 0;
+    notifications = 0;
 
     assert.doesNotThrow(() => setUiConfig({ skin: "daylight" }), "a failed launch-colour write failed the skin write");
     assert.equal(getUiConfig().skin, "daylight", "the skin was not saved when its launch colour could not be");
@@ -163,7 +171,14 @@ test("a launch colour that cannot be written never fails the skin write or start
     assert.ok(statSync(launch).isDirectory(), "the premise: the launch file really could not be written");
     assert.equal(warnings.length, 2, "each failed write is reported, not swallowed silently");
     assert.match(String(warnings[0]![0]), /could not remember the window background/);
+    assert.equal(notifications, 1);
+
+    remove(launch, { recursive: true });
+    setUiConfig({ skin: "daylight" });
+    assert.equal(JSON.parse(readFileSync(launch, "utf8")).color, "#f5f7fa");
+    assert.equal(notifications, 1, "rebuilding the launch colour does not invalidate open dashboards");
   } finally {
+    unsubscribe();
     remove(launch, { recursive: true, force: true });
   }
 });
@@ -278,7 +293,10 @@ test("saving the defaults on purpose still counts as configured", () => {
   // Board has configured this, and adoption must not fire over the top of that choice.
   setUiConfig({ layout: "board" });
   assert.equal(uiConfigView().configured, true);
-  assert.deepEqual(uiConfigView().config, UI_CONFIG_DEFAULTS);
+  // The `voice` flag is off here, so the view withholds `ui.voice`; the stored record keeps it.
+  const { voice: _withheld, ...withoutVoice } = UI_CONFIG_DEFAULTS;
+  assert.deepEqual(uiConfigView().config, withoutVoice);
+  assert.deepEqual(getUiConfig(), UI_CONFIG_DEFAULTS);
 });
 
 test("a patch merges over the stored config rather than replacing it", () => {

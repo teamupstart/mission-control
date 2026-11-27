@@ -16,12 +16,13 @@ import {
   workflowSelectionRestore,
 } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
+import { PAGE_SEGMENTS } from "../src/shared/topbar-items-settings.ts";
 import {
   clearRequestedWorkflowVersion,
   readRequestedWorkflowVersion,
   requestWorkflowVersionOpen,
 } from "../src/web/workflows/workflowSelection.ts";
-import type { LlmState } from "../src/web/useLlm.ts";
+
 import {
   WORKFLOW_LIMITS,
   type WorkflowDefinition,
@@ -29,7 +30,6 @@ import {
   type WorkflowVersion,
 } from "../src/shared/workflow.ts";
 
-const llm: LlmState = { config: null, status: null, personaDefaults: null, error: null, update: async () => {} };
 const workflow: WorkflowDefinition = {
   id: "w", name: "Release review", normalizedName: "release review", description: "",
   draft: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Approved", position: { x: 300, y: 0 } }], edges: [] },
@@ -246,7 +246,7 @@ test("the top-bar segment reaches the Library, and the builder is one level unde
   // a Workflows shelf card, which is what makes the shelf the place you learn what a
   // workflow is before you open one. The segment table lives in the topbar registry, the
   // button in `Topbar`, and `App` turns the page id into a route with nothing added.
-  assert.match(read("lib/topbar-items.ts"), /id: "runs",[\s\S]*?action: "runs"/);
+  assert.equal(PAGE_SEGMENTS.find(segment => segment.id === "runs")?.action, "runs");
   assert.match(read("components/Topbar.tsx"), /onClick=\{\(\) => props\.onNavigatePage\(id\)\}/);
   assert.match(source, /onNavigatePage=\{\(page\) => navigate\(\{ page \}\)\}/);
   assert.match(source, /<WorkflowLibrary[\s\S]*?initialWorkflowId=\{libraryAssetId\}/);

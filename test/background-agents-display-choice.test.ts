@@ -186,7 +186,7 @@ test("the key is an operator setting, so a settings backup carries it", () => {
 
 test("Board card offers Background sub-agents after Task type, with the plan's copy", () => {
   const card = DISPLAY_CHOICES.filter((choice) => choice.group === "card");
-  assert.deepEqual(card.map((choice) => choice.key), ["taskKindCard", "backgroundAgentsStyle"]);
+  assert.deepEqual(card.map((choice) => choice.key), ["taskKindCard", "backgroundAgentsStyle", "callSignCardStyle"]);
   const choice = card[1]!;
   assert.equal(choice.label, "Background sub-agents");
   assert.equal(

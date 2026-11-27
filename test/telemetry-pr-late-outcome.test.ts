@@ -426,7 +426,7 @@ for (const creationVerified of [false, true]) {
       assert.equal(facts.length, 1);
       assert.equal(facts[0]?.fact, creationVerified ? "creation_verified" : "associated_existing");
       assert.equal(facts[0]?.task_kind, "ship");
-      assert.equal((facts[0]?.refs as Record<string, string>).session_id, SESSION_ID);
+      assert.equal((facts[0]?.refs as Record<string, string>)?.session_id, SESSION_ID);
       assert.equal((openDb().prepare("SELECT occurred_at FROM telemetry_journal WHERE name = 'mission.pr.observed'").get() as { occurred_at: number }).occurred_at, 2_000);
       telemetryPrPollTargets(4_000);
       assert.equal(prFacts().length, 1, "a successful retry is not counted again");
@@ -839,7 +839,7 @@ test("a task rebound to a new session cannot claim its previous author's live de
   await pollAndReconcilePrs(registry as never, async () => null,
     async () => ({ state: "merged", mergedAt: 9_000 }), undefined, 10_000, async () => null);
   assert.equal(prFacts().at(-1)?.delivery, "late");
-  assert.equal((prFacts().at(-1)?.refs as Record<string, string>).session_id, SESSION_ID);
+  assert.equal((prFacts().at(-1)?.refs as Record<string, string>)?.session_id, SESSION_ID);
 });
 
 for (const currentEpisode of [true, false]) {

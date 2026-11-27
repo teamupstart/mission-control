@@ -1,3 +1,4 @@
+import { workflowGraphFingerprint } from "../workflows/graph-fingerprint.ts";
 import { emptyWorkflowCommandView } from "@shared/workflow.ts";
 import type { CostConfig, SkillsConfig } from "@shared/protocol.ts";
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
@@ -166,9 +167,9 @@ function canonical(value: unknown): string {
 function personaContent(value: Persona | SettingsBackupPersona): unknown {
   const {
     id: _id, revision: _revision, archivedAt: _archivedAt, createdAt: _createdAt,
-    updatedAt: _updatedAt, builtin: _builtin, ...content
+    updatedAt: _updatedAt, builtin: _builtin, repositoryAccessRevision: _accessRevision, ...content
   } = value;
-  return content;
+  return { ...content, repositoryAccess: value.repositoryAccess ?? "none" };
 }
 
 function actionContent(value: SessionAction | SettingsBackupSessionAction): unknown {
@@ -377,8 +378,10 @@ export function preflightSettingsRestore(
   ));
 
   blockers.push(...keyedDuplicates(staged.workflowCommands, (row) => row.slot, "Command slot"));
-  if (!staged.workflowCommands.some((row) => row.slot === "coderabbit")) {
-    staged.workflowCommands.push(emptyWorkflowCommandView("coderabbit"));
+  for (const slot of ["coderabbit", "inspector"] as const) {
+    if (!staged.workflowCommands.some((row) => row.slot === slot)) {
+      staged.workflowCommands.push(emptyWorkflowCommandView(slot));
+    }
   }
   const expectedSlots = new Set<string>(WORKFLOW_CHECK_SLOTS);
   for (const command of staged.workflowCommands) {
@@ -400,7 +403,7 @@ export function preflightSettingsRestore(
     ),
     ...keyedDuplicates(
       staged.workflowVersions,
-      (row) => `${row.workflowId}\0${row.sourceDraftRevision}`,
+      (row) => `${row.workflowId}\0${row.sourceDraftRevision}\0${workflowGraphFingerprint(row.graph)}`,
       "workflow source draft revision",
     ),
     ...keyedDuplicates(
@@ -445,7 +448,7 @@ export function preflightSettingsRestore(
   const byVersionId = new Map(currentVersions.map((row) => [row.id, row]));
   const byNumber = new Map(currentVersions.map((row) => [`${row.workflowId}\0${row.version}`, row]));
   const byDraft = new Map(currentVersions.map((row) => [
-    `${row.workflowId}\0${row.sourceDraftRevision}`,
+    `${row.workflowId}\0${row.sourceDraftRevision}\0${workflowGraphFingerprint(row.graph)}`,
     row,
   ]));
   let inserted = 0;
@@ -464,7 +467,7 @@ export function preflightSettingsRestore(
     if (sameNumber && sameNumber.id !== version.id) {
       blockers.push(`Workflow ${version.workflowId} version ${version.version} belongs to ${sameNumber.id}`);
     }
-    const sameDraft = byDraft.get(`${version.workflowId}\0${version.sourceDraftRevision}`);
+    const sameDraft = byDraft.get(`${version.workflowId}\0${version.sourceDraftRevision}\0${workflowGraphFingerprint(version.graph)}`);
     if (sameDraft && sameDraft.id !== version.id) {
       blockers.push(
         `Workflow ${version.workflowId} source revision ${version.sourceDraftRevision} belongs to ${sameDraft.id}`,

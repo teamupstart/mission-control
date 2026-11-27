@@ -185,6 +185,40 @@ test("a merge completes the task past open questions and closes each with the re
   assert.equal(f.registry.getSession(f.id)?.openQuestions, 0, "it leaves the inbox at once");
 });
 
+test("a merge completes the task past an open filed plan form and closes it as merged in the task's transaction", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  // Both flags off at the merge: a filed form keeps its rule after the flags that filed it are gone.
+  const f = fleet("s-merge-plan");
+  const form = f.reviews.create(f.id, "plan-decisions", "Plan", "Plan", decisions("Plan?"), { waitMode: "message" });
+  const call = f.reviews.create(f.id, "plan-decisions", "Call plan", "Call plan", decisions("Call?"));
+  assert.equal(f.registry.getSession(f.id)?.pendingReviews, 2);
+  f.reviews.resolve(call.id, "dismiss", null, "human");
+
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done", "a merge is the one thing that completes the task past the form");
+  assert.equal(f.registry.getReview(form.id)?.status, "orphaned");
+  assert.equal(f.registry.getReview(form.id)?.closedReason, "merged");
+  assert.match(reviewToolResult(f.registry.getReview(form.id)!).text, /pull request merged/);
+  assert.equal(f.registry.getSession(f.id)?.pendingReviews, 0, "it leaves the inbox at once");
+});
+
+test("a closure that fails leaves a filed plan form open with its task running, and the next observation completes both", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const failing = { times: Number.POSITIVE_INFINITY };
+  const f = fleet("s-merge-plan-fails", failing);
+  const form = f.reviews.create(f.id, "plan-decisions", "Plan", "Plan", decisions("Plan?"), { waitMode: "message" });
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  assert.equal(f.registry.getReview(form.id)?.status, "pending", "no finished task with a gate still open");
+  failing.times = 0;
+  f.hook("Stop");
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(form.id)?.closedReason, "merged");
+});
+
 test("with the flag off a merge records no reason on a snoozed call-mode question, as today", async () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-merge-off");

@@ -53,6 +53,7 @@ export function primaryActionTelemetry(): MiddlewareHandler {
         if (match && (c.req.bodyCache.json || c.req.bodyCache.text)) {
           // Only inspect a body the route already consumed. In particular, never read a
           // rejected oversized stream after its bodyLimit middleware has returned 413.
+          // oxlint-disable-next-line repository/parse-request-body -- Middleware reads an already consumed body after the route responds.
           const body: unknown = await c.req.json();
           const parsed = requestContext.safeParse(body);
           observation.primaryAction = primaryActionVariant(match.action, body);

@@ -103,10 +103,10 @@ test("the Claude bridge says when it cut the in-flight list, and only then", asy
     ["Stop", { background_tasks: many }],
     ["Stop", { background_tasks: many.slice(0, HOOK_BACKGROUND_TASKS_MAX) }],
   ]);
-  assert.equal((cut?.backgroundTasks as unknown[]).length, HOOK_BACKGROUND_TASKS_MAX);
+  assert.equal((cut?.backgroundTasks as unknown[])?.length, HOOK_BACKGROUND_TASKS_MAX);
   assert.equal(cut?.backgroundTasksTruncated, true);
   assert.equal(HookIngestSchema.parse(cut).backgroundTasksTruncated, true);
-  assert.equal((whole?.backgroundTasks as unknown[]).length, HOOK_BACKGROUND_TASKS_MAX);
+  assert.equal((whole?.backgroundTasks as unknown[])?.length, HOOK_BACKGROUND_TASKS_MAX);
   assert.equal("backgroundTasksTruncated" in (whole ?? {}), false, "a list at the bound is whole");
   // Malformed entries are not tasks, so they never make a whole list read as cut.
   assert.equal(backgroundTasksTruncated({ background_tasks: [...many.slice(0, HOOK_BACKGROUND_TASKS_MAX), { type: "shell" }] }), undefined);

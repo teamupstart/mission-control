@@ -53,7 +53,6 @@ async function shoot(page: Page, target: Page | Locator, name: string): Promise<
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-closed-pr-recheck/${name}.png`);
 }
 
@@ -153,7 +152,6 @@ async function seedRun(page: Page, daemon: DaemonHandle, name = "E2E closed pull
       timeout: 40_000,
     }).toBe("completed");
   } catch (caught) {
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
     throw caught;
   }
@@ -224,7 +222,7 @@ function strandAsClosed(daemon: DaemonHandle, runId: string): void {
 }
 
 /** Script what GitHub answers when the daemon reads this pull request. */
-function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED", head = FAILED_HEAD): void {
+function scriptGitHub(daemon: DaemonHandle, state: "OPEN" | "CLOSED" | "MERGED", head = FAILED_HEAD): void {
   writeGhPullRequests(daemon.home, [{
     cwd: daemon.repo,
     url: PR_URL,
@@ -318,6 +316,109 @@ test("a run blocked as closed offers Check again, which lifts the block only for
   await shoot(dashboard, header, "02-open-pull-request-restores-the-repair-wait");
 });
 
+
+/**
+ * Leave the run where the reported merged pull request left it: the PR merged while the
+ * workflow's Pull Request action was still settling, GitHub Inspector read it MERGED and retired
+ * the row, and the gate opened afterwards to wait for an observation nothing would ever send.
+ */
+function strandAwaitingMergedRow(daemon: DaemonHandle, runId: string): void {
+  const now = Date.now();
+  withDaemonDb(daemon, (db) => {
+    const run = db.prepare("SELECT workflow_version_id FROM workflow_runs WHERE id = ?")
+      .get(runId) as { workflow_version_id: string } | undefined;
+    if (!run) throw new Error(`missing run ${runId}`);
+    db.prepare("UPDATE workflow_versions SET completion_policy_json = ? WHERE id = ?").run(
+      JSON.stringify({ kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" }),
+      run.workflow_version_id,
+    );
+    db.prepare(
+      `UPDATE workflow_runs
+          SET status = 'waiting_for_inspector', current_phase = 'inspector_awaiting_fresh_observation',
+              inspector_pr_key = ?, inspector_head_sha = NULL, gate_state_json = ?, completed_at = NULL,
+              updated_at = ?
+        WHERE id = ?`,
+    ).run(
+      PR_KEY,
+      JSON.stringify({
+        prKey: PR_KEY, prUrl: PR_URL, targetHeadSha: null, failedHeadSha: null,
+        enteredAt: now - 30_000, lastObservedAt: null, observedHeadSha: null, reviewPosture: null,
+        waitReason: "awaiting_fresh_observation", findingFingerprints: [],
+      }),
+      now,
+      runId,
+    );
+    db.prepare(
+      `INSERT INTO inspector_prs
+         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+          head_sha, review_posture, review_complete, clean_review_head_sha, round, last_reviewed_at,
+          last_error, fail_count, last_fail_kind, next_attempt_at, last_attempt_sha, merged_at,
+          merge_block, observed_head_sha, observed_state, observed_at, head_ref_name, title,
+          adopted_at, updated_at)
+       VALUES (?, ?, 'owner', 'repo', ?, ?, ?, NULL, 'hook', 'closed',
+               ?, 'live', 1, ?, 1, ?, NULL, 0, NULL, NULL, ?, NULL, NULL,
+               ?, 'MERGED', ?, 'feat/closed-pr', 'Merged pull request', ?, ?)`,
+    ).run(
+      PR_KEY, PR_URL, PR_NUMBER, daemon.repo, daemon.repo,
+      FAILED_HEAD, FAILED_HEAD, now - 90_000, FAILED_HEAD,
+      FAILED_HEAD, now - 45_000, now - 120_000, now - 45_000,
+    );
+  });
+}
+
+test("a run waiting on a pull request that merged before its gate opened holds as closed and never completes", async ({
+  dashboard,
+  daemon,
+}) => {
+  const runId = await seedRun(dashboard, daemon, "E2E merged before gate");
+  await api(
+    daemon,
+    "/api/inspector/config",
+    { enabled: true, mode: "live", repoAllowlist: [daemon.repo] },
+    "PUT",
+  );
+  strandAwaitingMergedRow(daemon, runId);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const header = dashboard.locator("header.wf-run-head");
+  await expect(header.getByText("Waiting for GitHub Inspector", { exact: true })).toBeVisible();
+  const checkAgain = header.getByRole("button", { name: "Check again" });
+  await expect(checkAgain).toBeVisible();
+  await shoot(dashboard, header, "11-stranded-merged-wait-offers-check-again");
+
+  // GitHub still says merged. The click holds the run as the ordinary closed-PR block, reads
+  // GitHub again, and passes nothing: no completion, no clean verdict, the row stays retired.
+  scriptGitHub(daemon, "MERGED");
+  const before = ledgerRow(daemon).observed_at;
+  await checkAgain.click();
+  await expect(header.getByText("Blocked", { exact: true })).toBeVisible();
+  await expect.poll(() => ledgerRow(daemon).observed_at, {
+    message: "the recheck should read the merged pull request from GitHub",
+  }).not.toBe(before);
+  await dashboard.waitForTimeout(500);
+  expect(ledgerRow(daemon)).toMatchObject({ state: "closed", observed_state: "MERGED" });
+  const held = await probe(daemon, runId);
+  expect(held.run).toMatchObject({ status: "blocked", currentPhase: "inspector_pr_closed" });
+  expect(held.events.filter((event) => event.kind === "inspector_pr_closed")).toHaveLength(1);
+  expect(held.events.filter((event) => event.kind === "inspector_gate_clean")).toHaveLength(0);
+  await expect(header.getByRole("button", { name: "Check again" })).toBeVisible();
+  await dashboard.getByRole("tab", { name: /^Completion/ }).click();
+  const pane = dashboard.getByRole("tabpanel", { name: /^Completion/ });
+  await expect(pane).toContainText("The adopted pull request was closed or switched.");
+  await shoot(dashboard, header, "12-merged-before-gate-holds-as-closed");
+
+  // Reopened on GitHub: the same button lifts the hold, and the gate's ordinary exact-head check
+  // takes over. GitHub's head is not the one this run reviewed, so it waits on the session -
+  // still never completed on the strength of the earlier merge.
+  scriptGitHub(daemon, "OPEN");
+  await header.getByRole("button", { name: "Check again" }).click();
+  await expect(header.getByText("Waiting for the session", { exact: true })).toBeVisible();
+  expect(ledgerRow(daemon)).toMatchObject({ state: "open", observed_state: "OPEN" });
+  const reopened = await probe(daemon, runId);
+  expect(reopened.run).toMatchObject({ status: "waiting_for_session", currentPhase: "inspector_head_mismatch" });
+  expect(reopened.events.filter((event) => event.kind === "inspector_pr_seen_open")).toHaveLength(1);
+  expect(reopened.events.filter((event) => event.kind === "inspector_gate_clean")).toHaveLength(0);
+});
 
 // Issue #1549: seed the historical unsent delivery block, then let a real session
 // resume event reconcile the current Inspector ledger and repaint the open run page.
@@ -424,6 +525,47 @@ test(`${trigger} releases unsent feedback for a superseded clean Inspector head`
 });
 }
 
+/** Seed the parent review and its changed shipping continuation, so every gate evaluation sees the same hold. */
+function seedPublishedTreeMismatch(daemon: DaemonHandle, runId: string, head: string, tree: string): void {
+  strandAsClosed(daemon, runId);
+  withDaemonDb(daemon, (db) => {
+    const version = db.prepare(`SELECT v.id, v.graph_json FROM workflow_versions v
+      JOIN workflow_runs r ON r.workflow_version_id = v.id WHERE r.id = ?`)
+      .get(runId) as { id: string; graph_json: string };
+    const graph = JSON.parse(version.graph_json);
+    graph.nodes.push({ id: "publish", kind: "session_action", position: { x: 330, y: 0 },
+      action: { sourceSessionActionId: "seeded-publish", sourceRevision: 1, name: "Publish",
+        description: "", promptMarkdown: "Publish the reviewed work", requiredSkillId: null,
+        completion: { kind: "pull_request" } } });
+    Object.assign(graph.edges.find((edge: { id: string }) => edge.id === "pass"),
+      { target: "publish", targetPort: "activate" });
+    graph.edges.push({ id: "published", source: "publish", sourcePort: "complete", target: "end", targetPort: "terminal" });
+    db.prepare("UPDATE workflow_versions SET graph_json = ? WHERE id = ?").run(JSON.stringify(graph), version.id);
+    const parent = db.prepare("SELECT id, context_json FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1")
+      .get(runId) as { id: string; context_json: string };
+    const context = JSON.parse(parent.context_json);
+    Object.assign(context.evidence, { headSha: FAILED_HEAD, contentTreeOid: "a".repeat(40), workingTreeDirty: false, workingTreeStatus: [] });
+    delete context.evidence.publication;
+    db.prepare("UPDATE workflow_submissions SET context_json = ? WHERE id = ?").run(JSON.stringify(context), parent.id);
+    context.evidence.contentTreeOid = tree;
+    context.evidence.headSha = head;
+    db.prepare(`INSERT INTO workflow_submissions
+      (id, run_id, round, segment, parent_submission_id, continuation_node_id, continuation_node_attempt_id, refinement_reason,
+       mode, trigger_source, trigger_key, evidence_fingerprint, context_json, evidence_json, pr_head_sha, status, created_at, updated_at)
+      SELECT id || '-shipping', run_id, round, 1, id, 'publish', 'seeded-publication-action', 'session_action', mode, trigger_source,
+        trigger_key || '-shipping', evidence_fingerprint, ?, ?, ?, 'completed', created_at + 1, updated_at + 1
+      FROM workflow_submissions WHERE id = ?`)
+      .run(JSON.stringify(context), JSON.stringify(context.evidence), head, parent.id);
+    const row = db.prepare("SELECT gate_state_json FROM workflow_runs WHERE id = ?").get(runId) as { gate_state_json: string };
+    const gate = JSON.parse(row.gate_state_json);
+    Object.assign(gate, { targetHeadSha: null, failedHeadSha: null, findingFingerprints: [] });
+    db.prepare("UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?").run(JSON.stringify(gate), runId);
+    db.prepare("UPDATE inspector_prs SET head_sha = ?, last_attempt_sha = ? WHERE key = ?").run(head, head, PR_KEY);
+    db.prepare("UPDATE inspector_comments SET github_url = ?, posted_at = ? WHERE pr_key = ?")
+      .run(`${PR_URL}#discussion_r1576`, Date.now(), PR_KEY);
+  });
+}
+
 // Issue #1574: the immutable gate state is seeded because publication and reviews are fake;
 // the fresh-review click uses the real route, capture, Persona runner and SSE repaint.
 test("a published tree changed after review offers fresh review without another push", async ({ dashboard, daemon }) => {
@@ -517,4 +659,29 @@ test("a published tree changed after review offers fresh review without another 
     WHERE s.run_id = ? AND s.round = 2 AND a.node_id = 'reviewer' AND a.state = 'completed' AND a.runner_id IS NOT NULL
   `).get(runId) as { count: number }).count).toBe(1);
   expect(execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(head);
+});
+
+// #1576: a publication mismatch must not swallow a current-head Inspector packet.
+// Seed only the immutable publication snapshots; recheck runs the real gate and delivery preparation.
+test("current-head findings remain visible as a repair packet across the published-tree hold", async ({ dashboard, daemon }) => {
+  const runId = await seedRun(dashboard, daemon, "E2E published finding delivery");
+  await api(daemon, "/api/inspector/config", { enabled: true, mode: "live", repoAllowlist: [daemon.repo] }, "PUT");
+  const head = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const tree = execFileSync("git", ["-C", daemon.repo, "rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
+  seedPublishedTreeMismatch(daemon, runId, head, tree);
+  scriptGitHub(daemon, "OPEN", head);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const checkAgain = dashboard.locator("header.wf-run-head").getByRole("button", { name: "Check again" });
+  await expect(checkAgain).toBeVisible();
+  await checkAgain.click();
+  await expect.poll(async () => (await probe(daemon, runId)).run.currentPhase).toBe("inspector_findings");
+  await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+  const pane = dashboard.getByRole("tabpanel", { name: /^Deliveries/ });
+  await pane.getByRole("button", { name: "Show packet" }).click();
+  await expect(pane).toContainText(FINDING);
+  await expect(pane).toContainText(`${PR_URL}#discussion_r1576`);
+  await expect(pane).toContainText("fresh full workflow review is required even if no code changes are needed");
+  await expect(pane).toContainText("not confirmed"); // Preview never claims to have sent it.
+  expect((await probe(daemon, runId)).run.status).toBe("waiting_for_session");
+  await shoot(dashboard, pane, "10-published-head-finding-packet");
 });

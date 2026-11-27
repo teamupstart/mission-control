@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, open, realpath, rename, rmdir, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
   type ArchiveManifestArtifact,
   type ArchiveManifestRepository,
 } from "@shared/archives.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import { verifyArchiveBundle } from "./bundle.ts";
 import type { ArchiveCaptureJob } from "./capture-store.ts";
 import { headOf, resolveRoots } from "./checkout.ts";
@@ -134,19 +135,7 @@ async function publish(
   deps: ArchiveCaptureDeps,
   now: () => number,
 ): Promise<ArchiveCaptureOutcome> {
-  const renameDir = deps.rename ?? ((from, to) => rename(from, to));
-  const staging = stagingRoot(deps.libraryRoot);
-  // Staged under `<staging>/<producer>/<archive>` rather than a flat temp name, so the SAME
-  // importer that verifies a stranger's bundle can verify this one before it is published -
-  // it derives the directory from the identity, and a flat name would need a second, weaker
-  // verifier that only the local path ever used.
-  const stageProducer = path.join(staging, identity.producerId);
-  const stageDir = path.join(stageProducer, identity.archiveId);
-
-  try {
-    await rm(stageDir, { recursive: true, force: true, maxRetries: 2 });
-    await mkdir(stageDir, { recursive: true, mode: 0o700 });
-
+  return publishBundle(identity, deps, async (stageDir) => {
     const artifacts: ArchiveManifestArtifact[] = [];
     const copyProblems: string[] = [];
     let ordinal = 0;
@@ -199,12 +188,54 @@ async function publish(
         artifacts.find((artifact) => artifact.role === "primary_report")?.id ?? null,
       artifacts,
       missing: plan.missing,
-      contentDigest:
-        formatArchiveDigest(
-          createHash("sha256").update(canonicalArchiveContentPayload(artifacts)).digest("hex"),
-        ) ?? "",
+      contentDigest: archiveContentDigest(artifacts),
     };
-    await writeFile(path.join(stageDir, "manifest.json"), serializeArchiveManifest(manifest), {
+    return { ok: true, manifest };
+  });
+}
+
+/** The manifest's `contentDigest` over the artifacts it lists. */
+export function archiveContentDigest(artifacts: readonly ArchiveManifestArtifact[]): string {
+  return formatArchiveDigest(
+    createHash("sha256").update(canonicalArchiveContentPayload([...artifacts])).digest("hex"),
+  ) ?? "";
+}
+
+/** What a bundle's content writer hands back: the manifest describing what it staged. */
+export type StagedBundleContent =
+  | { ok: true; manifest: ArchiveManifest }
+  | { ok: false; problems: string[] };
+
+/**
+ * Stage one bundle, verify it, rename it into place and verify it again.
+ *
+ * Kind-agnostic and source-agnostic: `stage` writes the content files into the staging
+ * directory it is handed and returns the manifest that describes them. A checkout capture
+ * copies planned files; an operator-published report writes the one page the daemon built.
+ * Either way the manifest is written here, and the bundle is checked by the same importer
+ * that verifies a stranger's bundle before anything is visible in the library.
+ */
+export async function publishBundle(
+  identity: ArchiveIdentity,
+  deps: Pick<ArchiveCaptureDeps, "libraryRoot" | "rename">,
+  stage: (stageDir: string) => Promise<StagedBundleContent>,
+): Promise<ArchiveCaptureOutcome> {
+  const renameDir = deps.rename ?? ((from, to) => rename(from, to));
+  const staging = stagingRoot(deps.libraryRoot);
+  // Staged under `<staging>/<producer>/<archive>` rather than a flat temp name, so the SAME
+  // importer that verifies a stranger's bundle can verify this one before it is published -
+  // it derives the directory from the identity, and a flat name would need a second, weaker
+  // verifier that only the local path ever used.
+  const stageProducer = path.join(staging, identity.producerId);
+  const stageDir = path.join(stageProducer, identity.archiveId);
+
+  try {
+    await removeTree(stageDir);
+    await mkdir(stageDir, { recursive: true, mode: 0o700 });
+
+    const content = await stage(stageDir);
+    if (!content.ok) return { ok: false, problems: content.problems };
+    await writeFile(path.join(stageDir, "manifest.json"), serializeArchiveManifest(content.manifest), {
       encoding: "utf8",
       mode: 0o600,
     });
@@ -256,7 +287,7 @@ async function publish(
   } finally {
     // Staging is disposable by construction: a failed attempt re-stages from scratch next
     // time, and a successful one has already renamed the directory away.
-    await rm(stageDir, { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+    await removeTree(stageDir).catch(() => {});
     await rmdir(stageProducer).catch(() => {});
   }
 }

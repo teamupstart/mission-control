@@ -22,6 +22,7 @@ const {
   clearPendingTurns,
   markPendingTurnUncertain,
 } = await import("../src/server/db.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -33,7 +34,10 @@ const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
-const { claimHumanEcho, HUMAN_ECHO_TTL_MS, observeInjections, originOf } = await import("../src/server/injections.ts");
+const {
+  claimHumanEcho, HUMAN_ECHO_TTL_MS, injectionFingerprint, observeInjections, onPersonDelivery, originOf,
+  onAutomatedDelivery,
+} = await import("../src/server/injections.ts");
 const { journalScoutPrompt } = await import("../src/server/scouts/prompt-journal.ts");
 const { SNOOZE_INSTRUCTION_TURN_PREFIX, MESSAGE_ANSWER_TURN_PREFIX, insertReview, updateReviewStatus, markReviewWaitDetached } = await import("../src/server/db.ts");
 const { noteKeyFor } = await import("../src/server/registry.ts");
@@ -444,7 +448,10 @@ test("an SDK failure before the acceptance boundary remains safely retryable", a
   clearPendingTurns(key);
 });
 
-test("SDK ownership changes before acceptance preserve uncertainty", async () => {
+test("SDK ownership changes before acceptance preserve uncertainty", async (t) => {
+  // The person's words never reached the driver, so their announcement is withdrawn too.
+  const heard: Array<{ id: string; released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ id: delivery.id, released: delivery.released }); }));
   const registry = new Registry();
   const id = "sdk:owner-before-acceptance";
   const key = "agent:owner-before-acceptance";
@@ -494,11 +501,16 @@ test("SDK ownership changes before acceptance preserve uncertainty", async () =>
   assert.equal(accepted, 0);
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /ownership changed/);
+  assert.deepEqual(heard.map((h) => h.released), [false, true], "a send refused before acceptance still contests a delivery of its words");
+  assert.equal(heard[1]!.id, heard[0]!.id);
   manager.stop();
   clearPendingTurns(key);
 });
 
-test("SDK ownership changes during acknowledgement preserve uncertainty", async () => {
+test("SDK ownership changes during acknowledgement preserve uncertainty", async (t) => {
+  // Past the acceptance boundary the words may have reached the agent: the announcement stands.
+  const heard: Array<{ released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ released: delivery.released }); }));
   const registry = new Registry();
   const id = "sdk:owner-during-ack";
   const key = "agent:owner-during-ack";
@@ -546,6 +558,7 @@ test("SDK ownership changes during acknowledgement preserve uncertainty", async 
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /ownership changed/);
   assert.equal(registry.getGoal(id), null, "an uncertain owner cannot receive the prompt");
+  assert.deepEqual(heard.map((h) => h.released), [false], "a send that may have landed was taken back");
   manager.stop();
   clearPendingTurns(key);
 });
@@ -643,6 +656,46 @@ test("a dialog raised on a stopping session still refuses the queued row", async
   f.manager.stop();
 });
 
+test("the operator's queued words are announced as a person's delivery on both runtimes", async (t) => {
+  // A declared wait reads a person's turn as the wake even when its words repeat an automated
+  // delivery still pending, and it can only do that if the outbox says the words are a person's.
+  const heard: Array<{ sessionId: string; key: string }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ sessionId: delivery.sessionId, key: delivery.key }); }));
+
+  const sdk = sdkFixture("person-sdk", async () => "started");
+  working(sdk.registry, sdk.id);
+  sdk.manager.submit(sdk.id, "Please wrap up and open the pull request.");
+  idle(sdk.registry, sdk.id);
+  await tick();
+  assert.deepEqual(sdk.calls, ["Please wrap up and open the pull request."]);
+  sdk.manager.stop();
+
+  const terminal = terminalFixture("person-terminal", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  terminal.manager.submit(terminal.id, "Please wrap up and open the pull request.");
+  await tick();
+  assert.deepEqual(terminal.injected, ["Please wrap up and open the pull request."]);
+  terminal.manager.stop();
+
+  const key = injectionFingerprint("Please wrap up and open the pull request.");
+  assert.deepEqual(heard, [{ sessionId: sdk.id, key }, { sessionId: terminal.id, key }]);
+});
+
+test("an operator's queued words the driver refuses are taken back as a person's delivery", async (t) => {
+  // A refusal is positive evidence nothing landed, so the announcement is withdrawn beside the
+  // other-send record, and a waiting session's matching automated delivery stops being contested.
+  const heard: Array<{ id: string; released: boolean }> = [];
+  t.after(onPersonDelivery((delivery) => { heard.push({ id: delivery.id, released: delivery.released }); }));
+  const sdk = sdkFixture("person-refused", async () => null);
+  working(sdk.registry, sdk.id);
+  sdk.manager.submit(sdk.id, "Please wrap up and open the pull request.");
+  idle(sdk.registry, sdk.id);
+  await tick();
+  assert.deepEqual(sdk.calls, ["Please wrap up and open the pull request."]);
+  sdk.manager.stop();
+  assert.deepEqual(heard.map((h) => h.released), [false, true]);
+  assert.equal(heard[1]!.id, heard[0]!.id);
+});
+
 test("terminal rows remain sending until a hook proves prompt pickup", async () => {
   const f = terminalFixture("pickup", async () => ({
     ok: true,
@@ -702,6 +755,188 @@ test("a verified terminal submit waits for fresh activity and idle before draini
   assert.deepEqual(f.injected, ["first terminal turn", "second terminal turn"]);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
   f.manager.stop();
+});
+
+for (const runtime of ["sdk", "terminal"] as const) test(runtime + " refusal retries only the atomic spoken settlement after SQLite recovers", async t => {
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const name = "refusal-settlement-" + runtime;
+  let attempts = 0;
+  const refuse = () => {
+    attempts++;
+    db.openDb().exec(`CREATE TRIGGER refuse_queue_write BEFORE UPDATE OF state ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL AND NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'queue write failed'); END`);
+  };
+  const f = runtime === "sdk" ? sdkFixture(name, async () => { refuse(); return null; }) :
+    terminalFixture(name, async () => { refuse(); return { ok: false, pasted: false, submitVerified: false, error: "positive refusal" }; });
+  t.after(() => { f.manager.stop(); db.openDb().exec("DROP TRIGGER IF EXISTS refuse_queue_write"); });
+  if (runtime === "sdk") idle(f.registry, f.id);
+  assert.ok(f.manager.submitSpoken(f.id, "inspect this refusal", name).ok);
+  await until(() => attempts === 1, "transport refusal");
+  assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+  const receipts = db.loadSpokenTurns(f.key);
+  assert.equal(receipts.length, 1, "the failed transition also rolled back reservation withdrawal");
+  db.openDb().exec("DROP TRIGGER refuse_queue_write");
+  await until(() => listPendingTurns(f.key)[0]?.state === "queued", "bookkeeping retry", 5000);
+  assert.equal(db.loadSpokenTurns(f.key).length, 0);
+  await tick(30); // Let a drain erroneously scheduled by the queue update run.
+  assert.equal(attempts, 1, "the storage retry did not call the transport");
+  db.recoverSendingPendingTurns(Date.now());
+  assert.equal(listPendingTurns(f.key)[0]?.state, "queued");
+});
+
+test("a spoken refusal before the handoff retries only the requeue after SQLite recovers", async t => {
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  let boundaries = 0;
+  const f = terminalFixture("spoken-before-handoff", async () => ({ ok: true, pasted: true, submitVerified: true }), 15, async () => {
+    if (++boundaries !== 1) return;
+    db.openDb().exec(`CREATE TEMP TRIGGER block_unreserved_requeue BEFORE UPDATE OF state ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL AND NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'busy'); END`);
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  });
+  t.after(() => {
+    f.manager.stop();
+    db.openDb().exec("DROP TRIGGER IF EXISTS block_unreserved_requeue");
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  });
+  const spoken = f.manager.submitSpoken(f.id, "do not send", "before-guard").pendingTurn!;
+  await until(() => boundaries === 1, "transport guard refusal");
+  assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+  assert.deepEqual(db.loadSpokenTurns(f.key), []);
+  db.openDb().exec("DROP TRIGGER block_unreserved_requeue");
+  await until(() => listPendingTurns(f.key)[0]?.state === "queued", "claim requeued without restart", 5000);
+  assert.equal(boundaries, 1);
+  assert.deepEqual(f.injected, []);
+  const released = listPendingTurns(f.key)[0]!;
+  assert.equal(released.id, spoken.id);
+  assert.ok(f.manager.recall(f.id, released.id, released.revision));
+  f.manager.submit(f.id, "next typed message");
+  await until(() => f.injected.length > 0, "typed message following the recalled speech");
+  assert.deepEqual(f.injected, ["next typed message"]);
+});
+
+test("a spoken paste retries a changed transcript boundary and sends once against the fresh file", async t => {
+  const name = "spoken-boundary-retry";
+  const path = join(home, name + ".jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  let attempts = 0;
+  const f = terminalFixture(name, async () => ({ ok: true, pasted: true, submitVerified: true }), 15, async () => {
+    if (++attempts === 1) appendFileSync(path, "{}\n");
+  });
+  t.after(() => f.manager.stop());
+  const receipt = f.manager.submitSpoken(f.id, "check the build", name);
+  assert.equal(receipt.ok, true);
+  await until(() => listPendingTurns(f.key)[0]?.lastError?.includes("transcript changed") === true, "safe retry");
+  assert.deepEqual(f.injected, []);
+  await until(() => listPendingTurns(f.key).length === 0, "confirmed spoken paste", 10_000);
+  assert.equal(attempts, 2);
+  assert.equal(f.injected.length, 1);
+  const { loadSpokenTurns } = await import("../src/server/db.ts");
+  const [row] = loadSpokenTurns(f.key);
+  assert.equal(row?.transcriptBoundary, claudeTranscript.messages!.boundary!(path)?.proof);
+});
+
+test("failed spoken preparation retries SQLite settlement without sending and releases the following turn", async t => {
+  const { openDb } = await import("../src/server/db.ts");
+  const path = join(home, "spoken-preparation-settlement.jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const d = openDb();
+  let attempts = 0;
+  const read = claudeTranscript.messages as Required<Pick<TranscriptMessages, "prepareHandoffBoundaries">>;
+  t.mock.method(read, "prepareHandoffBoundaries", async () => {
+    attempts++;
+    if (attempts === 1) d.exec(`CREATE TEMP TRIGGER block_prepare_settlement BEFORE UPDATE OF state ON pending_turns
+      WHEN NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'cannot requeue yet'); END`);
+    if (attempts === 3) d.exec(`CREATE TEMP TRIGGER block_prepare_settlement BEFORE DELETE ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL BEGIN SELECT RAISE(ABORT, 'cannot remove yet'); END`);
+    throw new Error("proof worker unavailable");
+  });
+  const f = terminalFixture("spoken-preparation-settlement", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  t.after(() => { f.manager.stop(); d.exec("DROP TRIGGER IF EXISTS block_prepare_settlement"); });
+  const spoken = f.manager.submitSpoken(f.id, "first spoken instruction", f.key).pendingTurn!;
+  f.manager.submit(f.id, "next typed turn");
+  for (const attempt of [1, 3]) {
+    await until(() => attempts === attempt, "blocked preparation settlement " + attempt, 10_000);
+    assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+    assert.equal(d.prepare("SELECT spoken_proof_failures AS count FROM pending_turns WHERE id = ?").get(spoken.id)?.count, attempt - 1);
+    assert.equal(f.registry.voiceHold(f.id), true);
+    assert.deepEqual(f.injected, []);
+    d.exec("DROP TRIGGER block_prepare_settlement");
+  }
+  await until(() => f.injected.length > 0, "following typed delivery", 5_000);
+  assert.equal(attempts, 3, "bookkeeping retries did not consume proof attempts");
+  assert.deepEqual(f.injected, ["next typed turn"]);
+  assert.equal(f.registry.voiceHold(f.id), false);
+  assert.equal(listPendingTurns(f.key).some(row => row.id === spoken.id), false);
+});
+
+test("a quiet spoken delivery bounds worker failures and changed transcript revisions across restart, then releases Foreman", async t => {
+  const { VoiceRouter } = await import("../src/server/voice/router.ts");
+  const { closeDb, loadSpokenTurns } = await import("../src/server/db.ts");
+  const path = join(home, "spoken-worker-recovery.jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const read = claudeTranscript.messages as Required<Pick<TranscriptMessages, "prepareHandoffBoundaries">>;
+  const prepare = read.prepareHandoffBoundaries.bind(read);
+  let workerFailures = 0;
+  let attempts = 0;
+  t.mock.method(read, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+    attempts++;
+    if (attempts <= workerFailures) throw new Error("Transcript worker exited before returning proof");
+    return prepare(...args);
+  });
+  for (const [errors, changes] of [[1, 0], [3, 0], [0, 3], [1, 2]] as const) {
+    workerFailures = errors;
+    attempts = 0;
+    const fixture = () => terminalFixture(`spoken-proof-${errors}-${changes}`, async () => ({ ok: true, pasted: true, submitVerified: true }),
+      15, async () => { if (attempts <= errors + changes) appendFileSync(path, "{}\n"); });
+    let f = fixture();
+    t.after(() => f.manager.stop());
+    const target = { key: "task:steve", name: "Steve", kind: "session", sessionId: f.id, taskId: null,
+      role: "", colorId: null, agent: "claude", state: "running" } as const;
+    const cards: import("../src/shared/voice-routing.ts").VoiceCard[] = [];
+    const router = new VoiceRouter(() => ({ mode: "listening", backend: "fluidaudio", roster: [target] }),
+      () => ({ enabled: false, seconds: 1 }), { deliver: async (_target, words, id, _command, _active, queued) => {
+        const turn = f.manager.submitSpoken(f.id, words, id, queued).pendingTurn!;
+        return { outcome: "queued", turnId: turn.id };
+      } }, card => cards.push(card));
+    f.registry.voiceRouter = router;
+    await router.accept({ id: f.key, text: "Steve, inspect the build", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+    assert.equal(f.registry.voiceHold(f.id), true);
+    if (changes === 2) {
+      await until(() => listPendingTurns(f.key)[0]?.lastError?.includes("Retrying the spoken message") === true, "first proof retry");
+      f.manager.stop();
+      closeDb();
+      f = fixture();
+      f.registry.voiceRouter = router;
+    }
+    await until(() => listPendingTurns(f.key).length === 0, "worker-result settlement", 10_000);
+    const failed = errors + changes === 3;
+    assert.equal(attempts, failed ? 3 : 2);
+    assert.equal(f.injected.length, failed ? 0 : 1);
+    assert.equal(loadSpokenTurns(f.key).length, failed ? 0 : 1);
+    assert.equal(cards.at(-1)?.state, failed ? "failed" : "sent");
+    assert.equal(router.heard.list()[0]?.outcome, cards.at(-1)?.state);
+    if (failed) {
+      assert.match(cards.at(-1)?.detail ?? "", /Nothing was sent.*try again/);
+      assert.equal(router.heard.list()[0]?.detail, cards.at(-1)?.detail);
+      assert.equal(f.registry.voiceHold(f.id), false);
+      await router.accept({ id: f.key + "-retry", text: "Steve, inspect the build", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+      await until(() => cards.at(-1)?.state === "sent", "operator retry", 10_000);
+      assert.equal(f.injected.length, 1);
+    }
+    f.manager.stop();
+  }
 });
 
 test("a terminal refusal before paste returns to queued", async () => {
@@ -2885,6 +3120,44 @@ test("a snoozed question's carry-on instruction is delivered as the daemon's wor
   clearScoutPromptContext(episode.taskId, episode.episodeId);
 });
 
+test("a daemon-written row whose attribution cannot be stored is refused before the driver sees it, and goes back to the queue", async (t) => {
+  const f = sdkFixture("attribution-refused", async () => "started");
+  // A declared wait that cannot record the delivery as Mission Control's (its store failed).
+  t.after(onAutomatedDelivery(() => { throw new Error("store down"); }));
+  const text = 'Your earlier request_input question "Which build?" ended before the operator chose.';
+  createPendingTurn({ id: `${SNOOZE_INSTRUCTION_TURN_PREFIX}review-refused`, noteKey: f.key, text, now: 1 });
+  f.registry.refreshPendingTurns(f.key);
+
+  idle(f.registry, f.id);
+  await settles(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued"
+    && f.registry.getSession(f.id)?.pendingTurns[0]?.lastError != null);
+
+  assert.deepEqual(f.calls, [], "the driver was handed a delivery whose attribution was not stored");
+  const row = f.registry.getSession(f.id)?.pendingTurns[0];
+  assert.match(row?.lastError ?? "", /could not record this delivery/);
+  assert.equal(originOf(f.id, text), undefined, "a refused delivery still claimed authorship");
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("an operator's row whose attribution cannot be stored is refused before the driver sees it, and goes back to the queue", async (t) => {
+  const f = sdkFixture("person-attribution-refused", async () => "started");
+  // A declared wait that cannot record these words as the operator's (its store failed).
+  t.after(onPersonDelivery(() => { throw new Error("store down"); }));
+  const text = "Check the release notes before you merge.";
+  createPendingTurn({ id: "operator-refused", noteKey: f.key, text, now: 1 });
+  f.registry.refreshPendingTurns(f.key);
+
+  idle(f.registry, f.id);
+  await settles(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued"
+    && f.registry.getSession(f.id)?.pendingTurns[0]?.lastError != null);
+
+  assert.deepEqual(f.calls, [], "the driver was handed words whose attribution was not stored");
+  assert.match(f.registry.getSession(f.id)?.pendingTurns[0]?.lastError ?? "", /could not record these words as a person's/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
 // ---- async-input: answers to filed questions are the daemon's words ----------------------
 
 /** A settled `request_input` question, as the review manager leaves it before handing it on. */
@@ -3024,4 +3297,536 @@ for (const mode of ["steer", "interrupt"] as const) test(`coalescing preserves t
     assert.equal(originOf(f.id, f.sends[0]!), "harness");
   } else assert.equal(f.interrupts(), 1);
   f.manager.stop(); clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
+});
+
+// ---- async-input answer cards: a marked row records its own delivery -----------------------
+
+const { openDb } = await import("../src/server/db.ts");
+const { parseReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+const deliveriesFor = (key: string) => openDb().prepare(
+  "SELECT id, review_ids AS reviewIds, confirmed_at AS confirmedAt FROM session_review_deliveries WHERE note_key = ?",
+).all(key) as Array<{ id: string; reviewIds: string; confirmedAt: number | null }>;
+
+test("a marked answer reserves exactly one delivery before the send and confirms it on acceptance", async () => {
+  let atSend: Array<{ confirmedAt: number | null }> | null = null;
+  const f = sdkFixture("marked-answer", async () => {
+    atSend = deliveriesFor(f.key);
+    return "started";
+  });
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  const text = "Mission Control answer to question: Answered: eslint";
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, text).ok, true);
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+  assert.equal(f.calls.length, 1);
+  const envelope = parseReviewEnvelope(f.calls[0]!);
+  assert.deepEqual(envelope && { ids: envelope.reviewIds, rest: envelope.rest }, { ids: [reviewId], rest: text },
+    "the agent reads exactly the old text below one marker line");
+  assert.equal(atSend!.length, 1, "reserved before the runtime was handed the text");
+  assert.equal(atSend![0]!.confirmedAt, null);
+  const [row] = deliveriesFor(f.key);
+  assert.deepEqual(JSON.parse(row!.reviewIds), [reviewId]);
+  assert.notEqual(row!.confirmedAt, null, "confirmed once the driver accepted it");
+  assert.equal(deliveriesFor(f.key).length, 1);
+  assert.equal(f.registry.getGoal(f.id), null);
+  assert.equal(originOf(f.id, f.calls[0]!), "harness", "still daemon-authored");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+test("a refused marked delivery releases its reservation", async () => {
+  const f = sdkFixture("marked-refused", async () => null);
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  idle(f.registry, f.id);
+  await until(() => f.calls.length >= 1, "the refused attempt");
+  await until(() => deliveriesFor(f.key).length === 0, "the refused delivery's reservation to be released");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+test("a marked call-mode late answer (flag on) is never captured as a Goal revision at the send door", async (t) => {
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: true }).ok, true);
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled: false }));
+  const f = sdkFixture("marked-call-answer", async () => "started");
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human");
+  const text = `Mission Control review ${reviewId} was answered after its MCP wait ended. Answered: biome`;
+  const queued = f.manager.submitReviewContinuation(reviewId, f.id, text);
+  assert.equal(queued.ok && queued.pendingTurn?.id, `review-continuation:${reviewId}`, "the turn id is unchanged");
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+  assert.equal(parseReviewEnvelope(f.calls[0]!)?.rest, text);
+  assert.equal(f.registry.getGoal(f.id), null, "a delivery is nobody's ask");
+  assert.equal(claimHumanEcho(f.id, f.key, f.calls[0]!).kind, "none");
+  assert.equal(deliveriesFor(f.key).length, 1);
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+for (const mode of ["steer", "interrupt"] as const) test(`a marked answer keeps the ${mode} at ${mode === "steer" ? 60 : 180} s`, async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 3000000 });
+  const f = steeringFixture(`marked-${mode}`, mode === "interrupt" ? { beforeSteer: async () => { throw new Error("steer refused"); } } : {});
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "foreman", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  const deadline = mode === "steer" ? 60000 : 180000;
+  t.mock.timers.tick(deadline - 1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") assert.deepEqual(f.sends, []);
+  else assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (mode === "steer") {
+    assert.equal(f.sends.length, 1);
+    assert.deepEqual(parseReviewEnvelope(f.sends[0]!)?.reviewIds, [reviewId]);
+    assert.equal(originOf(f.id, f.sends[0]!), "harness");
+    assert.equal(f.registry.getGoal(f.id), null);
+  } else assert.equal(f.interrupts(), 1);
+  f.manager.stop(); clearPendingTurns(noteKeyFor(f.registry.getSession(f.id)!));
+});
+
+/** Make every write of a delivery's confirmation fail, as a full disk or a locked file would. */
+function failConfirmationWrites(t: { after: (fn: () => void) => void }): void {
+  openDb().exec(`CREATE TEMP TRIGGER fail_review_confirmation BEFORE UPDATE OF confirmed_at ON session_review_deliveries
+    BEGIN SELECT RAISE(ABORT, 'confirmation write failed'); END;`);
+  t.after(() => openDb().exec("DROP TRIGGER IF EXISTS temp.fail_review_confirmation"));
+}
+
+test("an SDK answer the runtime accepted is retired even when recording its confirmation fails", async (t) => {
+  failConfirmationWrites(t);
+  const f = sdkFixture("marked-confirm-fails", async () => "started");
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  idle(f.registry, f.id);
+  await until(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0, "the accepted answer to leave the outbox");
+  assert.equal(f.calls.length, 1, "accepted once, and never made retryable");
+  assert.equal(deliveriesFor(f.key)[0]?.confirmedAt, null, "the confirmation write did fail");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+test("a pasted terminal answer still completes pickup when recording its confirmation fails", async (t) => {
+  failConfirmationWrites(t);
+  let key = "";
+  const f = terminalFixture("marked-terminal-confirm-fails", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  key = noteKeyFor(f.registry.getSession(f.id)!);
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  await until(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0, "the verified paste to complete pickup");
+  assert.equal(f.injected.length, 1, "pasted once");
+  assert.equal(deliveriesFor(key)[0]?.confirmedAt, null, "the confirmation write did fail");
+  f.manager.stop(); clearPendingTurns(key);
+});
+
+test("an operator message that begins with a review marker is the operator's: no delivery is reserved for it", async () => {
+  const f = sdkFixture("operator-marker", async () => "started");
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  const pasted = `[mission-control:answer review=${reviewId}]\n\nI pasted this marker myself.`;
+  assert.equal(f.manager.submit(f.id, pasted).ok, true);
+  idle(f.registry, f.id);
+  await settles(() => (f.registry.getSession(f.id)?.pendingTurns.length ?? 1) === 0);
+  assert.deepEqual(f.calls, [pasted]);
+  assert.equal(deliveriesFor(f.key).length, 0, "the marker proves nothing; only the daemon's own rows are recorded");
+  assert.notEqual(f.registry.getGoal(f.id), null, "and it reaches the Goal like any operator message");
+  f.manager.stop(); clearPendingTurns(f.key);
+});
+
+for (const refused of [false, true]) test(`a marked answer pasted into a terminal ${refused ? "releases its reservation when the pane refuses it" : "reserves before the paste and confirms on success"}`, async () => {
+  let atPaste = -1;
+  let key = "";
+  const f = terminalFixture(`marked-terminal-${refused}`, async () => {
+    atPaste = deliveriesFor(key).length;
+    return refused ? { ok: false, pasted: false, submitVerified: false, error: "pane refused" } : { ok: true, pasted: true, submitVerified: true };
+  });
+  key = noteKeyFor(f.registry.getSession(f.id)!);
+  const reviewId = crypto.randomUUID();
+  settledQuestion(reviewId, f.id, "human", "message");
+  assert.equal(f.manager.submitReviewContinuation(reviewId, f.id, "Answered: eslint").ok, true);
+  await until(() => f.injected.length >= 1, "the paste");
+  assert.equal(atPaste, 1, "reserved before the text reached the pane");
+  assert.equal(parseReviewEnvelope(f.injected[0]!)?.rest, "Answered: eslint");
+  if (refused) await until(() => deliveriesFor(key).length === 0, "the refused paste's reservation to be released");
+  else await until(() => deliveriesFor(key)[0]?.confirmedAt != null, "the pasted delivery to be confirmed");
+  f.manager.stop(); clearPendingTurns(key);
+});
+
+test("a queued after-work prompt is dropped, never sent, when task shaping is off at delivery", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const { AFTER_WORK_FLAG_OFF } = await import("../src/server/pending-turns.ts");
+  const run = (name: string, enabled: boolean) => {
+    const registry = new Registry();
+    const id = `sdk:${name}`;
+    registry.registerSdkSession({ id, agent: "claude", name, cwd: `/repo/${name}`, agentSessionId: `conversation:${name}` });
+    const sent: string[] = [];
+    let shaping = true;
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn) => { sent.push(turn.text); return "started"; },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => shaping });
+    manager.start();
+    working(registry, id);
+    const turnId = `${AFTER_WORK_SKILLS_TURN_PREFIX}task-${name}:${id}:1`;
+    // Queued while task shaping was on, as the after-work prompter queues it.
+    const queued = manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+      taskId: `task-${name}`, sessionId: id, noteKey, turnId, text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+    }));
+    assert.equal(queued.pendingTurn?.id, turnId);
+    shaping = enabled;
+    return { registry, manager, id, sent, row: () => getTaskSkillPrompt(`task-${name}`, id) };
+  };
+
+  const off = run("after-work-off", false);
+  idle(off.registry, off.id);
+  await settles(() => (off.registry.getSession(off.id)?.pendingTurns.length ?? 1) === 0);
+  await tick(20);
+  assert.deepEqual(off.sent, [], "nothing is sent once the flag is off");
+  assert.deepEqual(off.registry.getSession(off.id)?.pendingTurns, [], "the queued turn is gone from the outbox");
+  assert.equal(off.row()?.state, "not_delivered");
+  assert.equal(off.row()?.reason, AFTER_WORK_FLAG_OFF);
+  off.manager.stop();
+
+  // The same turn with the flag still on is delivered at idle.
+  const on = run("after-work-on", true);
+  idle(on.registry, on.id);
+  await until(() => on.sent.length > 0, "the after-work turn to be delivered");
+  assert.equal(on.sent[0]!.split("\n")[0], "/wrap-notes");
+  on.manager.stop();
+});
+
+test("an after-work turn a later launch supersedes while its delivery holds it never reaches the agent", async () => {
+  const { queueTaskSkillPromptTurn, upsertTask, commitTaskShaping } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-superseded";
+  registry.registerSdkSession({ id, agent: "claude", name: "superseded", cwd: "/repo/superseded", agentSessionId: "conversation:superseded" });
+  const taskId = "task-superseded";
+  upsertTask(mkTask({ id: taskId, status: "running", sessionId: id }));
+  const sent: string[] = [];
+  let handoffs = 0;
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      handoffs += 1;
+      // The task is handed back to this session while the delivery holds the turn: the new
+      // launch's shaping commit removes the earlier launch's prompt row, but not the claimed turn.
+      commitTaskShaping(taskId, null, "", Date.now(), id);
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+  assert.deepEqual(sent, [], "the superseded launch's prompt is refused at the acceptance guard");
+  assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+  manager.stop();
+});
+
+test("an after-work turn task shaping is turned off for while its delivery holds it never reaches the agent", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const { AFTER_WORK_FLAG_OFF } = await import("../src/server/pending-turns.ts");
+  const queue = (manager: InstanceType<typeof PendingTurnManager>, id: string, taskId: string) => manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+
+  // SDK: the flag is turned off after the outbox claimed the turn, while the driver waits to send it.
+  {
+    const registry = new Registry();
+    const id = "sdk:after-work-flag-held";
+    registry.registerSdkSession({ id, agent: "claude", name: "flag-held", cwd: "/repo/flag-held", agentSessionId: "conversation:flag-held" });
+    let shaping = true;
+    let handoffs = 0;
+    const sent: string[] = [];
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        handoffs += 1;
+        shaping = false;
+        if (beforeSend?.()) return null;
+        sent.push(turn.text);
+        return "started";
+      },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => shaping, afterWorkTurnOwed: () => true });
+    manager.start();
+    working(registry, id);
+    queue(manager, id, "task-flag-held-sdk");
+    idle(registry, id);
+    await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(sent, [], "refused at the acceptance guard once the flag is off");
+    assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+    assert.equal(getTaskSkillPrompt("task-flag-held-sdk", id)?.state, "not_delivered");
+    assert.equal(getTaskSkillPrompt("task-flag-held-sdk", id)?.reason, AFTER_WORK_FLAG_OFF);
+    manager.stop();
+  }
+
+  // Terminal: the flag is turned off after the outbox claimed the turn, before the paste.
+  {
+    const name = "after-work-flag-pane";
+    const registry = new Registry();
+    registry.applyDiscovery([discovered(name)]);
+    let shaping = true;
+    let handoffs = 0;
+    const pasted: string[] = [];
+    const manager = new PendingTurnManager(
+      registry,
+      { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
+      {
+        idleSettleMs: 0,
+        pickupTimeoutMs: 15,
+        afterWorkEnabled: () => shaping,
+        afterWorkTurnOwed: () => true,
+        inject: async (_session, text, _deps, beforeWrite) => {
+          handoffs += 1;
+          shaping = false;
+          const blocker = beforeWrite?.() ?? null;
+          if (blocker) return { ok: false, error: blocker, pasted: false, submitVerified: false };
+          pasted.push(text);
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      },
+    );
+    manager.start();
+    const id = `terminal:${name}`;
+    working(registry, id);
+    queue(manager, id, "task-flag-held-pane");
+    stopHook(registry, name);
+    await settles(() => handoffs > 0 && (registry.getSession(id)?.pendingTurns.length ?? 1) === 0);
+    assert.deepEqual(pasted, [], "refused at the paste guard once the flag is off");
+    assert.deepEqual(registry.getSession(id)?.pendingTurns, [], "and dropped, not claimed again");
+    assert.equal(getTaskSkillPrompt("task-flag-held-pane", id)?.state, "not_delivered");
+    assert.equal(getTaskSkillPrompt("task-flag-held-pane", id)?.reason, AFTER_WORK_FLAG_OFF);
+    manager.stop();
+  }
+});
+
+test("an after-work turn whose launch cannot be checked is held back, never delivered and never dropped, until it can", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-unverified";
+  registry.registerSdkSession({ id, agent: "claude", name: "unverified", cwd: "/repo/unverified", agentSessionId: "conversation:unverified" });
+  const taskId = "task-unverified";
+  let readable = true;
+  let checksWhileUnreadable = 0;
+  let handoffs = 0;
+  const sent: string[] = [];
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      handoffs += 1;
+      // The ownership read starts failing while the driver holds the claimed turn.
+      if (handoffs === 1) readable = false;
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, {
+    idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkRecheckMs: 5,
+    afterWorkTurnOwed: () => {
+      if (readable) return true;
+      checksWhileUnreadable += 1;
+      throw new Error("database is locked");
+    },
+  });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  // Refused at the acceptance guard, then checked again on the drain's recheck timer, never claimed.
+  await until(() => checksWhileUnreadable >= 3, "the drain to recheck the unreadable launch");
+  assert.deepEqual(sent, [], "an unreadable ownership check never delivers the turn");
+  assert.equal(handoffs, 1, "and the turn is not claimed again while it cannot be checked");
+  assert.equal(registry.getSession(id)?.pendingTurns.length, 1, "it stays queued: nothing was dropped");
+  assert.equal(getTaskSkillPrompt(taskId, id)?.state, "queued", "and its prompt row is not settled");
+  // The read recovers: the turn is delivered, once.
+  readable = true;
+  await until(() => sent.length === 1, "the held-back turn to be delivered");
+  await tick(20);
+  assert.equal(sent.length, 1);
+  manager.stop();
+});
+
+test("an ownership read that fails only at the delivery guard still gets the turn rechecked and delivered on a quiet session", async () => {
+  const { queueTaskSkillPromptTurn } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const queue = (manager: InstanceType<typeof PendingTurnManager>, id: string, taskId: string) => manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  // Reads: 1 at the drain (owed), 2 at the guard (throws), 3 after the release (owed again).
+  // Nothing else happens to the session, so only the drain's own recheck can deliver it.
+  const intermittent = () => {
+    let reads = 0;
+    return () => {
+      reads += 1;
+      if (reads === 2) throw new Error("database is locked");
+      return true;
+    };
+  };
+
+  // SDK: the acceptance guard.
+  {
+    const registry = new Registry();
+    const id = "sdk:after-work-intermittent";
+    registry.registerSdkSession({ id, agent: "claude", name: "intermittent", cwd: "/repo/intermittent", agentSessionId: "conversation:intermittent" });
+    let handoffs = 0;
+    const sent: string[] = [];
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        handoffs += 1;
+        if (beforeSend?.()) return null;
+        sent.push(turn.text);
+        return "started";
+      },
+    }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkRecheckMs: 5, afterWorkTurnOwed: intermittent() });
+    manager.start();
+    working(registry, id);
+    queue(manager, id, "task-intermittent-sdk");
+    idle(registry, id);
+    await until(() => sent.length === 1, "the turn the guard held back to be rechecked and delivered");
+    assert.equal(handoffs, 2, "refused once at the guard, then delivered by the recheck");
+    await tick(20);
+    assert.equal(sent.length, 1);
+    manager.stop();
+  }
+
+  // Terminal: the paste guard.
+  {
+    const name = "after-work-intermittent-pane";
+    const registry = new Registry();
+    registry.applyDiscovery([discovered(name)]);
+    let handoffs = 0;
+    const pasted: string[] = [];
+    const manager = new PendingTurnManager(
+      registry,
+      { ...unexpectedActiveSdkDelivery, sendWhenIdle: async () => "started" },
+      {
+        idleSettleMs: 0,
+        pickupTimeoutMs: 15,
+        afterWorkEnabled: () => true,
+        afterWorkRecheckMs: 5,
+        afterWorkTurnOwed: intermittent(),
+        inject: async (_session, text, _deps, beforeWrite) => {
+          handoffs += 1;
+          const blocker = beforeWrite?.() ?? null;
+          if (blocker) return { ok: false, error: blocker, pasted: false, submitVerified: false };
+          pasted.push(text);
+          return { ok: true, pasted: true, submitVerified: true };
+        },
+      },
+    );
+    manager.start();
+    const id = `terminal:${name}`;
+    working(registry, id);
+    queue(manager, id, "task-intermittent-pane");
+    stopHook(registry, name);
+    await until(() => pasted.length === 1, "the pane's held-back turn to be rechecked and pasted");
+    assert.equal(handoffs, 2, "refused once at the paste guard, then pasted by the recheck");
+    manager.stop();
+  }
+});
+
+test("the outbox records an after-work prompt delivered when it retires the turn, with no listener involved", async () => {
+  const { queueTaskSkillPromptTurn, getTaskSkillPrompt } = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-retired";
+  registry.registerSdkSession({ id, agent: "claude", name: "retired", cwd: "/repo/retired", agentSessionId: "conversation:retired" });
+  const taskId = "task-retired";
+  const sent: string[] = [];
+  // No after-work prompter is wired here: only the outbox's own retire can settle the row.
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, { idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkTurnOwed: () => true });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await until(() => sent.length === 1, "the after-work turn to be delivered");
+  assert.equal(getTaskSkillPrompt(taskId, id)?.state, "delivered");
+  assert.ok(getTaskSkillPrompt(taskId, id)?.deliveredAt);
+  manager.stop();
+});
+
+test("a delivered turn whose retire fails is retired again, and its after-work row settled, without sending it again", async () => {
+  const db = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const registry = new Registry();
+  const id = "sdk:after-work-retire-retry";
+  registry.registerSdkSession({ id, agent: "claude", name: "retire-retry", cwd: "/repo/retire-retry", agentSessionId: "conversation:retire-retry" });
+  const taskId = "task-retire-retry";
+  const sent: string[] = [];
+  let retires = 0;
+  const manager = new PendingTurnManager(registry, {
+    ...unexpectedActiveSdkDelivery,
+    sendWhenIdle: async (_id, turn, beforeSend) => {
+      if (beforeSend?.()) return null;
+      sent.push(turn.text);
+      return "started";
+    },
+  }, {
+    idleSettleMs: 0, pickupTimeoutMs: 15, afterWorkEnabled: () => true, afterWorkTurnOwed: () => true,
+    retireDelivered: (turnId, revision, at) => {
+      retires += 1;
+      if (retires === 1) throw new Error("disk I/O error");
+      return db.retireDeliveredPendingTurnKey(turnId, revision, at);
+    },
+  });
+  manager.start();
+  working(registry, id);
+  manager.submitDaemonTurn(id, (noteKey, now) => db.queueTaskSkillPromptTurn({
+    taskId, sessionId: id, noteKey, turnId: `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:${id}:1`,
+    text: "/wrap-notes\n\nThe work is complete.", skills: ["wrap-notes"], from: null, now,
+  }));
+  idle(registry, id);
+  await until(() => sent.length === 1, "the after-work turn to be delivered");
+  assert.equal(retires, 1);
+  assert.equal(db.getTaskSkillPrompt(taskId, id)?.state, "queued", "the failed retire changed nothing yet");
+  await until(() => retires === 2, "the retire to be tried again", 3_000);
+  assert.equal(db.getTaskSkillPrompt(taskId, id)?.state, "delivered");
+  assert.deepEqual(registry.getSession(id)?.pendingTurns, []);
+  await tick(20);
+  assert.equal(sent.length, 1, "the prompt is never sent twice");
+  manager.stop();
+});
+
+test("marking an uncertain after-work turn sent settles its prompt row delivered in the same transaction", async () => {
+  const db = await import("../src/server/db.ts");
+  const { AFTER_WORK_SKILLS_TURN_PREFIX } = await import("../src/shared/message-delivery.ts");
+  const d = db.openDb();
+  const taskId = "task-uncertain-sent";
+  const turnId = `${AFTER_WORK_SKILLS_TURN_PREFIX}${taskId}:s-uncertain:1`;
+  db.queueTaskSkillPromptTurn({ taskId, sessionId: "s-uncertain", noteKey: "note:s-uncertain", turnId, text: "/wrap-notes", skills: ["wrap-notes"], from: null, now: 1 });
+  // The daemon stopped after the agent took the turn and before its retire committed.
+  d.prepare(`UPDATE pending_turns SET state = 'sending', claimed_at = 2 WHERE id = ?`).run(turnId);
+  db.recoverSendingPendingTurns(3);
+  const row = d.prepare(`SELECT state, revision FROM pending_turns WHERE id = ?`).get(turnId) as { state: string; revision: number };
+  assert.equal(row.state, "uncertain", "never resent on its own");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.state, "queued");
+  assert.equal(db.resolveUncertainPendingTurn(turnId, row.revision, 40), true);
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.state, "delivered");
+  assert.equal(db.getTaskSkillPrompt(taskId, "s-uncertain")?.deliveredAt, 40);
 });

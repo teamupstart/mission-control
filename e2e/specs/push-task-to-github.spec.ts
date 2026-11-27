@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { seedRepo, type DaemonHandle } from "../fixtures/daemon.ts";
 import { FAKE_GH_ISSUE_ID, FAKE_GH_ISSUE_URL } from "../fixtures/fake-agents.ts";
@@ -60,7 +61,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
   if (restore) await page.setViewportSize(restore);
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/push-task-to-github/${name}.png`);
 }
 
@@ -71,7 +71,7 @@ async function putSources(
   sources: Array<Record<string, unknown>>,
 ): Promise<void> {
   const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
-    data: { sources },
+    data: { revision: await taskSourcesRevision(page, daemon), sources },
   });
   expect(res.ok(), await res.text()).toBe(true);
 }

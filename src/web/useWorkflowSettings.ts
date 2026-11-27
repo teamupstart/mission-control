@@ -1,4 +1,6 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { WorkflowSettingsPatch } from "@shared/protocol.ts";
 import type {
   TestEvidenceAuditAggregate,
   WorkflowConfig,
@@ -33,11 +35,8 @@ export interface WorkflowSettingsState {
    * prevent. Never raced by a write - nothing on this panel writes it.
    */
   testEvidenceAudit: TestEvidenceAuditAggregate | null;
-  /**
-   * Write the whole config, resolving to whether the daemon accepted it. The route is a
-   * PUT of the complete blob (not a patch), so callers spread the config they were handed.
-   */
-  update: (next: WorkflowConfig) => Promise<boolean>;
+  /** Save the fields the operator edited, resolving to whether the daemon accepted them. */
+  update: (patch: WorkflowSettingsPatch) => Promise<boolean>;
   /** Why the last write didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -126,9 +125,7 @@ export function pollRacedByWrite(before: WriteClock, after: WriteClock): boolean
  * The interval starts a tick whether or not the previous one's requests are still out, so
  * two polls can be in flight at once and they do not have to land in the order they left.
  * An older one landing last repaints what IT read - the panel showed Live delivery come on
- * and then go off again for nearly three seconds against a held response - and the value it
- * restores is not merely displayed: every save on this panel spreads the config it is
- * holding, so an operator acting during that window writes the obsolete blob back.
+ * and then go off again for nearly three seconds against a held response.
  *
  * An id per poll, and a completion older than the newest applied is dropped. The
  * alternative - refusing to start a tick while one is in flight - rules the reorder out
@@ -172,6 +169,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
     setConfigState(next);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("workflows");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -208,7 +206,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
       alive = false;
       clearInterval(id);
     };
-  }, [setConfig, readClock]);
+  }, [setConfig, readClock, settingsRevision]);
 
   /**
    * Apply a config change optimistically, and TAKE IT BACK if the daemon refuses.
@@ -219,16 +217,17 @@ export function useWorkflowSettings(): WorkflowSettingsState {
    * must not leave the optimistic value on screen.
    */
   const update = useCallback(
-    async (next: WorkflowConfig): Promise<boolean> => {
+    async ({ retentionConfirmation, ...patch }: WorkflowSettingsPatch): Promise<boolean> => {
       const before = configRef.current;
+      if (!before) return false;
       // Marked in flight BEFORE the request goes out, which is the whole point: the window
       // a poll has to be kept out of opens at the click, not when the daemon answers.
       writesInFlight.current += 1;
-      setConfig(next);
+      setConfig({ ...before, ...patch, retention: { ...before.retention, ...patch.retention } });
       try {
         const saved = await workflowRequest<WorkflowConfig>("/api/workflows/config", {
-          method: "PUT",
-          body: JSON.stringify(next),
+          method: "PATCH",
+          body: JSON.stringify({ ...patch, retentionConfirmation }),
         });
         setConfig(saved);
         setError(null);

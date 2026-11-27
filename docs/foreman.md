@@ -200,8 +200,10 @@ Personal sessions retain their ordinary completion boundary. See
 
 **A workflow-bound `plan` task has a planning handoff.** Its approved Markdown/HTML, requested
 phase files and scheduling, verification, and applicable plan evidence must be ready. Its PR,
-review follow-through, CI waiting, and merge belong to the workflow. Commit and push remain
-part of planning when needed to make scheduled task paths durable. An unbound plan retains the
+review follow-through, CI waiting, merge, and the bound workflow's own validation or review
+result belong to the workflow. That last one is deferred because Foreman's completion claim is
+what starts the workflow, so a plan can never be held for a result only that run produces.
+Commit and push remain part of planning when needed to make scheduled task paths durable. An unbound plan retains the
 skill's direct PR path. Foreman reads live publication ownership independently of Persona
 evidence eligibility and discards the verdict if binding identity, version, or trigger mode
 changes during verification or before the completion check. The completion claim carries that
@@ -232,8 +234,8 @@ sending recovery gaps.
 Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
 and captions remain inside the untrusted evidence fence. Evidence from an older work
-generation remains usable within the same intent episode, while legacy unstamped evidence and
-evidence from another episode are excluded. For an eligible binding, a zero count explicitly leaves
+generation remains usable within the same intent episode. Unstamped evidence is excluded.
+Stamped evidence from an earlier episode requires the continuation revalidation described below. For an eligible binding, a zero count explicitly leaves
 the evidence-registration clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
 the items cover what the task requested. If the implementation is complete and every blocking gap
 only says verification proof is unavailable, registered same-episode evidence lets Foreman claim a
@@ -254,6 +256,34 @@ gaps. Only complete, standalone registration statements are omitted; compound or
 legacy prose is retained for normal verification. If registration was the only gap, recovery asks
 the session to recheck the task and report completion.
 
+### Registered proof after a continuation
+
+Foreman reports how many registered items it excluded when their intent episode differs
+from the current one. Their captions and locators stay outside the verifier's evidence.
+A missing registration, an earlier registration, an unreadable source and a changed
+checkout or file have different meanings for completion.
+
+For a single-checkout ship or bugfix task awaiting its first submission, a complete
+agent registration can record a receipt for its issued checkout, task, binding, objective,
+items and criterion links. Mission Control compares the full HEAD, index and Git-visible
+worktree contents across registration using the bounded repository snapshot reader. Sparse,
+nested, unborn or unreadable checkouts use normal fresh registration. For the immediately following revision only, it
+can revalidate that packet when the accepted instruction was exactly `continue` and the
+refiner recorded it as steering on the same objective. It compares the receipt, reopens
+the scoped file sources and verifies their bytes. The daemon samples the checkout revision
+before validating the exact digest for a claim. Inside the completion transaction, it
+reopens the evidence files and compares the checkout revision again within the existing
+budget. A changed HEAD, index or Git-visible file prevents the claim before reservation.
+The original stamps, coverage, work generation and ownership stay on
+the registration. Normal verification, blocking standards findings and workflow gates apply.
+
+For an already-held generation, inspect the staged items and the hold's other findings.
+An older registration without a checkout receipt requires fresh verification and normal
+registration of the verified items and criterion links. Use the existing ids for identical
+proof. A normal recovery turn or the next authorized author turn supplies a new settled
+generation for Foreman to assess. The original hold remains in history and its delivery
+budget still applies. Manual bindings continue to require manual submission.
+
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
 `empty`, or `verification_failed` - with a bounded summary and, for a hold, its blocking gaps.
@@ -264,17 +294,34 @@ decision without episode metadata remains readable but feeds no verifier history
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
+Because the queue row keeps only the latest decision, the worker also appends one line per
+decision to `foreman.log` in the state directory, beside the app's Foreman lifecycle lines.
+Each line carries the time, session, task kind, generation, intent episode, outcome, blocking gap
+ids with their kind, a claimed run id, and the verifier's summary clamped to one line. Gap
+details, transcripts and diffs are never written. At 5 MiB the worker renames it to `foreman.log.1`.
+The app writes its Foreman lifecycle lines to the path rather than through a handle it keeps open,
+so every line lands in `foreman.log` or `foreman.log.1` and none is lost to a rotation.
+A hold that later turns out to have stalled a workflow can therefore still be read after the
+next completion has replaced it.
+
 Two of those outcomes - `empty` and `retired` - can also *conclude a task*, and only ever a
 [recurring mission's](recurring-missions.md#when-a-run-finishes-but-its-task-does-not) whose
 own completion policy asked for it. Both mean the run is over with nothing to ship, which is
 exactly the case no merge will ever settle. Nothing else changes: every other outcome, and
 every task that did not come from a mission, still completes the way it always has.
 
-**Pre-PR recovery applies only to invited, task-owned `ship` sessions.** Its popover
+**Pre-PR recovery applies only to invited, task-owned `ship`, `bugfix` and `document`
+sessions, and to a plan that waits on Foreman to start its workflow.** That plan is a
+repository-stored `plan` task whose publication a **Foreman Complete** workflow owns. Its
+workflow starts only from Foreman's completion claim, so a held verdict would otherwise leave
+it idle with no run, no message and no next turn. A plan receives only its held gaps, or an
+escalation when the verifier keeps failing. The relay keeps the planning handoff's
+commit-and-push rule and tells the session that the workflow's own result is not its gap to
+close. An unbound plan, a Manual binding and a local-storage plan are not relayed. The popover
 switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
 of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed
-ship task, an explicit Foreman invite, a drivable hook-instrumented session, and a completed
-settled-idle work cycle. A human ask, a work-queue item, a pending turn, an active Workflow, or
+task of one of those kinds, an explicit Foreman invite, a drivable hook-instrumented session,
+and a completed settled-idle work cycle. A human ask, a work-queue item, a pending turn, an active Workflow, or
 any open task-owned pull request in any attached repository wins and makes the shepherd hold.
 The first quiet window is **20 minutes** by default and is configurable from 1 to 1440 minutes
 under **Settings → Foreman → Safety**.
@@ -285,7 +332,7 @@ question, pending or snoozed, under the `async-input` preview flag's
 the question is answered or dismissed. Foreman's answer to a question filed without stopping
 reaches the agent as a message, like yours.
 
-When prompted completion records a real held verdict for an eligible managed ship task, Foreman
+When prompted completion records a real held verdict for an eligible managed task, Foreman
 does not wait for that first quiet window. It claims recovery through the same daemon-owned ledger
 and relays the reviewed blocking-gap payload in the same worker pass. This immediate route uses the
 existing **Keep pre-PR ship tasks moving** switch and every ownership, delivery, live-mode, and
@@ -344,6 +391,31 @@ finished work never reaches an automatic completion action:
 
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
+A retirement takes no handoff action, so it also applies when the Goal records an
+[operator-only handoff](sessions.md#goal). The hold keeps an otherwise eligible completion pending.
+
+When you authorize implementing a selected mockup, the reconciled [Goal](sessions.md#goal)
+describes the product change. Foreman applies the same artifact-only diff safeguard and then
+verifies the implementation before claiming the bound Workflow. A drained work queue uses
+the current Goal to decide what is eligible for handoff. The completed items and task title
+supply the contract when there is no Goal. A pending or ambiguous Goal pauses the drain decision.
+Items delivered after the operator's latest deliverable instruction still contribute artifact-only
+requirements, even if the Goal is reconciled after the item. A standalone release lifts item
+restrictions on publication while preserving those requirements, including when the queue has no Goal.
+An automatic retry keeps the first delivery time for an item's instruction.
+Guarded drain writes use a dedicated daemon route. A worker connected to an older daemon
+receives a missing-route error and leaves the drain untouched. Desktop updates stop the owned
+worker and daemon before switching bundles. See [desktop updates](desktop-and-packaging.md#updates-from-the-installed-app).
+
+To recover a prompted completion that Foreman already retired as a review artifact, first check the
+session's completion entry in `foreman.log` for the retired generation and artifact reason. Verify
+that the session still owns the checkout, the intended Foreman-complete binding has no submission,
+and no PR or direct shipping handoff already owns the work. Send a new human instruction naming
+the selected design and making the product implementation the deliverable, and ask the agent to
+check the existing change and prepare it for the bound Workflow. Once the new Goal resolves and
+the turn settles, Foreman verifies the new generation with the ordinary evidence and review
+requirements. The earlier retirement stays recorded in the log. Use this recovery only for a
+confirmed misclassification and honor any outstanding stop or no-PR instruction.
 
 **A `chat` task with no explicit Workflow always stays human-ended.** Foreman may recognize
 its completion boundary, but it retires that automatic pass without offering or sending a
@@ -742,3 +814,11 @@ per pass keeps PR follow-through ahead of ship recovery and ordinary queue work.
 marks retain their existing clocks; CodeRabbit generations and claims live in the adoption
 ledger, never in the Foreman process. Unknown delivery stays spent across restarts and appears
 in Shipping with manual messaging available. Nothing in this source authorizes a merge.
+
+## Spoken messages
+
+While Voice addressing is enabled, a pending addressed message holds Foreman writes to its session.
+Any undelivered spoken row, including an uncertain handoff, keeps the hold until delivery or removal.
+After confirmed delivery, the receiving turn holds Foreman until it finishes. This hold survives
+a daemon restart and has no time limit. If the daemon misses the completion signal, Foreman
+continues to wait.

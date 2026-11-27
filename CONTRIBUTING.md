@@ -32,6 +32,8 @@ Prerequisites:
   `ASDF_NODEJS_VERSION=24.18.0 npm test`. With Homebrew, run `brew install node@24` and put
   `$(brew --prefix node@24)/bin` first on `PATH`. Confirm with `node --version` before you
   run the suite.
+- On Apple silicon, see [macOS voice build and tests](#macos-voice-build-and-tests) for the
+  toolchain used by the complete desktop build.
 - Playwright Chromium for browser tests. It is a one-time download per machine and
   is intentionally not installed by `npm install`.
 
@@ -57,6 +59,53 @@ smaller compatibility path for dependencies, build, and hooks only.
 For the fuller first-run walkthrough, including state, desktop, hooks, and demo
 mode, see [docs/setup.md](docs/setup.md).
 
+### macOS voice build and tests
+
+On Apple silicon running macOS 14 or newer, `npm run build` includes the Swift voice
+listener. Confirm that the selected developer tools provide Swift 6.2 or newer and the macOS SDK.
+The [Command Line Tools for Xcode](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools)
+are sufficient when they meet those requirements. Microphone permission is needed when capturing
+audio at runtime.
+
+```sh
+xcode-select --print-path
+swift --version
+xcrun --sdk macosx --show-sdk-path
+npm run build:voice-listener
+```
+
+On the first build, `curl` downloads the NeMo archive to a checkout-local SwiftPM cache and
+verifies its SHA-256. SwiftPM requests the archive even with the NeMo trait disabled. If a new
+FluidAudio pin changes the binary target, update the URL and checksum in
+`scripts/build-voice-listener.mjs`. Other platforms skip the Swift listener build.
+
+The standalone Swift test suite uses XCTest. If it reports `no such module 'XCTest'`, install
+[full Xcode](https://developer.apple.com/xcode/) with Swift 6.2 or newer and select it for the
+test command with `DEVELOPER_DIR`. This keeps the machine-wide toolchain selection intact. Use the
+actual installation path if Xcode is installed elsewhere. Build the listener first so the tests
+can reuse the verified archive.
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -version
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test -c release \
+  --package-path native/voice-listener \
+  --cache-path "$PWD/native/voice-listener/.build/swift-cache"
+```
+
+For the recognizer test, generate clips with `python3 scripts/voice-spike/corpus.py`, set
+`VOICE_TEST_CORPUS` to the absolute path of `.tmp/voice-spike/audio`, and set
+`MISSION_VOICE_MODEL_DIR` to the downloaded model revision directory.
+
+To exercise long messages with the installed macOS models, build the dashboard and daemon
+and set `MISSION_LONG_VOICE_MODELS` to the downloaded FluidAudio revision directory.
+Run `npm run test:e2e -- --workers=1 voice-long-capture.spec.ts`. The spec synthesizes a
+known message, feeds one minute of PCM into the release listener at microphone callback
+speed, and compares the receiving SDK session's delivery receipt word for word. It runs
+once with automatic silence detection and once with a dated push-to-talk release.
+
+For dashboard and daemon development, `npm run dev` skips the Swift voice listener build and
+the FluidAudio download. Leave the `voice` preview off when working without voice.
+
 ## Commands
 
 | Command | Use it for |
@@ -67,7 +116,8 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run dev:desktop` | Daemon, dashboard, and Electron shell. |
 | `npm run build` | Production web, server, Electron, MCP, and hook bundles. |
 | `npm run typecheck` | TypeScript validation. |
-| `npm run lint` | Oxlint over source, hooks, tests, scripts, and e2e. |
+| `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations, plus repository policy rules. React/hooks and accessibility findings are warnings. |
+| `npm run konsistent` | Structural conventions from [konsistent.json](konsistent.json). Component export names are advisory. |
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
@@ -75,6 +125,25 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run package` | Builds the macOS application package. |
 | `npm run demo` | Starts a token-free demo. Build first. |
 | `npm run docs:screenshots` | Regenerates the committed README screenshots from the token-free demo. Build first. |
+
+`npm run lint` exits non-zero on correctness errors, including `debugger`, and leaves
+React/hooks and JSX accessibility findings advisory until their follow-up tasks promote them.
+`.oxlintrc.json` documents the disabled `prefer-tag-over-role` rule and narrowly scoped
+exceptions for intentional control-character sanitization and its tests. Console output is
+allowed: CLI output, daemon diagnostics, and fixture logging are intentional, so redundant
+`no-console` suppressions should not be added.
+
+Repository lint rules are named in [AGENTS.md](AGENTS.md). Scoped legacy exceptions are
+annotated at their use sites.
+The CI gates job also runs the structural checks. Update `konsistent.json` when a
+required file, export name, or directory convention changes. Use
+`npm run konsistent -- validate` to validate config edits.
+CI also runs `node scripts/check-doc-links.mjs` and checks pull requests for agent co-author
+trailers, changelog changes outside Release Please, and new image paths outside documentation
+and product asset locations. The image check permits `docs/images/`, top-level files in `build/`,
+and public web assets in `src/web/public/`. Evidence, verification, and shots folders under
+product asset locations remain subject to the image check.
+Images already tracked at the pull request's merge base are grandfathered by path.
 
 `make build`, `make check`, `make test`, `make lint`, and `make smoke` install or
 refresh dependencies through the repository's stamp file. On macOS, `npm test`
@@ -125,6 +194,27 @@ label, or placeholder.
 - Do not commit secrets, local state, generated outputs edited by hand, or PR
   evidence. Put evidence under gitignored `e2e/.artifacts/<topic>/` and attach it
   to the pull request.
+
+## Onboard a setting
+
+1. Reuse the control's entry in `src/shared/settings-controls.ts` for its label, keywords
+   and category. Reuse its generator for repeated controls. Keep runtime toggle bindings
+   in the web layer.
+2. In the owner's session settings adapter, declare a stable
+   public key and the exact field it reads and edits. For an ordinary field, bind it to the
+   dashboard patch schema and synchronous owner getter and writer. Reserve a custom leaf
+   projection for cases such as a single member of a preferences list. A storage or UI
+   rename keeps the published key or provides an alias. Declare the access policy and
+   document the reason and operator destination for protected, read-only and operational controls.
+3. For a new domain, provide the owner binding once and share the dashboard's validation,
+   feature checks and post-save effects. Use an existing update event or a bounded
+   invalidation that makes the browser re-read its normal route. Composite replacements
+   require an owner revision that advances on dashboard writes and restores. Prefer a
+   narrower edit when a parent also contains protected leaves.
+4. Update the [coverage inventory](docs/session-settings-inventory.md) and run
+   `test/session-settings-inventory.test.ts`, `test/typed-settings-owners.test.ts` and
+   `test/mcp-settings.test.ts`. A setting
+   declaration never adds a tool, request field, enum of setting names, or prompt content.
 
 ## Submitting a change as a repository collaborator
 

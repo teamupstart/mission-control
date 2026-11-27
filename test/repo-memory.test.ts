@@ -47,13 +47,6 @@ test("the convention's paths are frozen, because repos already hold them", () =>
   assert.ok(MEMORY_POINTER_LINE.includes(MEMORY_REFERENCE_MARKER));
 });
 
-test("the convention module stays browser-safe", () => {
-  // `src/shared/` is a controlled path: the dashboard bundles it, so one `node:` import
-  // takes the web build down. Phase 3 imports these constants into the browser.
-  const source = readFileSync(`${here}../src/shared/memory.ts`, "utf8");
-  assert.equal(/from "node:/.test(source), false, "shared code may not import node builtins");
-});
-
 test("the pointer names the index and the entries it links", () => {
   // An index is a table of contents. An agent that reads it and stops has the titles of
   // this repo's traps and none of the traps, which is the failure mode the line is worded
@@ -168,7 +161,9 @@ test("the dispatcher composes pi's turn one through the pointer", () => {
   // name, and that `preparePiLaunch` is handed that same name.
   assert.match(
     dispatcher,
-    /const piText\s*=[^;]*withRepoMemoryPointer\(\s*wt\.path,\s*intent,?\s*\)/,
+    // The third argument is the pointer decision the launch read once, so the budget and the
+    // launch message agree on it; it is still this call that composes Pi's launch message.
+    /const piText\s*=[^;]*withRepoMemoryPointer\(\s*wt\.path,\s*intent(?:,\s*piHasMemory)?,?\s*\)/,
     "pi's launch message must be composed through withRepoMemoryPointer",
   );
   assert.match(

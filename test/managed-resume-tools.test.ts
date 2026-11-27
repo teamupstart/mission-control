@@ -450,8 +450,43 @@ fi
   }
 });
 
+// The work unit a resumed agent actually receives, through preparation and the real guard, in a
+// pane whose terminal server already holds ANOTHER unit's id (docs/work-units.md).
+for (const workUnitId of ["wu_01JD00000000000000000000AA", null] as const) test(`a resumed agent in a pane holding another WORK_UNIT_ID receives ${workUnitId ? "its own" : "none"}`, async () => {
+  const nativeId = `work-unit-resume-${workUnitId ? "own" : "none"}`;
+  const p = await prepareTerminalResume(session(nativeId), { ...context, workUnitId });
+  assert.equal(p.workUnitId, workUnitId);
+  const marker = join(home, `${nativeId}.json`);
+  const script = join(home, `${nativeId}.mjs`);
+  writeFileSync(script, `import {writeFileSync,renameSync} from 'node:fs';
+writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({workUnitId:process.env.WORK_UNIT_ID ?? null}));
+renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});`);
+  const configPath = join(p.stateHome, "launch.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  writeFileSync(configPath, JSON.stringify({ ...config, argv: [process.execPath, script] }));
+  p.beginLaunch();
+  // The same unambiguous inventory the real-wrapper cases use, so the guard's ps reads are quick.
+  const ps = join(home, "work-unit-ps");
+  writeFileSync(ps, `#!/bin/sh
+date='Wed Sep 30 12:34:56 2026'
+if [ "$1" = '-p' ]; then
+  printf '%s\\n' "$date"
+else
+  printf '1 0 %s\\n%s 1 %s\\n' "$date" "$PPID" "$date"
+fi
+`, { mode: 0o755 });
+  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_PS_BIN: ps, WORK_UNIT_ID: "wu_01JD00000000000000000000PN" };
+  const child = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (data) => { stderr += data; });
+  const code = await new Promise((resolve) => child.once("exit", resolve));
+  assert.equal(code, 0, stderr);
+  const observed = JSON.parse(readFileSync(marker, "utf8")) as { workUnitId: string | null };
+  assert.equal(observed.workUnitId, workUnitId, "the resume's own decision, never the pane's");
+});
+
 for (const { doubleFork, signal } of [{ doubleFork: false, signal: null }, { doubleFork: true, signal: null },
-  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 30_000 }, async () => {
+  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 30_000 }, async (t) => {
   const nativeId = `detached-${doubleFork}-${signal}`;
   writeFileSync(join(home, "token"), "fixture-only-loopback-credential", { mode: 0o600 });
   const p = await prepareTerminalResume(session(nativeId), context);
@@ -493,27 +528,7 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
   let stderr = "";
   guard.stderr.on("data", (data) => { stderr += data; });
   const exited = new Promise((resolve) => guard.once("exit", resolve));
-  try {
-    if (signal) {
-      const readyDeadline = Date.now() + 15_000;
-      while (Date.now() < readyDeadline && !existsSync(marker) && guard.exitCode === null) await delay(30);
-      assert.ok(existsSync(marker), stderr);
-      process.kill(-guard.pid!, signal);
-    }
-    assert.equal(await exited, signal ? 1 : 0, stderr);
-    assert.ok(existsSync(marker), "the descendant started before its parents exited");
-    const observed = JSON.parse(readFileSync(marker, "utf8"));
-    process.kill(observed.pid, 0);
-    assert.equal(observed.home, p.stateHome);
-    assert.ok(existsSync(configPath), "agent exit must not remove a detached descendant's environment");
-    assert.equal(resumeLeaseStatus(p.lease).state, "claimed");
-    reconcileResumeLeases(p.lease.root, Date.now() + RESUME_START_MS * 100);
-    assert.ok(existsSync(configPath), "an ambiguous descendant prevents age-based cleanup after restart");
-    await assert.rejects(prepareTerminalResume(session(nativeId), context), /unresolved|already|still/i);
-    writeFileSync(check, "check credentials after guard exit");
-    for (let i = 0; i < 100 && !existsSync(result); i++) await delay(30);
-    assert.equal(readFileSync(result, "utf8"), "true", "the surviving descendant can still read its Mission credential");
-  } finally {
+  t.after(async () => {
     writeFileSync(stop, "stop");
     if (guard.exitCode === null) guard.kill("SIGTERM");
     await exited;
@@ -528,7 +543,26 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
         await delay(30);
       }
     }
+  });
+  if (signal) {
+    const readyDeadline = Date.now() + 15_000;
+    while (Date.now() < readyDeadline && !existsSync(marker) && guard.exitCode === null) await delay(30);
+    assert.ok(existsSync(marker), stderr);
+    process.kill(-guard.pid!, signal);
   }
+  assert.equal(await exited, signal ? 1 : 0, stderr);
+  assert.ok(existsSync(marker), "the descendant started before its parents exited");
+  const observed = JSON.parse(readFileSync(marker, "utf8"));
+  process.kill(observed.pid, 0);
+  assert.equal(observed.home, p.stateHome);
+  assert.ok(existsSync(configPath), "agent exit must not remove a detached descendant's environment");
+  assert.equal(resumeLeaseStatus(p.lease).state, "claimed");
+  reconcileResumeLeases(p.lease.root, Date.now() + RESUME_START_MS * 100);
+  assert.ok(existsSync(configPath), "an ambiguous descendant prevents age-based cleanup after restart");
+  await assert.rejects(prepareTerminalResume(session(nativeId), context), /unresolved|already|still/i);
+  writeFileSync(check, "check credentials after guard exit");
+  for (let i = 0; i < 100 && !existsSync(result); i++) await delay(30);
+  assert.equal(readFileSync(result, "utf8"), "true", "the surviving descendant can still read its Mission credential");
 });
 
 test("symlinks, foreign locators and corrupt records cannot authorize deletion", () => {

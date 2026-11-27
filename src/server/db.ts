@@ -1,5 +1,6 @@
-import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
-import type { SdkUsage } from "./harness/types.ts";
+import { workflowGraphFingerprint } from "./workflows/graph-fingerprint.ts";
+import { RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
+import type { SdkUsage, TranscriptBoundary, TranscriptSession } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
 import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
@@ -9,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
 import { z } from "zod";
+import { TaskShapingSchema, TaskSkillPromptSchema, type TaskShaping, type TaskSkillPrompt } from "@shared/shaping.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { createHash } from "node:crypto";
@@ -30,6 +32,7 @@ import { supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
   STANDING_INSTRUCTIONS_MECHANISMS,
+  type RepoTaskSkillRecord,
   type StandingInstructionsMechanism,
   type StandingInstructionsSource,
 } from "@shared/standing-instructions.ts";
@@ -51,7 +54,7 @@ import {
   type PipelineProviderId,
   type PipelineRun,
 } from "@shared/pipeline.ts";
-import { MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
+import { AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_DELIVERY_MODES, type MessageDeliveryMode } from "@shared/message-delivery.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -101,6 +104,8 @@ import type {
   WorkItemState,
   WorkCycleSummary,
   WorktreeProvider,
+  SessionAwaiting,
+  SessionAwaitingWakeSource,
   SessionBlocker,
   SessionBlockerKind,
   SessionBlockerReply,
@@ -110,10 +115,12 @@ import {
   PROMPTED_COMPLETION_OUTCOMES,
   REVIEW_CLOSED_REASONS,
   REVIEW_SNOOZE_MODES,
+  SESSION_AWAITING_WAKE_SOURCES,
   SESSION_BLOCKER_KINDS,
   TASK_KINDS,
 } from "@shared/types.ts";
 import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
+import { SpokenNameSchema } from "@shared/voice-names.ts";
 import {
   PROMPTED_DECISION_GAPS_MAX,
   PROMPTED_DECISION_GAP_DETAIL_MAX,
@@ -146,6 +153,8 @@ import {
   HOME_DISPATCH_ACTOR_NAMES,
   HOME_DISPATCH_ACTOR_PREFIXES,
   HUMAN_REVIEW_STATUSES,
+  CONVERSATION_QUESTION_RECORDS,
+  isConversationQuestionRecord,
   isConversationResolvedReview,
   isHomeDispatchResolvedReview,
 } from "@shared/review-item.ts";
@@ -169,10 +178,17 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { isWorkUnitId } from "@shared/work-unit.ts";
 import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
+import {
+  parseReviewEnvelope,
+  REVIEW_MESSAGE_TURN_PREFIX,
+  wrapReviewEnvelope,
+  type ReviewEnvelopeKind,
+} from "@shared/review-message-envelope.ts";
 import {
   isRetentionCandidate,
   isRetentionRetryable,
@@ -277,7 +293,56 @@ let db: DatabaseSync | undefined;
 // 39: the asynchronous input inbox (`reviews.wait_mode`, `meanwhile`, `closed_reason`), nullable
 //     with no backfill: every existing row is a question its agent waited for inside the call,
 //     filed no meanwhile line, and was never closed by a merge.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 39;
+// 40: a task's work unit id (`tasks.work_unit_id`, @shared/work-unit.ts) and its index, nullable
+//     with no backfill: an older task gets its id at its next dispatch or assign, and nothing is
+//     inferred for it. Written once, enforced by `upsertTask`.
+// 41: review-message deliveries (`session_review_deliveries`), a new empty table: no turn was
+//     drawn as a delivered answer card before it existed, so older turns render as they did.
+// 42: task shaping's record of the latest launch that reached a worker (`tasks.shaping`,
+//     @shared/shaping.ts) and the section it delivered (`task_shaping_text`). Nullable and a new
+//     table, with no backfill: no launch was shaped before they existed.
+// 43: the work unit each session's agent was started with (`session_launch_work_units`), a new
+//     empty table keyed by note key: a session running before it has no record and emits no
+//     work unit until its next start. No existing row is migrated.
+// 44: declared waits on background processes (`session_awaitings`), keyed by note key. A new
+//     empty table: no session declared a wait before it existed.
+// 45: each launch's after-work skills prompt (`task_skill_prompts`), keyed by task and session
+//     and replaced in the same transaction as each launch's shaping commit. A new empty table:
+//     no skill was routed before it existed.
+// 46: agent reports (`reports`, @shared/reports.ts), a new empty table: no agent posted a report
+//     before it existed. Its follow-up, announce and publication columns stay NULL until the
+//     later phases that write them.
+// 47: revised plan forms (`reviews.revises_review_id`, `revision`) and the index that keeps one
+//     revision per form, nullable with no backfill: every existing row is a form that revises
+//     nothing.
+// 48: the delivery id a task's binding was last written with (`tasks.shaping_delivery`), which
+//     a current shaping record carries too (`TaskShaping.deliveryId`). Backfilled once: a record
+//     naming the task's bound session shares a fresh id with its row, so what readers showed
+//     still shows; every other record gains an id no binding carries, so it stays hidden.
+// 49: `reports.counted_in_digest_at`, when a return digest counted a report (agent reports
+//     phase 6). Nullable, no backfill: no digest counted a report before it existed.
+// 50: muted report authors (`report_mutes`, agent reports phase 7), a new empty table: no
+//     author was muted before it existed, so every report notifies and is listed as before.
+// 51: a task's call sign (`tasks.call_sign`, @shared/voice-names.ts), nullable with no backfill:
+//     no task was given a spoken name before it existed.
+// 52: remember a stopped task's displaced roster name until it runs or changes names.
+// 53: reports and their mute records keep the spoken label alongside the fallback.
+// 54: content-addressed repository artifacts, durable cleanup intent and submission claims.
+//     Historical submissions acquire no claim. Readiness is checked on first activation.
+// 55: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
+// 56: unique identities for spoken outbox claims before runtime handoff.
+// 57: native transcript turn receipts for workflow packet sends. Historical sends keep their offsets.
+// 58: index retained workflow deliveries that have an active native receipt.
+// 59: seek unresolved workflow receipts by delivery state and age on cold reads.
+// 60: durable receipt replay for a blocking question filed by voice.
+// 61: remember accepted spoken outbox IDs after retirement.
+// 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
+// 63: replace the previously materialized Voice mute shortcut default once.
+// 64: retain handoff release, accepted Goal instruction and initial queue delivery times.
+// 65: preserve resident reference-name provenance in reports and mutes.
+// 66: remember verified departure for task worktree retention.
+// 67: preserve additional SDK checkout grants across driver and daemon lifetimes.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 67;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -378,17 +443,12 @@ function createAppConfig(d: DatabaseSync): void {
   }
 
   // Commit the first table and the install default together. An interrupted first start
-  // either retries as a fresh database or resumes with the default already recorded.
-  d.exec("BEGIN IMMEDIATE;");
-  try {
-    d.exec(CREATE_APP_CONFIG);
-    d.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)")
-      .run(APP_CONFIG_ENTRIES.inspector.key, JSON.stringify({ enabled: true, mode: "live" }));
-    d.exec("COMMIT;");
-  } catch (error) {
-    try { d.exec("ROLLBACK;"); } catch {}
-    throw error;
-  }
+  // either retries as a fresh database or resumes with the default already recorded. The
+  // transaction that does it is the schema's own (`upgradeDatabaseToCurrentSchema`), which
+  // this runs first inside, so it opens none of its own.
+  d.exec(CREATE_APP_CONFIG);
+  d.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)")
+    .run(APP_CONFIG_ENTRIES.inspector.key, JSON.stringify({ enabled: true, mode: "live" }));
 }
 
 /**
@@ -396,6 +456,10 @@ function createAppConfig(d: DatabaseSync): void {
  * verification. Callers must provide a database they own and may mutate.
  */
 export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
+  const version = databaseSchemaVersion(d);
+  if (version > CURRENT_DATABASE_SCHEMA_VERSION) {
+    throw new Error(`Database schema ${version} requires a newer Mission Control build`);
+  }
   d.exec("PRAGMA journal_mode = WAL;");
   // No `busy_timeout` beside it, and that is a decision rather than an omission.
   //
@@ -428,6 +492,49 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // relation the schema never declared. A new REFERENCES clause on an older table becomes
   // live the moment it is written, which is the point.
   d.exec("PRAGMA foreign_keys = ON;");
+  // One transaction for every CREATE, not one per statement. Outside a transaction each of the
+  // few hundred tables and indexes a fresh database gains is its own commit, and under WAL with
+  // the default `synchronous=FULL` every commit syncs the WAL to disk: on ext4 that was over a
+  // second before a fresh daemon could listen, and every e2e test boots one. On an existing
+  // database every statement is a no-op and the commit writes nothing. `migrateTelemetry`,
+  // `migrate` and the one-time rollouts after them stay outside: their steps take their own
+  // transactions.
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    // Earlier artifact previews installed a broader running-status guard. Replace it atomically
+    // with the current definition below, preserving existing claims and submissions.
+    if (databaseSchemaVersion(d) < 54) d.exec("DROP TRIGGER IF EXISTS repository_activation_required");
+    if (databaseSchemaVersion(d) < 62) d.exec("DROP TRIGGER IF EXISTS repository_capture_failed");
+    createSchemaObjects(d);
+    d.exec("COMMIT;");
+  } catch (error) {
+    // As in `rebuildDerivedPartialIndexIfStale`: a failed ROLLBACK must not bury the real error.
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw error;
+  }
+  migrateTelemetry(d);
+  migrate(d);
+  migrateMockupsSkill(d);
+  migrateCodeRabbitFollowUp(d);
+  if (databaseSchemaVersion(d) < 63) {
+    const key = APP_CONFIG_ENTRIES.voice.key;
+    const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string } | undefined;
+    // Old saves materialized defaults without recording which fields the operator chose.
+    // Change only that exact legacy value. Future explicit selections survive every reopen.
+    const next = row && withTopLevelLiteral(row.value, "hotkey", '"ctrl+alt+m"', '"cmd+ctrl+alt+v"');
+    if (next) d.prepare("UPDATE app_config SET value = ? WHERE key = ?").run(next, key);
+  }
+  markDatabaseSchemaCurrent(d);
+}
+
+/**
+ * Every table and index the current schema declares, created where missing. The one row it
+ * writes is a fresh database's install default (`createAppConfig`), which has to commit with
+ * the first table; upgrade steps still belong in `migrate`.
+ */
+function createSchemaObjects(d: DatabaseSync): void {
   createAppConfig(d);
   d.exec(`
     CREATE TABLE IF NOT EXISTS pr_branch_update_attempts (
@@ -450,6 +557,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       created_at             INTEGER NOT NULL,
       resolved_at            INTEGER,
       mcp_wait_detached_at   INTEGER,
+      filed_by_voice_at      INTEGER,
+      voice_conversion_blocked INTEGER NOT NULL DEFAULT 1,
       continuation_queued_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_reviews_session ON reviews(session_id);
@@ -487,6 +596,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS tasks (
       id            TEXT PRIMARY KEY,
+      -- The work unit, wu_ and a ULID (@shared/work-unit.ts). Written once. NULL for a resident
+      -- run, and for a task filed before the column until its next dispatch or assign.
+      work_unit_id  TEXT,
       title         TEXT NOT NULL,
       intent        TEXT NOT NULL,
       kind          TEXT NOT NULL,
@@ -507,6 +619,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       advisor_model TEXT,
       -- Library Persona whose guidance the launch carries as standing instructions. NULL is none.
       persona_id    TEXT,
+      -- The call sign: a short name the operator says to address the task's session by voice
+      -- (@shared/voice-names.ts). NULL is none. Annotation: it may change while the agent runs.
+      call_sign     TEXT,
+      retired_call_sign TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -574,6 +690,13 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- JSON TaskClaimWarning[]: the dependency claims that failed in this task's worktrees
       -- when they were leased. NULL when none failed, which is nearly every task.
       claim_warnings TEXT,
+      -- JSON TaskShaping (@shared/shaping.ts): what task shaping added to the latest launch
+      -- that reached a worker, naming its session. Written only by commitTaskShaping().
+      shaping       TEXT,
+      -- The turn-one delivery this row's binding was last written with; a current record
+      -- carries the same id (see currentShaping). Written only by commitTaskShaping() and
+      -- by a turn-one binding (upsertTask with a delivery id), never by an ordinary upsert.
+      shaping_delivery TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -805,8 +928,11 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       text                    TEXT,              -- compact durable objective for the card
       source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
       opening_prompt          TEXT,              -- first accepted human instruction, write-once
+      handoff_released_at     INTEGER,
+      deliverable_updated_at  INTEGER,
       objective               TEXT,              -- durable completion contract
       prompt                  TEXT,              -- latest filtered human instruction
+      latest_prompt_accepted_at INTEGER,
       focus                   TEXT,              -- compact latest instruction
       relationship            TEXT,              -- initial | steer | amend | replace | unclear
       rationale               TEXT,              -- why the latest relationship was chosen
@@ -881,6 +1007,18 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_session_launch_turns_age
       ON session_launch_turns(updated_at);
 
+    -- Operator's spoken words and the payload matched to the native transcript.
+    CREATE TABLE IF NOT EXISTS session_spoken_turns (
+      id TEXT PRIMARY KEY, note_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+      spoken_words TEXT NOT NULL, received TEXT NOT NULL, delivered_at INTEGER NOT NULL, transcript_offset INTEGER,
+      contested INTEGER NOT NULL DEFAULT 0, message_id TEXT, message_ts INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_spoken_turns_key ON session_spoken_turns(note_key);
+    -- Reconsider the other senders of these words after the outbox removal commits.
+    CREATE TABLE IF NOT EXISTS session_spoken_releases (
+      note_key TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY (note_key, fingerprint)
+    );
+
     -- WHICH SESSION SENT A DELEGATED MESSAGE, one row per delivery.
     --
     -- A message one session sends another through session control lands in the target's
@@ -922,6 +1060,44 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON session_other_sends(note_key);
     CREATE INDEX IF NOT EXISTS idx_session_other_sends_age
       ON session_other_sends(sent_at);
+
+    -- WHICH TURN A REVIEW MESSAGE WROTE, one row per delivery of a marked outbox message
+    -- (async-input): an answer, or a snoozed question's "carry on". Reserved before the send and
+    -- bound by the same rule as session_delegated_turns (delivery-binding.ts). Only a turn a
+    -- bound row names is drawn as an answer card; a pasted marker never is. Bound rows are never
+    -- pruned, so an old conversation keeps its cards. Contested rows and rows with no offset are
+    -- never pruned either: they can never bind, and they are the record that a turn with their
+    -- words could be Mission Control's. Only an ordinary unbound row past the delivery window is
+    -- pruned: once a binding walk (the prune tick walks live conversations) has expired it, or
+    -- once no live session holds its conversation and delivered_at is older than the goal table's
+    -- prune age (an old row can go on the first tick after its session exits). No message text,
+    -- only its fingerprint.
+    --
+    -- echo_* is the one prompt-hook echo the delivery owes the Goal reader, so a restart cannot
+    -- let it through as the operator's Goal. Cleared when it arrives, when the work cycle it
+    -- belongs to (echo_turn_generation) completes, or HUMAN_ECHO_TTL_MS after echo_eligible_at.
+    CREATE TABLE IF NOT EXISTS session_review_deliveries (
+      id                   TEXT PRIMARY KEY,
+      note_key             TEXT NOT NULL,   -- the conversation's noteKeyFor(s)
+      fingerprint          TEXT NOT NULL,   -- injectionFingerprint of the delivered text
+      envelope             TEXT NOT NULL,   -- 'answer' | 'remind-later'
+      review_ids           TEXT NOT NULL,   -- JSON array, in delivery order
+      delivered_at         INTEGER NOT NULL,
+      transcript_offset    INTEGER,         -- transcript size at send; NULL if unknown, never binds
+      contested            INTEGER NOT NULL DEFAULT 0,
+      confirmed_at         INTEGER,         -- NULL until the runtime accepted it
+      message_id           TEXT,            -- native id of the bound turn
+      message_ts           INTEGER,
+      echo_owed            INTEGER NOT NULL DEFAULT 1,
+      echo_turn_generation INTEGER NOT NULL DEFAULT 0,
+      echo_eligible_at     INTEGER,
+      steer_echo           TEXT,            -- a steered delivery's plain echo turn: NULL undecided, '' none
+      handed_at            INTEGER          -- when the runtime was handed the text; NULL never handed, owes no echo
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_review_deliveries_key
+      ON session_review_deliveries(note_key, fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_session_review_deliveries_age
+      ON session_review_deliveries(delivered_at);
 
     -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
     --
@@ -1252,8 +1428,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_number
       ON workflow_versions(workflow_id, version);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_draft
-      ON workflow_versions(workflow_id, source_draft_revision);
+    CREATE TABLE IF NOT EXISTS workflow_publish_requests (
+      workflow_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      version_id TEXT NOT NULL REFERENCES workflow_versions(id),
+      PRIMARY KEY(workflow_id, request_id)
+    );
 
     -- repo_root is WHICH CHECKOUT this binding reviews, and the second column of the
     -- active-binding key. Empty string means "the session's own checkout" - every row ever
@@ -1305,6 +1485,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       updated_at            INTEGER NOT NULL,
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
+      publication_handoff_generation INTEGER,
       disabled_nodes_json   TEXT,
       persona_directives_json TEXT,
       check_budget_epoch_round INTEGER,
@@ -1367,6 +1548,77 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- database. It lives beside its ALTER, which is the house rule for exactly this reason.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
+
+    CREATE TABLE IF NOT EXISTS workflow_repository_workloads (
+      id TEXT PRIMARY KEY REFERENCES workflow_llm_calls(id) ON DELETE CASCADE,
+      attempt_id TEXT NOT NULL REFERENCES workflow_node_attempts(id) ON DELETE CASCADE,
+      digest TEXT NOT NULL, state TEXT NOT NULL, deadline INTEGER NOT NULL,
+      cancellation_generation INTEGER NOT NULL DEFAULT 0, error_code TEXT, usage_json TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_current_workload ON workflow_repository_workloads(attempt_id) WHERE state='running';
+    CREATE TABLE IF NOT EXISTS workflow_repository_local_owners (
+      workload_id TEXT PRIMARY KEY REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
+      group_pid INTEGER, group_identity TEXT, lease_id TEXT UNIQUE, lease_nonce TEXT,
+      home_path TEXT, home_dev TEXT, home_ino TEXT,
+      CHECK ((group_pid IS NULL) = (group_identity IS NULL)),
+      CHECK (group_pid > 1 AND length(group_identity) > 0),
+      CHECK ((lease_id IS NULL) = (lease_nonce IS NULL)),
+      CHECK ((home_path IS NULL) = (home_dev IS NULL) AND (home_path IS NULL) = (home_ino IS NULL))
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_events (
+      workload_id TEXT NOT NULL REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL, event_id TEXT NOT NULL UNIQUE, hash TEXT NOT NULL,
+      kind TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(workload_id,sequence)
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_queries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, workload_id TEXT NOT NULL REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
+      operation_id TEXT NOT NULL UNIQUE, audit_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_repository_queries_workload ON workflow_repository_queries(workload_id,id);
+    CREATE TABLE IF NOT EXISTS workflow_repository_handles (
+      id TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES workflow_repository_queries(operation_id) ON DELETE CASCADE,
+      audit_index INTEGER NOT NULL CHECK(audit_index >= 0), UNIQUE(operation_id, audit_index)
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_artifacts (
+      digest TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('creating','ready','failed','cleanup_pending')),
+      created_at INTEGER NOT NULL, verified_at INTEGER, verification_error TEXT, cleanup_requested_at INTEGER,
+      cleanup_attempted_at INTEGER, cleanup_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_snapshot_claims (
+      submission_id TEXT PRIMARY KEY REFERENCES workflow_submissions(id) ON DELETE CASCADE,
+      digest TEXT NOT NULL REFERENCES workflow_repository_artifacts(digest) ON DELETE RESTRICT,
+      state TEXT NOT NULL CHECK(state IN ('provisional','active','release_pending','released')),
+      created_at INTEGER NOT NULL, activated_at INTEGER, released_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_repository_claim_digest
+      ON workflow_repository_snapshot_claims(digest,state);
+    -- Cascaded submission deletion and explicit release share the same durable cleanup intent.
+    CREATE TRIGGER IF NOT EXISTS repository_claim_removed AFTER DELETE ON workflow_repository_snapshot_claims
+    WHEN NOT EXISTS (SELECT 1 FROM workflow_repository_snapshot_claims WHERE digest=OLD.digest AND state!='released')
+    BEGIN
+      UPDATE workflow_repository_artifacts SET state='cleanup_pending',
+        cleanup_requested_at=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE digest=OLD.digest;
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_claim_released AFTER UPDATE OF state ON workflow_repository_snapshot_claims
+    WHEN NEW.state='released' AND NOT EXISTS (
+      SELECT 1 FROM workflow_repository_snapshot_claims WHERE digest=NEW.digest AND state!='released')
+    BEGIN
+      UPDATE workflow_repository_artifacts SET state='cleanup_pending',
+        cleanup_requested_at=NEW.released_at WHERE digest=NEW.digest;
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_capture_failed AFTER UPDATE OF status ON workflow_submissions
+    WHEN OLD.status IN ('capturing','waiting_for_evidence_readiness') AND NEW.status IN ('cancelled','failed')
+      AND NOT EXISTS (SELECT 1 FROM workflow_runs WHERE id=NEW.run_id AND current_phase='evidence_reconciliation_error' AND NEW.status='failed')
+    BEGIN
+      UPDATE workflow_repository_snapshot_claims SET state='released', released_at=NEW.updated_at
+        WHERE submission_id=NEW.id AND state='provisional';
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_activation_required BEFORE UPDATE OF status ON workflow_submissions
+    WHEN OLD.status='capturing' AND NEW.status='running' AND EXISTS (
+      SELECT 1 FROM workflow_repository_snapshot_claims c JOIN workflow_repository_artifacts a ON a.digest=c.digest
+       WHERE c.submission_id=NEW.id AND (c.state!='active' OR a.state!='ready'))
+    BEGIN SELECT RAISE(ABORT,'repository claim is not active'); END;
 
     -- Mutable, conversation-owned evidence remains separate from immutable submissions.
     -- Source roots and inline bodies are server-only. Child-supplied locators may enter the
@@ -1663,6 +1915,22 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON workflow_deliveries(run_id, created_at);
     -- The two node_attempt_id indexes are created by migrate() beside their ALTER, for the
     -- reason spelled out on workflow_submissions above.
+
+    CREATE TABLE IF NOT EXISTS workflow_delivery_turns (
+      id                TEXT PRIMARY KEY,
+      delivery_id       TEXT NOT NULL REFERENCES workflow_deliveries(id) ON DELETE CASCADE,
+      transcript_path   TEXT,
+      note_key          TEXT NOT NULL,
+      fingerprint       TEXT NOT NULL,
+      delivered_at      INTEGER NOT NULL,
+      transcript_offset INTEGER,
+      contested         INTEGER NOT NULL,
+      message_id        TEXT,
+      discarded_at      INTEGER,
+      message_ts        INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_key ON workflow_delivery_turns(note_key);
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_delivery ON workflow_delivery_turns(delivery_id);
 
     CREATE TABLE IF NOT EXISTS workflow_llm_calls (
       id               TEXT PRIMARY KEY,
@@ -2087,7 +2355,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- restart revert every card to its pre-refinement guess. A rename outranks both.
       display_name      TEXT,
       created_at        INTEGER NOT NULL,
-      updated_at        INTEGER NOT NULL
+      updated_at        INTEGER NOT NULL,
+      extra_dirs_json   TEXT
     );
 
     -- Human turns the daemon still owns. Unlike a harness's internal queue, rows here have
@@ -2110,6 +2379,17 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON pending_turns(note_key, seq);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_sending
       ON pending_turns(note_key) WHERE state = 'sending';
+
+    CREATE TABLE IF NOT EXISTS spoken_outbox_ids (
+      turn_id TEXT PRIMARY KEY NOT NULL
+    ) WITHOUT ROWID;
+
+    CREATE TABLE IF NOT EXISTS spoken_turn_review_waits (
+      review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL REFERENCES pending_turns(id) ON DELETE CASCADE,
+      PRIMARY KEY (review_id, turn_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_spoken_turn_review_waits_turn ON spoken_turn_review_waits(turn_id);
 
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
@@ -2162,6 +2442,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL,
       sent_at           INTEGER,
+      first_delivered_at INTEGER,
       delivery_runtime  TEXT,              -- runtime that accepted this delivery attempt
       completed_at      INTEGER
     );
@@ -2230,6 +2511,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       stack_note         TEXT,
       stack_state        TEXT,           -- JSON StackObservation: the last lifecycle observation
       stack_await_replacement_at INTEGER, -- the operator chose Wait for a replacement
+      local_review_head_sha TEXT,        -- head matched to a passed Local Inspector review
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -2343,7 +2625,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- Custom server DEFINITIONS live in app_config (residents.mcpServers) and travel with
     -- settings snapshots. Their SECRET VALUES live only here: written by a save, read only by
     -- a launch's snapshot, never returned by a route, published, logged or captured by a
-    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/service.ts). Keyed by the
+    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/publication.ts). Keyed by the
     -- server's id and the field ("env:NAME", "header:Name", "query:name").
     CREATE TABLE IF NOT EXISTS resident_mcp_secrets (
       server_id   TEXT NOT NULL,
@@ -3267,11 +3549,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- file in a worktree moves nothing on the row at all. So the clock is kept where it can be
     -- derived from the checkouts themselves, and re-derived after a restart.
     --
-    -- The row is not created when the task ends. It is created at the FIRST SUCCESSFUL
-    -- OBSERVATION of a set of resources, and that is the rollout safety mechanism rather than
-    -- laziness: no timestamp this database already holds can prove when a pre-existing tree
-    -- was last touched, so every tree that existed before this shipped is seeded at the moment
-    -- it is first read and gets one full, final grace period from there.
+    -- A row can report a blocker before the clock starts. Only a verified owner-free
+    -- observation grants a deadline. Older rows have no verified departure.
     CREATE TABLE IF NOT EXISTS task_worktree_retention (
       task_id         TEXT PRIMARY KEY,
       -- The RESOURCE GENERATION this observation was taken against - taskResourceGeneration's
@@ -3287,7 +3566,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- content, no Git output. Comparing it with the next observation's is the whole of "did
       -- anything change".
       fingerprint     TEXT NOT NULL,
-      -- When the fingerprint last CHANGED - the activity boundary the 30-day rule counts from.
+      -- When the fingerprint last changed, or when a new clock was first seeded.
       -- Seeded at first observation (see above) and reset by any changed fingerprint. An
       -- unknown read never moves it, because "we could not look" is not evidence of quiet.
       last_changed_at INTEGER NOT NULL,
@@ -3295,11 +3574,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- read, which is the difference between a tree that is genuinely quiet and one nothing
       -- has managed to probe for a week.
       observed_at     INTEGER NOT NULL,
-      -- last_changed_at plus the retention window. Stored rather than computed on read so the
-      -- boundary a restart resumes from is the one that was actually granted, even if the
-      -- window's value ever changes.
+      -- The later of departure and Git activity, plus the applied window. Zero while held.
       cleanup_due_at  INTEGER NOT NULL,
       retention_ms    INTEGER NOT NULL DEFAULT 2592000000,
+      unowned_since   INTEGER,
       -- Everything from here down is Phase 2's claim/retry state, declared now so activating
       -- automatic reclamation needs no second migration. Phase 1 writes 'observing' and NULL
       -- to all of it and never transitions a claim; task-worktree-retention.ts has no
@@ -3484,11 +3762,6 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // is that a projection checkpoint, its aggregate state and its output batch must commit in
   // one transaction with the writer that already serializes everything else here.
   createTelemetryTables(d);
-  migrateTelemetry(d);
-  migrate(d);
-  migrateMockupsSkill(d);
-  migrateCodeRabbitFollowUp(d);
-  markDatabaseSchemaCurrent(d);
 }
 
 /** One rollout, not a default applied again whenever the app is upgraded. */
@@ -3596,6 +3869,7 @@ export function closeDb(): void {
   if (!db) return;
   db.close();
   db = undefined;
+  checkSpokenReleases = true;
 }
 
 /**
@@ -3635,8 +3909,45 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "workflow_versions", "source_snapshot_fingerprint", "TEXT");
+  const pending = d.prepare(`SELECT id, graph_json FROM workflow_versions
+    WHERE source_snapshot_fingerprint IS NULL AND id > ? ORDER BY id LIMIT 32`);
+  const setFingerprint = d.prepare("UPDATE workflow_versions SET source_snapshot_fingerprint=? WHERE id=?");
+  let after = "";
+  for (;;) {
+    const rows = pending.all(after);
+    if (!rows.length) break;
+    for (const row of rows) {
+      const raw = String(row.graph_json);
+      let fingerprint: string;
+      try {
+        fingerprint = workflowGraphFingerprint(JSON.parse(raw));
+      } catch {
+        // Preserve unreadable historical rows for diagnosis without blocking database startup.
+        fingerprint = "unreadable:" + createHash("sha256").update(raw).digest("hex");
+      }
+      after = String(row.id);
+      setFingerprint.run(fingerprint, after);
+    }
+  }
+  d.exec(`DROP INDEX IF EXISTS idx_workflow_versions_draft;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_snapshot
+      ON workflow_versions(workflow_id, source_draft_revision, source_snapshot_fingerprint)`);
+  addColumn(d, "personas", "repository_access", "TEXT NOT NULL DEFAULT 'none' CHECK(repository_access IN ('none','read'))");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS persona_builtin_overrides (
+    persona_id TEXT PRIMARY KEY,
+    repository_access TEXT NOT NULL CHECK(repository_access IN ('none','read')),
+    revision INTEGER NOT NULL
+  )`);
+
   migrateHomeDispatch(d);
+  migrateTaskWorkUnit(d);
+  migrateLaunchWorkUnits(d);
+  // Added within version 41, before it shipped: a database this branch already opened lacks it.
+  addColumn(d, "session_review_deliveries", "handed_at", "INTEGER");
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
+  addColumn(d, "task_worktree_retention", "unowned_since", "INTEGER");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
@@ -3711,6 +4022,36 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_iterations", "wake_text", "TEXT");
   addColumn(d, "resident_iterations", "reanchor_epoch", "INTEGER");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
+  addColumn(d, "pending_turns", "spoken_words", "TEXT");
+  addColumn(d, "pending_turns", "composed_at", "INTEGER");
+  addColumn(d, "pending_turns", "spoken_handoff_key", "TEXT");
+  addColumn(d, "pending_turns", "spoken_handoff_generation", "INTEGER");
+  addColumn(d, "pending_turns", "spoken_handoff_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_pending_spoken_handoff ON pending_turns(spoken_handoff_key) WHERE spoken_handoff_key IS NOT NULL");
+  addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
+  addColumn(d, "pending_turns", "spoken_claim_id", "TEXT");
+  addColumn(d, "pending_turns", "spoken_requires_guard", "INTEGER");
+  addColumn(d, "session_other_sends", "spoken_boundary", "TEXT");
+  addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
+  if (databaseSchemaVersion(d) < 61) {
+    d.exec(`INSERT OR IGNORE INTO spoken_outbox_ids SELECT id FROM pending_turns WHERE spoken_words IS NOT NULL;
+      INSERT OR IGNORE INTO spoken_outbox_ids SELECT outbox_turn_id FROM session_spoken_turns WHERE outbox_turn_id IS NOT NULL;`);
+  }
+  addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
+  addColumn(d, "session_spoken_turns", "transcript_boundary", "TEXT");
+  addColumn(d, "session_spoken_turns", "transcript_agent", "TEXT");
+  addColumn(d, "session_spoken_turns", "transcript_cwd", "TEXT");
+  addColumn(d, "session_spoken_turns", "transcript_path", "TEXT");
+  addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
+  addColumn(d, "session_spoken_turns", "text_receipt_order", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_text_receipt ON session_spoken_turns(note_key, text_receipt_order) WHERE text_receipt_order IS NOT NULL");
+  addColumn(d, "session_spoken_turns", "abandoned_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_abandoned ON session_spoken_turns(abandoned_at) WHERE abandoned_at IS NOT NULL");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_unbound_confirmed ON session_spoken_turns(runtime_confirmed_at) WHERE message_id IS NULL AND runtime_confirmed_at IS NOT NULL");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_unobserved_sdk ON session_spoken_turns(runtime_confirmed_at) WHERE message_id = id AND message_ts IS NULL AND runtime_confirmed_at IS NOT NULL");
+  addColumn(d, "session_work_cycles", "spoken_hold", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_work_cycles", "spoken_hold_since", "INTEGER");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
   addColumn(d, "task_session_closures", "retired_at", "INTEGER");
@@ -3775,6 +4116,7 @@ function migrate(d: DatabaseSync): void {
   // builds turns into a visible refusal instead of a silent retry on every restart. 0 on
   // every older row, which is what they all were.
   addColumn(d, "sdk_sessions", "resume_deferrals", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "sdk_sessions", "extra_dirs_json", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -3821,8 +4163,38 @@ function migrate(d: DatabaseSync): void {
   // evidence and delivery payloads. The sweep fills them only after its transaction
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
+  addColumn(d, "workflow_runs", "publication_handoff_generation", "INTEGER");
+  addColumn(d, "workflow_delivery_turns", "discarded_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_discarded_turns ON workflow_delivery_turns(discarded_at) WHERE discarded_at IS NOT NULL");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  addColumn(d, "workflow_deliveries", "has_transcript_receipt", "INTEGER NOT NULL DEFAULT 0");
+  if (databaseSchemaVersion(d) < 58) {
+    d.exec(`UPDATE workflow_deliveries SET has_transcript_receipt = 1
+      WHERE id IN (SELECT delivery_id FROM workflow_delivery_turns WHERE discarded_at IS NULL)`);
+  }
   d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_window
+      ON workflow_deliveries(note_key, session_id, delivered_at DESC, id DESC)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_unresolved
+      ON workflow_deliveries(note_key, session_id, state, updated_at)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL AND delivered_at IS NULL;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_inserted AFTER INSERT ON workflow_delivery_turns
+      WHEN NEW.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = 1 WHERE id = NEW.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_removed AFTER DELETE ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_discarded AFTER UPDATE OF discarded_at ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL AND NEW.discarded_at IS NOT NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_transcript_attribution
       ON workflow_deliveries(session_id, note_key, delivered_at DESC)
       WHERE delivered_at IS NOT NULL AND payload_pruned_at IS NULL;
@@ -3847,6 +4219,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_commands", "timeout_ms", "INTEGER");
   addColumn(d, "workflow_commands", "on_unavailable", "TEXT NOT NULL DEFAULT 'skip'");
   addColumn(d, "workflow_commands", "on_budget_exhausted", "TEXT NOT NULL DEFAULT 'skip'");
+  addColumn(d, "workflow_commands", "inspector_severity", "TEXT");
   // One attempt's claim on a Command's per-run execution budget. Nullable with no default and
   // no backfill: an attempt written before this column existed reserved nothing, and inventing
   // a reservation for it would spend a budget against work whose cost is already paid.
@@ -3907,6 +4280,8 @@ function migrate(d: DatabaseSync): void {
   // guard falls back to the full fingerprint for those rows, which is exactly what it did
   // before, so an upgraded database keeps its historical behaviour on historical rows.
   addColumn(d, "workflow_submissions", "repository_fingerprint", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_packet", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_checkout", "TEXT");
   addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
   // Existing staged rows are images. The append-only kind lets text/log evidence share the
   // reservation and generation lifecycle without changing any historical row's meaning.
@@ -4025,6 +4400,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "check_evidence_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_input_json", "TEXT");
+  addColumn(d, "workflow_submissions", "local_inspector_comparison_json", "TEXT");
   addColumn(d, "workflow_submissions", "coderabbit_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_rejections_json", "TEXT");
 
@@ -4139,6 +4515,67 @@ function migrate(d: DatabaseSync): void {
   // The dependency claims that failed in a task's worktrees, as the task card shows them.
   // Nullable with no backfill: no task leased a claimed slot before this column existed.
   addColumn(d, "tasks", "claim_warnings", "TEXT");
+  // Task shaping's record of the latest launch that reached a worker, and the section that
+  // launch delivered. Nullable with no backfill: no launch was shaped before this column. The
+  // text has its own table so a task read never carries up to 64 KiB of prompt it did not ask
+  // for; it is replaced or deleted in the same transaction as the summary.
+  addColumn(d, "tasks", "shaping", "TEXT");
+  // The delivery id a current shaping record shares with its task's binding. Backfilled once,
+  // when the column is added: a record that names the task's bound session now is the one
+  // readers showed before delivery ids existed, so it and its row share a fresh id and keep
+  // showing; every other record gains an id no binding carries and stays hidden, as it was.
+  // The column and both updates commit together: the column's presence is what says the
+  // backfill ran, so an upgrade interrupted between them must leave no column behind, and the
+  // next start runs the whole step again.
+  if (!hasColumn(d, "tasks", "shaping_delivery")) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      addColumn(d, "tasks", "shaping_delivery", "TEXT");
+      d.exec(`
+        UPDATE tasks SET shaping_delivery = lower(hex(randomblob(16)))
+          WHERE shaping IS NOT NULL AND json_valid(shaping) AND session_id IS NOT NULL
+            AND json_extract(shaping, '$.sessionId') = session_id;
+        UPDATE tasks SET shaping = json_set(shaping, '$.deliveryId', COALESCE(shaping_delivery, lower(hex(randomblob(16)))))
+          WHERE shaping IS NOT NULL AND json_valid(shaping);
+      `);
+      d.exec("COMMIT;");
+    } catch (err) {
+      try { d.exec("ROLLBACK;"); } catch {}
+      throw err;
+    }
+  }
+  // A task's call sign (schema 51). Nullable with no backfill: no task had a spoken name before
+  // this column existed, so every existing row reads as having none.
+  addColumn(d, "tasks", "call_sign", "TEXT");
+  addColumn(d, "tasks", "retired_call_sign", "TEXT");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS task_shaping_text (
+      task_id    TEXT PRIMARY KEY,
+      text       TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+  // A launch's after-work skills prompt (task shaping's route stage). Keyed by task AND session,
+  // so a later launch of the task into another session gets its own row and never collides with
+  // the first launch's, and the key is what makes the prompt once per launch. `turn_id` is the
+  // outbox row it was queued as, which never changes once written, even when a resume re-keys
+  // the row to its successor session. Not part of `tasks.shaping`, which keeps one writer.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS task_skill_prompts (
+      task_id      TEXT NOT NULL,
+      session_id   TEXT NOT NULL,
+      state        TEXT NOT NULL,
+      reason       TEXT,
+      skills       TEXT NOT NULL,
+      turn_id      TEXT,
+      created_at   INTEGER NOT NULL,
+      delivered_at INTEGER,
+      PRIMARY KEY (task_id, session_id)
+    );
+  `);
+  // Set on a held row in the same transaction as the wrap-up answer that releases it, so a
+  // daemon that stops before the release still releases it at its next start. 0 otherwise.
+  addColumn(d, "task_skill_prompts", "wrapup_answered", "INTEGER NOT NULL DEFAULT 0");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -4305,6 +4742,11 @@ function migrate(d: DatabaseSync): void {
   // Capture the attempt's runtime before delivery. Legacy rows have no acknowledgement
   // evidence and retain the conservative pickup-verification path.
   addColumn(d, "foreman_queue_items", "delivery_runtime", "TEXT");
+  addColumn(d, "foreman_queue_items", "first_delivered_at", "INTEGER");
+  if (databaseSchemaVersion(d) < 64) {
+    // Older queues only retain the latest known send. Keep that stamp across future retries.
+    d.exec("UPDATE foreman_queue_items SET first_delivered_at = sent_at WHERE first_delivered_at IS NULL AND sent_at IS NOT NULL");
+  }
 
   // `prompted_goal`: the historical resolved-intent guard used before prompted
   // completion consumed work-cycle generations. It remains readable for one-time
@@ -4424,8 +4866,23 @@ function migrate(d: DatabaseSync): void {
   // All nullable with no default: an existing row is a call-mode question with no meanwhile line
   // that no merge closed, which is exactly what every row written before this was.
   addColumn(d, "reviews", "wait_mode", "TEXT");
+  addColumn(d, "reviews", "filed_by_voice_at", "INTEGER");
+  // Existing rows may already have a legacy call. New reviews start without one in insertReview.
+  addColumn(d, "reviews", "voice_conversion_blocked", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "reviews", "meanwhile", "TEXT");
   addColumn(d, "reviews", "closed_reason", "TEXT");
+
+  // Revised plan forms (`request_plan_decisions` with `revises`). `revises_review_id` names the
+  // form a revision replaced and `revision` is its place in the chain (2 for the first). Both
+  // nullable with no default: an existing row is a form that revises nothing. The partial unique
+  // index is the durable half of "a form is revised at most once"; the review manager refuses a
+  // second revision with a reason before the insert would trip it. The self-reference is enforced
+  // (`PRAGMA foreign_keys = ON`), so a link always names a review that exists; SET NULL rather than
+  // RESTRICT, so a future pruning of old reviews is never blocked by a revision chain, and a row
+  // whose predecessor went away reads as revising nothing.
+  addColumn(d, "reviews", "revises_review_id", "TEXT REFERENCES reviews(id) ON DELETE SET NULL");
+  addColumn(d, "reviews", "revision", "INTEGER");
+  d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_revises ON reviews(revises_review_id) WHERE revises_review_id IS NOT NULL");
 
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
@@ -4523,6 +4980,49 @@ function migrate(d: DatabaseSync): void {
   // Each blocker's identity, kept across re-reports. A row written before it existed reads
   // back with an id derived from its key and start (see `rowToSessionBlocker`).
   addColumn(d, "session_blockers", "blocker_id", "TEXT");
+  // Schema 44: a session idle on purpose while a background process finishes. Keyed like
+  // session_blockers, so a daemon restart reloads it; `task_id` is recorded for the
+  // terminal-task clear. `settled_at` is when the declaring turn was seen to end, which is what
+  // tells the session's NEXT turn (the wake) from the rest of the turn that declared it.
+  // `pending_nudges` is a JSON array of the deliveries Mission Control's own automation claimed
+  // into the session while the wait stood, or shortly before it was declared with their prompt
+  // not yet back (`outstandingAutomatedClaims`), each `{ at, key }` with the delivered text's
+  // fingerprint and not yet matched to its turn: a turn whose prompt is one of them is that
+  // nudge, not the wake. Stored so a daemon restart between a delivery and its turn cannot
+  // forget whose turn it was.
+  // Created here, beside its upgrade path, so an older database gains the table on next open.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS session_awaitings (
+      note_key      TEXT PRIMARY KEY,
+      task_id       TEXT,
+      awaiting_id   TEXT NOT NULL,
+      what          TEXT NOT NULL,
+      wake_source   TEXT NOT NULL,
+      expected_by   INTEGER NOT NULL,
+      reference_url TEXT,
+      details       TEXT,
+      started_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      settled_at    INTEGER,
+      pending_nudges TEXT,
+      undecided_turn INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_awaitings_task ON session_awaitings(task_id);
+  `);
+  addColumn(d, "session_awaitings", "pending_nudges", "TEXT");
+  // `undecided_turn`: a turn started while a delivery was pending and its prompt has not been
+  // reported yet. Stored so a restart before the prompt arrives can still decide that turn.
+  addColumn(d, "session_awaitings", "undecided_turn", "INTEGER");
+  // `redeclared_in_turn`: the session declared its wait again during that undecided turn. The
+  // turn may still use up the delivery that started it, but it can no longer be the wake, since
+  // the agent has just said it is still waiting. Stored for the same restart.
+  addColumn(d, "session_awaitings", "redeclared_in_turn", "INTEGER");
+  // `session_id`: the last session seen holding the wait, so a clear with no live holder (a
+  // prune after a restart, the preview switched off) still logs its audit row under a session.
+  addColumn(d, "session_awaitings", "session_id", "TEXT");
+  // `judged_turn_at`: the transcript time of the latest turn start the wait has judged, so a turn
+  // marker is compared in transcript time rather than against when a sweep happened to look.
+  addColumn(d, "session_awaitings", "judged_turn_at", "INTEGER");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -4681,6 +5181,10 @@ function migrate(d: DatabaseSync): void {
   // operator has chosen to wait for a replacement parent.
   addColumn(d, "inspector_prs", "stack_state", "TEXT");
   addColumn(d, "inspector_prs", "stack_await_replacement_at", "INTEGER");
+  // The head the worker matched to a passed Local Inspector review, in any posture. Nullable
+  // with no default: a row written before it was never matched, so it reads as reviewed (or
+  // not) on GitHub exactly as before.
+  addColumn(d, "inspector_prs", "local_review_head_sha", "TEXT");
   // One row per (pull request, prompt kind, condition tip): the claim taken BEFORE a catch-up
   // or restack prompt is typed, exactly as CodeRabbit's receipts are. `outcome` is
   // `uncertain` from the claim until delivery is confirmed (`delivered`); a confirmed
@@ -4799,6 +5303,9 @@ function migrate(d: DatabaseSync): void {
   // legacy rows explicitly pre-versioned rather than inventing a prompt history they never had.
   addColumn(d, "session_goals", "objective", "TEXT");
   addColumn(d, "session_goals", "opening_prompt", "TEXT");
+  addColumn(d, "session_goals", "handoff_released_at", "INTEGER");
+  addColumn(d, "session_goals", "deliverable_updated_at", "INTEGER");
+  addColumn(d, "session_goals", "latest_prompt_accepted_at", "INTEGER");
   addColumn(d, "session_goals", "focus", "TEXT");
   addColumn(d, "session_goals", "relationship", "TEXT");
   addColumn(d, "session_goals", "rationale", "TEXT");
@@ -4899,6 +5406,86 @@ function migrate(d: DatabaseSync): void {
       dismissed_at INTEGER NOT NULL
     );
   `);
+
+  // Agent reports (schema 46, `src/server/reports.ts`). One row per posted report, never deleted:
+  // a report outlives the session that posted it, so nothing here is keyed to a live session and
+  // nothing prunes on eviction. `seq` is the number in the public id `r-<seq>`; AUTOINCREMENT so a
+  // number is never handed out twice. A replacing report points at the first report of its chain
+  // (`root_id`) and marks the one it replaced `superseded_by`; `read_at` is written once, by
+  // `ReportManager.markRead`. A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS reports (
+      seq                        INTEGER PRIMARY KEY AUTOINCREMENT,
+      id                         TEXT NOT NULL UNIQUE,
+      session_id                 TEXT NOT NULL,
+      task_id                    TEXT,
+      repository                 TEXT,
+      author_key                 TEXT NOT NULL,
+      author_name                TEXT NOT NULL,
+      author_resident_profile_id TEXT,
+      title                      TEXT NOT NULL,
+      body                       TEXT NOT NULL,
+      url                        TEXT,
+      document_name              TEXT,
+      document_kind              TEXT,
+      root_id                    TEXT NOT NULL,
+      version                    INTEGER NOT NULL,
+      superseded_by              TEXT,
+      created_at                 INTEGER NOT NULL,
+      root_created_at            INTEGER NOT NULL,
+      opened_at                  INTEGER,
+      read_at                    INTEGER,
+      read_by                    TEXT,
+      follow_up_task_id          TEXT,
+      announced_as               TEXT,
+      announced_at               INTEGER,
+      published_archive_key      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_reports_to_read ON reports(read_at, superseded_by);
+  `);
+  // Schema 49: when a return digest counted a report, so it notifies no window afterwards. Written
+  // once a dashboard claims the digest, so the stamp stays quiet for a window that reconnects or a
+  // daemon that restarts before it lands (`ReportManager.digestClaimed`).
+  addColumn(d, "reports", "counted_in_digest_at", "INTEGER");
+  // Schema 50: muted report authors (`ReportManager.mute`). One row per author key, deleted on
+  // Unmute. A mute only hides: it never touches `reports`, so unmuting brings back every report
+  // still waiting to be read. A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS report_mutes (
+      author_key  TEXT PRIMARY KEY,
+      author_name TEXT NOT NULL,
+      muted_at    INTEGER NOT NULL
+    );
+  `);
+
+  addColumn(d, "reports", "author_spoken_name", "TEXT");
+  addColumn(d, "report_mutes", "author_spoken_name", "TEXT");
+
+  addColumn(d, "reports", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "report_mutes", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  // Recover the source using the profile revision at post time. A profile rename alone
+  // can also make the stored spoken and pinned fallback names differ.
+  if (databaseSchemaVersion(d) < 65) {
+    d.function("normalized_spoken_name", { deterministic: true }, value => {
+      const parsed = SpokenNameSchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    });
+    d.exec(`
+      UPDATE reports SET author_is_reference_name = 1,
+        author_spoken_name = COALESCE(author_spoken_name, author_name)
+      WHERE author_resident_profile_id IS NOT NULL AND COALESCE(author_spoken_name, author_name) = (
+        SELECT CASE WHEN json_valid(settings_json) THEN normalized_spoken_name(json_extract(settings_json, '$.identity.referenceName')) END
+        FROM resident_profile_revisions WHERE profile_id = reports.author_resident_profile_id
+          AND created_at <= reports.created_at ORDER BY revision DESC LIMIT 1
+      );
+      UPDATE report_mutes SET author_is_reference_name = 1
+      WHERE (SELECT author_is_reference_name FROM reports WHERE reports.author_key = report_mutes.author_key
+        AND reports.author_name = report_mutes.author_name
+        AND COALESCE(reports.author_spoken_name, reports.author_name) = COALESCE(report_mutes.author_spoken_name, report_mutes.author_name)
+        AND created_at <= report_mutes.muted_at ORDER BY seq DESC LIMIT 1) = 1;
+    `);
+  }
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
@@ -5316,6 +5903,36 @@ function migrateHomeDispatch(d: DatabaseSync): void {
   `);
 }
 
+/**
+ * Schema 40: a task's work unit id. The column before the index that names it, so an upgraded
+ * database never indexes a column it does not have yet. No backfill (decision D3).
+ */
+function migrateTaskWorkUnit(d: DatabaseSync): void {
+  addColumn(d, "tasks", "work_unit_id", "TEXT");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_tasks_work_unit ON tasks(work_unit_id)");
+}
+
+/**
+ * Schema 43: the launch record - the work unit each session's agent was started with.
+ *
+ * Its own table, keyed like `session_standing_instructions` (noteKeyFor = agentSessionId ??
+ * synthetic id) and for the same reason: it describes the PROCESS, which a `/clear` or an
+ * assign does not end, so the row follows the session across every note-key rotation. One row
+ * per session whose agent carries a work unit; an agent started with none has no row.
+ * Additive: an upgraded database gains an empty table.
+ */
+function migrateLaunchWorkUnits(d: DatabaseSync): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS session_launch_work_units (
+      note_key     TEXT PRIMARY KEY,
+      work_unit_id TEXT NOT NULL,
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_launch_work_units_age
+      ON session_launch_work_units(created_at);
+  `);
+}
+
 function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
   if (hasColumn(d, table, column)) return false;
   d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
@@ -5345,9 +5962,12 @@ interface ReviewRow {
   snooze_reminded_at?: number | null;
   snooze_instruction_owed_at?: number | null;
   snooze_instruction_queued_at?: number | null;
+  filed_by_voice_at?: number | null;
   wait_mode?: string | null;
   meanwhile?: string | null;
   closed_reason?: string | null;
+  revises_review_id?: string | null;
+  revision?: number | null;
 }
 
 function rowToReview(r: ReviewRow): ReviewItem {
@@ -5376,9 +5996,14 @@ function rowToReview(r: ReviewRow): ReviewItem {
     ...(snooze ? { snooze } : {}),
     // Spread only when set, like the snooze, so a call-mode row decodes exactly as it always did.
     // An unknown wait mode reads as call mode: the conservative reading holds and delivers less.
+    ...(r.filed_by_voice_at != null ? { filedByVoiceAt: r.filed_by_voice_at } : {}),
     ...(r.wait_mode === "message" ? { waitMode: "message" as const } : {}),
     ...(r.meanwhile ? { meanwhile: r.meanwhile } : {}),
     ...(closedReason ? { closedReason } : {}),
+    // Spread only when both halves are stored, so a form that revises nothing decodes exactly as
+    // it always did.
+    ...(r.revises_review_id && typeof r.revision === "number" && Number.isSafeInteger(r.revision) && r.revision >= 2
+      ? { revision: { number: r.revision, previousId: r.revises_review_id } } : {}),
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
   };
@@ -5397,6 +6022,11 @@ function rowToSnooze(r: ReviewRow): ReviewSnooze | null {
     mode: readPersistedEnum(REVIEW_SNOOZE_MODES, r.snooze_mode) ?? "judgment",
     optionId: r.snooze_option_id ?? null,
     remindedAt: r.snooze_reminded_at ?? null,
+    // A recorded mode is what the agent was told. Only a silent message-mode "Keep doing what it
+    // said" snooze leaves it unrecorded (`snoozeReviewRow`); a judgment snooze stored before that
+    // rule did tell its agent, and keeps reading as told. Spread only when false, so every other
+    // row decodes exactly as it always did.
+    ...(r.snooze_mode == null ? { instructed: false } : {}),
   };
 }
 
@@ -5430,8 +6060,8 @@ export function insertReview(r: ReviewItem): void {
   openDb()
     .prepare(
       `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at,
-                            wait_mode, meanwhile, mcp_wait_detached_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            wait_mode, meanwhile, mcp_wait_detached_at, revises_review_id, revision, voice_conversion_blocked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     )
     .run(
       r.id,
@@ -5448,7 +6078,20 @@ export function insertReview(r: ReviewItem): void {
       message ? "message" : null,
       r.meanwhile ?? null,
       message ? r.createdAt : null,
+      r.revision?.previousId ?? null,
+      r.revision?.number ?? null,
     );
+}
+
+/** One review row by id, whatever its status or age, or null when no review has that id. */
+export function loadReview(id: string): ReviewItem | null {
+  return loadReviewsByIds([id])[0] ?? null;
+}
+
+/** The id of the form that revises this one (`revises_review_id`), or null when none does. */
+export function reviewRevisedBy(id: string): string | null {
+  const row = openDb().prepare("SELECT id FROM reviews WHERE revises_review_id = ?").get(id) as { id: string } | undefined;
+  return row?.id ?? null;
 }
 
 /**
@@ -5462,6 +6105,17 @@ export function insertReview(r: ReviewItem): void {
  * `snooze_mode` and `snooze_option_id` are written only on the FIRST snooze. That is the one
  * time the agent is told what to do meanwhile; a second snooze of a question that came back
  * moves `until` and nothing the agent was told.
+ *
+ * A message-mode question (`wait_mode = 'message'`, the `async-input` flag) is always unheard and
+ * detached, yet snoozing it in `judgment` mode owes the agent nothing: that choice reads "Keep
+ * doing what it said", and the agent was already told to carry on when the question was filed.
+ * Telling it again would interrupt a turn to repeat its own receipt. `option` and `hold` change
+ * what it does, so they are owed exactly as for any other detached question.
+ *
+ * Because that silent snooze tells the agent nothing, it does not use up the first-snooze slot:
+ * `snooze_mode` and `snooze_option_id` stay NULL (and read back as `judgment`), so when the
+ * question comes back and is snoozed again on Hold or a provisional option, that choice is
+ * stored and sent exactly as a first snooze's would be.
  */
 export function snoozeReviewRow(
   id: string,
@@ -5484,10 +6138,15 @@ export function snoozeReviewRow(
               snoozed_at = ?,
               snoozed_until = ?,
               snooze_instruction_owed_at = CASE
-                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL THEN ?
+                WHEN ? = 0 AND snooze_mode IS NULL AND mcp_wait_detached_at IS NOT NULL
+                  AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
                 ELSE snooze_instruction_owed_at END,
-              snooze_option_id = CASE WHEN snooze_mode IS NULL THEN ? ELSE snooze_option_id END,
-              snooze_mode = COALESCE(snooze_mode, ?),
+              snooze_option_id = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_option_id END,
+              snooze_mode = CASE
+                WHEN snooze_mode IS NULL AND NOT (wait_mode IS 'message' AND ? = 'judgment') THEN ?
+                ELSE snooze_mode END,
               mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
         WHERE id = ? AND status = 'pending'
         RETURNING *`,
@@ -5496,8 +6155,11 @@ export function snoozeReviewRow(
       snooze.at,
       snooze.until,
       snooze.listening ? 1 : 0,
+      snooze.mode,
       snooze.at,
+      snooze.mode,
       snooze.optionId,
+      snooze.mode,
       snooze.mode,
       snooze.at,
       id,
@@ -5588,6 +6250,30 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
   return row ? rowToReview(row) : null;
 }
 
+/** A legacy call has no per-caller identity to release its hold, even between polls or across restart. */
+export function blockReviewVoiceConversion(id: string): void {
+  openDb().prepare(`UPDATE reviews SET voice_conversion_blocked = 1
+    WHERE id = ? AND status = 'pending' AND voice_conversion_blocked = 0
+      AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))`).run(id);
+}
+
+/** Speech queued for this conversation while this call was open, still awaiting delivery. */
+export function hasQueuedSpeechForReview(reviewId: string, noteKey: string): boolean {
+  return Boolean(openDb().prepare(`SELECT 1 FROM spoken_turn_review_waits w
+    JOIN pending_turns t ON t.id = w.turn_id
+    WHERE w.review_id = ? AND t.note_key = ? AND t.state = 'queued' LIMIT 1`).get(reviewId, noteKey));
+}
+
+/** File the pending ask and route its eventual answer through the outbox in the same write. */
+export function fileReviewByVoice(id: string, at: number): ReviewItem | null {
+  const row = openDb().prepare(`UPDATE reviews
+    SET wait_mode = 'message', filed_by_voice_at = ?, mcp_wait_detached_at = ?
+    WHERE id = ? AND status = 'pending' AND wait_mode IS NULL AND voice_conversion_blocked = 0
+      AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))
+    RETURNING *`).get(at, at, id) as unknown as ReviewRow | undefined;
+  return row ? rowToReview(row) : null;
+}
+
 /**
  * A call has started waiting on a message-mode question: an MCP child from an older build
  * re-attached to it (`ReviewManager.attachCall`). From here it is a call-mode question: the
@@ -5601,7 +6287,7 @@ export function markReviewWaitAttached(id: string): boolean {
   const result = openDb()
     .prepare(
       `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL
-        WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL`,
+        WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL AND filed_by_voice_at IS NULL`,
     )
     .run(id);
   return Number(result.changes) > 0;
@@ -5621,6 +6307,16 @@ export function reviewWaitAttached(id: string): boolean {
 /** Quote fixed identifiers from a shared policy as SQL string literals. Never pass input here. */
 function sqlLiterals(values: Iterable<string>): string {
   return [...values].map((value) => `'${value.replaceAll("'", "''")}'`).join(", ");
+}
+
+/**
+ * `isConversationQuestionRecord` over a review row, built from `CONVERSATION_QUESTION_RECORDS`, so
+ * the history route admits exactly the questions the dashboard admits live. Exported so a test can
+ * show the two agree over every defined case.
+ */
+export function conversationQuestionRecordSql(): string {
+  const { waitModes, closedReasons } = CONVERSATION_QUESTION_RECORDS;
+  return `(wait_mode IN (${sqlLiterals(waitModes)}) OR closed_reason IN (${sqlLiterals(closedReasons)}))`;
 }
 
 /**
@@ -5670,26 +6366,22 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
  * neither or both, never a review claiming delivery with no queued turn and never two turns
  * for one review after startup reconciliation retries it.
  */
-export function createReviewContinuationPendingTurn(input: {
-  reviewId: string;
-  noteKey: string;
-  text: string;
-  now: number;
-}): PendingTurn | null {
+export function createReviewContinuationPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   // A message-mode question's answer (`async-input`) is daemon-written news, whoever resolved
-  // it, so it takes its own id under the shared prefix. `wait_mode` is fixed at insert, so
-  // reading it outside the queueing transaction cannot race a change.
+  // it, so it takes its own id under the shared prefix. Only a pending ask can change wait mode, so the
+  // resolved row already carries its final mode.
   const mode = openDb().prepare("SELECT wait_mode FROM reviews WHERE id = ?").get(input.reviewId) as
     | { wait_mode: string | null }
     | undefined;
   return queueReviewPendingTurn(input, {
-    turnId: `${mode?.wait_mode === "message" ? MESSAGE_ANSWER_TURN_PREFIX : "review-continuation:"}${input.reviewId}`,
+    turnId: `${mode?.wait_mode === "message" ? MESSAGE_ANSWER_TURN_PREFIX : REVIEW_MESSAGE_TURN_PREFIX}${input.reviewId}`,
     eligible: `mcp_wait_detached_at IS NOT NULL
             AND continuation_queued_at IS NULL
             AND ${CONTINUATION_ACTOR_SQL}
             AND ${CONTINUATION_STATUS_SQL}`,
     stamp: "continuation_queued_at",
     coalesce: mode?.wait_mode === "message",
+    envelope: "answer",
   });
 }
 
@@ -5701,7 +6393,7 @@ export function createReviewContinuationPendingTurn(input: {
  * It keeps the `review-continuation:` prefix, which resident pacing reads. A call-mode answer
  * that lost its call keeps the bare `review-continuation:<id>` and operator authorship.
  */
-export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
+export const MESSAGE_ANSWER_TURN_PREFIX = `${REVIEW_MESSAGE_TURN_PREFIX}answer:`;
 
 /**
  * Atomically hand a snoozed question's owed "carry on" instruction to the same outbox.
@@ -5710,7 +6402,7 @@ export const MESSAGE_ANSWER_TURN_PREFIX = "review-continuation:answer:";
  * The id keeps the `review-continuation:` prefix on purpose: it is daemon-written news about a
  * review, which every reader of that prefix (a resident's pacing) already treats correctly.
  */
-export const SNOOZE_INSTRUCTION_TURN_PREFIX = "review-continuation:snooze:";
+export const SNOOZE_INSTRUCTION_TURN_PREFIX = `${REVIEW_MESSAGE_TURN_PREFIX}snooze:`;
 
 /** Cancel only an unclaimed instruction; return its conversation key for publication after commit. */
 export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | null {
@@ -5720,12 +6412,7 @@ export function cancelUnclaimedSnoozeInstruction(reviewId: string): string | nul
   return row?.note_key ?? null;
 }
 
-export function createSnoozeInstructionPendingTurn(input: {
-  reviewId: string;
-  noteKey: string;
-  text: string;
-  now: number;
-}): PendingTurn | null {
+export function createSnoozeInstructionPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   return queueReviewPendingTurn(input, {
     turnId: `${SNOOZE_INSTRUCTION_TURN_PREFIX}${input.reviewId}`,
     eligible: `snooze_instruction_owed_at IS NOT NULL
@@ -5733,11 +6420,25 @@ export function createSnoozeInstructionPendingTurn(input: {
             AND continuation_queued_at IS NULL
             AND status IN ('snoozed', 'pending')`,
     stamp: "snooze_instruction_queued_at",
+    envelope: "remind-later",
   });
 }
 
+/** One review message for the outbox. `text` is what the agent receives below any marker line. */
+export interface ReviewPendingTurnInput {
+  reviewId: string;
+  noteKey: string;
+  text: string;
+  now: number;
+  /**
+   * Mark a call-mode question's message too (`async-input` on when it is queued). A
+   * message-mode question's message is always marked: it exists only because the flag was on.
+   */
+  markCallMode?: boolean;
+}
+
 function queueReviewPendingTurn(
-  input: { reviewId: string; noteKey: string; text: string; now: number },
+  input: ReviewPendingTurnInput,
   kind: {
     turnId: string;
     coalesce?: boolean;
@@ -5745,27 +6446,44 @@ function queueReviewPendingTurn(
     eligible: string;
     /** The review column that records it was queued, which `eligible` must test as NULL. */
     stamp: "continuation_queued_at" | "snooze_instruction_queued_at";
+    /** The marker line this message carries when it is marked (`review-message-envelope.ts`). */
+    envelope: ReviewEnvelopeKind;
   },
 ): PendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
     const eligible = d
-      .prepare(`SELECT 1 AS present FROM reviews WHERE id = ? AND ${kind.eligible}`)
-      .get(input.reviewId) as unknown as { present: number } | undefined;
+      .prepare(`SELECT wait_mode FROM reviews WHERE id = ? AND ${kind.eligible}`)
+      .get(input.reviewId) as unknown as { wait_mode: string | null } | undefined;
     if (!eligible) {
       d.exec("COMMIT");
       return null;
     }
+    // The marker line is composed here, where the row's final text is written, so a fold
+    // below can rewrite it to name every review the row carries. The text under it is exactly
+    // what the agent received before the marker existed.
+    const marked = eligible.wait_mode === "message" || input.markCallMode === true;
+    const text = marked ? wrapReviewEnvelope(kind.envelope, [input.reviewId], input.text) : input.text;
     // Only untouched answer rows may grow. Preserve the first answer's escalation clock,
     // prefix and authorship; never rewrite a claimed or uncertain delivery. Look only at
     // the conversation's tail: appending to an earlier answer would pass intervening turns.
     if (kind.coalesce) {
       const existing = d.prepare(`SELECT * FROM pending_turns
         WHERE note_key = ? ORDER BY seq DESC LIMIT 1`).get(input.noteKey) as unknown as PendingTurnRow | undefined;
-      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null) {
+      // A marked row names every answer it carries, in delivery order. One queued before the
+      // marker existed has no line to extend, so a marked answer never folds into it: folding
+      // would drop the new answer's marker, and with it its delivery record and its card. The
+      // legacy row is left exactly as it was, and the new answer is queued as its own row.
+      const prior = existing ? parseReviewEnvelope(existing.text) : null;
+      const carriesMarker = text !== input.text;
+      if (existing?.id.startsWith(MESSAGE_ANSWER_TURN_PREFIX) && existing.state === "queued" && existing.claimed_at === null
+        && (prior !== null || !carriesMarker)) {
+        const folded = prior && marked
+          ? wrapReviewEnvelope(prior.kind, [...prior.reviewIds, input.reviewId], `${prior.rest}\n\n---\n\n${input.text}`)
+          : `${existing.text}\n\n---\n\n${input.text}`;
         const row = d.prepare(`UPDATE pending_turns SET text = ?, revision = revision + 1, updated_at = ?
-          WHERE id = ? RETURNING *`).get(`${existing.text}\n\n---\n\n${input.text}`, input.now, existing.id) as unknown as PendingTurnRow;
+          WHERE id = ? RETURNING *`).get(folded, input.now, existing.id) as unknown as PendingTurnRow;
         d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
         d.exec("COMMIT");
         return rowToPendingTurn(row);
@@ -5778,14 +6496,14 @@ function queueReviewPendingTurn(
       `INSERT INTO pending_turns
          (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
        VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
-    ).run(kind.turnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
+    ).run(kind.turnId, input.noteKey, sequence.seq, text, input.now, input.now);
     d.prepare(`UPDATE reviews SET ${kind.stamp} = ? WHERE id = ?`).run(input.now, input.reviewId);
     d.exec("COMMIT");
     return {
       id: kind.turnId,
       noteKey: input.noteKey,
       seq: sequence.seq,
-      text: input.text,
+      text,
       state: "queued",
       revision: 0,
       createdAt: input.now,
@@ -5865,22 +6583,33 @@ export function loadHumanResolvedReviews(sessionId: string, limit = 500): Review
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
+/**
+ * The conversation replay: every review `loadHumanResolvedReviews` would return for a delegated
+ * session too, plus every question the conversation records for itself whatever became of it
+ * (`isConversationQuestionRecord`): a message-mode question, so its Asked entry and how it ended
+ * (answered, closed by a merge, withdrawn) survive a reload, and a call-mode question a merge
+ * closed. Those extra rows are never evidence of intent, so the evidence read never sees them.
+ */
 export function loadConversationResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
   return loadConversationReviewHistory(sessionId, limit, true);
 }
 
 function loadConversationReviewHistory(sessionId: string, limit: number, includeDelegated: boolean): ReviewItem[] {
   const statuses = [...HUMAN_REVIEW_STATUSES];
+  // `isConversationQuestionRecord` in SQL, from its one definition. An open or unanswered row has
+  // no `resolved_at`, so both orders read its creation time instead; every answered row orders
+  // exactly as before.
+  const questionRecord = includeDelegated ? ` OR ${conversationQuestionRecordSql()}` : "";
   const rows = openDb()
     .prepare(
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
-            AND status IN (${statuses.map(() => "?").join(", ")})
-          ORDER BY resolved_at DESC, created_at DESC
+            AND (((resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ` OR ${HOME_DISPATCH_ACTOR_SQL}`})
+            AND status IN (${statuses.map(() => "?").join(", ")}))${questionRecord})
+          ORDER BY COALESCE(resolved_at, created_at) DESC, created_at DESC
           LIMIT ?
-       ) ORDER BY resolved_at ASC, created_at ASC`,
+       ) ORDER BY COALESCE(resolved_at, created_at) ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
   // The evidence-of-human-intent read (`includeDelegated` false) also returns the answers given from a
@@ -5888,7 +6617,8 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
   // any of them. Which of them APPROVE is decided by `isApprovingActor`, not here. The
   // conversation replay (`includeDelegated`) never sees them.
   return rows.map(rowToReview).filter((review) =>
-    isConversationResolvedReview(review) || (!includeDelegated && isHomeDispatchResolvedReview(review)));
+    isConversationResolvedReview(review)
+    || (includeDelegated ? isConversationQuestionRecord(review) : isHomeDispatchResolvedReview(review)));
 }
 
 /**
@@ -5972,6 +6702,47 @@ export function workCycleFor(logicalKey: string): WorkCycleSummary | null {
   return row ? rowToWorkCycle(row) : null;
 }
 
+export function hasDeliveredSpokenHold(logicalKey: string): boolean {
+  return !!openDb().prepare("SELECT 1 FROM session_work_cycles WHERE logical_key = ? AND spoken_hold = 1").get(logicalKey);
+}
+
+/** A first native binding names the same receiving turn. A later /clear uses its own cycle. */
+export function workCycleForBoundSession(sessionId: string, logicalKey: string): WorkCycleSummary | null {
+  if (sessionId === logicalKey) return workCycleFor(logicalKey);
+  const d = openDb();
+  const held = hasDeliveredSpokenHold(sessionId);
+  const handoff = d.prepare(`SELECT 1 FROM pending_turns WHERE note_key IN (?, ?) AND spoken_handoff_key = ?
+    AND state IN ('sending', 'uncertain') LIMIT 1`).get(sessionId, logicalKey, sessionId);
+  if (held || handoff) {
+    const bind = () => {
+      let movedHandoff = false;
+      if (handoff) {
+        // Each key has its own generation counter. Translate an unfinished handoff before
+        // processing the first native event, which can itself be the receiving turn's end.
+        const moved = d.prepare(`UPDATE pending_turns SET spoken_handoff_key = ?, spoken_handoff_generation =
+          COALESCE((SELECT generation FROM session_work_cycles WHERE logical_key = ?), 0)
+          WHERE note_key IN (?, ?) AND spoken_handoff_key = ? AND state IN ('sending', 'uncertain')
+          AND spoken_handoff_generation = COALESCE((SELECT generation FROM session_work_cycles WHERE logical_key = ?), 0)`)
+          .run(logicalKey, logicalKey, sessionId, logicalKey, sessionId, sessionId);
+        movedHandoff = moved.changes > 0;
+      }
+      if (!held && !movedHandoff) return;
+      // The first event on the native key can be Stop. Move the active bit along with
+      // the handoff so that event can complete it before a late receipt arrives.
+      d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold, spoken_hold_since)
+        SELECT ?, updated_at, 1, spoken_hold, spoken_hold_since FROM session_work_cycles WHERE logical_key = ? AND active = 1
+        ON CONFLICT(logical_key) DO UPDATE SET active = 1,
+          updated_at = MAX(updated_at, excluded.updated_at),
+          spoken_hold_since = COALESCE(MAX(spoken_hold_since, excluded.spoken_hold_since), excluded.spoken_hold_since, spoken_hold_since),
+          spoken_hold = MAX(spoken_hold, excluded.spoken_hold)`).run(logicalKey, sessionId);
+      d.prepare("UPDATE session_work_cycles SET active = 0, spoken_hold = 0, spoken_hold_since = NULL WHERE logical_key = ?").run(sessionId);
+    };
+    if (d.isTransaction) bind();
+    else inTransaction(bind);
+  }
+  return workCycleFor(logicalKey);
+}
+
 /**
  * True when work observed at `occurredAt` happened before `cycle`'s last recorded completion.
  *
@@ -6012,8 +6783,8 @@ export function markWorkCycleActive(logicalKey: string, updatedAt: number, occur
 /**
  * Complete an armed cycle, advancing its generation once.
  *
- * A turn end with no prior work is a no-op. No row is created for idle/end noise, and an
- * existing inactive row is returned unchanged so duplicate turn ends stay on one generation.
+ * A stamped spoken handoff can be the only evidence of work before a terminal's first Stop.
+ * It closes only the generation stamped at handoff, so duplicate ends and idle noise do nothing.
  */
 export function completeWorkCycle(
   logicalKey: string,
@@ -6022,14 +6793,22 @@ export function completeWorkCycle(
 ): WorkCycleSummary | null {
   openDb()
     .prepare(
-      `UPDATE session_work_cycles
-          SET generation = generation + 1,
-              active = 0,
-              completed_at = ?,
-              updated_at = ?
-        WHERE logical_key = ? AND active = 1`,
+      `WITH cycle AS (SELECT * FROM session_work_cycles WHERE logical_key = $key),
+            handoff AS (
+              SELECT MAX(COALESCE(p.spoken_handoff_at, s.delivered_at)) AS at
+              FROM pending_turns p JOIN session_spoken_turns s ON s.id = p.spoken_reservation_id AND s.outbox_turn_id = p.id
+              WHERE p.spoken_handoff_key = $key AND p.state IN ('sending', 'uncertain')
+                AND p.spoken_handoff_generation = COALESCE((SELECT generation FROM cycle), 0)
+            )
+        INSERT INTO session_work_cycles (logical_key, generation, active, completed_at, updated_at)
+        SELECT $key, 1, 0, $completedAt, $updatedAt FROM handoff
+         WHERE (at IS NOT NULL OR EXISTS (SELECT 1 FROM cycle WHERE active = 1))
+           AND (at IS NULL OR at <= $completedAt)
+           AND NOT EXISTS (SELECT 1 FROM cycle WHERE spoken_hold_since > $completedAt)
+        ON CONFLICT(logical_key) DO UPDATE SET generation = generation + 1, active = 0,
+          spoken_hold = 0, spoken_hold_since = NULL, completed_at = excluded.completed_at, updated_at = excluded.updated_at`,
     )
-    .run(completedAt, updatedAt, logicalKey);
+    .run({ key: logicalKey, completedAt, updatedAt });
   return workCycleFor(logicalKey);
 }
 
@@ -6530,6 +7309,8 @@ export function sessionsBoundToAgents(agentSessionIds: Iterable<string>): Set<st
 interface TaskRow {
   workspace_kind: string | null;
   id: string;
+  /** Optional: a row read before `migrate` added the column has none. */
+  work_unit_id?: string | null;
   title: string;
   intent: string;
   kind: string;
@@ -6548,6 +7329,8 @@ interface TaskRow {
   effort: string | null;
   advisor_model: string | null;
   persona_id: string | null;
+  /** Optional: a row read before `migrate` added the column has none. */
+  call_sign?: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
@@ -6573,6 +7356,8 @@ interface TaskRow {
   terminal_launch: string | null;
   session_id: string | null;
   claim_warnings?: string | null;
+  shaping?: string | null;
+  shaping_delivery?: string | null;
   schedule_id: string | null;
   schedule_occurrence_id: string | null;
   scheduled_for: number | null;
@@ -6762,6 +7547,22 @@ function readTaskClaimWarnings(raw: string | null): Pick<Task, "claimWarnings"> 
   }
 }
 
+/**
+ * `tasks.shaping` read back, as the key `rowToTask` spreads: absent when there is no record,
+ * so an unshaped task reads exactly as it did before the column. An unreadable blob is no
+ * record, because one bad row must not take out `listTasks`.
+ */
+function readTaskShaping(raw: string | null, delivery: string | null): Pick<Task, "shaping" | "shapingDelivery"> {
+  const binding = delivery ? { shapingDelivery: delivery } : {};
+  if (!raw) return binding;
+  try {
+    const parsed = TaskShapingSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? { shaping: parsed.data, ...binding } : binding;
+  } catch {
+    return binding;
+  }
+}
+
 function parseTerminalLaunch(raw: string | null): Task["terminalLaunch"] {
   if (!raw) return null;
   try {
@@ -6938,6 +7739,13 @@ function readTaskPlans(inputs: string | null, policy: string | null): Pick<Task,
   return result;
 }
 
+/** A stored call sign as `rowToTask` spreads it: present only when it is one a writer could store. */
+function readCallSign(raw: string | null | undefined): { callSign?: string } {
+  if (!raw) return {};
+  const parsed = SpokenNameSchema.safeParse(raw);
+  return parsed.success ? { callSign: parsed.data } : {};
+}
+
 /** A stale/newer effort value cannot be trusted as a harness launch option. */
 function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
   return raw && supportsEffort(agent, raw as NonNullable<Task["effort"]>)
@@ -6968,6 +7776,9 @@ function rowToTask(
 ): Task {
   return {
     id: r.id,
+    // Validated, not cast, like `kind` below: a hand-edited or malformed value reads as no work
+    // unit rather than reaching a consumer that would send it to another service.
+    workUnitId: isWorkUnitId(r.work_unit_id) ? r.work_unit_id : null,
     title: r.title,
     intent: r.intent,
     // Validated, not cast. The column is unconstrained TEXT, so the value is whatever
@@ -7011,6 +7822,9 @@ function rowToTask(
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
     personaId: r.persona_id || null,
+    // Present only when set, so a task with none decodes exactly as it did before the column.
+    // Validated, not cast: a value no build would write (blank, or past the limit) reads as none.
+    ...readCallSign(r.call_sign),
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -7056,6 +7870,7 @@ function rowToTask(
     automaticCleanup,
     residentRestart,
     ...readTaskClaimWarnings(r.claim_warnings ?? null),
+    ...readTaskShaping(r.shaping ?? null, r.shaping_delivery ?? null),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -7078,7 +7893,15 @@ function parseSourceParent(raw: string | null): TaskSourceRef | null {
   }
 }
 
-export function upsertTask(t: Task): string[] {
+export function upsertTask(
+  t: Task,
+  /**
+   * Set only by a turn-one binding: the delivery id written with the row in this same
+   * transaction (`Task.shapingDelivery`). Every other write leaves the column alone, whatever
+   * the copy of the task it was handed carries, so a stale copy never brings an earlier id back.
+   */
+  binding: { shapingDelivery: string } | null = null,
+): string[] {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
@@ -7106,8 +7929,8 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
-         model, effort, advisor_model, persona_id,
+         id, work_unit_id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
+         model, effort, advisor_model, persona_id, call_sign,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
@@ -7116,14 +7939,18 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings, hibernation,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
+         -- Written once. A stored id is never replaced, whatever this copy of the task carries:
+         -- a writer holding a copy read before the id was given must not erase or change it.
+         work_unit_id=COALESCE(tasks.work_unit_id, excluded.work_unit_id),
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          grill_first=excluded.grill_first, enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
-         persona_id=excluded.persona_id,
+         persona_id=excluded.persona_id, call_sign=excluded.call_sign,
+         retired_call_sign=CASE WHEN excluded.call_sign IS NULL THEN NULL ELSE tasks.retired_call_sign END,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url, source_parent=excluded.source_parent,
@@ -7153,7 +7980,7 @@ export function upsertTask(t: Task): string[] {
          updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
-      t.id, t.title, t.intent, t.kind, t.agent, t.priority,
+      t.id, t.workUnitId ?? null, t.title, t.intent, t.kind, t.agent, t.priority,
       // Stored as NULL rather than "[]" when empty, so the column reads the same for a
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
@@ -7168,6 +7995,7 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.advisorModel,
       t.personaId,
+      t.callSign ?? null,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.sourceParent ? JSON.stringify(t.sourceParent) : null,
@@ -7220,12 +8048,36 @@ export function upsertTask(t: Task): string[] {
     d.prepare(`DELETE FROM task_worktree_returns WHERE task_id = ? AND
       (? <> 'done' OR completed_at IS NOT ? OR dispatched_at IS NOT ? OR ? = 0)`)
       .run(t.id, t.status, t.completedAt, t.dispatchedAt, taskHasWorktrees(t) ? 1 : 0);
+    // A turn-one binding carries its delivery id in the same transaction as the row naming the
+    // session, so the binding never lands without it (see `currentShaping`).
+    if (binding) d.prepare(`UPDATE tasks SET shaping_delivery = ? WHERE id = ?`).run(binding.shapingDelivery, t.id);
     if (ownsTransaction) d.exec("COMMIT");
     return displaced;
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * Give task `taskId` the work unit `candidate` unless it already has one, and return the id it
+ * has afterwards: `candidate` when this write was first, the stored one when another write got
+ * there first, or null when no such task exists. A caller uses the returned value and never its
+ * own candidate, so two operations initializing the same task at once end up with one id.
+ */
+export function claimTaskWorkUnitId(taskId: string, candidate: string): string | null {
+  if (!isWorkUnitId(candidate)) throw new TypeError(`not a work unit id: ${candidate}`);
+  const d = openDb();
+  d.prepare(`UPDATE tasks SET work_unit_id = ? WHERE id = ? AND work_unit_id IS NULL`).run(candidate, taskId);
+  return storedTaskWorkUnitId(taskId);
+}
+
+/** The work unit id stored for `taskId`, or null when it has none or no such task exists. */
+export function storedTaskWorkUnitId(taskId: string): string | null {
+  const row = openDb().prepare(`SELECT work_unit_id FROM tasks WHERE id = ?`).get(taskId) as
+    | { work_unit_id: string | null }
+    | undefined;
+  return isWorkUnitId(row?.work_unit_id) ? row.work_unit_id : null;
 }
 
 /**
@@ -8350,7 +9202,8 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
   }
 }
 
-export function deleteTask(id: string): void {
+/** Delete a task and everything keyed on it. True when a task row was there to delete. */
+export function deleteTask(id: string): boolean {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
@@ -8374,12 +9227,397 @@ export function deleteTask(id: string): void {
     // cleaning up after this function forever instead of after genuine surprises.
     d.prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_source_sync WHERE task_id = ?`).run(id);
-    d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+    d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(id);
+    d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ?`).run(id);
+    const deleted = Number(d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id).changes) > 0;
     if (ownsTransaction) d.exec("COMMIT");
+    return deleted;
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+// ---- task shaping record ----
+
+/**
+ * Settle one launch's shaping record: the summary, its delivery id and the delivered text, in
+ * ONE transaction.
+ *
+ * The only writer of `tasks.shaping` besides `rekeyTaskShaping`; `upsertTask` never names
+ * the column, so a task written from an older snapshot cannot bring a superseded record back.
+ * Called once turn one has been handed to the worker, whether or not shaping ran:
+ *
+ * - `summary` replaces the record, or clears it when null (no shaper applied, or the flag
+ *   was off). A record is stamped with this delivery's id.
+ * - The delivery id is written to the task's binding (`shaping_delivery`) either way, so a
+ *   record shows only while it is this delivery's (`currentShaping`), and a delivery that
+ *   recorded nothing still binds under its own id.
+ * - `text` replaces the delivered section, or deletes it when empty. A launch whose only
+ *   shaper failed keeps its degraded summary and has no text.
+ *
+ * Returns whether the record, the text or an after-work prompt row changed: a task with no
+ * record and no text, settled with neither, gains only its delivery id.
+ */
+export function commitTaskShaping(
+  taskId: string,
+  summary: TaskShaping | null,
+  text: string,
+  at = Date.now(),
+  /**
+   * The session this launch was delivered to. Its after-work prompt row, left by an earlier
+   * launch of the task into the same session (a handover back to the agent it already ran on),
+   * describes a launch this commit supersedes: it is removed here, with its outbox turn while no
+   * delivery has claimed it, so the new launch writes its own. Defaults to the summary's session.
+   */
+  deliveredTo: string | null = summary?.sessionId ?? null,
+  /** This delivery's id. Defaults to the summary's own, or a fresh one. */
+  deliveryId: string = summary?.deliveryId ?? randomUUID(),
+): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    // A task deleted while its worker started has nothing left to own a record: write neither
+    // half, so no delivered text outlives the row `deleteTask` already removed.
+    if (!d.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(taskId)) {
+      if (ownsTransaction) d.exec("COMMIT");
+      return false;
+    }
+    let changes = 0;
+    if (summary) {
+      const record = TaskShapingSchema.parse({ ...summary, deliveryId });
+      changes += Number(d.prepare(`UPDATE tasks SET shaping = ? WHERE id = ?`).run(JSON.stringify(record), taskId).changes);
+    } else {
+      changes += Number(d.prepare(`UPDATE tasks SET shaping = NULL WHERE id = ? AND shaping IS NOT NULL`).run(taskId).changes);
+    }
+    d.prepare(`UPDATE tasks SET shaping_delivery = ? WHERE id = ?`).run(deliveryId, taskId);
+    if (text) {
+      changes += Number(d.prepare(
+        `INSERT INTO task_shaping_text (task_id, text, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET text = excluded.text, created_at = excluded.created_at`,
+      ).run(taskId, text, at).changes);
+    } else {
+      changes += Number(d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(taskId).changes);
+    }
+    if (deliveredTo) changes += clearSupersededSkillPrompt(d, taskId, deliveredTo);
+    if (ownsTransaction) d.exec("COMMIT");
+    return changes > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Carry a task's record from one session to its successor in the same work episode, such as a
+ * resumed or transferred conversation. Only a record that names `fromSessionId` moves, so a
+ * record left by an earlier launch never attaches to a later one. Returns whether it moved.
+ */
+export function rekeyTaskShaping(taskId: string, fromSessionId: string, toSessionId: string): boolean {
+  if (fromSessionId === toSessionId) return false;
+  const r = openDb()
+    .prepare(
+      `UPDATE tasks SET shaping = json_set(shaping, '$.sessionId', ?)
+         WHERE id = ? AND shaping IS NOT NULL AND json_extract(shaping, '$.sessionId') = ?`,
+    )
+    .run(toSessionId, taskId, fromSessionId);
+  return Number(r.changes) > 0;
+}
+
+// ---- task shaping: after-work skills prompts ----
+
+interface TaskSkillPromptRow {
+  task_id: string;
+  session_id: string;
+  state: string;
+  reason: string | null;
+  skills: string;
+  turn_id: string | null;
+  created_at: number;
+  delivered_at: number | null;
+}
+
+/** A stored prompt row, as reads carry it, or null when it does not parse under this build. */
+function rowToTaskSkillPrompt(row: TaskSkillPromptRow): (TaskSkillPrompt & { taskId: string; turnId: string | null }) | null {
+  let skills: unknown;
+  try { skills = JSON.parse(row.skills); } catch { return null; }
+  const parsed = TaskSkillPromptSchema.safeParse({
+    sessionId: row.session_id, state: row.state, reason: row.reason, skills,
+    createdAt: row.created_at, deliveredAt: row.delivered_at,
+  });
+  return parsed.success ? { ...parsed.data, taskId: row.task_id, turnId: row.turn_id } : null;
+}
+
+/** One launch's after-work prompt, or null when none was written for that task and session. */
+export function getTaskSkillPrompt(taskId: string, sessionId: string): (TaskSkillPrompt & { taskId: string; turnId: string | null }) | null {
+  const row = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE task_id = ? AND session_id = ?`)
+    .get(taskId, sessionId) as TaskSkillPromptRow | undefined;
+  return row ? rowToTaskSkillPrompt(row) : null;
+}
+
+/**
+ * Inside the shaping commit: drop the prompt row an earlier launch of `taskId` into `sessionId`
+ * left, and its outbox turn while it is still queued and unclaimed. A turn a delivery already
+ * claimed cannot be deleted under it; with its row gone it is no longer owed, and the outbox's
+ * delivery guard refuses it before the agent takes it (`afterWorkTurnOwed`). A guard that cannot
+ * read the row holds the turn back rather than deliver it. Returns the rows changed.
+ */
+function clearSupersededSkillPrompt(d: DatabaseSync, taskId: string, sessionId: string): number {
+  const row = d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ? AND session_id = ? RETURNING turn_id`)
+    .get(taskId, sessionId) as { turn_id: string | null } | undefined;
+  if (!row) return 0;
+  const turn = row.turn_id
+    ? Number(d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND claimed_at IS NULL`).run(row.turn_id).changes)
+    : 0;
+  return 1 + turn;
+}
+
+/**
+ * Whether an after-work outbox turn is still owed: its prompt row exists and is `queued` under
+ * this turn id. A later launch's shaping commit removes the row, so a turn it left in flight
+ * answers false, and the outbox refuses to deliver it.
+ */
+export function afterWorkTurnOwed(turnId: string): boolean {
+  return Boolean(openDb().prepare(`SELECT 1 FROM task_skill_prompts WHERE turn_id = ? AND state = 'queued'`).get(turnId));
+}
+
+/**
+ * Drop a queued after-work turn that is about to be delivered after task shaping was turned
+ * off, and record its prompt row as not delivered, in one transaction. Only an unclaimed queued
+ * turn: one a delivery already took is left to finish. True when the turn was dropped.
+ */
+export function dropQueuedAfterWorkTurn(turnId: string, reason: string): boolean {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const dropped = Number(d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND claimed_at IS NULL`)
+      .run(turnId).changes) > 0;
+    if (dropped) {
+      d.prepare(`UPDATE task_skill_prompts SET state = 'not_delivered', reason = ?, delivered_at = NULL
+                   WHERE turn_id = ? AND state = 'queued'`).run(reason, turnId);
+    }
+    d.exec("COMMIT");
+    return dropped;
+  } catch (error) {
+    try { d.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+/** The prompt rows still owed to a session: held, queued or waiting. */
+export function listOpenTaskSkillPrompts(sessionId: string): Array<TaskSkillPrompt & { taskId: string; turnId: string | null }> {
+  const rows = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE session_id = ? AND state IN ('held', 'queued', 'waiting')`)
+    .all(sessionId) as unknown as TaskSkillPromptRow[];
+  return rows.map(rowToTaskSkillPrompt).filter((row) => row !== null);
+}
+
+/** The sessions that have a prompt the outbox refused for a reason that can clear. */
+export function listWaitingTaskSkillPromptSessions(): string[] {
+  const rows = openDb().prepare(`SELECT DISTINCT session_id FROM task_skill_prompts WHERE state = 'waiting'`)
+    .all() as unknown as Array<{ session_id: string }>;
+  return rows.map((row) => row.session_id);
+}
+
+/**
+ * Record that the outbox refused a launch's prompt for a reason that can clear. A launch with no
+ * row gets one (`from` null); otherwise only a row still in `from` moves, and a row already
+ * waiting keeps waiting with the latest reason. True when written.
+ */
+export function markTaskSkillPromptWaiting(input: {
+  taskId: string;
+  sessionId: string;
+  from: "held" | "waiting" | null;
+  skills: readonly string[];
+  reason: string;
+  now: number;
+}): boolean {
+  const d = openDb();
+  const r = input.from === null
+    ? d.prepare(
+      `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
+         VALUES (?, ?, 'waiting', ?, ?, NULL, ?, NULL)
+       ON CONFLICT(task_id, session_id) DO NOTHING`,
+    ).run(input.taskId, input.sessionId, input.reason, JSON.stringify(input.skills), input.now)
+    : d.prepare(
+      `UPDATE task_skill_prompts SET state = 'waiting', reason = ?, skills = ?
+         WHERE task_id = ? AND session_id = ? AND state = ?`,
+    ).run(input.reason, JSON.stringify(input.skills), input.taskId, input.sessionId, input.from);
+  return Number(r.changes) > 0;
+}
+
+/** The prompt row an outbox row was queued as. */
+export function taskSkillPromptForTurn(turnId: string): (TaskSkillPrompt & { taskId: string; turnId: string | null }) | null {
+  const row = openDb().prepare(`SELECT * FROM task_skill_prompts WHERE turn_id = ?`).get(turnId) as TaskSkillPromptRow | undefined;
+  return row ? rowToTaskSkillPrompt(row) : null;
+}
+
+/**
+ * Write a launch's prompt row in a state that queues nothing: `held`, `skipped` or
+ * `not_delivered`. Only when the launch has none yet, so it is written once per launch whoever
+ * asks. True when this call wrote it.
+ */
+export function insertTaskSkillPrompt(input: {
+  taskId: string;
+  sessionId: string;
+  state: "held" | "skipped" | "not_delivered";
+  reason: string | null;
+  skills: readonly string[];
+  now: number;
+}): boolean {
+  const r = openDb().prepare(
+    `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, NULL)
+     ON CONFLICT(task_id, session_id) DO NOTHING`,
+  ).run(input.taskId, input.sessionId, input.state, input.reason, JSON.stringify(input.skills), input.now);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Mark a session's held prompts as answered: called inside the transaction that records its
+ * wrap-up answer, so the release they are owed survives a daemon that stops before it runs.
+ */
+export function markHeldTaskSkillPromptsAnswered(sessionId: string): number {
+  return Number(openDb().prepare(`UPDATE task_skill_prompts SET wrapup_answered = 1 WHERE session_id = ? AND state = 'held'`)
+    .run(sessionId).changes);
+}
+
+/** The sessions with a held prompt whose wrap-up was answered and not yet released. For startup. */
+export function listAnsweredHeldTaskSkillPromptSessions(): string[] {
+  const rows = openDb().prepare(`SELECT DISTINCT session_id FROM task_skill_prompts WHERE state = 'held' AND wrapup_answered = 1`)
+    .all() as unknown as Array<{ session_id: string }>;
+  return rows.map((row) => row.session_id);
+}
+
+/**
+ * Queue a launch's after-work prompt: the outbox row and the prompt row marked `queued`, in ONE
+ * transaction, so a crash leaves neither or both and a retry never queues a second turn. A launch
+ * with no row yet gets one (`from` null); otherwise only a row still in `from` - `held` behind a
+ * wrap-up, or `waiting` after a refusal that could clear - moves. Null when the prompt is no
+ * longer owed: a row exists already, or the row has moved on.
+ */
+export function queueTaskSkillPromptTurn(input: {
+  taskId: string;
+  sessionId: string;
+  noteKey: string;
+  turnId: string;
+  text: string;
+  skills: readonly string[];
+  from: "held" | "waiting" | null;
+  now: number;
+}): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const owed = input.from !== null
+      ? d.prepare(
+        `UPDATE task_skill_prompts SET state = 'queued', reason = NULL, skills = ?, turn_id = ?
+           WHERE task_id = ? AND session_id = ? AND state = ?`,
+      ).run(JSON.stringify(input.skills), input.turnId, input.taskId, input.sessionId, input.from)
+      : d.prepare(
+        `INSERT INTO task_skill_prompts (task_id, session_id, state, reason, skills, turn_id, created_at, delivered_at)
+           VALUES (?, ?, 'queued', NULL, ?, ?, ?, NULL)
+         ON CONFLICT(task_id, session_id) DO NOTHING`,
+      ).run(input.taskId, input.sessionId, JSON.stringify(input.skills), input.turnId, input.now);
+    if (Number(owed.changes) !== 1 || d.prepare(`SELECT 1 FROM pending_turns WHERE id = ?`).get(input.turnId)) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    const sequence = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(input.noteKey) as unknown as { seq: number };
+    d.prepare(
+      `INSERT INTO pending_turns
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, 'after-turn', NULL)`,
+    ).run(input.turnId, input.noteKey, sequence.seq, input.text, input.now, input.now);
+    const row = d.prepare(`SELECT * FROM pending_turns WHERE id = ?`).get(input.turnId) as unknown as PendingTurnRow;
+    d.exec("COMMIT");
+    return rowToPendingTurn(row);
+  } catch (error) {
+    try { d.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+/**
+ * Settle a prompt row that is still `from` one of the given states. A final state is written
+ * once: a row already delivered, skipped or not delivered is never moved again. True when moved.
+ */
+export function settleTaskSkillPrompt(input: {
+  taskId: string;
+  sessionId: string;
+  from: readonly TaskSkillPrompt["state"][];
+  state: "delivered" | "skipped" | "not_delivered";
+  reason: string | null;
+  at: number;
+}): boolean {
+  if (input.from.length === 0) return false;
+  const r = openDb().prepare(
+    `UPDATE task_skill_prompts SET state = ?, reason = ?, delivered_at = ?
+       WHERE task_id = ? AND session_id = ? AND state IN (${input.from.map(() => "?").join(", ")})`,
+  ).run(input.state, input.reason, input.state === "delivered" ? input.at : null, input.taskId, input.sessionId, ...input.from);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Carry a launch's prompt row to its successor session, where the shaping record is re-keyed
+ * (`rekeyTaskShaping`): the same conversation continuing is the same launch, so it is not
+ * prompted again. A row the successor already holds is from an earlier launch into it, which
+ * the record now replaces, so it goes first, with its unclaimed outbox turn.
+ */
+export function rekeyTaskSkillPrompt(taskId: string, fromSessionId: string, toSessionId: string): boolean {
+  if (fromSessionId === toSessionId) return false;
+  const d = openDb();
+  clearSupersededSkillPrompt(d, taskId, toSessionId);
+  const r = d.prepare(`UPDATE task_skill_prompts SET session_id = ? WHERE task_id = ? AND session_id = ?`)
+    .run(toSessionId, taskId, fromSessionId);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Carry a launch to its successor session on resume: the shaping record and the launch's
+ * after-work prompt row move together or not at all. Moved apart, a restart between them would
+ * leave the record on the successor with no prompt row there, and the same launch could be
+ * prompted again. Inside a caller's transaction this is a savepoint, so a failure undoes both
+ * moves without undoing the caller's own writes. Returns whether the record moved.
+ */
+export function rekeyTaskLaunch(taskId: string, fromSessionId: string, toSessionId: string): boolean {
+  if (fromSessionId === toSessionId) return false;
+  const d = openDb();
+  const nested = d.isTransaction;
+  d.exec(nested ? "SAVEPOINT rekey_task_launch" : "BEGIN IMMEDIATE");
+  try {
+    const moved = rekeyTaskShaping(taskId, fromSessionId, toSessionId);
+    if (moved) rekeyTaskSkillPrompt(taskId, fromSessionId, toSessionId);
+    d.exec(nested ? "RELEASE rekey_task_launch" : "COMMIT");
+    return moved;
+  } catch (error) {
+    try {
+      d.exec(nested ? "ROLLBACK TO rekey_task_launch; RELEASE rekey_task_launch" : "ROLLBACK");
+    } catch {}
+    throw error;
+  }
+}
+
+/** The stored record and the delivery id its binding carries, for a task that is not in memory. */
+export function taskShapingState(taskId: string): Pick<Task, "shaping" | "shapingDelivery"> {
+  const row = openDb().prepare(`SELECT shaping, shaping_delivery FROM tasks WHERE id = ?`).get(taskId) as
+    { shaping: string | null; shaping_delivery: string | null } | undefined;
+  return readTaskShaping(row?.shaping ?? null, row?.shaping_delivery ?? null);
+}
+
+/** The stored record alone, for a task that is not in memory. */
+export function taskShapingRecord(taskId: string): TaskShaping | null {
+  return taskShapingState(taskId).shaping ?? null;
+}
+
+/** The section the task's latest shaped launch delivered, when it delivered one. */
+export function getTaskShapingText(taskId: string): { text: string; createdAt: number } | null {
+  const row = openDb()
+    .prepare(`SELECT text, created_at FROM task_shaping_text WHERE task_id = ?`)
+    .get(taskId) as { text: string; created_at: number } | undefined;
+  return row ? { text: row.text, createdAt: row.created_at } : null;
 }
 
 export function listTasks(): Task[] {
@@ -8424,6 +9662,34 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
        ORDER BY updated_at DESC LIMIT ?`,
     )
     .all(limit) as unknown as TaskRow[];
+  return rowsToTasks(rows);
+}
+
+/** Roster retirement belongs to the task row and leaves its configured call sign intact. */
+export const taskNameRetirement = {
+  read(id: string): string | null {
+    const row = openDb().prepare("SELECT retired_call_sign FROM tasks WHERE id = ?").get(id);
+    return typeof row?.retired_call_sign === "string" ? row.retired_call_sign : null;
+  },
+  write(id: string, name: string | null): void {
+    openDb().prepare("UPDATE tasks SET retired_call_sign = ? WHERE id = ?").run(name, id);
+  },
+};
+
+/**
+ * Finished tasks with a call sign that stopped at or after `since`, from storage rather than the
+ * Registry's 50 most recent finished tasks: the voice roster keeps such a name for 24 hours from
+ * when its task stopped (`@server/voice/names.ts`), and a restart reloads only those 50, so it
+ * reads the rest of that day's named tasks here without widening the board's cache. Stopped is
+ * `completed_at`, or `updated_at` on a row with none, the time the roster counts from.
+ */
+export function loadFinishedTasksWithCallSign(since: number): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks WHERE call_sign IS NOT NULL AND status IN ('done','failed','cancelled')
+       AND COALESCE(completed_at, updated_at) >= ?`,
+    )
+    .all(since) as unknown as TaskRow[];
   return rowsToTasks(rows);
 }
 
@@ -8535,6 +9801,7 @@ export interface TaskWorktreeRetentionRow {
   generation: string;
   fingerprint: string;
   lastChangedAt: number;
+  unownedSince: number | null;
   observedAt: number;
   cleanupDueAt: number;
   cleanupState: string;
@@ -8554,6 +9821,7 @@ interface TaskWorktreeRetentionDbRow {
   observed_at: number;
   cleanup_due_at: number;
   retention_ms: number;
+  unowned_since: number | null;
   cleanup_state: string;
   claim_token: string | null;
   claimed_at: number | null;
@@ -8569,6 +9837,7 @@ function toRetentionRow(row: TaskWorktreeRetentionDbRow): TaskWorktreeRetentionR
     generation: row.generation,
     fingerprint: row.fingerprint,
     lastChangedAt: row.last_changed_at,
+    unownedSince: row.unowned_since,
     observedAt: row.observed_at,
     cleanupDueAt: row.cleanup_due_at,
     cleanupState: row.cleanup_state,
@@ -8607,7 +9876,7 @@ export function listDueTaskWorktreeRetention(now: number): TaskWorktreeRetention
   const rows = openDb()
     .prepare(
       `SELECT * FROM task_worktree_retention
-       WHERE cleanup_due_at <= ? AND (retry_at IS NULL OR retry_at <= ?)
+       WHERE cleanup_due_at > 0 AND cleanup_due_at <= ? AND (retry_at IS NULL OR retry_at <= ?)
        ORDER BY cleanup_due_at ASC`,
     )
     .all(now, now) as unknown as TaskWorktreeRetentionDbRow[];
@@ -8654,6 +9923,27 @@ export function deleteTaskWorktreeRetention(taskId: string): void {
   openDb().prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(taskId);
 }
 
+/** A tracked user or an unverified first observation invalidates the clock and any claim. */
+export function holdTaskWorktreeRetention(taskId: string, reason: string, now: number, expectedGeneration?: string): void {
+  const task = getTask(taskId);
+  if (!task || !isRetentionRetryable(task)) return;
+  const generation = taskResourceGeneration(task);
+  if (expectedGeneration && generation !== expectedGeneration) return;
+  const error = reason.slice(0, RETENTION_ERROR_LIMIT);
+  openDb().prepare(`
+    INSERT INTO task_worktree_retention
+      (task_id, generation, fingerprint, last_changed_at, observed_at, cleanup_due_at,
+       cleanup_state, last_error, updated_at)
+    VALUES (?, ?, '', ?, 0, 0, 'observing', ?, ?)
+    ON CONFLICT(task_id) DO UPDATE SET
+      generation = excluded.generation, unowned_since = NULL, cleanup_due_at = 0, cleanup_state = 'observing',
+      claim_token = NULL, claimed_at = NULL, retry_at = NULL, last_attempt_at = NULL,
+      last_error = excluded.last_error, updated_at = excluded.updated_at
+    WHERE generation <> excluded.generation OR unowned_since IS NOT NULL OR cleanup_due_at <> 0
+       OR last_error IS NOT excluded.last_error
+  `).run(taskId, generation, now, error, now);
+}
+
 /** What one observation did to the ledger. Returned so a caller can log or assert it. */
 export type RetentionObservationOutcome =
   /** No row existed for this generation: the conservative full window starts NOW. */
@@ -8691,6 +9981,8 @@ export interface RetentionObservationInput {
   now: number;
   /** How long a quiet tree is kept. Passed in so policy lives with the observer, not here. */
   retentionMs: number;
+  /** This observation followed a verified absence of checkout users. */
+  verifyDeparture?: boolean;
 }
 
 /**
@@ -8762,6 +10054,7 @@ export function recordTaskWorktreeObservation(
 
     let outcome: RetentionObservationOutcome;
     if (!existing) outcome = "seeded";
+    else if (input.verifyDeparture && existing.unowned_since === null) outcome = "replaced";
     else if (existing.generation !== generation) {
       // A generation change on a row that is already in RETRY is not an external replacement,
       // and treating it as one is the bug this branch exists to prevent. A row only reaches
@@ -8772,7 +10065,7 @@ export function recordTaskWorktreeObservation(
       // non-terminal task's row is pruned before any of this. So the survivor ADOPTS: new
       // generation, new fingerprint, same activity boundary, same deadline. It was 30 days
       // quiet before the failed attempt and it does not earn another month by surviving one.
-      outcome = existing.cleanup_state === "retry" ? "retry-adopted" : "replaced";
+      outcome = !input.verifyDeparture && existing.cleanup_state === "retry" ? "retry-adopted" : "replaced";
     } else if (existing.fingerprint !== fingerprint) outcome = "changed";
     else outcome = "unchanged";
 
@@ -8784,7 +10077,9 @@ export function recordTaskWorktreeObservation(
       ).run(generation, fingerprint, now, now, taskId);
     } else if (outcome === "unchanged") {
       d.prepare(
-        `UPDATE task_worktree_retention SET observed_at = ?, last_error = NULL, updated_at = ?
+        `UPDATE task_worktree_retention
+         SET observed_at = ?, last_error = CASE WHEN cleanup_state = 'retry' THEN last_error END,
+             updated_at = ?
          WHERE task_id = ?`,
       ).run(now, now, taskId);
     } else if (outcome === "changed") {
@@ -8811,9 +10106,9 @@ export function recordTaskWorktreeObservation(
         `INSERT OR REPLACE INTO task_worktree_retention
            (task_id, generation, fingerprint, last_changed_at, observed_at, cleanup_due_at,
             cleanup_state, claim_token, claimed_at, last_attempt_at, retry_at, last_error,
-            updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'observing', NULL, NULL, NULL, NULL, NULL, ?)`,
-      ).run(taskId, generation, fingerprint, now, now, now + retentionMs, now);
+            updated_at, unowned_since)
+         VALUES (?, ?, ?, ?, ?, ?, 'observing', NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      ).run(taskId, generation, fingerprint, now, now, now + retentionMs, now, input.verifyDeparture ? now : null);
     }
     // Rebase only after a successful probe, and never change a claimed deadline. Store the
     // applied window separately: a grace-clamped deadline cannot tell us which policy made it.
@@ -8823,14 +10118,18 @@ export function recordTaskWorktreeObservation(
       const fresh = outcome === "seeded" || outcome === "changed" || outcome === "replaced";
       const windowChanged = existing && existing.retention_ms !== retentionMs;
       if (fresh || windowChanged) {
-        const lastChanged = fresh ? now : existing!.last_changed_at;
-        const due = fresh ? lastChanged + retentionMs
+        const cutoff = fresh ? worktreeRetentionCutoff(now, null, retentionMs)
+          : worktreeRetentionCutoff(existing!.last_changed_at, existing!.unowned_since, retentionMs);
+        const due = fresh ? cutoff
           : retentionMs < existing!.retention_ms
-            ? Math.max(lastChanged + retentionMs, now + RETENTION_OBSERVE_INTERVAL_MS)
-            : Math.max(lastChanged + retentionMs, existing!.cleanup_due_at);
+            ? Math.max(cutoff, now + RETENTION_OBSERVE_INTERVAL_MS)
+            : Math.max(cutoff, existing!.cleanup_due_at);
         d.prepare(`UPDATE task_worktree_retention SET cleanup_due_at = ?, retention_ms = ? WHERE task_id = ?`)
           .run(due, retentionMs, taskId);
       }
+    }
+    if (input.verifyDeparture) {
+      d.prepare(`DELETE FROM task_worktree_returns WHERE task_id = ?`).run(taskId);
     }
     const row = d
       .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
@@ -8896,6 +10195,7 @@ export interface RetentionClaimInput {
   /** A value only this attempt holds. Every later transition must present it. */
   token: string;
   now: number;
+  requireDeparture?: boolean;
 }
 
 /**
@@ -8938,7 +10238,9 @@ export function claimTaskWorktreeCleanup(
     if (taskResourceGeneration(current) !== generation) return refuse("generation-moved");
     if (existing.generation !== generation) return refuse("generation-moved");
     if (existing.fingerprint !== fingerprint) return refuse("activity-changed");
-    if (existing.cleanup_due_at > now) return refuse("not-due");
+    if (existing.cleanup_due_at === 0 || existing.cleanup_due_at > now || (input.requireDeparture && existing.unowned_since === null)) {
+      return refuse("not-due");
+    }
     if (existing.retry_at !== null && existing.retry_at > now) return refuse("not-due");
     if (existing.cleanup_state === "claimed") return refuse("already-claimed");
     d.prepare(
@@ -9325,7 +10627,7 @@ export function completeTaskWithSessionClosure(
   }
 }
 
-/** Only completions made under the automatic-return policy may resume destructive return. */
+/** Whether this completion is still owed a handoff to the retention ledger. */
 export function taskOwesWorktreeReturn(task: Task): boolean {
   if (task.status !== "done" || !taskHasWorktrees(task) || task.completedAt === null) return false;
   return Boolean(openDb().prepare(`SELECT 1 FROM task_worktree_returns
@@ -11806,6 +13108,9 @@ export function loadSessionNotes(): SessionNote[] {
 // ---- session goals ----
 
 interface SessionGoalRow {
+  handoff_released_at: number | null;
+  deliverable_updated_at: number | null;
+  latest_prompt_accepted_at: number | null;
   opening_prompt: string | null;
   note_key: string;
   text: string | null;
@@ -11831,11 +13136,12 @@ function pendingGoalPrompts(r: SessionGoalRow): SessionGoal["pendingPrompts"] {
     if (Array.isArray(parsed)) {
       const valid = parsed.flatMap((entry) => {
         if (!entry || typeof entry !== "object") return [];
-        const revision = (entry as { revision?: unknown }).revision;
-        const prompt = (entry as { prompt?: unknown }).prompt;
+        const { revision, prompt, acceptedAt } = entry as { revision?: unknown; prompt?: unknown; acceptedAt?: unknown };
         return Number.isInteger(revision) && Number(revision) > 0 &&
           (typeof prompt === "string" || prompt === null)
-          ? [{ revision: Number(revision), prompt }]
+          ? [{ revision: Number(revision), prompt,
+            ...(typeof acceptedAt === "number" && Number.isSafeInteger(acceptedAt) ? { acceptedAt } : {}),
+          }]
           : [];
       });
       const unresolved = valid
@@ -11885,6 +13191,9 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     resolvedPromptRevision:
       r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0),
     pendingPrompts: pendingGoalPrompts(r),
+    ...(r.latest_prompt_accepted_at === null ? {} : { latestPromptAcceptedAt: r.latest_prompt_accepted_at }),
+    ...(r.handoff_released_at === null ? {} : { handoffReleasedAt: r.handoff_released_at }),
+    ...(r.deliverable_updated_at === null ? {} : { deliverableUpdatedAt: r.deliverable_updated_at }),
     updatedAt: r.updated_at,
   };
 }
@@ -11894,8 +13203,9 @@ export function upsertSessionGoal(g: SessionGoal): void {
     .prepare(
       `INSERT INTO session_goals
          (note_key, text, source, objective, opening_prompt, prompt, focus, relationship, rationale,
-          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at,
+          handoff_released_at, deliverable_updated_at, latest_prompt_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text, source=excluded.source, objective=excluded.objective,
          opening_prompt=COALESCE(session_goals.opening_prompt, excluded.opening_prompt),
@@ -11904,12 +13214,15 @@ export function upsertSessionGoal(g: SessionGoal): void {
          prompt_revision=excluded.prompt_revision,
          resolved_prompt_revision=excluded.resolved_prompt_revision,
          pending_prompts=excluded.pending_prompts,
-         updated_at=excluded.updated_at`,
+         handoff_released_at=excluded.handoff_released_at,
+         deliverable_updated_at=excluded.deliverable_updated_at,
+         latest_prompt_accepted_at=excluded.latest_prompt_accepted_at, updated_at=excluded.updated_at`,
     )
     .run(
       g.noteKey, g.text, g.source, g.objective, g.openingPrompt, g.prompt, g.focus, g.relationship,
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
-      JSON.stringify(g.pendingPrompts), g.updatedAt,
+      JSON.stringify(g.pendingPrompts), g.updatedAt, g.handoffReleasedAt ?? null,
+      g.deliverableUpdatedAt ?? null, g.latestPromptAcceptedAt ?? null,
     );
 }
 
@@ -12322,15 +13635,11 @@ export function pruneSessionLaunchTurns(liveKeys: Iterable<string>, olderThan: n
   return Number(r.changes);
 }
 
-// ---- delegated turns (which controlling session sent a message) ----
-
-/** One delegated delivery into a target conversation, bound to its turn once seen. */
-export interface DelegatedTurnRow {
+/** The columns shared by deliveries that can bind to a native transcript turn. */
+export interface BindableDelivery {
   id: string;
   noteKey: string;
   fingerprint: string;
-  controllerId: string;
-  controllerName: string;
   deliveredAt: number;
   /** The target transcript's size at send; null when none was located or its size could not be read, and the row never binds. */
   transcriptOffset: number | null;
@@ -12338,6 +13647,197 @@ export interface DelegatedTurnRow {
   contested: boolean;
   messageId: string | null;
   messageTs: number | null;
+}
+
+// ---- spoken turns (operator words and the exact payload delivered) ----
+
+export interface SpokenTranscriptLocator {
+  transcriptAgent: TranscriptSession["agent"] | null;
+  transcriptCwd: string | null;
+  transcriptPath: string | null;
+}
+
+export interface SpokenTurnRow extends BindableDelivery, SpokenTranscriptLocator {
+  transcriptBoundary: string | null;
+  spokenWords: string;
+  received: string;
+  outboxTurnId: string | null;
+  outboxRevision: number | null;
+}
+
+export function insertSpokenTurn(row: SpokenTurnRow): void {
+  openDb().prepare(
+    `INSERT INTO session_spoken_turns
+       (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, contested, message_id, message_ts,
+        outbox_turn_id, outbox_revision, transcript_boundary, transcript_agent, transcript_cwd, transcript_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.noteKey, row.fingerprint, row.spokenWords, row.received,
+    row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId, row.messageTs,
+    row.outboxTurnId, row.outboxRevision, row.transcriptBoundary, row.transcriptAgent, row.transcriptCwd, row.transcriptPath);
+}
+
+export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
+  // Older reservations have no attempt identity. Keep their native bindings and client receipts,
+  // but a text match alone cannot prove that an unbound legacy attempt reached its guard.
+  const rows = openDb().prepare(
+    `SELECT id, note_key AS noteKey, fingerprint, spoken_words AS spokenWords, received,
+            delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
+            message_id AS messageId, message_ts AS messageTs, outbox_turn_id AS outboxTurnId, outbox_revision AS outboxRevision,
+            transcript_boundary AS transcriptBoundary, transcript_agent AS transcriptAgent,
+            transcript_cwd AS transcriptCwd, transcript_path AS transcriptPath
+       FROM session_spoken_turns WHERE note_key = ? AND (message_id IS NOT NULL OR runtime_confirmed_at IS NOT NULL
+         OR EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = outbox_turn_id AND p.spoken_reservation_id = session_spoken_turns.id
+           AND p.state IN ('sending', 'uncertain') AND p.spoken_handoff_generation IS NOT NULL))
+       ORDER BY rowid`,
+  ).all(noteKey) as unknown as Array<Omit<SpokenTurnRow, "contested"> & { contested: number }>;
+  return rows.map(row => ({ ...row, contested: row.contested === 1 }));
+}
+
+export function moveSpokenTurns(fromKey: string, toKey: string): number {
+  if (fromKey === toKey) return 0;
+  const d = openDb();
+  const move = () => {
+    // A native key can already owe the same fingerprint. Merge before deleting the
+    // provisional key so a crash cannot separate its reservations from their release.
+    d.prepare(`INSERT OR IGNORE INTO session_spoken_releases (note_key, fingerprint)
+      SELECT ?, fingerprint FROM session_spoken_releases WHERE note_key = ?`).run(toKey, fromKey);
+    if (d.prepare("DELETE FROM session_spoken_releases WHERE note_key = ?").run(fromKey).changes) checkSpokenReleases = true;
+    const moved = d.prepare("UPDATE session_other_sends SET note_key = ? WHERE note_key = ? AND spoken_boundary IS NOT NULL").run(toKey, fromKey);
+    if (moved.changes) {
+      otherSendChanges.add(fromKey);
+      otherSendChanges.add(toKey);
+    }
+    return Number(d.prepare("UPDATE session_spoken_turns SET note_key = ? WHERE note_key = ?").run(toKey, fromKey).changes);
+  };
+  return d.isTransaction ? move() : inTransaction(move);
+}
+
+export function deleteSpokenTurn(id: string): void {
+  openDb().prepare("DELETE FROM session_spoken_turns WHERE id = ?").run(id);
+}
+
+type ReleasedDelivery = { noteKey: string; fingerprint: string };
+let checkSpokenReleases = true;
+
+function rememberSpokenRelease(d: DatabaseSync, row: ReleasedDelivery): void {
+  discardedSpokenKeys.add(row.noteKey);
+  d.prepare("INSERT OR IGNORE INTO session_spoken_releases (note_key, fingerprint) VALUES (?, ?)").run(row.noteKey, row.fingerprint);
+  checkSpokenReleases = true;
+}
+
+/** A crash or failed reconciliation leaves the committed release available for the next ledger read. */
+export function processSpokenReleases(reconsider: (rows: ReleasedDelivery[]) => void): void {
+  if (!checkSpokenReleases || openDb().isTransaction) return;
+  inTransaction(() => {
+    const rows = openDb().prepare("DELETE FROM session_spoken_releases RETURNING note_key AS noteKey, fingerprint")
+      .all() as ReleasedDelivery[];
+    if (rows.length) reconsider(rows);
+  });
+  checkSpokenReleases = false;
+}
+
+/** A client UUID can still appear in the transcript after a crash. Start its reconciliation window once. */
+function discardUnconfirmedSpokenReservation(d: DatabaseSync, reservationId: string | null, now: number, withdrawn: boolean): void {
+  if (!reservationId) return;
+  const row = d.prepare(`DELETE FROM session_spoken_turns
+    WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NULL
+    RETURNING id, note_key AS noteKey, fingerprint, delivered_at AS sentAt, transcript_offset AS transcriptOffset,
+      transcript_boundary AS spokenBoundary`)
+    .get(reservationId) as OtherSendRow | undefined;
+  if (row) {
+    if (withdrawn) rememberSpokenRelease(d, row);
+    else {
+      // Manual settlement cannot establish a native receipt. Keep the original send boundary
+      // in the shared arbitration ledger while dropping the undisclosed payload.
+      insertOtherSend({ ...row, spokenBoundary: row.spokenBoundary ?? "unknown" });
+      otherSendChanges.add(row.noteKey);
+      discardedSpokenKeys.add(row.noteKey);
+    }
+  } else d.prepare(`UPDATE session_spoken_turns SET abandoned_at = ?
+    WHERE id = ? AND message_id = id AND message_ts IS NULL AND runtime_confirmed_at IS NULL AND abandoned_at IS NULL`)
+    .run(now, reservationId);
+}
+
+export function observeSpokenClientReceipt(id: string, messageTs: number): number | null {
+  const d = openDb();
+  const updated = d.prepare(`UPDATE session_spoken_turns SET message_ts = ?, abandoned_at = NULL
+    WHERE id = ? AND message_id = id AND message_ts IS NULL RETURNING message_ts`).get(messageTs, id);
+  if (updated) return Number(updated.message_ts);
+  const existing = d.prepare("SELECT message_ts FROM session_spoken_turns WHERE id = ? AND message_id = id").get(id);
+  if (!existing) return null;
+  if (existing.message_ts === null) throw new Error("Native spoken receipt observation was not saved");
+  return Number(existing.message_ts);
+}
+
+// Runtime confirmation and native text binding can land in different transactions, in any
+// turn order. Each change gets a new position in the conversation's durable attribution history.
+const nextSpokenAttributionOrder = `(SELECT COALESCE(MAX(other.text_receipt_order), 0) + 1
+  FROM session_spoken_turns other WHERE other.note_key = session_spoken_turns.note_key AND other.text_receipt_order IS NOT NULL)`;
+
+/** A stream cursor covers file bytes. This opaque receipt also changes when a native turn binds. */
+export function spokenTranscriptState(noteKey: string): { receipt: string | null } | null {
+  // A reserved SDK UUID can already be displayed before a text-only handoff ever occurs.
+  const row = openDb().prepare(`SELECT (SELECT id || ':' || text_receipt_order FROM session_spoken_turns WHERE note_key = ?
+    AND text_receipt_order IS NOT NULL ORDER BY text_receipt_order DESC, rowid DESC LIMIT 1) AS receipt
+    FROM session_spoken_turns WHERE note_key = ? LIMIT 1`).get(noteKey, noteKey);
+  return row ? { receipt: row.receipt as string | null } : null;
+}
+
+export function expiredSpokenConversationKeys(cutoff: number): string[] {
+  return openDb().prepare(`SELECT DISTINCT note_key FROM session_spoken_turns
+    WHERE abandoned_at <= ? OR (message_id IS NULL AND runtime_confirmed_at <= ?)
+      OR (message_id = id AND message_ts IS NULL AND runtime_confirmed_at <= ?)`)
+    .all(cutoff, cutoff, cutoff).map(row => String(row.note_key));
+}
+
+export function spokenTranscriptLocators(noteKey: string): SpokenTranscriptLocator[] {
+  return openDb().prepare(`SELECT DISTINCT transcript_agent AS transcriptAgent, transcript_cwd AS transcriptCwd,
+    transcript_path AS transcriptPath FROM session_spoken_turns WHERE note_key = ?`).all(noteKey) as unknown as SpokenTranscriptLocator[];
+}
+
+export function deleteExpiredSpokenReservations(noteKey: string, candidates: string[], sdkCutoff: number | null, textCutoff: number | null): number {
+  const removed = openDb().prepare(`DELETE FROM session_spoken_turns
+    WHERE note_key = ? AND id IN (SELECT value FROM json_each(?)) AND message_ts IS NULL AND (
+      (abandoned_at <= ? AND runtime_confirmed_at IS NULL) OR
+      (runtime_confirmed_at <= ? AND message_id = id) OR
+      (runtime_confirmed_at <= ? AND message_id IS NULL))`)
+    .run(noteKey, JSON.stringify(candidates), sdkCutoff, sdkCutoff, textCutoff);
+  if (removed.changes) discardedSpokenKeys.add(noteKey);
+  return Number(removed.changes);
+}
+
+const discardedSpokenKeys = new Set<string>();
+
+/** Reload the committed view on the next ledger read. A rolled-back deletion just reloads the original rows. */
+export function takeDiscardedSpokenKeys(): string[] | undefined {
+  if (!discardedSpokenKeys.size || openDb().isTransaction) return;
+  const keys = [...discardedSpokenKeys];
+  discardedSpokenKeys.clear();
+  return keys;
+}
+
+export function contestSpokenTurn(id: string, contested: boolean): void {
+  openDb().prepare("UPDATE session_spoken_turns SET contested = ? WHERE id = ? AND message_id IS NULL")
+    .run(Number(contested), id);
+}
+
+export function bindSpokenTurn(id: string, messageId: string, messageTs: number, boundary: TranscriptBoundary): boolean {
+  // A text-only match needs a positive runtime receipt for this attempt. Check it on the write
+  // as well as the read: a cached reservation can outlive a retry, discard, or manual settlement.
+  const result = openDb().prepare(
+    `UPDATE session_spoken_turns SET message_id = ?, message_ts = ?, transcript_offset = ?, transcript_boundary = ?,
+      text_receipt_order = ${nextSpokenAttributionOrder}
+      WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NOT NULL`,
+  ).run(messageId, messageTs, boundary.offset, boundary.proof, id);
+  return Number(result.changes) > 0;
+}
+
+// ---- delegated turns (which controlling session sent a message) ----
+
+/** One delegated delivery into a target conversation, bound to its turn once seen. */
+export interface DelegatedTurnRow extends BindableDelivery {
+  controllerId: string;
+  controllerName: string;
 }
 
 export function insertDelegatedTurn(row: DelegatedTurnRow): void {
@@ -12409,6 +13909,17 @@ export function pruneDelegatedTurns(liveKeys: Iterable<string> | null, olderThan
   return Number(r.changes);
 }
 
+const otherSendChanges = new Set<string>();
+
+/** Outbox settlement or first native binding can change the shared sends behind a warm ledger. */
+export function takeOtherSendChanges(): string[] {
+  if (!otherSendChanges.size) return [];
+  const keys = [...otherSendChanges];
+  // A reader inside the write transaction must reload again after commit or rollback.
+  if (!openDb().isTransaction) otherSendChanges.clear();
+  return keys;
+}
+
 /** One non-delegated send still inside its race window. */
 export interface OtherSendRow {
   id: string;
@@ -12416,15 +13927,16 @@ export interface OtherSendRow {
   fingerprint: string;
   sentAt: number;
   transcriptOffset: number | null;
+  spokenBoundary?: string | null;
 }
 
 export function insertOtherSend(row: OtherSendRow): void {
   openDb()
     .prepare(
-      `INSERT INTO session_other_sends (id, note_key, fingerprint, sent_at, transcript_offset)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO session_other_sends (id, note_key, fingerprint, sent_at, transcript_offset, spoken_boundary)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(row.id, row.noteKey, row.fingerprint, row.sentAt, row.transcriptOffset);
+    .run(row.id, row.noteKey, row.fingerprint, row.sentAt, row.transcriptOffset, row.spokenBoundary ?? null);
 }
 
 /** Take back a send with positive evidence that nothing landed. */
@@ -12436,7 +13948,7 @@ export function deleteOtherSend(id: string): void {
 export function loadOtherSends(noteKey: string, since: number): OtherSendRow[] {
   return openDb()
     .prepare(
-      `SELECT id, note_key AS noteKey, fingerprint, sent_at AS sentAt, transcript_offset AS transcriptOffset
+      `SELECT id, note_key AS noteKey, fingerprint, sent_at AS sentAt, transcript_offset AS transcriptOffset, spoken_boundary AS spokenBoundary
          FROM session_other_sends WHERE note_key = ? AND sent_at >= ? ORDER BY rowid ASC`,
     )
     .all(noteKey, since) as unknown as OtherSendRow[];
@@ -12445,6 +13957,173 @@ export function loadOtherSends(noteKey: string, since: number): OtherSendRow[] {
 /** Drop sends past the race window, for every conversation. */
 export function pruneOtherSends(olderThan: number): number {
   return Number(openDb().prepare(`DELETE FROM session_other_sends WHERE sent_at < ?`).run(olderThan).changes);
+}
+
+// ---- review-message deliveries (which turn carried an answer to the agent) ----
+
+/** One delivery of a marked review message into a conversation, bound to its turn once seen. */
+export interface ReviewDeliveryRow extends BindableDelivery {
+  envelope: ReviewEnvelopeKind;
+  /** In delivery order, from the row's marker line when it was sent. */
+  reviewIds: string[];
+  /** When the runtime accepted it; null while only reserved, or when the outcome is uncertain. */
+  confirmedAt: number | null;
+  /** Whether the one prompt-hook echo this delivery produces is still owed to the Goal reader. */
+  echoOwed: boolean;
+  /** The work-cycle generation whose completion ends the wait for that echo. */
+  echoTurnGeneration: number;
+  /** When the echo's wait started aging toward `HUMAN_ECHO_TTL_MS`; null until its turn is next. */
+  echoEligibleAt: number | null;
+  /**
+   * The plain record that echoes a steered delivery's mid-turn turn: null until decided, "" when
+   * it has none (including when another send of the same words could have written it).
+   */
+  steerEcho: string | null;
+  /**
+   * When the runtime was handed the text (`stampReviewDeliveryHandoff`), stamped before the write.
+   * Null for a delivery never handed over, which wrote nothing, so it owes no echo to anyone.
+   */
+  handedAt: number | null;
+}
+
+type ReviewDeliverySqlRow = Omit<ReviewDeliveryRow, "contested" | "reviewIds" | "echoOwed" | "envelope"> & {
+  contested: number;
+  reviewIds: string;
+  echoOwed: number;
+  envelope: string;
+};
+
+export function insertReviewDelivery(row: ReviewDeliveryRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_review_deliveries
+         (id, note_key, fingerprint, envelope, review_ids, delivered_at, transcript_offset, contested,
+          confirmed_at, message_id, message_ts, echo_owed, echo_turn_generation, echo_eligible_at, steer_echo, handed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.envelope, JSON.stringify(row.reviewIds), row.deliveredAt,
+      row.transcriptOffset, row.contested ? 1 : 0, row.confirmedAt, row.messageId, row.messageTs,
+      row.echoOwed ? 1 : 0, row.echoTurnGeneration, row.echoEligibleAt, row.steerEcho, row.handedAt);
+}
+
+/** Carry every delivery recorded under one conversation key to another, as one statement. */
+export function moveReviewDeliveries(fromKey: string, toKey: string): number {
+  if (fromKey === toKey) return 0;
+  return Number(openDb().prepare(`UPDATE session_review_deliveries SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey).changes);
+}
+
+/** Drop a delivery that provably did not land. */
+export function deleteReviewDelivery(id: string): void {
+  openDb().prepare(`DELETE FROM session_review_deliveries WHERE id = ?`).run(id);
+}
+
+/** In reservation order. A row whose stored ids or envelope no longer parse is skipped. */
+export function loadReviewDeliveries(noteKey: string): ReviewDeliveryRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, envelope, review_ids AS reviewIds, delivered_at AS deliveredAt,
+              transcript_offset AS transcriptOffset, contested, confirmed_at AS confirmedAt,
+              message_id AS messageId, message_ts AS messageTs, echo_owed AS echoOwed,
+              echo_turn_generation AS echoTurnGeneration, echo_eligible_at AS echoEligibleAt,
+              steer_echo AS steerEcho, handed_at AS handedAt
+         FROM session_review_deliveries WHERE note_key = ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey) as unknown as ReviewDeliverySqlRow[];
+  return rows.flatMap((row) => {
+    let ids: unknown;
+    try {
+      ids = JSON.parse(row.reviewIds);
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) return [];
+    if (row.envelope !== "answer" && row.envelope !== "remind-later") return [];
+    return [{
+      ...row,
+      envelope: row.envelope,
+      reviewIds: ids as string[],
+      contested: row.contested === 1,
+      echoOwed: row.echoOwed === 1,
+    }];
+  });
+}
+
+export function contestReviewDelivery(id: string, contested = true): void {
+  openDb()
+    .prepare(`UPDATE session_review_deliveries SET contested = ? WHERE id = ? AND message_id IS NULL`)
+    .run(contested ? 1 : 0, id);
+}
+
+/** Write-once: a bound delivery is never re-pointed at a later turn with the same words. */
+export function bindReviewDelivery(id: string, messageId: string, messageTs: number): boolean {
+  const r = openDb()
+    .prepare(
+      `UPDATE session_review_deliveries SET message_id = ?, message_ts = ?
+         WHERE id = ? AND message_id IS NULL`,
+    )
+    .run(messageId, messageTs, id);
+  return Number(r.changes) > 0;
+}
+
+/** These reviews, whatever their status or age; ids that name no review are skipped. */
+export function loadReviewsByIds(ids: readonly string[]): ReviewItem[] {
+  if (!ids.length) return [];
+  const rows = openDb()
+    .prepare(`SELECT * FROM reviews WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .all(...ids) as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
+/** Write-once: a steered delivery's echo decision, "" for none. */
+export function settleReviewDeliverySteerEcho(id: string, echo: string): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET steer_echo = ? WHERE id = ? AND steer_echo IS NULL`).run(echo, id);
+}
+
+/** The runtime accepted it. */
+export function confirmReviewDelivery(id: string, at: number): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET confirmed_at = ? WHERE id = ?`).run(at, id);
+}
+
+/** Record, once, that the runtime was handed this delivery's text. */
+export function markReviewDeliveryHanded(id: string, at: number): void {
+  openDb().prepare(`UPDATE session_review_deliveries SET handed_at = ? WHERE id = ? AND handed_at IS NULL`).run(at, id);
+}
+
+/** Persist a delivery's echo debt as `review-deliveries.ts` settled it. */
+export function updateReviewDeliveryEcho(
+  id: string,
+  echo: { owed: boolean; turnGeneration: number; eligibleAt: number | null },
+): void {
+  openDb()
+    .prepare(
+      `UPDATE session_review_deliveries SET echo_owed = ?, echo_turn_generation = ?, echo_eligible_at = ?
+         WHERE id = ?`,
+    )
+    .run(echo.owed ? 1 : 0, echo.turnGeneration, echo.eligibleAt, id);
+}
+
+/**
+ * Ordinary unbound deliveries older than `olderThan`: the only rows that may ever be pruned. A
+ * bound row is never pruned, so an old conversation keeps its answer cards; nor is a contested
+ * or offset-less row, which can never bind and is what keeps a turn with its words from being
+ * read as the operator's (`DeliveryLedger.bound`). Age alone does not make one of these
+ * prunable: the caller deletes only those a binding walk has actually expired.
+ */
+export function loadPrunableReviewDeliveries(olderThan: number): Array<{ id: string; noteKey: string; deliveredAt: number }> {
+  return openDb()
+    .prepare(`SELECT id, note_key AS noteKey, delivered_at AS deliveredAt FROM session_review_deliveries
+       WHERE message_id IS NULL AND contested = 0 AND transcript_offset IS NOT NULL AND delivered_at < ?`)
+    .all(olderThan) as unknown as Array<{ id: string; noteKey: string; deliveredAt: number }>;
+}
+
+/** Delete these deliveries, each only if it is still unbound. */
+export function deleteUnboundReviewDeliveries(ids: readonly string[]): number {
+  if (!ids.length) return 0;
+  return Number(
+    openDb()
+      .prepare(`DELETE FROM session_review_deliveries WHERE message_id IS NULL AND id IN (${ids.map(() => "?").join(",")})`)
+      .run(...ids).changes,
+  );
 }
 
 // ---- session standing instructions (what a launch actually delivered) ----
@@ -12458,6 +14137,8 @@ export interface StandingInstructionsSnapshot {
   /** One entry per contributing repository, in the launch manifest's order. */
   sources: StandingInstructionsSource[];
   createdAt: number;
+  /** What repository task skills this launch included or skipped (spec 7.15). Absent when none applied. */
+  repoTaskSkills?: RepoTaskSkillRecord | null;
 }
 
 interface StandingInstructionsRow {
@@ -12466,6 +14147,39 @@ interface StandingInstructionsRow {
   mechanism: string;
   sources: string;
   created_at: number;
+  repo_task_skills: string | null;
+}
+
+/** Parse the stored skill record, tolerating anything a newer build wrote: unreadable is null. */
+function parseRepoTaskSkills(raw: string | null): RepoTaskSkillRecord | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { included, skipped } = parsed as { included?: unknown; skipped?: unknown };
+    if (!Array.isArray(included) || !Array.isArray(skipped)) return null;
+    // Entries are checked by field TYPE, not against today's vocabularies: a newer build may
+    // add a kind or a skip reason, and an entry that is merely unfamiliar must survive. One
+    // that lacks the fields a reader dereferences is dropped rather than surfaced as typed.
+    const isStr = (v: unknown): v is string => typeof v === "string";
+    const keptIncluded = included.filter(
+      (e): e is RepoTaskSkillRecord["included"][number] =>
+        typeof e === "object" && e !== null &&
+        isStr((e as { repo?: unknown }).repo) && isStr((e as { kind?: unknown }).kind) &&
+        isStr((e as { path?: unknown }).path) &&
+        typeof (e as { bytes?: unknown }).bytes === "number" &&
+        typeof (e as { truncated?: unknown }).truncated === "boolean",
+    );
+    const keptSkipped = skipped.filter(
+      (e): e is RepoTaskSkillRecord["skipped"][number] =>
+        typeof e === "object" && e !== null &&
+        isStr((e as { repo?: unknown }).repo) && isStr((e as { kind?: unknown }).kind) &&
+        isStr((e as { path?: unknown }).path) && isStr((e as { reason?: unknown }).reason),
+    );
+    return { included: keptIncluded, skipped: keptSkipped };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -12502,6 +14216,7 @@ function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstruct
     mechanism,
     sources,
     createdAt: r.created_at,
+    repoTaskSkills: parseRepoTaskSkills(r.repo_task_skills),
   };
 }
 
@@ -12516,13 +14231,14 @@ function rowToStandingInstructions(r: StandingInstructionsRow): StandingInstruct
 export function insertStandingInstructions(snapshot: StandingInstructionsSnapshot): void {
   openDb()
     .prepare(
-      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at, repo_task_skills)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text,
          mechanism=excluded.mechanism,
          sources=excluded.sources,
-         created_at=excluded.created_at`,
+         created_at=excluded.created_at,
+         repo_task_skills=excluded.repo_task_skills`,
     )
     .run(
       snapshot.noteKey,
@@ -12530,6 +14246,7 @@ export function insertStandingInstructions(snapshot: StandingInstructionsSnapsho
       snapshot.mechanism,
       JSON.stringify(snapshot.sources),
       snapshot.createdAt,
+      snapshot.repoTaskSkills ? JSON.stringify(snapshot.repoTaskSkills) : null,
     );
 }
 
@@ -12537,7 +14254,7 @@ export function insertStandingInstructions(snapshot: StandingInstructionsSnapsho
 export function getStandingInstructions(noteKey: string): StandingInstructionsSnapshot | undefined {
   const row = openDb()
     .prepare(
-      `SELECT note_key, text, mechanism, sources, created_at
+      `SELECT note_key, text, mechanism, sources, created_at, repo_task_skills
          FROM session_standing_instructions WHERE note_key = ?`,
     )
     .get(noteKey) as unknown as StandingInstructionsRow | undefined;
@@ -12548,7 +14265,7 @@ export function getStandingInstructions(noteKey: string): StandingInstructionsSn
 export function loadStandingInstructions(): StandingInstructionsSnapshot[] {
   const rows = openDb()
     .prepare(
-      `SELECT note_key, text, mechanism, sources, created_at
+      `SELECT note_key, text, mechanism, sources, created_at, repo_task_skills
          FROM session_standing_instructions ORDER BY created_at DESC`,
     )
     .all() as unknown as StandingInstructionsRow[];
@@ -12583,14 +14300,22 @@ export function moveStandingInstructions(fromKey: string, toKey: string): void {
   d.exec("BEGIN IMMEDIATE");
   try {
     d.prepare(
-      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_standing_instructions (note_key, text, mechanism, sources, created_at, repo_task_skills)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text,
          mechanism=excluded.mechanism,
          sources=excluded.sources,
-         created_at=excluded.created_at`,
-    ).run(toKey, row.text, row.mechanism, JSON.stringify(row.sources), row.createdAt);
+         created_at=excluded.created_at,
+         repo_task_skills=excluded.repo_task_skills`,
+    ).run(
+      toKey,
+      row.text,
+      row.mechanism,
+      JSON.stringify(row.sources),
+      row.createdAt,
+      row.repoTaskSkills ? JSON.stringify(row.repoTaskSkills) : null,
+    );
     d.prepare(`DELETE FROM session_standing_instructions WHERE note_key = ?`).run(fromKey);
     d.exec("COMMIT");
   } catch (err) {
@@ -12623,6 +14348,98 @@ export function pruneStandingInstructions(liveKeys: Iterable<string>, olderThan:
   const r = openDb()
     .prepare(
       `DELETE FROM session_standing_instructions
+         WHERE created_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+// ---- session launch work units (what each agent was started with) ----
+
+/** One session's launch record: the work unit its agent's environment carries. */
+export interface LaunchWorkUnitRecord {
+  noteKey: string;
+  workUnitId: string;
+  createdAt: number;
+}
+
+interface LaunchWorkUnitRow {
+  note_key: string;
+  work_unit_id: string;
+  created_at: number;
+}
+
+/**
+ * Record what a launch that succeeded carries, replacing any earlier launch's row under this
+ * key - an agent's environment belongs to its latest start. A launch that carries none deletes
+ * the row instead (`deleteLaunchWorkUnit`); there is no "none" row.
+ */
+export function upsertLaunchWorkUnit(record: LaunchWorkUnitRecord): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_launch_work_units (note_key, work_unit_id, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET work_unit_id=excluded.work_unit_id, created_at=excluded.created_at`,
+    )
+    .run(record.noteKey, record.workUnitId, record.createdAt);
+}
+
+export function deleteLaunchWorkUnit(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_launch_work_units WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Every record, reloaded into the registry on start. A row whose id is not well formed - which
+ * nothing in this build writes - is skipped rather than trusted: it could only tag a session
+ * with something that is not a work unit.
+ */
+export function loadLaunchWorkUnits(): LaunchWorkUnitRecord[] {
+  const rows = openDb()
+    .prepare(`SELECT note_key, work_unit_id, created_at FROM session_launch_work_units`)
+    .all() as unknown as LaunchWorkUnitRow[];
+  return rows
+    .filter((row) => isWorkUnitId(row.work_unit_id))
+    .map((row) => ({ noteKey: row.note_key, workUnitId: row.work_unit_id, createdAt: row.created_at }));
+}
+
+/**
+ * Carry a record across a note-key rotation - every rotation, as `moveStandingInstructions`
+ * does and for its reason: a `/clear` or an assign starts a new conversation, not a new
+ * process, and the variable is on the process. Last-write-wins on the destination.
+ */
+export function moveLaunchWorkUnit(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d
+      .prepare(`SELECT work_unit_id, created_at FROM session_launch_work_units WHERE note_key = ?`)
+      .get(fromKey) as { work_unit_id: string; created_at: number } | undefined;
+    if (row) {
+      d.prepare(
+        `INSERT INTO session_launch_work_units (note_key, work_unit_id, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(note_key) DO UPDATE SET work_unit_id=excluded.work_unit_id, created_at=excluded.created_at`,
+      ).run(toKey, row.work_unit_id, row.created_at);
+      d.prepare(`DELETE FROM session_launch_work_units WHERE note_key = ?`).run(fromKey);
+    }
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+/**
+ * Delete records that belong to no live session and have gone stale. Returns how many.
+ * `pruneStandingInstructions`' twin, with the same contract: its only caller,
+ * `Registry.pruneLaunchWorkUnits`, proves liveness first, so an empty `liveKeys` means nothing
+ * is live.
+ */
+export function pruneLaunchWorkUnits(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM session_launch_work_units
          WHERE created_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
     )
     .run(olderThan, ...keys);
@@ -12756,6 +14573,189 @@ export function moveSessionBlocker(fromKey: string, toKey: string): void {
     d.prepare(`DELETE FROM session_blockers WHERE note_key = ? AND EXISTS
       (SELECT 1 FROM session_blockers WHERE note_key = ?)`).run(toKey, fromKey);
     d.prepare(`UPDATE session_blockers SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+// ---- session awaitings (idle on purpose while a background process finishes) ----
+
+/** A stored wait and the columns the wire record does not carry. */
+export interface SessionAwaitingRecord {
+  noteKey: string;
+  taskId: string | null;
+  /** The last session seen holding the wait; null for a row written before this was stored. */
+  sessionId: string | null;
+  awaiting: SessionAwaiting;
+  /**
+   * When the turn that declared the wait was seen to end, or null while it is still running.
+   * Only a turn that starts after this is the session's wake.
+   */
+  settledAt: number | null;
+  /**
+   * The deliveries Mission Control's own automation (Foreman, a workflow, the harness, a
+   * resident) claimed into the session while the wait stood, or shortly before it was declared
+   * with their prompt not yet back, oldest first, each not yet matched to its turn: when it was claimed, and the delivered text's fingerprint
+   * (`injectionFingerprint`). A turn whose prompt is one of them is that nudge and uses it up;
+   * any other turn is the session's wake. A claim that provably never landed is removed.
+   */
+  pendingNudges: PendingNudge[];
+  /**
+   * A turn started while a delivery was pending and its prompt has not been reported yet: the
+   * prompt decides whose turn it was, or, if none comes, the turn's end does.
+   */
+  undecidedTurn: boolean;
+  /**
+   * The session declared its wait again during that undecided turn. The turn is still decided,
+   * so a delivery that started it is used up, but it no longer ends the wait: the agent has
+   * just said it is still waiting. False whenever `undecidedTurn` is.
+   */
+  redeclaredInTurn: boolean;
+  /**
+   * The transcript time of the latest turn start the wait has judged or settled, or null before
+   * any was read. A transcript's turn marker counts as a new turn only past this, in the
+   * transcript's own time.
+   */
+  judgedTurnAt: number | null;
+}
+
+interface SessionAwaitingRow {
+  note_key: string;
+  task_id: string | null;
+  awaiting_id: string;
+  what: string;
+  wake_source: string;
+  expected_by: number;
+  reference_url: string | null;
+  details: string | null;
+  started_at: number;
+  updated_at: number;
+  settled_at: number | null;
+  pending_nudges: string | null;
+  undecided_turn: number | null;
+  redeclared_in_turn: number | null;
+  session_id: string | null;
+  judged_turn_at: number | null;
+}
+
+const SESSION_AWAITING_COLUMNS = `note_key, task_id, awaiting_id, what, wake_source, expected_by,
+  reference_url, details, started_at, updated_at, settled_at, pending_nudges, undecided_turn, redeclared_in_turn, session_id, judged_turn_at`;
+
+/** One automated delivery a waiting session has not yet started a turn for. */
+export interface PendingNudge {
+  at: number;
+  /** `injectionFingerprint` of the delivered text, matched against the turn's prompt. */
+  key: string;
+  /**
+   * The ids of the person sends (`notePersonDelivery`) in exactly these words made while this
+   * delivery was pending. While any stands, the turn whose prompt matches cannot be told apart
+   * from that person's and is read as the wake. Stored per send, so a send taken back after a
+   * restart removes only its own claim. Absent when uncontested.
+   */
+  contestedBy?: string[];
+}
+
+
+/** A stored `pending_nudges` array, or empty for NULL or anything that is not one. */
+function parsePendingNudges(raw: string | null): PendingNudge[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!Array.isArray(v)) return [];
+    return v.filter((n): n is PendingNudge =>
+      typeof n === "object" && n !== null
+      && typeof (n as PendingNudge).at === "number" && Number.isFinite((n as PendingNudge).at)
+      && typeof (n as PendingNudge).key === "string")
+      .map((n) => {
+        const by = Array.isArray(n.contestedBy) ? n.contestedBy.filter((id): id is string => typeof id === "string") : [];
+        return { at: n.at, key: n.key, ...(by.length > 0 ? { contestedBy: by } : {}) };
+      });
+  } catch {
+    return [];
+  }
+}
+
+function rowToSessionAwaiting(r: SessionAwaitingRow): SessionAwaitingRecord {
+  // An unknown wake source (a newer build appended one) reads as `other` rather than dropping
+  // the wait: the deadline is the part that must survive a downgrade, not the label.
+  const wakeSource = (SESSION_AWAITING_WAKE_SOURCES as readonly string[]).includes(r.wake_source)
+    ? (r.wake_source as SessionAwaitingWakeSource)
+    : "other";
+  return {
+    noteKey: r.note_key,
+    taskId: r.task_id,
+    sessionId: r.session_id,
+    awaiting: {
+      id: r.awaiting_id,
+      what: r.what,
+      wakeSource,
+      expectedBy: r.expected_by,
+      referenceUrl: r.reference_url,
+      details: r.details,
+      startedAt: r.started_at,
+      updatedAt: r.updated_at,
+    },
+    settledAt: r.settled_at,
+    pendingNudges: parsePendingNudges(r.pending_nudges),
+    undecidedTurn: r.undecided_turn === 1,
+    redeclaredInTurn: r.undecided_turn === 1 && r.redeclared_in_turn === 1,
+    judgedTurnAt: r.judged_turn_at,
+  };
+}
+
+/** Every stored wait, reloaded into the registry on start. */
+export function loadSessionAwaitings(): SessionAwaitingRecord[] {
+  const rows = openDb()
+    .prepare(`SELECT ${SESSION_AWAITING_COLUMNS} FROM session_awaitings ORDER BY started_at`)
+    .all() as unknown as SessionAwaitingRow[];
+  return rows.map(rowToSessionAwaiting);
+}
+
+/** Write a wait whole: a first declaration, a re-declaration, or the declaring turn's end. */
+export function upsertSessionAwaiting(record: SessionAwaitingRecord): void {
+  const a = record.awaiting;
+  openDb()
+    .prepare(
+      `INSERT INTO session_awaitings (${SESSION_AWAITING_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         task_id=excluded.task_id, awaiting_id=excluded.awaiting_id, what=excluded.what,
+         wake_source=excluded.wake_source, expected_by=excluded.expected_by,
+         reference_url=excluded.reference_url, details=excluded.details,
+         started_at=excluded.started_at, updated_at=excluded.updated_at, settled_at=excluded.settled_at,
+         pending_nudges=excluded.pending_nudges, undecided_turn=excluded.undecided_turn,
+         redeclared_in_turn=excluded.redeclared_in_turn, session_id=excluded.session_id,
+         judged_turn_at=excluded.judged_turn_at`,
+    )
+    .run(
+      record.noteKey, record.taskId, a.id, a.what, a.wakeSource, a.expectedBy, a.referenceUrl,
+      a.details, a.startedAt, a.updatedAt, record.settledAt,
+      record.pendingNudges.length ? JSON.stringify(record.pendingNudges) : null,
+      record.undecidedTurn ? 1 : 0,
+      record.undecidedTurn && record.redeclaredInTurn ? 1 : 0,
+      record.sessionId,
+      record.judgedTurnAt,
+    );
+}
+
+export function deleteSessionAwaiting(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_awaitings WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a wait across a note-key rotation, as `moveSessionBlocker` carries a blocker: the
+ * process that declared it is the same one, so what it is waiting for has not changed.
+ */
+export function moveSessionAwaiting(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(`DELETE FROM session_awaitings WHERE note_key = ? AND EXISTS
+      (SELECT 1 FROM session_awaitings WHERE note_key = ?)`).run(toKey, fromKey);
+    d.prepare(`UPDATE session_awaitings SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey);
     d.exec("COMMIT");
   } catch (err) {
     if (d.isTransaction) d.exec("ROLLBACK");
@@ -13678,6 +15678,9 @@ export function pruneUsageSources(cutoff: number): number {
 // ---- Editable pending conversation turns ----
 
 interface PendingTurnRow {
+  spoken_words: string | null;
+  spoken_reservation_id: string | null;
+  composed_at: number | null;
   id: string;
   note_key: string;
   seq: number;
@@ -13704,6 +15707,7 @@ function rowToPendingTurn(row: PendingTurnRow): PendingTurn {
     id: row.id,
     noteKey: row.note_key,
     seq: row.seq,
+    ...(row.spoken_words != null && { spokenWords: row.spoken_words }),
     text: row.text,
     state,
     revision: row.revision,
@@ -13734,6 +15738,8 @@ export function listPendingTurns(noteKey: string): PendingTurn[] {
  * `created_at` instead, so it needs nothing written here to survive a restart.
  */
 export function createPendingTurn(input: {
+  spokenWords?: string;
+  spokenSessionId?: string;
   id: string;
   noteKey: string;
   text: string;
@@ -13742,19 +15748,43 @@ export function createPendingTurn(input: {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
+    if (input.spokenWords !== undefined) {
+      const existing = d.prepare("SELECT * FROM pending_turns WHERE id = ?").get(input.id) as PendingTurnRow | undefined;
+      if (existing) {
+        if (existing.note_key !== input.noteKey || existing.spoken_words !== input.spokenWords) {
+          throw new Error("This capture ID already belongs to a different outbox message.");
+        }
+        d.exec("COMMIT");
+        return rowToPendingTurn(existing);
+      }
+    }
+    // Only listener submissions have a capture identity. Reconstructed lower-level handoffs may reuse an outbox ID.
+    if (input.spokenSessionId !== undefined && input.spokenWords !== undefined) {
+      if (!d.prepare("INSERT OR IGNORE INTO spoken_outbox_ids (turn_id) VALUES (?)").run(input.id).changes) {
+        throw new Error("This spoken capture was already queued and has left the outbox.");
+      }
+    }
     const row = d
       .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
       .get(input.noteKey) as unknown as { seq: number };
     d.prepare(
       `INSERT INTO pending_turns
-         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at)
-       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, 'after-turn', NULL)`,
-    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now);
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error, delivery_mode, deadline_at, spoken_words)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, 'after-turn', NULL, ?)`,
+    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now, input.spokenWords ?? null);
+    if (input.spokenWords !== undefined && input.spokenSessionId !== undefined) {
+      // Snapshot only asks that existed when these words were queued. A replay returns above;
+      // recalling or delivering the turn removes these links with its outbox row.
+      d.prepare(`INSERT INTO spoken_turn_review_waits(review_id, turn_id)
+        SELECT id, ? FROM reviews WHERE session_id = ? AND status = 'pending' AND wait_mode IS NULL
+          AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))`).run(input.id, input.spokenSessionId);
+    }
     d.exec("COMMIT");
     return {
       id: input.id,
       noteKey: input.noteKey,
       seq: row.seq,
+      ...(input.spokenWords != null && { spokenWords: input.spokenWords }),
       text: input.text,
       state: "queued",
       revision: 0,
@@ -13774,12 +15804,15 @@ export function createPendingTurn(input: {
   }
 }
 
+export type ClaimedPendingTurn = PendingTurn & { spokenClaimId: string | null };
+
 /** Claim the FIFO head or an explicitly selected row, never past an unresolved delivery. */
 export function claimNextPendingTurn(
   noteKey: string,
   now: number,
   selected?: { id: string; revision: number },
-): PendingTurn | null {
+  composeSpoken?: (words: string) => string,
+): ClaimedPendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
@@ -13805,14 +15838,29 @@ export function claimNextPendingTurn(
       d.exec("COMMIT");
       return null;
     }
+    if (row.spoken_words !== null && row.composed_at === null) {
+      if (!composeSpoken) throw new Error("Missing spoken delivery composer");
+      row.text = composeSpoken(row.spoken_words);
+      row.composed_at = now;
+    } else if (row.spoken_words !== null) {
+      // A pre-upgrade claim froze this suffix after the words and routing notes.
+      // Change only the next send, leaving any earlier delivery receipt intact.
+      const legacySuffix = "\n\nWhen you have finished this, post a report.";
+      if (row.text.slice(row.spoken_words.length).endsWith(legacySuffix)) {
+        row.text = row.text.slice(0, -legacySuffix.length);
+      }
+    }
+    const spokenClaimId = row.spoken_words === null ? null : randomUUID();
     const changed = d
       .prepare(
         `UPDATE pending_turns
             SET state = 'sending', revision = revision + 1, updated_at = ?,
-                claimed_at = ?, last_error = NULL
+                claimed_at = ?, spoken_claim_id = ?, last_error = NULL, text = ?, composed_at = ?,
+                spoken_requires_guard = CASE WHEN spoken_words IS NOT NULL THEN 1 END,
+                spoken_handoff_key = NULL, spoken_handoff_generation = NULL, spoken_handoff_at = NULL, spoken_reservation_id = NULL
           WHERE id = ? AND state = 'queued' AND revision = ?`,
       )
-      .run(now, now, row.id, row.revision).changes;
+      .run(now, now, spokenClaimId, row.text, row.composed_at, row.id, row.revision).changes;
     if (changed !== 1) {
       d.exec("ROLLBACK");
       return null;
@@ -13824,6 +15872,7 @@ export function claimNextPendingTurn(
       revision: row.revision + 1,
       updatedAt: now,
       claimedAt: now,
+      spokenClaimId,
       lastError: null,
     };
   } catch (err) {
@@ -13834,14 +15883,14 @@ export function claimNextPendingTurn(
   }
 }
 
-/** An explicit operator action may change only text that has not left the outbox. */
+/** Only queued, non-spoken rows accept an explicit steer or interrupt. */
 export function expeditePendingTurn(
   noteKey: string, id: string, revision: number, action: "steer" | "interrupt", now: number,
 ): PendingTurn | null {
   const d = openDb();
   const changed = d.prepare(`UPDATE pending_turns SET delivery_mode = ?, deadline_at = ?,
     interrupt_attempted_at = NULL, last_error = NULL, updated_at = ?, revision = revision + 1
-    WHERE note_key = ? AND id = ? AND revision = ? AND state = 'queued'`)
+    WHERE note_key = ? AND id = ? AND revision = ? AND state = 'queued' AND spoken_words IS NULL`)
     .run(action === "steer" ? "steer" : "interrupt-after-wait", now, now, noteKey, id, revision).changes;
   if (changed !== 1) return null;
   return rowToPendingTurn(d.prepare("SELECT * FROM pending_turns WHERE id = ?").get(id) as unknown as PendingTurnRow);
@@ -13853,40 +15902,20 @@ export function recordPendingTurnInterrupt(id: string, revision: number, now: nu
     .run(now, id, revision).changes === 1;
 }
 
-/** Move the newest still-editable row back to the composer. */
+/** Recall the newest editable row, or the exact spoken turn named by a held voice card. */
 export function recallPendingTurn(
   noteKey: string,
   id: string,
   revision: number,
+  heldVoiceTurn = false,
 ): PendingTurn | null {
-  const d = openDb();
-  d.exec("BEGIN IMMEDIATE");
-  try {
-    const newest = d
-      .prepare(
-        `SELECT * FROM pending_turns
-          WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1`,
-      )
-      .get(noteKey) as unknown as PendingTurnRow | undefined;
-    if (!newest || newest.id !== id || newest.revision !== revision) {
-      d.exec("COMMIT");
-      return null;
-    }
-    const changed = d
-      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND revision = ?`)
-      .run(id, revision).changes;
-    if (changed !== 1) {
-      d.exec("ROLLBACK");
-      return null;
-    }
-    d.exec("COMMIT");
-    return rowToPendingTurn(newest);
-  } catch (err) {
-    try {
-      d.exec("ROLLBACK");
-    } catch {}
-    throw err;
-  }
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE note_key = ? AND id = ? AND state = 'queued' AND revision = ?
+      AND ((? = 1 AND spoken_words IS NOT NULL) OR id = (
+        SELECT id FROM pending_turns WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1
+      ))
+    RETURNING *`).get(noteKey, id, revision, Number(heldVoiceTurn), noteKey) as PendingTurnRow | undefined;
+  return row ? rowToPendingTurn(row) : null;
 }
 
 function transitionPendingTurn(
@@ -13896,22 +15925,40 @@ function transitionPendingTurn(
   to: PendingTurnState,
   now: number,
   lastError: string | null,
+  refusedReservationId: string | null = null,
 ): PendingTurn | null {
   const d = openDb();
-  const changed = d
-    .prepare(
-      `UPDATE pending_turns
+  const transition = () => {
+    const row = d.prepare(`UPDATE pending_turns
           SET state = ?, revision = revision + 1, updated_at = ?,
               claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
               last_error = ?
-        WHERE id = ? AND state = ? AND revision = ?`,
-    )
-    .run(to, now, to, lastError, id, from, revision).changes;
-  if (changed !== 1) return null;
-  const row = d.prepare(`SELECT * FROM pending_turns WHERE id = ?`).get(id) as
-    | unknown as PendingTurnRow
-    | undefined;
-  return row ? rowToPendingTurn(row) : null;
+        WHERE id = ? AND state = ? AND revision = ? AND (? IS NULL OR spoken_reservation_id = ?) RETURNING *`)
+      .get(to, now, to, lastError, id, from, revision, refusedReservationId, refusedReservationId) as PendingTurnRow | undefined;
+    if (!row) {
+      if (refusedReservationId && d.prepare("SELECT 1 FROM pending_turns WHERE id = ? AND state = ? AND revision = ? AND spoken_reservation_id = ?")
+          .get(id, from, revision, refusedReservationId)) throw new Error("The spoken refusal was not saved");
+      return null;
+    }
+    if (to === "queued" && row.spoken_reservation_id) {
+      if (from === "sending") {
+        // A positive refusal withdraws the actual attempt, including its unused SDK UUID.
+        // A crash or a manual retry of an uncertain row lacks this evidence.
+        const released = d.prepare(`DELETE FROM session_spoken_turns WHERE id = ? AND outbox_turn_id = ?
+          AND outbox_revision = ? AND runtime_confirmed_at IS NULL RETURNING note_key AS noteKey, fingerprint`)
+          .get(row.spoken_reservation_id, id, revision) as ReleasedDelivery | undefined;
+        if (released) rememberSpokenRelease(d, released);
+        else if (d.prepare("SELECT 1 FROM session_spoken_turns WHERE id = ?").get(row.spoken_reservation_id)) {
+          throw new Error("The refused spoken reservation was not withdrawn");
+        }
+        const cleared = d.prepare(`UPDATE pending_turns SET spoken_handoff_key = NULL, spoken_handoff_at = NULL,
+          spoken_handoff_generation = NULL, spoken_reservation_id = NULL WHERE id = ?`).run(id);
+        if (!cleared.changes) throw new Error("The refused spoken handoff stamp was not cleared");
+      } else discardUnconfirmedSpokenReservation(d, row.spoken_reservation_id, now, true);
+    }
+    return rowToPendingTurn(row);
+  };
+  return to === "queued" && !d.isTransaction ? inTransaction(transition) : transition();
 }
 
 export function releasePendingTurn(
@@ -13919,8 +15966,9 @@ export function releasePendingTurn(
   revision: number,
   error: string,
   now: number,
+  reservationId?: string,
 ): PendingTurn | null {
-  return transitionPendingTurn(id, revision, "sending", "queued", now, error);
+  return transitionPendingTurn(id, revision, "sending", "queued", now, error, reservationId);
 }
 
 export function markPendingTurnUncertain(
@@ -13948,12 +15996,120 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
   );
 }
 
-export function resolveUncertainPendingTurn(id: string, revision: number): boolean {
-  return (
-    openDb()
-      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'uncertain' AND revision = ?`)
-      .run(id, revision).changes === 1
-  );
+type SpokenClaim = Pick<ClaimedPendingTurn, "id" | "revision" | "spokenClaimId">;
+// A capture can be replayed with the same id and revision. A refusal before the guard
+// applies only to the sending row originally claimed, while it still has no handoff.
+const unreservedSpokenClaim = `id = ? AND state = 'sending' AND revision = ? AND spoken_claim_id = ?
+  AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`;
+
+export function releaseUnreservedSpokenClaim(turn: SpokenClaim, error: string, now: number): PendingTurn | null {
+  return inTransaction(() => {
+    const { id, revision, spokenClaimId } = turn;
+    if (!openDb().prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, spokenClaimId)) return null;
+    const row = releasePendingTurn(id, revision, error, now);
+    if (!row) throw new Error("The spoken refusal was not saved");
+    return row;
+  });
+}
+
+/** Verification failed before the runtime guard. Share one retry budget across worker and revision failures. */
+export function failSpokenPreparation(turn: SpokenClaim, now: number, retryDetail: string):
+  { noteKey: string; exhausted: boolean } | null {
+  return inTransaction(() => {
+    const { id, revision, spokenClaimId } = turn;
+    const d = openDb();
+    const row = d.prepare(`UPDATE pending_turns SET spoken_proof_failures = spoken_proof_failures + 1
+      WHERE ${unreservedSpokenClaim} RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision, spokenClaimId) as
+      { noteKey: string; failures: number } | undefined;
+    if (!row) {
+      if (d.prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, spokenClaimId)) {
+        throw new Error("Could not record the failed spoken preparation");
+      }
+      return null;
+    }
+    const exhausted = row.failures >= 3;
+    const settled = exhausted ? deleteClaimedPendingTurn(id, revision) : releasePendingTurn(id, revision, retryDetail, now);
+    if (!settled) throw new Error("Could not settle the failed spoken preparation");
+    return { noteKey: row.noteKey, exhausted };
+  });
+}
+
+/** Stamp the receiving cycle and mint one reservation for this write, even if a capture ID is reused. */
+export function recordSpokenHandoff(id: string, revision: number, generation: number, now = Date.now()): string | null {
+  const reservationId = randomUUID();
+  const updated = openDb().prepare(`UPDATE pending_turns SET spoken_handoff_key = note_key, spoken_handoff_generation = ?,
+    spoken_handoff_at = ?, spoken_reservation_id = ? WHERE id = ? AND revision = ? AND state = 'sending'
+    AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`).run(generation, now, reservationId, id, revision);
+  return updated.changes === 1 ? reservationId : null;
+}
+
+/**
+ * Retire a claimed turn whose bytes the agent took, and, for an after-work skills turn, settle
+ * its prompt row `delivered` in the same transaction. The delivery and its record therefore
+ * commit together or not at all: a confirmed delivery can never leave the row `queued`, which
+ * nothing at startup would revisit. A row a session-end notice moved to `not_delivered` first is
+ * settled too, since delivery is the fact. Returns whether the turn was retired.
+ */
+export function retireDeliveredPendingTurn(id: string, revision: number, deliveredAt: number, reservationId: string | null = null): boolean {
+  return retireDeliveredPendingTurnKey(id, revision, deliveredAt, reservationId) !== null;
+}
+
+/** The outbox can move after runtime acceptance. Return the key on the row SQLite actually retired. */
+export function retireDeliveredPendingTurnKey(id: string, revision: number, deliveredAt: number, reservationId: string | null = null): string | null {
+  return settleDeliveredPendingTurn(id, revision, deliveredAt, "sending", reservationId);
+}
+
+/** Marking an uncertain turn sent confirms the same delivery after a restart. */
+export function resolveUncertainPendingTurn(id: string, revision: number, resolvedAt = Date.now()): boolean {
+  return settleDeliveredPendingTurn(id, revision, resolvedAt, "uncertain") !== null;
+}
+
+function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: number, state: "sending" | "uncertain",
+  reservationId: string | null = null): string | null {
+  const d = openDb();
+  const nested = d.isTransaction;
+  d.exec(nested ? "SAVEPOINT retire_delivered_turn" : "BEGIN IMMEDIATE");
+  try {
+    const retired = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = ? AND revision = ?
+      AND (state = 'uncertain' OR spoken_reservation_id IS ?)
+      RETURNING note_key AS noteKey, COALESCE(spoken_handoff_key, note_key) AS receivingKey,
+                spoken_words IS NOT NULL AS spoken,
+                CASE WHEN EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.id = pending_turns.spoken_reservation_id
+                  AND s.outbox_turn_id = pending_turns.id) THEN spoken_handoff_generation END AS generation,
+                COALESCE(spoken_handoff_at, (SELECT delivered_at FROM session_spoken_turns WHERE id = spoken_reservation_id)) AS handoffAt,
+                spoken_reservation_id AS reservationId`)
+      .get(id, state, revision, reservationId) as {
+        noteKey: string; receivingKey: string; spoken: number; generation: number | null; reservationId: string | null; handoffAt: number | null;
+      } | undefined;
+    if (retired && state === "uncertain") discardUnconfirmedSpokenReservation(d, retired.reservationId, deliveredAt, false);
+    if (retired?.spoken && retired.generation !== null) {
+      if (reservationId !== null) {
+        // Only a text-only reservation needs a receipt before its already-streamed native turn can bind.
+        d.prepare(`UPDATE session_spoken_turns SET runtime_confirmed_at = ?, text_receipt_order = CASE WHEN message_id IS NULL THEN
+          ${nextSpokenAttributionOrder} END
+          WHERE id = ?`).run(deliveredAt, reservationId);
+      }
+      // If the receiving cycle completed before acknowledgement (or during a retire retry),
+      // its generation already advanced. Never put a hold on the following turn.
+      d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold, spoken_hold_since)
+        VALUES (?, ?, 1, 1, ?)
+        ON CONFLICT(logical_key) DO UPDATE SET spoken_hold = 1, active = 1,
+          spoken_hold_since = COALESCE(MAX(spoken_hold_since, excluded.spoken_hold_since), excluded.spoken_hold_since, spoken_hold_since)
+        WHERE session_work_cycles.generation = ?`)
+        .run(retired.receivingKey, deliveredAt, retired.handoffAt, retired.generation);
+    }
+    if (retired && id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)) {
+      d.prepare(`UPDATE task_skill_prompts SET state = 'delivered', reason = NULL, delivered_at = ?
+                   WHERE turn_id = ? AND state IN ('queued', 'not_delivered')`).run(deliveredAt, id);
+    }
+    d.exec(nested ? "RELEASE retire_delivered_turn" : "COMMIT");
+    return retired?.noteKey ?? null;
+  } catch (error) {
+    if (d.isTransaction) {
+      d.exec(nested ? "ROLLBACK TO retire_delivered_turn; RELEASE retire_delivered_turn" : "ROLLBACK");
+    }
+    throw error;
+  }
 }
 
 /**
@@ -13979,17 +16135,18 @@ export function dropQueuedPendingTurns(noteKey: string): number {
   );
 }
 
-export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): number {
+export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): { count: number; spokenIds: string[] } {
   const d = openDb();
-  if (preserveIds.length === 0) {
-    return Number(d.prepare(`DELETE FROM pending_turns WHERE note_key = ?`).run(noteKey).changes);
-  }
-  const placeholders = preserveIds.map(() => "?").join(", ");
-  return Number(
-    d.prepare(
-      `DELETE FROM pending_turns WHERE note_key = ? AND id NOT IN (${placeholders})`,
-    ).run(noteKey, ...preserveIds).changes,
-  );
+  const clear = () => {
+    const preserve = preserveIds.length ? `AND id NOT IN (${preserveIds.map(() => "?").join(", ")})` : "";
+    const rows = d.prepare(`DELETE FROM pending_turns WHERE note_key = ? ${preserve}
+      RETURNING id, spoken_words IS NOT NULL AS spoken, spoken_reservation_id AS reservationId`)
+      .all(noteKey, ...preserveIds) as { id: string; spoken: number; reservationId: string | null }[];
+    const now = Date.now();
+    for (const row of rows) discardUnconfirmedSpokenReservation(d, row.reservationId, now, true);
+    return { count: rows.length, spokenIds: rows.filter(row => row.spoken).map(row => row.id) };
+  };
+  return d.isTransaction ? clear() : inTransaction(clear);
 }
 
 /** Carry pre-binding outbox rows from a synthetic session id onto the real conversation. */
@@ -14035,16 +16192,50 @@ export function rekeyPendingTurns(fromKey: string, toKey: string, now: number): 
 
 /** A daemon crash can leave delivery possible but unacknowledged, so never auto-resend it. */
 export function recoverSendingPendingTurns(now: number): number {
-  return Number(
-    openDb()
-      .prepare(
-        `UPDATE pending_turns
+  const d = openDb();
+  const recover = () => {
+    // Only a claim made by the guarded protocol proves absence of a write before its stamp.
+    // Earlier builds and every attempt with handoff evidence still need operator confirmation.
+    const unhanded = d.prepare(`UPDATE pending_turns SET state = 'queued', revision = revision + 1,
+      updated_at = ?, claimed_at = NULL, last_error = NULL
+      WHERE state = 'sending' AND spoken_words IS NOT NULL AND spoken_requires_guard = 1
+        AND spoken_reservation_id IS NULL AND spoken_handoff_key IS NULL
+        AND spoken_handoff_at IS NULL AND spoken_handoff_generation IS NULL
+        AND NOT EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.outbox_turn_id = pending_turns.id
+          AND s.outbox_revision = pending_turns.revision)`).run(now);
+    const updated = d.prepare(`UPDATE pending_turns
             SET state = 'uncertain', revision = revision + 1, updated_at = ?,
                 last_error = 'Mission Control restarted during delivery; confirm before retrying.'
-          WHERE state = 'sending'`,
-      )
-      .run(now).changes,
-  );
+          WHERE state = 'sending'`).run(now);
+    // Older guards could commit the outbox stamp and crash before recording the reservation.
+    // Keep the operator's uncertain row, but it cannot establish that a receiving turn exists.
+    d.prepare(`UPDATE pending_turns SET spoken_handoff_key = NULL, spoken_handoff_generation = NULL,
+        spoken_handoff_at = NULL, spoken_reservation_id = NULL
+      WHERE state = 'uncertain' AND spoken_words IS NOT NULL AND spoken_handoff_generation IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.id = pending_turns.spoken_reservation_id
+          AND s.outbox_turn_id = pending_turns.id)`).run();
+    // Early text-only binding trusted append order. An older timestamp proves that
+    // a buffered record predates handoff. Reopen its receipt for the real native turn.
+    const reopened = d.prepare(`UPDATE session_spoken_turns SET message_id = NULL, message_ts = NULL,
+        text_receipt_order = ${nextSpokenAttributionOrder}
+      WHERE message_id <> id AND message_ts < delivered_at AND runtime_confirmed_at IS NOT NULL
+      RETURNING note_key`).all() as { note_key: string }[];
+    for (const row of reopened) discardedSpokenKeys.add(row.note_key);
+    // Earlier builds could leave unbindable rows behind after their outbox attempts were removed.
+    const removed = d.prepare(`DELETE FROM session_spoken_turns
+      WHERE message_id IS NULL AND runtime_confirmed_at IS NULL AND NOT EXISTS (
+        SELECT 1 FROM pending_turns p WHERE p.id = session_spoken_turns.outbox_turn_id
+          AND p.spoken_reservation_id = session_spoken_turns.id AND p.state IN ('sending', 'uncertain')
+      ) RETURNING note_key AS noteKey, fingerprint`).all() as ReleasedDelivery[];
+    for (const row of removed) rememberSpokenRelease(d, row);
+    // Older builds retained abandoned client UUIDs indefinitely. Preserve time to find their native receipt.
+    d.prepare(`UPDATE session_spoken_turns SET abandoned_at = ?
+      WHERE message_id = id AND message_ts IS NULL AND runtime_confirmed_at IS NULL AND abandoned_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = session_spoken_turns.outbox_turn_id
+          AND p.spoken_reservation_id = session_spoken_turns.id AND p.state IN ('sending', 'uncertain'))`).run(now);
+    return Number(unhanded.changes) + Number(updated.changes);
+  };
+  return d.isTransaction ? recover() : inTransaction(recover);
 }
 
 // ---- Foreman session work queues ----
@@ -14309,6 +16500,7 @@ interface QueueItemRow {
   created_at: number;
   updated_at: number;
   sent_at: number | null;
+  first_delivered_at: number | null;
   delivery_runtime: "terminal" | "sdk" | null;
   completed_at: number | null;
 }
@@ -14335,6 +16527,7 @@ function rowToItem(r: QueueItemRow): WorkItem {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     sentAt: r.sent_at,
+    ...(r.first_delivered_at === null ? {} : { firstDeliveredAt: r.first_delivered_at }),
     ...(r.delivery_runtime ? { deliveryRuntime: r.delivery_runtime } : {}),
     completedAt: r.completed_at,
   };
@@ -15030,8 +17223,8 @@ export function upsertQueueItem(i: WorkItem): void {
          id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
          send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
          proposed_payload, recovered_at, revision, created_at, updated_at, sent_at,
-         completed_at, delivery_runtime
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         completed_at, delivery_runtime, first_delivered_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
          state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
@@ -15041,13 +17234,17 @@ export function upsertQueueItem(i: WorkItem): void {
          approved_at=excluded.approved_at, proposed_payload=excluded.proposed_payload,
          recovered_at=excluded.recovered_at, revision=excluded.revision,
          updated_at=excluded.updated_at, sent_at=excluded.sent_at,
-         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime`,
+         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime,
+         first_delivered_at=CASE WHEN foreman_queue_items.intent = excluded.intent
+           THEN COALESCE(foreman_queue_items.first_delivered_at, excluded.first_delivered_at)
+           ELSE excluded.first_delivered_at END`,
     )
     .run(
       i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
       JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
       i.lastVerdict, i.approvedAt, i.proposedPayload, i.recoveredAt, i.revision,
       i.createdAt, i.updatedAt, i.sentAt, i.completedAt, i.deliveryRuntime ?? null,
+      i.firstDeliveredAt ?? null,
     );
 }
 
@@ -15210,6 +17407,11 @@ export function reorderQueueItems(noteKey: string, ids: string[], now: number): 
 
 // ---- generic app config (Foreman config, future singletons) ----
 
+/** Whether a value is stored for this entry, readable or not. */
+export function hasAppConfig(entry: AppConfigEntry): boolean {
+  return openDb().prepare(`SELECT 1 FROM app_config WHERE key = ?`).get(entry.key) !== undefined;
+}
+
 /** Read a registered JSON-encoded config blob, or undefined when unset/corrupt JSON. */
 export function getAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
@@ -15258,16 +17460,30 @@ export function setSkillsAck(noteKey: string, generation: number, now = Date.now
     .run(noteKey, generation, now);
 }
 
+const appConfigRevisions = new Map<string, number>();
+const appConfigRevisionSource = randomUUID();
+
+/** A daemon-local generation for conditional setting replacement. */
+export function appConfigRevision(entry: AppConfigEntry): string {
+  return `${appConfigRevisionSource}:${appConfigRevisions.get(entry.key) ?? 0}`;
+}
+
+function bumpAppConfigRevision(entry: AppConfigEntry): void {
+  appConfigRevisions.set(entry.key, (appConfigRevisions.get(entry.key) ?? 0) + 1);
+}
+
 export function setAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
   value: AppConfigInput<Entry>,
+  db = openDb(),
 ): void {
-  openDb()
+  db
     .prepare(
       `INSERT INTO app_config (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
     .run(entry.key, JSON.stringify(value));
+  bumpAppConfigRevision(entry);
 }
 
 /**
@@ -15281,6 +17497,7 @@ export function hasAppConfigRow(entry: AppConfigEntry): boolean {
 /** Remove a registered config blob, so a later read answers undefined as if never set. */
 export function deleteAppConfig(entry: AppConfigEntry): void {
   openDb().prepare(`DELETE FROM app_config WHERE key = ?`).run(entry.key);
+  bumpAppConfigRevision(entry);
 }
 
 // ---- Inspector: the adoption + provenance ledgers ----
@@ -15334,6 +17551,7 @@ interface InspectorPrRow {
   stack_note?: string | null;
   stack_state?: string | null;
   stack_await_replacement_at?: number | null;
+  local_review_head_sha?: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -15407,6 +17625,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     reviewedBaseRef: r.reviewed_base_ref ?? null,
     reviewedBaseSha: r.reviewed_base_sha ?? null,
     mergeCommitSha: r.merge_commit_sha ?? null,
+    localReviewHeadSha: r.local_review_head_sha ?? null,
     stack: rowToStackLineage(r),
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
@@ -15509,6 +17728,8 @@ export function updateInspectorPr(
     /** Written beside `reviewedBaseRef`; advanced when GitHub confirms the same merge base. */
     reviewedBaseSha?: string | null;
     mergeCommitSha?: string | null;
+    /** The head matched to a passed Local Inspector review, or null once a head is not. */
+    localReviewHeadSha?: string | null;
   },
   now: number,
 ): void {
@@ -15525,7 +17746,7 @@ export function updateInspectorPr(
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
               title = ?, base_ref_name = ?, reviewed_base_ref = ?, reviewed_base_sha = ?, merge_commit_sha = ?,
-              updated_at = ?
+              local_review_head_sha = ?, updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -15552,6 +17773,7 @@ export function updateInspectorPr(
       next.reviewedBaseRef ?? null,
       next.reviewedBaseSha ?? null,
       next.mergeCommitSha ?? null,
+      next.localReviewHeadSha ?? null,
       now,
       key,
     );
@@ -15857,8 +18079,8 @@ export function noteInspectorPrStack(key: string, note: string | null, now: numb
     .run(note, now, key);
 }
 
-export function getInspectorPr(key: string): InspectorPr | null {
-  const r = openDb().prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
+export function getInspectorPr(key: string, db = openDb()): InspectorPr | null {
+  const r = db.prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
     | InspectorPrRow
     | undefined;
   return r ? rowToInspectorPr(r) : null;
@@ -17409,8 +19631,8 @@ export function setFileCommentReviewState(
 // its owner. Retain at most 2,000 root identities and 10,000 conversation/episode receipts
 // per PR; exceeding either holds observation/delivery instead of evicting replay protection.
 const codeRabbitProcessId = randomUUID();
-export function readCodeRabbit(prKey: string): CodeRabbitRecord | null {
-  const row = openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
+export function readCodeRabbit(prKey: string, db = openDb()): CodeRabbitRecord | null {
+  const row = db.prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
   try {
     const parsed = CodeRabbitRecordSchema.safeParse(JSON.parse(row?.code_rabbit_state ?? "null"));
     return parsed.success ? parsed.data : null;

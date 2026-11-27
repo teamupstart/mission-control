@@ -1,20 +1,31 @@
 import { verifyArchiveBundle } from "./bundle.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, rmdir, stat, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenTargetId } from "@shared/open-targets.ts";
 import {
+  ARCHIVE_FORMAT_VERSION,
+  ARCHIVE_PRIMARY_ARTIFACT_ID,
+  ARCHIVE_PRIMARY_REPORT_PATH,
+  ARCHIVE_REPORT_DIR,
   ARCHIVE_TEXT_LIMITS,
+  archiveArtifactId,
   archiveKey,
+  archiveRepoSlot,
+  formatArchiveDigest,
   decodeArchiveCursor,
   isArchiveId,
   parseArchiveKey,
+  validateArchivePath,
   type ArchiveArtifactView,
   type ArchiveCaptureStatus,
   type ArchiveDetail,
   type ArchiveIdentity,
+  type ArchiveManifest,
+  type ArchiveManifestArtifact,
+  type ArchiveManifestMissing,
   type ArchivePage,
   type ArchiveSearchQuery,
   type ArchiveSummary,
@@ -23,7 +34,7 @@ import { SCOUT_REPORT_PATH_SHAPE, scoutReportDirectory, scoutReportSlug, type Sc
 import type { Session } from "@shared/types.ts";
 import { archiveReconcileMs } from "../config.ts";
 import { openFile, type OpenFileOutcome } from "../open-targets/index.ts";
-import { captureArchive, type ArchiveCaptureOutcome } from "./capture.ts";
+import { archiveContentDigest, captureArchive, publishBundle, type ArchiveCaptureOutcome } from "./capture.ts";
 import {
   archiveOperationKey,
   scoutOperationKey,
@@ -32,8 +43,9 @@ import {
   type ArchiveCaptureScope,
 } from "./capture-store.ts";
 import { resolveRoots } from "./checkout.ts";
+import { unlinkMissingCompanions, validateStaticReportHtml } from "./html.ts";
 import { ArchiveLibrary } from "./library.ts";
-import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
+import { ArchivePathError, archiveDir, caseDistinctPaths, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
 import { loadArchiveProducer, type ArchiveProducerIdentity } from "./producer.ts";
 import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
@@ -43,6 +55,7 @@ import { managedPlanCaptureScopes } from "../plans/store.ts";
 import { allScoutPromptContexts, clearScoutPromptContext } from "../scouts/prompt-context.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
 
 /**
@@ -54,6 +67,26 @@ import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
  * that turns them into a path - always by GENERATING the path from a decoded key and
  * re-checking containment, never by trusting a stored or claimed path.
  */
+
+/** The idempotent operation key for one checkout's exact local-only file set. */
+function checkoutPreservationKey(input: CheckoutPreservation) {
+  const files = [...input.files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const digest = createHash("sha256").update(JSON.stringify(files.map((file) => [file.path, file.sha256, file.bytes])))
+    .digest("hex");
+  return { files, operationKey: JSON.stringify(["checkout-v1", input.taskId, input.checkout, digest]) };
+}
+
+/** One orphaned checkout's local-only files, as automatic retention found them. */
+export interface CheckoutPreservation {
+  taskId: string;
+  title: string;
+  repoLabel: string | null;
+  /** The checkout directory the files live in. Read through `resolveRoots`, never trusted. */
+  checkout: string;
+  /** The commit the files were compared with, recorded as the repository head. */
+  commit: string | null;
+  files: readonly { path: string; sha256: string; bytes: number }[];
+}
 
 export class ArchiveError extends Error {
   constructor(
@@ -105,6 +138,79 @@ export type ArchiveCaptureResult =
       conflict: boolean;
     };
 
+/**
+ * An agent report's page, offered for publication because the operator pressed Publish as scout.
+ * The page is the daemon's own build from the report's stored document; nothing here came from
+ * the browser.
+ */
+export interface ReportPagePublication {
+  reportId: string;
+  /** When the report was posted. Part of the archive's identity, with the report's id. */
+  reportCreatedAt: number;
+  title: string;
+  page: Buffer;
+  /**
+   * The files stored with the report's document, by path relative to it. Each is archived beside
+   * the page under `report/`. A relative link the page makes to any other file is unlinked and
+   * listed as missing.
+   */
+  companions: ReadonlyArray<{ path: string; bytes: Buffer }>;
+  /**
+   * The stored document's own file name. A link to `report.html` names the page itself only when
+   * the document was `report.html`; from any other document it names a different file, which is
+   * never stored (the page takes that name in the archive), so it is unlinked like any other.
+   */
+  documentName: string;
+  /** The session that posted the report, recorded as the archive's source session. */
+  session: { id: string; name: string; taskId: string | null };
+  /** A label for the report's repository, when it recorded one. Informational. */
+  repositoryLabel: string | null;
+}
+
+export type ReportPagePublicationResult =
+  | { ok: true; key: string; replayed: boolean }
+  | { ok: false; status: 409 | 422 | 500 | 503; problems: string[] };
+
+/**
+ * The archive id a report publishes under: derived from this producer, the report's id and when
+ * it was posted, so pressing Publish as scout twice, or again after a lost response or a restart,
+ * reaches the same archive. A database reset that reuses `r-1` for a different report posts it at
+ * a different time and so derives a different id. Formatted as a lowercase name-based UUID.
+ */
+export function reportArchiveId(producerId: string, reportId: string, reportCreatedAt: number): string {
+  const hex = createHash("sha256")
+    .update(`mission-control/report-archive\0${producerId}\0${reportId}\0${reportCreatedAt}`)
+    .digest("hex")
+    .slice(0, 32)
+    .split("");
+  hex[12] = "5";
+  hex[16] = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  const h = hex.join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/** A manifest holds at most this many missing entries; past it, the last one counts the rest. */
+const MAX_REPORT_MISSING = 64;
+
+/** The manifest's missing entries for the links a published report page had unlinked. */
+function reportMissingCompanions(paths: readonly string[]): ArchiveManifestMissing[] {
+  const reason = "linked from the report, but not stored with it when it was posted, so the link was removed";
+  const listed = paths.length > MAX_REPORT_MISSING ? paths.slice(0, MAX_REPORT_MISSING - 1) : paths;
+  const missing: ArchiveManifestMissing[] = listed.map((path) => ({
+    kind: "report_companion",
+    expectedSource: path.slice(0, 1024),
+    reason,
+  }));
+  if (paths.length > listed.length) {
+    missing.push({
+      kind: "report_companion",
+      expectedSource: null,
+      reason: `${paths.length - listed.length} more linked files were not stored with the report, so their links were removed`,
+    });
+  }
+  return missing;
+}
+
 export interface ArchiveManagerOptions {
   /** Where new bundles are published. Defaults to the daemon's archive root. */
   root?: string;
@@ -130,6 +236,8 @@ export interface ArchiveManagerOptions {
   tasks?: ArchiveTaskGateway;
   /** Raised once after a reconciliation batch changed derived state. */
   onChanged?: () => void;
+  /** Raised once after a complete reconciliation pass pruned bundles, with exactly their keys. */
+  onPruned?: (keys: readonly string[]) => void;
   /** Recurring cadence in ms, or null for trigger-only. Defaults to the shipped cadence. */
   intervalMs?: number | null;
   /** Whether to install a filesystem watcher. Off by default; the daemon turns it on. */
@@ -207,6 +315,7 @@ export class ArchiveManager {
       store: this.store,
       titleFor: (key) => this.titleStore.get(key),
       onChanged: this.onChanged,
+      onPruned: options.onPruned,
       intervalMs: options.intervalMs === undefined ? archiveReconcileMs() : options.intervalMs,
       watch: options.watch ?? false,
     });
@@ -350,6 +459,84 @@ export class ArchiveManager {
    */
   async settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
     return this.withCleanup(taskId, () => this.settleTaskArchives(taskId));
+  }
+
+  /**
+   * Archive an orphaned checkout's local-only files before automatic retention removes it.
+   *
+   * Idempotent by construction: the operation key is derived from the task, the checkout and
+   * the exact file set with its digests, so a retry replays the published bundle's
+   * verification rather than publishing a second one, and a set that changed reserves a new
+   * job instead of being published under a decision it did not match. A bundle an operator
+   * deleted is never recreated here; the checkout stays held. Errors are bounded and carry no
+   * path, because they are persisted as the retention blocker.
+   */
+  async preserveCheckoutFiles(input: CheckoutPreservation): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (input.files.length === 0) return { ok: true };
+    const { files, operationKey } = checkoutPreservationKey(input);
+    const slot = archiveRepoSlot(1);
+    let job: ArchiveCaptureJob;
+    try {
+      job = this.captureStore.reserve({
+        operationKey,
+        kind: "checkout",
+        taskId: input.taskId,
+        sessionId: null,
+        episodeId: null,
+        producerId: this.producer.id,
+        title: input.title,
+        question: null,
+        prompts: null,
+        origin: { agent: null, model: null, source: "orphaned-checkout" },
+        repos: [{ slot, label: input.repoLabel, root: input.checkout, head: input.commit, primary: true }],
+        scope: { slot, directory: ".", files },
+      });
+    } catch {
+      return { ok: false, error: "local-only files could not be reserved for archiving" };
+    }
+    if (job.status === "deleted") {
+      return { ok: false, error: "the archive of this checkout's local-only files was deleted" };
+    }
+    const outcome = await this.captureUnlessDeleted(operationKey);
+    if (!outcome) return { ok: false, error: "the archive of this checkout's local-only files was deleted" };
+    if (!outcome.ok) {
+      console.warn(`[archives] could not archive an orphaned checkout's local-only files: ${outcome.problems.join("; ")}`);
+      return { ok: false, error: "local-only files in the orphaned checkout could not be archived" };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Run `removal` while the archive holding these local-only files is guaranteed to exist.
+   *
+   * It takes the archive's own mutation lock - the one an operator's delete takes - so a
+   * delete that arrives while the checkout is being removed waits until removal has finished.
+   * Under that lock it re-reads the job and re-verifies the bundle from disk, including that
+   * every file is in its manifest with the digest the removal decision saw. Throws, without
+   * calling `removal`, if any of that is not so.
+   */
+  async withCheckoutFilesHeld<T>(input: CheckoutPreservation, removal: () => Promise<T>): Promise<T> {
+    const { files, operationKey } = checkoutPreservationKey(input);
+    const job = this.captureStore.get(operationKey);
+    if (!job || job.status !== "published") {
+      throw new Error("local-only files in the orphaned checkout are not archived");
+    }
+    const identity = { producerId: job.producerId, archiveId: job.archiveId };
+    return this.withMutation(archiveKey(identity.producerId, identity.archiveId), async () => {
+      if (this.captureStore.get(operationKey)?.status !== "published") {
+        throw new Error("the archive of this checkout's local-only files was deleted");
+      }
+      const root = await realpath(this.libraryPath).catch(() => null);
+      const read = root ? await verifyArchiveBundle(root, identity) : null;
+      if (read?.kind !== "verified") {
+        throw new Error("the archive of this checkout's local-only files could not be verified");
+      }
+      const archived = new Map(read.bundle.manifest.artifacts.map((artifact) => [artifact.originalPath, artifact.sha256]));
+      if (files.some((file) => archived.get(file.path) !== formatArchiveDigest(file.sha256))) {
+        throw new Error("the archive of this checkout's local-only files does not hold them");
+      }
+      return removal();
+    });
   }
 
   private async settleTaskArchives(taskId: string): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -798,6 +985,222 @@ export class ArchiveManager {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // Publish as scout: an agent report's document, on the operator's press only
+  // -------------------------------------------------------------------------
+
+  /**
+   * Whether `key` still names a bundle directory in this manager's library: one `stat`, no
+   * manifest read and no digesting. This is the one check a report's recorded key is held
+   * against, at startup, on a Publish press, after a DELETE and for a pass's pruned keys. A key
+   * is cleared only when its bundle is absent; a bundle that is present but no longer verifies
+   * keeps its key and shows as unreadable on the Scouts page, where it can be deleted.
+   *
+   * Answers false only for an absence (`ENOENT`/`ENOTDIR`, from the library root or the bundle).
+   * Any other error - permission, descriptor exhaustion, I/O - is thrown, so a library that
+   * cannot be read right now is never taken for one whose bundles are gone. A root that is
+   * missing, or an empty mount point, is indistinguishable from a deleted library and counts as
+   * absent; a later press restores the key through `publishReportPage`'s replay.
+   */
+  async archivePresent(key: string): Promise<boolean> {
+    const identity = parseArchiveKey(key);
+    if (!identity) return false;
+    const root = await realpath(this.libraryPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+      throw error;
+    });
+    if (!root) return false;
+    return (await statRealDirectory(archiveDir(root, identity.producerId, identity.archiveId))) !== null;
+  }
+
+  /**
+   * Publish one report page as a `scout` archive. The only caller is the operator's Publish as
+   * scout route; nothing in the capture ledger, recovery, exit or cleanup paths reaches it, so a
+   * report is never archived unless the operator asked.
+   *
+   * The bundle is an ordinary version 1 scout bundle with one file, `report/report.html`: no
+   * prompt trail, no `artifacts/` half and no checkout read. The page must pass the same static
+   * checker every bundle passes; a refused page answers with every problem named and writes
+   * nothing. Identity comes from `reportArchiveId`, so a repeated publish re-verifies and returns
+   * the archive already there rather than writing a second one, and an archive at that key holding
+   * a different page is a conflict, never overwritten.
+   */
+  async publishReportPage(input: ReportPagePublication): Promise<ReportPagePublicationResult> {
+    if (!this.acceptingJobs) {
+      return { ok: false, status: 503, problems: ["Mission Control is shutting down; try again after it restarts"] };
+    }
+    let html: string;
+    try {
+      html = new TextDecoder("utf-8", { fatal: true }).decode(input.page);
+    } catch {
+      return { ok: false, status: 422, problems: ["the document is not UTF-8 text"] };
+    }
+    // The page sits at `report/report.html` with the files stored beside the report's document. A
+    // relative link to any other file is unlinked and named as missing rather than refusing the
+    // page: the file was never stored, so no later press could publish it either.
+    const primaryName = ARCHIVE_PRIMARY_REPORT_PATH.slice(ARCHIVE_REPORT_DIR.length + 1);
+    // Case-folded throughout: on a case-insensitive volume `Report.html` is the page's own path,
+    // and companions whose paths collide there (the same path in another case, or a file where
+    // another needs a directory) cannot all be written. `caseDistinctPaths` keeps one of each.
+    const eligible = input.companions.filter((companion) => {
+      const key = companion.path.toLowerCase();
+      return key !== primaryName && !key.startsWith(`${primaryName}/`)
+        && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${companion.path}`) !== null;
+    });
+    const distinct = caseDistinctPaths(eligible.map((companion) => companion.path));
+    const seen = new Set<string>();
+    const companions = eligible.filter((companion) => {
+      if (!distinct.has(companion.path) || seen.has(companion.path)) return false;
+      seen.add(companion.path);
+      return true;
+    });
+    // The page links to itself by its stored document's name. That name is the page's archive
+    // name when it folds to `report.html` (`Report.html` names the page on a case-insensitive
+    // volume): `report.html` is then a target, and a link spelled as the document's own name is
+    // rewritten to `report.html`, so it resolves in the archive instead of being unlinked.
+    const documentIsPage = input.documentName.toLowerCase() === primaryName;
+    const targets = new Set([
+      ...(documentIsPage ? [primaryName] : []),
+      ...companions.map((companion) => companion.path),
+    ]);
+    const aliases = documentIsPage && input.documentName !== primaryName
+      ? new Map([[input.documentName, primaryName]])
+      : undefined;
+    const unlinked = unlinkMissingCompanions(html, targets, aliases);
+    const checked = validateStaticReportHtml(unlinked.html, targets);
+    if (!checked.ok) return { ok: false, status: 422, problems: checked.problems.map((problem) => problem.message) };
+    const page = unlinked.html !== html ? Buffer.from(unlinked.html, "utf8") : input.page;
+    const missing = reportMissingCompanions(unlinked.unlinked);
+
+    const identity: ArchiveIdentity = {
+      producerId: this.producer.id,
+      archiveId: reportArchiveId(this.producer.id, input.reportId, input.reportCreatedAt),
+    };
+    const key = archiveKey(identity.producerId, identity.archiveId);
+    const sha256 = formatArchiveDigest(createHash("sha256").update(page).digest("hex"));
+    if (!sha256) return { ok: false, status: 500, problems: ["the page could not be digested"] };
+
+    return this.withMutation(key, async () => {
+      // Only a library that is not there counts as holding no bundle (ENOENT/ENOTDIR), as in
+      // `archivePresent`. A library that cannot be read right now (permissions, descriptor
+      // exhaustion, I/O) is reported, never taken for an empty one: a press then would stage over a
+      // bundle it could not see instead of replaying it.
+      let existing: Awaited<ReturnType<typeof verifyArchiveBundle>> | null;
+      try {
+        const root = await realpath(this.libraryPath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+          throw error;
+        });
+        existing = root ? await verifyArchiveBundle(root, identity) : null;
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        return { ok: false as const, status: 500 as const, problems: [`could not read the archive library: ${why}`] };
+      }
+      if (existing?.kind === "verified") {
+        const manifest = existing.bundle.manifest;
+        const primary = manifest.artifacts.find((artifact) => artifact.role === "primary_report");
+        if (primary?.sha256 === sha256) return { ok: true as const, key, replayed: true };
+        // The id is derived from this producer, the report id and its posting time, so a verified
+        // report bundle from the same session is this report's own archive even when the page
+        // built now differs: a Markdown page is re-rendered on every press, and a renderer or
+        // style change since the first publish must not turn the report's own archive into a
+        // conflict. It is returned as it is, never rewritten.
+        if (manifest.origin.source === "report" && manifest.origin.session?.id === input.session.id) {
+          return { ok: true as const, key, replayed: true };
+        }
+        return { ok: false as const, status: 409 as const, problems: [
+          `an archive already exists at ${key} that this report did not publish; delete it from the Scouts page, then publish again`,
+        ] };
+      }
+      // A bundle is at this key but does not verify (edited or damaged on disk). It is never
+      // renamed over or rewritten: say so, and leave it for the operator to delete.
+      if (existing && existing.kind !== "absent") {
+        return { ok: false as const, status: 409 as const, problems: [
+          `an archive already exists at ${key} but does not verify (${existing.reason}); delete it from the Scouts page, then publish again`,
+        ] };
+      }
+      const outcome = await publishBundle(identity, { libraryRoot: this.libraryPath, rename: this.renameDir }, async (stageDir) => {
+        const target = join(stageDir, ...ARCHIVE_PRIMARY_REPORT_PATH.split("/"));
+        await mkdir(join(target, ".."), { recursive: true, mode: 0o700 });
+        await writeFile(target, page, { mode: 0o600, flag: "wx" });
+        const artifacts: ArchiveManifestArtifact[] = [{
+          id: ARCHIVE_PRIMARY_ARTIFACT_ID,
+          role: "primary_report",
+          repoSlot: null,
+          originalPath: null,
+          archivePath: ARCHIVE_PRIMARY_REPORT_PATH,
+          mediaType: null,
+          bytes: page.byteLength,
+          sha256,
+        }];
+        for (const [index, companion] of companions.entries()) {
+          const archivePath = `${ARCHIVE_REPORT_DIR}/${companion.path}`;
+          const companionTarget = join(stageDir, ...archivePath.split("/"));
+          await mkdir(join(companionTarget, ".."), { recursive: true, mode: 0o700 });
+          await writeFile(companionTarget, companion.bytes, { mode: 0o600, flag: "wx" });
+          artifacts.push({
+            id: archiveArtifactId(index + 1),
+            role: "report_companion",
+            repoSlot: null,
+            originalPath: null,
+            archivePath,
+            mediaType: null,
+            bytes: companion.bytes.byteLength,
+            sha256: formatArchiveDigest(createHash("sha256").update(companion.bytes).digest("hex"))!,
+          });
+        }
+        // Both times are the report's own posting time, never the clock, so publishing the same
+        // page under the same key always writes a byte-identical manifest. A republish after the
+        // bundle was removed by hand, before a reconciliation pass pruned its index row, then
+        // matches the digest the index kept, instead of reading as a rewrite of an immutable key.
+        const at = new Date(input.reportCreatedAt).toISOString();
+        const manifest: ArchiveManifest = {
+          formatVersion: ARCHIVE_FORMAT_VERSION,
+          kind: "scout",
+          producer: { id: identity.producerId, label: this.producer.label },
+          archive: {
+            id: identity.archiveId,
+            createdAt: at,
+            completedAt: at,
+            captureStatus: missing.length > 0 ? "partial" : "complete",
+            title: input.title.slice(0, ARCHIVE_TEXT_LIMITS.title),
+            question: null,
+            prompts: null,
+            summary: null,
+            tags: [],
+          },
+          origin: {
+            session: {
+              id: input.session.id,
+              name: input.session.name.slice(0, ARCHIVE_TEXT_LIMITS.label),
+              taskId: input.session.taskId,
+              episodeId: null,
+            },
+            agent: null,
+            model: null,
+            source: "report",
+            repositories: input.repositoryLabel
+              ? [{ slot: "repo-01", label: input.repositoryLabel.slice(0, ARCHIVE_TEXT_LIMITS.label), head: null }]
+              : [],
+          },
+          primaryArtifactId: ARCHIVE_PRIMARY_ARTIFACT_ID,
+          artifacts,
+          missing,
+          contentDigest: archiveContentDigest(artifacts),
+        };
+        return { ok: true, manifest };
+      });
+      // The checker already passed the page above, so a failure here is the library's own:
+      // staging, writing, renaming or the post-write verification. A 500, never the 422 a
+      // checker refusal gets, so the operator does not go looking for a fault in the document.
+      if (!outcome.ok) {
+        return { ok: false as const, status: outcome.conflict ? 409 as const : 500 as const, problems: outcome.problems };
+      }
+      this.notifyPublished(outcome.identity.producerId, outcome.identity.archiveId);
+      return { ok: true as const, key, replayed: false };
+    });
+  }
+
   /** One bounded page of archives, with a snippet per row when the query searched. */
   list(query: ArchiveSearchQuery): ArchivePage {
     // Decoded HERE so an unusable cursor is refused rather than silently read as "start from
@@ -1048,7 +1451,7 @@ export class ArchiveManager {
 
     for (const grave of graves) {
       try {
-        await rm(grave, { recursive: true, force: true, maxRetries: 2 });
+        await removeTree(grave);
       } catch (error) {
         // The bundle is already outside discovery and the index/name cleanup is complete.
         // Its exact-key grave therefore authorizes another cleanup-only retry.

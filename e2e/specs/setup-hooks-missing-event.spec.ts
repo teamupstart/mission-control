@@ -29,7 +29,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/setup-hooks-missing-event/${name}.png`);
 }
 
@@ -231,14 +230,28 @@ test("the dispatch form carries the same notice, and drops it once the hooks are
  *
  * The operator reading it is standing in a modal, and the remedy (the Install button, or the
  * command to copy) lives on a Setup row three navigations away. The note's "Fix in Setup"
- * control closes the form and lands on that exact row. The dashboard here loaded before the
- * settings file was written, so the panel's startup snapshot has no such row: the door has to
- * re-read the machine and still select the right family, or it drops the operator on
- * whichever family the rail happens to open on.
+ * control closes the form and lands on that exact row. Here the panel has no Setup snapshot at
+ * all when the door is pressed: the door has to select the right family from the anchor alone
+ * and keep it once the re-read lands, or it drops the operator on whichever family the rail
+ * happens to open on.
  */
 test("the dispatch notice links straight to its Setup row", async ({ dashboard, daemon }) => {
   const script = liveScript(daemon);
   installHooks(daemon, script, BEFORE_SUBAGENT_START);
+
+  // The door must not depend on how fast the machine answers. Under load the dashboard's
+  // startup Setup read can still be outstanding when the operator presses the door, and the
+  // page hands the jump to the panel only until it starts waiting for the row; a panel that
+  // waited for rows before choosing a family lost the jump and opened its default family.
+  // Every Setup read is held here until the rail has been checked, so this spec takes that
+  // path on every run instead of only on a loaded runner.
+  let releaseSetupReads!: () => void;
+  const setupReadsHeld = new Promise<void>((resolve) => { releaseSetupReads = resolve; });
+  await dashboard.route((url) => url.pathname === "/api/setup/checks", async (route) => {
+    await setupReadsHeld;
+    await route.continue();
+  });
+  await dashboard.reload();
 
   const settled = dashboard.waitForResponse((res) => res.url().includes("/api/environment/checks"));
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
@@ -255,12 +268,22 @@ test("the dispatch notice links straight to its Setup row", async ({ dashboard, 
   await fix.click();
   await expect(dialog).toBeHidden();
   await expect(dashboard).toHaveURL(/#\/settings\/setup/);
+  // The family is chosen from the anchor alone, before any row has loaded.
   await expect(dashboard.locator("#setup-family-extensions")).toHaveAttribute("aria-current", "true");
   const row = setupRow(dashboard, ROW);
+  await expect(row).toHaveCount(0);
+  releaseSetupReads();
+  // The rows land under the family already chosen, and the waiting flash finds its row.
+  await expect(dashboard.locator("#setup-family-extensions")).toHaveAttribute("aria-current", "true");
   await expect(row).toBeVisible();
-  await expectRowStatus(dashboard, ROW, "Needs setup");
-  await expect(row.locator(".setup-command code")).toHaveText("npm run install-hooks");
-  // Landed on, not merely present: the page flashes the control a deep link names.
+  // Landed on, not merely present: the page flashes the control a deep link names. Asserted
+  // first because the flash is transient (`FLASH_MS`, 3.2s from the row mounting), while
+  // everything below is steady state and can be read at any time after.
   await expect(row).toHaveClass(/settings-flash/);
   await shoot(dashboard, "missing-subagent-start-setup-landing", row);
+  // And the family it selected, in the rail the flash scrolled away from. Evidence runs only.
+  if (process.env.MC_E2E_EVIDENCE) await dashboard.locator("#setup-family-extensions").scrollIntoViewIfNeeded();
+  await shoot(dashboard, "missing-subagent-start-setup-landing-family");
+  await expectRowStatus(dashboard, ROW, "Needs setup");
+  await expect(row.locator(".setup-command code")).toHaveText("npm run install-hooks");
 });

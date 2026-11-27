@@ -204,7 +204,7 @@ function mkApp(
   return buildApp({
     registry,
     reviews: {} as unknown as ReviewManager,
-    tasks: { prepareKilledSessionReturn: () => () => {} } as unknown as TaskManager,
+    tasks: {} as unknown as TaskManager,
     queues: {} as unknown as QueueManager,
     sdkSessions: supervisor,
     handoffDeps,
@@ -1587,6 +1587,7 @@ test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing"
       return {
         cwd: source.cwd!, argv: [], wrappedArgv: [], stateHome: lease.home, lease,
         descriptor: null, requiredTools: [], instrumented: false,
+        workUnitId: null, conversationKey: source.agentSessionId!,
         beginLaunch: () => beginResumeLaunch(lease),
         dispose: () => revokeResumeLease(lease),
       };

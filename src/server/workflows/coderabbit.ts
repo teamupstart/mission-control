@@ -1,14 +1,16 @@
 import type { CodeRabbitComparison, CodeRabbitConfigSnapshot, CodeRabbitTuning, WorkflowCommandView } from "@shared/workflow.ts";
-import { checkBlockedReason, defaultWorkflowCommandMaxRuns, effectiveWorkflowCommandTimeoutMs, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
+import { isDeepStrictEqual } from "node:util";
+import { checkBlockedReason, codeRabbitReviewArgv, CODERABBIT_REVIEW_COMMAND, DEFAULT_CODERABBIT_COMMAND, defaultWorkflowCommandMaxRuns, effectiveWorkflowCommandTimeoutMs, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { run, type RunResult } from "../util/exec.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { scrubCheckEnv } from "./check-env.ts";
-import { resolveCapturedCommit, FULL_SHA } from "./commit-id.ts";
+import { FULL_SHA } from "./commit-id.ts";
+import { resolveReviewComparison } from "./review-comparison.ts";
 import type { CheckResult, CheckRunDeps, CheckRunReservation, RunCheckInput } from "./checks.ts";
 import { workflowLog } from "./log.ts";
-import { CODERABBIT_OPERATOR_ACTION, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
+import { CODERABBIT_OPERATOR_ACTION } from "./coderabbit-result.ts";
 
 export const CODERABBIT_SETUP = "Settings > Setup";
 export const CODERABBIT_ALLOWANCE_REMEDY = "Inspect retained output and explicitly raise the run allowance in Library > Commands, then submit a new round to capture it";
@@ -122,68 +124,10 @@ export async function resolveCodeRabbitComparison(input: {
 }): Promise<CodeRabbitComparison> {
   const rule = input.command.overrides.find((r) => r.repoRoot === input.repoRoot)?.review;
   const tuning: CodeRabbitTuning = rule ?? { kind: "coderabbit", baseRef: null, severity: "major" };
-  const result: CodeRabbitComparison = { interpreterVersion: 1, yaml: input.yaml, severity: tuning.severity,
-    ruleRevision: input.command.revision, baseRef: tuning.baseRef, baseTip: null, mergeBase: null, head: null, empty: false,
-    timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command), maxRuns: input.command.maxRuns, error: null };
-  const git = async (args: string[]) => {
-    const r = await run("git", ["-C", input.repoRoot, ...args], { timeoutMs: 5000, maxBuffer: 64 * 1024 });
-    if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("Git comparison could not be resolved unambiguously. Correct local refs or set an explicit baseRef in Library > Commands, then retry");
-    return r.stdout.trim();
-  };
-  try {
-    if (!input.headSha) throw new Error("No captured committed head. Commit and submit again");
-    result.head = await resolveCapturedCommit(input.repoRoot, input.headSha);
-    const stacked = input.stackBase ? await input.stackBase() : null;
-    if (stacked) {
-      // At the task's repository root, from explicit commit ids: both commits are in its
-      // object store (linked worktrees share it), so nothing here runs in the checkout.
-      const atRoot = async (args: string[]) => {
-        const r = await run("git", ["-C", stacked.repoRoot, ...args], { timeoutMs: 5000, maxBuffer: 64 * 1024 });
-        if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("The stacked comparison could not be resolved at the repository root");
-        return r.stdout.trim();
-      };
-      result.baseRef = `refs/remotes/origin/${stacked.branch}`;
-      result.baseTip = stacked.sha;
-      result.mergeBase = await atRoot(["merge-base", "--all", result.baseTip, result.head]);
-      if (!FULL_SHA.test(result.mergeBase)) throw new Error("The stacked comparison has no unique merge base");
-      result.empty = (await atRoot(["diff", "--name-only", result.mergeBase, result.head, "--"])) === "";
-      return result;
-    }
-    if (!result.baseRef) {
-      // A locally observed remote HEAD is reliable; guessing main/master is not.
-      result.baseRef = await git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
-    }
-    if (!/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(result.baseRef) || result.baseRef.includes("..")) throw new Error("Set a valid explicit baseRef in Library > Commands and retry");
-    result.baseTip = await git(["rev-parse", "--verify", "--end-of-options", `${result.baseRef}^{commit}`]);
-    if (!FULL_SHA.test(result.baseTip)) throw new Error("The configured base did not resolve to one commit");
-    result.mergeBase = await git(["merge-base", "--all", result.baseTip, result.head]);
-    if (!FULL_SHA.test(result.mergeBase)) throw new Error("The comparison has no unique merge base");
-    result.empty = (await git(["diff", "--name-only", result.mergeBase, result.head, "--"])) === "";
-  } catch (error) { result.error = error instanceof Error ? error.message : "CodeRabbit comparison is unavailable"; }
-  return result;
-}
-
-/**
- * The pinned comparison's changed paths, which a `reviewedFiles` completion is checked against.
- * Renames are split so the new path is required and the old one is merely allowed, the same
- * way a deletion is. NUL-separated so no path is quoted or mangled.
- */
-export async function codeRabbitChangedPaths(repoRoot: string, mergeBase: string, head: string): Promise<CodeRabbitChangedPaths> {
-  if (!FULL_SHA.test(mergeBase) || !FULL_SHA.test(head)) throw new Error("CodeRabbit comparison is not pinned to full commits");
-  const r = await run("git", ["-C", repoRoot, "diff", "--name-status", "--no-renames", "--no-relative", "--no-ext-diff", "-z", mergeBase, head, "--"],
-    { timeoutMs: 10_000, maxBuffer: 4 * 1024 * 1024 });
-  if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("the pinned comparison's changed files could not be listed");
-  const fields = r.stdout.split("\0");
-  if (fields.at(-1) === "") fields.pop();
-  if (fields.length % 2) throw new Error("the pinned comparison's changed files could not be parsed");
-  const required: string[] = [], allowed: string[] = [];
-  for (let i = 0; i < fields.length; i += 2) {
-    const status = fields[i]!, path = fields[i + 1]!;
-    if (!/^[ACDMTUX]$/.test(status) || !path) throw new Error("the pinned comparison's changed files could not be parsed");
-    allowed.push(path);
-    if (status !== "D") required.push(path);
-  }
-  return { required, allowed };
+  return { interpreterVersion: 1, yaml: input.yaml, severity: tuning.severity,
+    command: [...(tuning.command ?? input.command.defaultCommand ?? DEFAULT_CODERABBIT_COMMAND)],
+    ruleRevision: input.command.revision, timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command), maxRuns: input.command.maxRuns,
+    ...await resolveReviewComparison(input, tuning.baseRef) };
 }
 
 /** Same recipe for arbitrary workflows and No-Mistakes. YAML and allowance precede probes. */
@@ -191,7 +135,7 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   const yaml = input.coderabbit?.yaml;
   let comparison: CodeRabbitComparison | null = null;
   let reservation: CheckRunReservation | undefined;
-  let started = false;
+  let chargeRun = false;
   let failureStage = "preflight";
   const summary = (status: "skipped" | "incomplete", diagnostic: string): import("@shared/workflow.ts").CodeRabbitReviewSummary => ({
     comparison: comparison ?? { interpreterVersion: 1,
@@ -209,14 +153,12 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   // and returned a result Mission Control cannot accept is a different problem: Setup would
   // show a healthy CLI, so point at the retained output instead.
   // `remedy` replaces both: a problem neither Setup nor the retained output can fix says its own.
-  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
+  const remainingRuns = () => Math.max(0,
+    (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit"))
+      - (reservation?.spent ?? 0) - Number(chargeRun));
+  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: remainingRuns() }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
   if (!yaml?.enabled) return skip("skipped", yaml?.diagnostic ?? "No captured explicit YAML enablement; submit again to refresh configuration", yaml && ["invalid", "unreadable"].includes(yaml.state) ? yaml.diagnostic : undefined);
-  reservation = input.reserveRun?.();
-  if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
-    "CodeRabbit review remains incomplete and its execution allowance is exhausted", undefined, undefined, false,
-    `${CODERABBIT_ALLOWANCE_REMEDY}; no additional credits were authorized`);
-  if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
-  try {
+  const preflight = () => {
     if (input.coderabbit?.retryAt && input.coderabbit.retryAt > Date.now()) return block(`CodeRabbit vendor wait is active until ${new Date(input.coderabbit.retryAt).toISOString()}. Retry after that time`);
     const denied = checkBlockedReason(input.policy, input.cwd, input.repoRoot);
     if (denied) return block(denied);
@@ -225,42 +167,84 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     // submission captured before snapshots existed: it has no commit holding what it reviewed.
     if (input.coderabbit?.dirty) return block("This submission captured uncommitted changes without a review snapshot", undefined, undefined, false, "Submit again so Mission Control captures one");
     if (yaml.committed === false) return block(`The captured ${yaml.source} is not the one in the reviewed commit`, undefined, undefined, false, `Make sure ${yaml.source} is not ignored, then submit again`);
+    return null;
+  };
+  try {
+    const prior = input.coderabbit?.priorCleanReview;
+    const priorComparison = prior?.review.comparison;
+    let comparisonRequest: Promise<CodeRabbitComparison> | undefined;
+    if (prior && priorComparison?.command && !priorComparison.command.includes("--fresh") && !preflight()) {
+      failureStage = "comparison";
+      // Resolve a reuse candidate before asking for an execution. If it cannot be reused,
+      // keep the allowance-first outcome for an exhausted run, including comparison errors.
+      comparisonRequest = Promise.resolve().then(input.coderabbit!.comparison);
+      const candidate = await comparisonRequest.catch(() => null);
+      if (candidate?.head && candidate.mergeBase && !candidate.error && isDeepStrictEqual(priorComparison, candidate)) {
+        const diagnostic = `Reused complete CodeRabbit review with no findings from attempt ${prior.attemptId} at unchanged head ${candidate.head}`;
+        const remainingRuns = Math.max(0, candidate.maxRuns - (input.coderabbit?.readRunsSpent?.() ?? 0));
+        return { kind: "outcome", outcome: {
+          slot: "coderabbit", status: "passed", command: null, exitCode: null, output: "", truncatedBytes: 0,
+          artifacts: [], timeoutMs: null, note: diagnostic, review: { ...prior.review, diagnostic, remainingRuns },
+        } };
+      }
+    }
+    failureStage = "preflight";
+    reservation = input.reserveRun?.();
+    if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
+      "CodeRabbit review remains incomplete and its execution allowance is exhausted", undefined, undefined, false,
+      `${CODERABBIT_ALLOWANCE_REMEDY}; no additional credits were authorized`);
+    if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
+    const problem = preflight();
+    if (problem) return problem;
     failureStage = "comparison";
-    comparison = await input.coderabbit!.comparison();
+    comparison = await (comparisonRequest ?? input.coderabbit!.comparison());
     if (comparison.error || !comparison.head || !comparison.mergeBase) return block(comparison.error ?? "CodeRabbit comparison is unavailable");
     failureStage = "readiness";
     const ready = await (deps.codeRabbitProbe ?? probeCodeRabbit)();
     if (ready.error || !("command" in ready)) return block(ready.error ?? "CodeRabbit is unavailable");
-    const command = [ready.command, "review", "--agent", "--gate", comparison.severity, "--committed", "--base-commit", comparison.mergeBase];
-    // An executor that throws cannot prove that the review never started. Keep its claim
-    // unless a completed runtime result explicitly reports a pre-start refusal.
-    started = true;
+    const argv = codeRabbitReviewArgv(comparison.command ?? CODERABBIT_REVIEW_COMMAND, comparison.severity, comparison.mergeBase);
+    const command = [ready.command, ...argv.slice(1)];
+    // Charge ambiguous executor exceptions. Only a typed runtime or provider failure
+    // establishes that the attempt ended for an infrastructure reason.
+    chargeRun = true;
     failureStage = "execution";
-    const execution = await deps.execute({ slot: "coderabbit", command, repoRoot: input.repoRoot, workingSubpath: "", headSha: comparison.head,
+    const execution = await deps.execute!({ slot: "coderabbit", command, repoRoot: input.repoRoot!, workingSubpath: "", headSha: comparison.head,
       timeoutMs: comparison.timeoutMs, coderabbit: comparison, env: ready.env });
-    started = execution.kind !== "unavailable" && execution.kind !== "decided"
-      && (execution.kind !== "infrastructure" || execution.started !== false);
+    chargeRun = execution.kind === "exited";
     // A review takes its tree without a dependency claim, so it is never decided by one.
     if (execution.kind === "unavailable" || execution.kind === "decided") return block(execution.note);
-    if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
+    if (execution.kind === "infrastructure") {
+      if (execution.cleanupFailed) {
+        // The engine owns the lease gate and retries even if reclamation has already
+        // settled the lease by the time it handles this result.
+        return {
+          kind: "infrastructure", reason: execution.reason, artifacts: execution.artifacts,
+          review: { ...(execution.review ?? summary("incomplete", execution.reason)), remainingRuns: remainingRuns() },
+        };
+      }
+      return block(execution.reason, execution.review, execution.artifacts);
+    }
     failureStage = "result";
     const review = execution.review;
-    if (review?.status === "incomplete" && review.retryableConnection) return {
-      kind: "retryable_connection", reason: review.diagnostic, artifacts: execution.artifacts,
-      review: { ...review, remainingRuns: Math.max(0, comparison.maxRuns - ((reservation?.spent ?? 0) + 1)) },
-    };
+    if (review?.status === "incomplete" && review.retryableConnection) {
+      chargeRun = false;
+      return {
+        kind: "retryable_connection", reason: review.diagnostic, artifacts: execution.artifacts,
+        review: { ...review, remainingRuns: remainingRuns() },
+      };
+    }
     if (!review || review.status === "incomplete") return block(review?.diagnostic ?? "CodeRabbit semantic result is missing", review, execution.artifacts,
       !review || review.diagnostic === CODERABBIT_OPERATOR_ACTION);
     const skipped = review.status === "skipped";
     const note = `${review.diagnostic}. Head ${comparison.head}; base ${comparison.baseRef} at ${comparison.baseTip}; merge-base ${comparison.mergeBase}; threshold ${comparison.severity}. ${Object.entries(review.counts).map(([severity, count]) => `${severity}: ${count}`).join(", ")}. YAML ${comparison.yaml.source}: ${comparison.yaml.state}; digest ${comparison.yaml.digest}. ${review.titles.join("; ")}`.slice(0, WORKFLOW_EXECUTION_LIMITS.verdictSummary);
     return { kind: "outcome", outcome: { slot: "coderabbit", status: skipped ? "skipped" : execution.exitCode === 2 ? "failed" : "passed", command,
       exitCode: execution.exitCode, output: execution.output, truncatedBytes: execution.truncatedBytes, artifacts: execution.artifacts ?? [], timeoutMs: comparison.timeoutMs,
-      note, review: { ...review, remainingRuns: Math.max(0, comparison.maxRuns - ((reservation?.spent ?? 0) + 1)) }, ...(skipped ? { warning: review.diagnostic } : {}),
+      note, review: { ...review, remainingRuns: remainingRuns() }, ...(skipped ? { warning: review.diagnostic } : {}),
     } };
   } catch (error) {
     // Raw exception messages and names can contain credentials, paths or vendor output.
     workflowLog("error", { event: "coderabbit_exception", state: failureStage,
       error: error instanceof SyntaxError ? "SyntaxError" : error instanceof TypeError ? "TypeError" : error instanceof Error ? "Error" : "unknown" });
     return block("CodeRabbit execution could not establish a complete review. Inspect daemon diagnostics and any retained output before retrying");
-  } finally { if (!started) reservation?.release?.(); }
+  } finally { if (!chargeRun) reservation?.release?.(); }
 }

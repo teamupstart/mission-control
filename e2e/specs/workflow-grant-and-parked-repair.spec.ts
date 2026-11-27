@@ -44,7 +44,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   // pointer is still on whichever primary the assertion above just clicked.
   await page.mouse.move(0, 0);
   await page.locator("header.wf-run-head").screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-grant-and-parked-repair/${name}.png`);
 }
 

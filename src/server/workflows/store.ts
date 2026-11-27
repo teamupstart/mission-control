@@ -1,13 +1,26 @@
-import { CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
+import { DEFAULT_LOCAL_INSPECTOR_SEVERITY, INSPECTOR_SEVERITIES } from "@shared/inspector-review.ts";
+import type { ReviewComparison } from "./review-comparison.ts";
+import type { EvidenceRef } from "@shared/workflow.ts";
+import type { PersonaWorkloadRequest, PersonaWorkloadEvent } from "@shared/repository-access.ts";
+import { PersonaVerdictSchema } from "@shared/protocol.ts";
+import { workflowCapturedLocalInspector, workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
+import { RepositoryEvidenceHandleSchema, RepositoryQueryAuditMetadataSchema } from "@shared/repository-access.ts";
+import { packetDigest } from "./continuation-evidence.ts";
+import { workflowGraphFingerprint } from "./graph-fingerprint.ts";
+import type { InspectorBranchActivity } from "../inspector/github.ts";
+import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
 import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
-import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
+import { type RecoverStaleInspectorGrant, WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
+import { noteDiscardedWorkflowReceipt, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT } from "../delivery-ledgers.ts";
+import type { DeliveredWorkflowTranscriptAnchor } from "./context.ts";
+import { PUBLICATION_REVISION_BUDGET_MS } from "./publication-revision.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -128,6 +141,7 @@ import {
   withInspectorGate,
   workflowInspectorGate,
   workflowInspectorGateNeedsFreshReview,
+  workflowInspectorOnlyRepair,
   workflowRoundLimitParkedPhase,
   workflowRunLifecycleViolation,
   type WorkflowRunPhase,
@@ -155,7 +169,6 @@ import type {
   WorkflowRun,
   WorkflowRunCriteria,
   WorkflowRunDetail,
-  WorkflowRunIntentSnapshot,
   WorkflowRunPage,
   WorkflowRunSummary,
   WorkflowSubmissionEvidenceImages,
@@ -192,7 +205,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import { THINKING_LEVELS } from "@shared/types.ts";
 import type { SessionIntentGuard, ThinkingLevel } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
-import { consumePromptedGeneration, openDb } from "../db.ts";
+import { consumePromptedGeneration, getInspectorPr, openDb, readCodeRabbit } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
 import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
@@ -225,6 +238,32 @@ const utf8 = new TextEncoder();
 const DEFAULT_DETAIL_PAGE_SIZE = 200;
 const PERSONA_DIRECTIVES_JSON_BYTES =
   WORKFLOW_LIMITS.personaDirectiveBytes * WORKFLOW_LIMITS.graphNodes + 100_000;
+// Cleanup can outlive a cancelled run. Its durable process and lease ownership
+// must survive until the executor or local supervisor confirms termination.
+const repositoryCleanupForRun = `SELECT 1 FROM workflow_llm_calls l
+  JOIN workflow_repository_workloads w ON w.id=l.id
+  LEFT JOIN workflow_repository_local_owners o ON o.workload_id=w.id
+  WHERE l.run_id=r.id AND (o.workload_id IS NOT NULL OR w.state IN ('running','cancellation_pending','interrupted'))`;
+
+// A Local Inspector attempt whose provider returned a response. The repository workload's
+// `persona_returned` event is recorded before the reply is judged, so a malformed verdict, a
+// verdict without a verified repository query, an audit failure or an interruption after the
+// return all still read as an execution. A succeeded model call is the older witness of the
+// same fact. A launch that failed or was interrupted before the provider returned has neither.
+const inspectorReviewReturned = `EXISTS (
+  SELECT 1 FROM workflow_llm_calls l WHERE l.submission_id = a.submission_id
+    AND l.node_attempt_id = a.id AND l.purpose = 'inspector_review'
+    AND (l.state = 'succeeded' OR EXISTS (
+      SELECT 1 FROM workflow_repository_events e WHERE e.workload_id = l.id AND e.kind = 'persona_returned'
+    ))
+)`;
+
+// An Inspector review that returned spends its claim even if processing that result fails.
+const countedCheckRun = `(
+  a.state NOT IN ('error', 'cancelled') OR a.check_run_slot = 'coderabbit'
+  OR (a.check_run_slot = 'inspector' AND ${inspectorReviewReturned})
+)`;
+
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 /**
@@ -424,6 +463,7 @@ function externalSourceFromRow(row: Record<string, unknown>): WorkflowExternalSo
 }
 
 export const WORKFLOW_TABLES = [
+  "persona_builtin_overrides",
   "personas",
   "session_actions",
   "builtin_session_action_overrides",
@@ -432,15 +472,23 @@ export const WORKFLOW_TABLES = [
   "workflow_builtin_round_limits",
   "workflow_definitions",
   "workflow_versions",
+  "workflow_publish_requests",
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
+  "workflow_repository_artifacts",
+  "workflow_repository_snapshot_claims",
   "workflow_node_attempts",
   "workflow_command_artifact_reservations",
   "workflow_command_artifacts",
   "workflow_edge_receipts",
   "workflow_deliveries",
   "workflow_llm_calls",
+  "workflow_repository_workloads",
+  "workflow_repository_local_owners",
+  "workflow_repository_events",
+  "workflow_repository_queries",
+  "workflow_repository_handles",
   "workflow_events",
   "workflow_submission_readiness_overrides",
   "workflow_binding_claims",
@@ -783,7 +831,10 @@ function readDeliveryMode(raw: unknown): WorkflowDeliveryMode {
     : "preview";
 }
 
+import { PERSONA_REPOSITORY_ACCESS_MODES } from "@shared/workflow.ts";
+
 const PersonaRowSchema = z.object({
+  repository_access: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).default("none"),
   id: nonempty,
   name: nonempty.max(WORKFLOW_LIMITS.personaName),
   normalized_name: nonempty,
@@ -884,6 +935,8 @@ export function parsePersonaRow(value: unknown): Persona {
     runner: row.runner_id as LlmRunnerId | null,
     model: row.model_id,
     effort: readPersonaEffort(row.effort),
+    repositoryAccess: row.repository_access,
+    repositoryAccessRevision: row.revision,
     revision: row.revision,
     archivedAt: row.archived_at,
     createdAt: row.created_at,
@@ -979,6 +1032,7 @@ const COMMAND_ARGV_JSON_BYTES =
 const WorkflowCommandRowSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   default_command_json: nullableText,
+  inspector_severity: z.enum(INSPECTOR_SEVERITIES).nullish().catch(null),
   /*
    * Deliberately UNTYPED in the row schema, and read by `readCommandMaxRuns` instead.
    *
@@ -1021,10 +1075,11 @@ function readCommandArgv(
   id: string,
   column: string,
   raw: string | null,
+  schema = CommandArgvJsonSchema,
 ): string[] | null {
   if (raw === null) return null;
   try {
-    return parseJson(table, id, column, raw, CommandArgvJsonSchema, COMMAND_ARGV_JSON_BYTES);
+    return parseJson(table, id, column, raw, schema, COMMAND_ARGV_JSON_BYTES);
   } catch (error) {
     diagnose(error);
     return null;
@@ -1117,11 +1172,10 @@ function parseWorkflowCommandRow(
   const row = parseShape("workflow_commands", WorkflowCommandRowSchema, value);
   return {
     slot: row.slot,
+    ...(row.slot === "inspector" ? { inspectorSeverity: row.inspector_severity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY } : {}),
     defaultCommand: readCommandArgv(
-      "workflow_commands",
-      row.slot,
-      "default_command_json",
-      row.default_command_json,
+      "workflow_commands", row.slot, "default_command_json", row.default_command_json,
+      row.slot === "coderabbit" ? CodeRabbitCommandSchema : CommandArgvJsonSchema,
     ),
     maxRuns: row.max_runs === undefined ? defaultWorkflowCommandMaxRuns(row.slot) : readCommandMaxRuns(row.max_runs),
     timeoutMs: readCommandTimeoutMs(row.timeout_ms),
@@ -1230,7 +1284,9 @@ export function parseWorkflowVersionRow(value: unknown): WorkflowVersion {
   };
 }
 
-const WorkflowVersionMetadataRowSchema = WorkflowVersionRowSchema.omit({ graph_json: true });
+const WorkflowVersionMetadataRowSchema = WorkflowVersionRowSchema.omit({ graph_json: true }).extend({
+  read_personas: z.string().optional(),
+});
 
 export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersionMetadata {
   const row = parseShape("workflow_versions", WorkflowVersionMetadataRowSchema, value);
@@ -1255,6 +1311,7 @@ export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersion
       row.binding_defaults_json,
       WorkflowBindingDefaultsSchema,
     ),
+    ...(row.read_personas ? { readPersonaIds: JSON.parse(row.read_personas) as string[] } : {}),
     publishedAt: row.published_at,
   };
 }
@@ -2446,6 +2503,16 @@ function runContextState(
   return "corrupt";
 }
 
+// Both End and Inspector can finish a run. Pin the conversation's generation in the
+// terminal UPDATE itself, before another turn or a daemon restart can change the answer.
+// A run completed before this column existed has no witnessed boundary.
+const completionGenerationSql = `(SELECT c.generation FROM session_work_cycles c
+  JOIN workflow_bindings b ON b.note_key = c.logical_key WHERE b.id = workflow_runs.binding_id)`;
+
+// The author's idle may already have landed at End, or may arrive one generation later.
+// Foreman coalesces missed cycles. A later generation cannot spend an earlier handoff.
+const publicationHandoffDueSql = "? BETWEEN publication_handoff_generation AND publication_handoff_generation + 1";
+
 function transaction<T>(db: DatabaseSync, fn: () => T): T {
   if (db.isTransaction) return fn();
   db.exec("BEGIN IMMEDIATE");
@@ -2604,7 +2671,7 @@ export type WorkflowPublishWrite =
   | { ok: true; workflow: WorkflowDefinition; version: WorkflowVersion; idempotent: boolean }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "archived" | "validation" | "builtin";
+      reason: "not_found" | "revision_conflict" | "publish_request_id_required" | "archived" | "validation" | "builtin";
       current: WorkflowDefinition | null;
       diagnostics?: WorkflowDiagnostic[];
     };
@@ -2868,6 +2935,11 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
+  continuationStillMatches?: (deadline: number) => boolean;
+  /** Includes targets without a publication of their own when a sibling's probe yielded. */
+  expectedLatestRunId?: string | null;
+  /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
+  publicationComparison?: { runId: string; stillMatches: (deadline: number) => boolean };
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
@@ -3043,6 +3115,14 @@ function restampsEpisode(stamped: string | null, episodeKey: string | null): boo
  */
 const FORGIVEN_CHECK_RUN_PREFIX = "forgiven:";
 
+type SubmissionCapture = {
+  context: WorkflowJson;
+  evidence: WorkflowJson;
+  fingerprint?: string;
+  repositoryFingerprint?: string;
+  readiness?: WorkflowEvidenceReadinessResult | null;
+};
+
 export class WorkflowStore {
   /** Publish domain writes before commit, including nested writes in an outer transaction. */
   private mutate<T>(
@@ -3140,18 +3220,28 @@ export class WorkflowStore {
       || a.id.localeCompare(b.id));
   }
 
+  private resolvedBuiltins(): Persona[] {
+    const overrides = this.db.prepare("SELECT * FROM persona_builtin_overrides").all();
+    const byId = new Map(overrides.map(row => [row.persona_id, row]));
+    return this.builtins.map(persona => {
+      const override = byId.get(persona.id);
+      return { ...persona, repositoryAccess: override?.repository_access === "read" ? "read" : "none",
+        repositoryAccessRevision: Number(override?.revision ?? 0) };
+    });
+  }
+
   private withBuiltins(rows: Persona[]): Persona[] {
     return this.sortPersonas(
-      personasForDisplay(rows.concat(this.builtins)),
+      personasForDisplay(rows.concat(this.resolvedBuiltins())),
     );
   }
 
   private withAddressableBuiltins(rows: Persona[]): Persona[] {
-    return this.sortPersonas(rows.concat(this.builtins));
+    return this.sortPersonas(rows.concat(this.resolvedBuiltins()));
   }
 
   private builtinPersona(id: string): Persona | null {
-    return this.builtins.find((persona) => persona.id === id) ?? null;
+    return this.resolvedBuiltins().find((persona) => persona.id === id) ?? null;
   }
 
   private builtinPersonaNamed(normalizedName: string): Persona | null {
@@ -3260,9 +3350,9 @@ export class WorkflowStore {
       this.db
         .prepare(
           `INSERT INTO personas (
-             id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
+             id, name, normalized_name, description, guidance_md, runner_id, model_id, effort, repository_access,
              revision, archived_at, created_at, updated_at, import_provenance_json
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`,
         )
         .run(
           input.id,
@@ -3273,11 +3363,30 @@ export class WorkflowStore {
           input.runner,
           input.model,
           input.effort ?? null,
+          input.repositoryAccess ?? "none",
           input.createdAt,
           input.updatedAt,
           serializePersonaProvenance(input.provenance ?? null),
         );
       return { ok: true, persona: this.mustPersona(input.id) };
+    });
+  }
+
+  setPersonaRepositoryAccess(id: string, revision: number, access: NonNullable<Persona["repositoryAccess"]>, now: number): PersonaStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.getPersona(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.repositoryAccessRevision !== revision) return { ok: false, reason: "revision_conflict", current };
+      if (current.builtin) {
+        this.db.prepare(`INSERT INTO persona_builtin_overrides(persona_id, repository_access, revision)
+          VALUES (?, ?, ?) ON CONFLICT(persona_id) DO UPDATE SET
+          repository_access=excluded.repository_access, revision=excluded.revision`).run(id, access, revision + 1);
+      } else {
+        this.db.prepare(`UPDATE personas SET repository_access=?, revision=revision+1, updated_at=? WHERE id=?`)
+          .run(access, now, id);
+      }
+      return { ok: true, persona: this.getPersona(id)! };
     });
   }
 
@@ -3699,6 +3808,19 @@ export class WorkflowStore {
   // compare-and-swap write inside one transaction, and a store that refuses rather than
   // repairs.
 
+  getLocalInspectorComparison(submissionId: string): ReviewComparison | null {
+    const row = this.db.prepare("SELECT local_inspector_comparison_json AS comparison FROM workflow_submissions WHERE id = ?")
+      .get(submissionId) as { comparison: string | null } | undefined;
+    return row?.comparison ? JSON.parse(row.comparison) : null;
+  }
+
+  freezeLocalInspectorComparison(submissionId: string, comparison: ReviewComparison): ReviewComparison {
+    if (comparison.error) return comparison;
+    this.db.prepare("UPDATE workflow_submissions SET local_inspector_comparison_json = ? WHERE id = ? AND local_inspector_comparison_json IS NULL")
+      .run(JSON.stringify(comparison), submissionId);
+    return this.getLocalInspectorComparison(submissionId) ?? comparison;
+  }
+
   getCodeRabbitComparison(submissionId: string): CodeRabbitComparison | null {
     const row = this.db.prepare("SELECT coderabbit_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { coderabbit_json: string | null } | undefined;
     const comparison = row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
@@ -3770,10 +3892,13 @@ export class WorkflowStore {
       .get() as { n: number };
     const wasEmpty = Number(existing.n) === 0;
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, revision, created_at, updated_at)
-       VALUES (?, NULL, ?, ?, 1, ?, ?)`,
+      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, on_budget_exhausted, revision, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, ?, 1, ?, ?)`,
     );
-    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, defaultWorkflowCommandMaxRuns(slot), slot === "coderabbit" ? "block" : "skip", now, now);
+    for (const slot of WORKFLOW_CHECK_SLOTS) {
+      const defaults = emptyWorkflowCommandView(slot);
+      insert.run(slot, defaults.maxRuns, defaults.onUnavailable, defaults.onBudgetExhausted, now, now);
+    }
     return wasEmpty;
   }
 
@@ -3795,6 +3920,7 @@ export class WorkflowStore {
       maxRuns: number;
       timeoutMs?: number | null;
       onUnavailable?: "skip" | "block";
+      inspectorSeverity?: WorkflowCommandView["inspectorSeverity"];
       onBudgetExhausted?: "skip" | "block";
     },
     now = Date.now(),
@@ -3803,7 +3929,15 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
-    if (key === "coderabbit" ? next.defaultCommand !== null || next.overrides.some((r) => !CodeRabbitTuningSchema.safeParse(r.review).success || r.command.length) : next.overrides.some((r) => r.review || !r.command.length)) {
+    const validRecipe = key === "inspector"
+      ? next.defaultCommand === null && next.overrides.length === 0
+        && (next.inspectorSeverity === undefined || INSPECTOR_SEVERITIES.includes(next.inspectorSeverity))
+      : next.inspectorSeverity !== undefined ? false
+      : key === "coderabbit"
+      ? (next.defaultCommand === null || CodeRabbitCommandSchema.safeParse(next.defaultCommand).success)
+        && next.overrides.every((rule) => rule.command.length === 0 && CodeRabbitTuningSchema.safeParse(rule.review).success)
+      : next.overrides.every((rule) => !rule.review && rule.command.length > 0);
+    if (!validRecipe) {
       return { ok: false, reason: "invalid_recipe", current: this.getWorkflowCommand(key) };
     }
     // Refused here as well as at the route, because the store is the boundary a future
@@ -3825,7 +3959,7 @@ export class WorkflowStore {
         .prepare(
           `UPDATE workflow_commands
               SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
-                  on_budget_exhausted = ?, revision = revision + 1, updated_at = ?
+                  on_budget_exhausted = ?, inspector_severity = ?, revision = revision + 1, updated_at = ?
             WHERE slot = ? AND revision = ?`,
         )
         .run(
@@ -3840,8 +3974,9 @@ export class WorkflowStore {
             WORKFLOW_LIMITS.commandMaxRunsMax,
           ),
           next.timeoutMs === undefined ? current.timeoutMs : next.timeoutMs,
-          key === "coderabbit" ? "block" : next.onUnavailable ?? current.onUnavailable,
+          key === "coderabbit" || key === "inspector" ? "block" : next.onUnavailable ?? current.onUnavailable,
           key === "coderabbit" ? "skip" : next.onBudgetExhausted ?? current.onBudgetExhausted,
+          next.inspectorSeverity ?? current.inspectorSeverity ?? null,
           now,
           key,
           expectedRevision,
@@ -3963,9 +4098,9 @@ export class WorkflowStore {
     const personaContent = (value: Persona | SettingsBackupPersona): unknown => {
       const {
         id: _id, revision: _revision, createdAt: _createdAt, updatedAt: _updatedAt,
-        builtin: _builtin, ...content
+        builtin: _builtin, repositoryAccessRevision: _accessRevision, ...content
       } = value;
-      return content;
+      return { ...content, repositoryAccess: value.repositoryAccess ?? "none" };
     };
     const actionContent = (value: SessionAction | SettingsBackupSessionAction): unknown => {
       const {
@@ -3994,13 +4129,13 @@ export class WorkflowStore {
     const stagedPersonaIds = new Set(staged.personas.map((row) => row.id));
     const writePersona = this.db.prepare(
       `INSERT INTO personas (
-         id, name, normalized_name, description, guidance_md, runner_id, model_id, effort,
+         id, name, normalized_name, description, guidance_md, runner_id, model_id, effort, repository_access,
          revision, archived_at, created_at, updated_at, import_provenance_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, normalized_name=excluded.normalized_name,
          description=excluded.description, guidance_md=excluded.guidance_md,
-         runner_id=excluded.runner_id, model_id=excluded.model_id, effort=excluded.effort,
+         runner_id=excluded.runner_id, model_id=excluded.model_id, effort=excluded.effort, repository_access=excluded.repository_access,
          revision=excluded.revision, archived_at=excluded.archived_at,
          updated_at=excluded.updated_at, import_provenance_json=excluded.import_provenance_json`,
     );
@@ -4016,6 +4151,7 @@ export class WorkflowStore {
         row.runner,
         row.model,
         row.effort ?? null,
+        row.repositoryAccess ?? "none",
         revision,
         row.archivedAt,
         current?.createdAt ?? row.createdAt,
@@ -4095,7 +4231,7 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_commands
             SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
-                on_budget_exhausted = ?, revision = ?, updated_at = ?
+                on_budget_exhausted = ?, inspector_severity = ?, revision = ?, updated_at = ?
           WHERE slot = ?`,
       ).run(
         row.defaultCommand === null ? null : JSON.stringify(row.defaultCommand),
@@ -4103,6 +4239,7 @@ export class WorkflowStore {
         row.timeoutMs,
         row.onUnavailable,
         row.onBudgetExhausted,
+        row.inspectorSeverity ?? null,
         revision,
         now,
         row.slot,
@@ -4199,14 +4336,14 @@ export class WorkflowStore {
       `SELECT * FROM workflow_versions WHERE workflow_id = ? AND version = ?`,
     );
     const versionByDraft = this.db.prepare(
-      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ?`,
+      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ? AND source_snapshot_fingerprint = ?`,
     );
     const insertVersion = this.db.prepare(
       `INSERT INTO workflow_versions (
-         id, workflow_id, version, source_draft_revision, graph_json,
+         id, workflow_id, version, source_draft_revision, source_snapshot_fingerprint, graph_json,
          completion_policy_json, resumption_policy, evidence_readiness_policy,
          binding_defaults_json, published_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of staged.workflowVersions) {
       const byId = this.db.prepare(`SELECT * FROM workflow_versions WHERE id = ?`).get(row.id);
@@ -4217,7 +4354,7 @@ export class WorkflowStore {
         continue;
       }
       const sameNumber = versionByNumber.get(row.workflowId, row.version);
-      const sameDraft = versionByDraft.get(row.workflowId, row.sourceDraftRevision);
+      const sameDraft = versionByDraft.get(row.workflowId, row.sourceDraftRevision, workflowGraphFingerprint(row.graph));
       if (sameNumber || sameDraft) {
         throw new Error(`Immutable workflow version uniqueness changed during restore`);
       }
@@ -4226,6 +4363,7 @@ export class WorkflowStore {
         row.workflowId,
         row.version,
         row.sourceDraftRevision,
+        workflowGraphFingerprint(row.graph),
         JSON.stringify(row.graph),
         JSON.stringify(row.completionPolicy),
         row.resumptionPolicy,
@@ -4296,7 +4434,7 @@ export class WorkflowStore {
     this.seedWorkflowCommandsInTransaction(now);
     const changed: WorkflowCommandView[] = [];
     for (const slot of WORKFLOW_CHECK_SLOTS) {
-      if (slot === "coderabbit") continue;
+      if (slot === "coderabbit" || slot === "inspector") continue;
       const desired = legacy
         .filter((entry) => entry.slot === slot)
         .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
@@ -4762,7 +4900,11 @@ export class WorkflowStore {
     const rows = this.db.prepare(
       `SELECT id, workflow_id, version, source_draft_revision,
               completion_policy_json, resumption_policy, evidence_readiness_policy,
-              binding_defaults_json, published_at
+              binding_defaults_json, published_at,
+              (SELECT json_group_array(json_extract(n.value,'$.persona.sourcePersonaId'))
+               FROM json_each(CASE WHEN json_valid(graph_json) THEN graph_json END,'$.nodes') n
+               WHERE CASE WHEN n.type='object' THEN json_extract(n.value,'$.kind')='persona'
+                 AND json_extract(n.value,'$.persona.repositoryAccess')='read' END) AS read_personas
          FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
     ).all(workflowId) as unknown[];
     const out: WorkflowVersionMetadata[] = [];
@@ -4789,21 +4931,31 @@ export class WorkflowStore {
     expectedDraftRevision: number,
     versionId: string,
     publishedAt = Date.now(),
+    requestId?: string,
   ): WorkflowPublishWrite {
     return this.mutate(() => {
       // A built-in arrives published. Refusing here rather than at the route is what stops a
       // second caller from minting a row version against an id that owns no rows.
       const shipped = this.builtinWorkflowById(id);
       if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
-      const existing = this.db.prepare(
-        `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ?`,
-      ).get(id, expectedDraftRevision);
-      if (existing) {
-        const version = parseWorkflowVersionRow(existing);
-        return { ok: true, workflow: this.mustWorkflow(id), version, idempotent: true };
-      }
       const workflow = this.getWorkflowInTransaction(id);
       if (!workflow) return { ok: false, reason: "not_found", current: null };
+      if (requestId) {
+        const receipt = this.db.prepare(`SELECT v.* FROM workflow_publish_requests r
+          JOIN workflow_versions v ON v.id=r.version_id AND v.workflow_id=r.workflow_id
+          WHERE r.workflow_id=? AND r.request_id=?`).get(id, requestId);
+        if (receipt) {
+          const version = parseWorkflowVersionRow(receipt);
+          if (version.sourceDraftRevision !== expectedDraftRevision) return { ok: false, reason: "revision_conflict", current: workflow };
+          return { ok: true, workflow, version, idempotent: true };
+        }
+      } else {
+        // A legacy retry identifies only the draft revision. Resolve it before reading live grants.
+        const versions = this.db.prepare(`SELECT * FROM workflow_versions
+          WHERE workflow_id=? AND source_draft_revision=? LIMIT 2`).all(id, expectedDraftRevision);
+        if (versions.length === 1) return { ok: true, workflow, version: parseWorkflowVersionRow(versions[0]), idempotent: true };
+        if (versions.length > 1) return { ok: false, reason: "publish_request_id_required", current: workflow };
+      }
       if (workflow.archivedAt !== null) return { ok: false, reason: "archived", current: workflow };
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
@@ -4858,20 +5010,37 @@ export class WorkflowStore {
         }),
         edges: workflow.draft.edges,
       };
+      const fingerprint = workflowGraphFingerprint(graph);
+      const publishResult = (version: WorkflowVersion, idempotent: boolean) => {
+        if (requestId) this.db.prepare(`INSERT INTO workflow_publish_requests(workflow_id,request_id,version_id)
+          VALUES(?,?,?)`).run(id, requestId, version.id);
+        return { ok: true as const, workflow: this.mustWorkflow(id), version, idempotent };
+      };
+      const existing = this.db.prepare(
+        `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ? AND source_snapshot_fingerprint = ?`,
+      ).get(id, expectedDraftRevision, fingerprint);
+      if (existing) {
+        const version = parseWorkflowVersionRow(existing);
+        if (workflow.currentVersionId !== version.id) {
+          this.db.prepare("UPDATE workflow_definitions SET current_version_id=?, updated_at=? WHERE id=?").run(version.id, publishedAt, id);
+        }
+        return publishResult(version, true);
+      }
       const next = Number((this.db.prepare(
         `SELECT COALESCE(MAX(version), 0) AS value FROM workflow_versions WHERE workflow_id = ?`,
       ).get(id) as { value: number }).value) + 1;
       this.db.prepare(
         `INSERT INTO workflow_versions (
-           id, workflow_id, version, source_draft_revision, graph_json,
+           id, workflow_id, version, source_draft_revision, source_snapshot_fingerprint, graph_json,
            completion_policy_json, resumption_policy, evidence_readiness_policy,
            binding_defaults_json, published_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         versionId,
         id,
         next,
         expectedDraftRevision,
+        fingerprint,
         JSON.stringify(graph),
         JSON.stringify(workflow.completionPolicy),
         // Frozen from the draft at publish time, exactly like the completion policy: a later
@@ -4884,12 +5053,7 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_definitions SET current_version_id = ?, updated_at = ? WHERE id = ?`,
       ).run(versionId, publishedAt, id);
-      return {
-        ok: true,
-        workflow: this.mustWorkflow(id),
-        version: this.mustWorkflowVersion(id, next),
-        idempotent: false,
-      };
+      return publishResult(this.mustWorkflowVersion(id, next), false);
     }, (result) => result.ok ? { kind: "version", id: result.version.id, now: publishedAt } : null);
   }
 
@@ -5250,11 +5414,79 @@ export class WorkflowStore {
     return row ? parseWorkflowRunRow(row) : null;
   }
 
+  /** The action and its accepted continuation are durable even when the author finishes later. */
+  publicationHandoffTree(runId: string, generation: number): string | null {
+    return this.publicationHandoff(runId, generation)?.treeOid ?? null;
+  }
+
+  /**
+   * The accepted tree together with the continuation submission that captured it. A run that
+   * then finished through Inspector-only repair rounds proves its terminal content from this
+   * submission forward, so the caller needs the row, not only its tree.
+   */
+  publicationHandoff(runId: string, generation: number): { treeOid: string; submissionId: string } | null {
+    const row = this.db.prepare(
+      `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree,
+              child.id AS submission_id
+         FROM workflow_submissions child
+        JOIN workflow_node_attempts action ON action.id = child.continuation_node_attempt_id
+        JOIN workflow_runs r ON r.id = child.run_id
+        WHERE r.id = ? AND ${publicationHandoffDueSql} AND action.submission_id = child.parent_submission_id
+          AND action.state = 'completed'
+          AND json_extract(action.session_action_snapshot_json, '$.completion.kind') = 'pull_request'
+          AND json_extract(action.output_json, '$.expectation.kind') = 'pull_request'
+          AND json_extract(action.output_json, '$.continuationSubmissionId') = child.id
+        ORDER BY child.round DESC, child.segment DESC LIMIT 1`,
+    ).get(runId, generation);
+    return typeof row?.tree === "string" && typeof row.submission_id === "string"
+      ? { treeOid: row.tree, submissionId: row.submission_id } : null;
+  }
+
   latestRunForBinding(bindingId: string): WorkflowRun | null {
     const row = this.db.prepare(
       `SELECT * FROM workflow_runs WHERE binding_id = ? ORDER BY started_at DESC, id DESC LIMIT 1`,
     ).get(bindingId);
     return row ? parseWorkflowRunRow(row) : null;
+  }
+
+  /**
+   * Runs whose stored gate names this pull request key, newest first.
+   *
+   * A text prefilter only: the caller decodes each gate through the lifecycle decoder and keeps
+   * the runs whose gate actually pinned the key. Terminal runs are included on purpose - a
+   * completed run still says which pull request it reviewed.
+   */
+  listRunsNamingGatePr(prKey: string): WorkflowRun[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_runs
+        WHERE gate_state_json IS NOT NULL AND instr(gate_state_json, ?) > 0
+        ORDER BY started_at DESC, id DESC`,
+    ).all(JSON.stringify(prKey)) as unknown[];
+    return rows.flatMap((row) => {
+      try { return [parseWorkflowRunRow(row)]; } catch (error) { diagnose(error); return []; }
+    });
+  }
+
+  /**
+   * Runs whose own Pull Request action recorded this pull request as the one it opened, newest
+   * first. The expectation is written to the action attempt's output while it waits to capture
+   * its continuation and kept after it completes, so it names the pull request before any gate
+   * can pin it.
+   */
+  listRunsWithPullRequestAction(prKey: string): WorkflowRun[] {
+    const rows = this.db.prepare(
+      `SELECT DISTINCT r.* FROM workflow_runs r
+         JOIN workflow_submissions s ON s.run_id = r.id
+         JOIN workflow_node_attempts a ON a.submission_id = s.id
+        WHERE a.output_json IS NOT NULL
+          AND json_valid(a.output_json)
+          AND json_extract(a.output_json, '$.expectation.kind') = 'pull_request'
+          AND json_extract(a.output_json, '$.expectation.pullRequestKey') = ?
+        ORDER BY r.started_at DESC, r.id DESC`,
+    ).all(prKey) as unknown[];
+    return rows.flatMap((row) => {
+      try { return [parseWorkflowRunRow(row)]; } catch (error) { diagnose(error); return []; }
+    });
   }
 
   listRuns(): WorkflowRun[] {
@@ -5486,6 +5718,7 @@ export class WorkflowStore {
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
           recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
+          recoverableSessionAction: this.recoverableLostSessionAction(run) !== null,
         }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
@@ -5551,6 +5784,7 @@ export class WorkflowStore {
         reviewPosture: gateState?.reviewPosture ?? null,
         uncertainDeliveryCount: Number(row.uncertain_delivery_count ?? 0),
         refusedDeliveryCount: Number(row.refused_delivery_count ?? 0),
+        startedAt: run.startedAt,
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -5567,6 +5801,7 @@ export class WorkflowStore {
     episodeKey: string | null = null,
     coverage: readonly WorkflowStagedEvidenceCoverageWrite[] = [],
     withdrawClientCriterionIds: readonly string[] = [],
+    witness?: { contract: string; root: string; checkout: string },
   ): WorkflowStagedEvidenceList {
     const validatedItems = items.map((item) => ({
       ...item,
@@ -5574,6 +5809,19 @@ export class WorkflowStore {
         ? WorkflowCommandExitCodeSchema.parse(item.commandExitCode)
         : null,
     }));
+    const finishRegistration = (): WorkflowStagedEvidenceList => {
+      const tray = this.listWorkflowEvidence(noteKey);
+      if (witness) {
+        const supplied = new Set(items.map(item => item.clientItemId));
+        const claims = new Set(coverage.map(claim => claim.clientCriterionId));
+        if ([...tray.images, ...tray.artifacts].every(item => supplied.has(item.clientItemId)) &&
+            tray.coverage?.every(claim => claims.has(claim.clientCriterionId))) {
+          this.db.prepare(`UPDATE workflow_evidence_owners SET continuation_packet = ?, continuation_checkout = ?
+            WHERE note_key = ?`).run(packetDigest(witness.contract, witness.root, tray), witness.checkout, noteKey);
+        }
+      }
+      return tray;
+    };
     return transaction(this.db, () => {
       this.db.prepare(
         `INSERT OR IGNORE INTO workflow_evidence_owners (
@@ -5826,7 +6074,7 @@ export class WorkflowStore {
         row.episode_key = episodeKey ?? row.episode_key;
       }
       if (changedItems.length === 0 && changedCoverage.length === 0 && changedRetirements.size === 0) {
-        return this.listWorkflowEvidence(noteKey);
+        return finishRegistration();
       }
 
       const currentStaged = existingRows.filter((row) => row.state === "staged");
@@ -6099,7 +6347,7 @@ export class WorkflowStore {
           now,
         );
       }
-      return this.listWorkflowEvidence(noteKey);
+      return finishRegistration();
     });
   }
 
@@ -6176,6 +6424,21 @@ export class WorkflowStore {
         updatedAt: row.updated_at,
       })),
     };
+  }
+
+  /** Inspect the original staging ownership, including claims. Reservation alone does not
+   * advance the generation and public tray metadata does not expose the issue-time roots.
+   */
+  continuationReceipt(noteKey: string, source: string, root: string): { packet: string; checkout: string } | null {
+    const receipt = this.db.prepare(`SELECT continuation_packet AS packet, continuation_checkout AS checkout
+      FROM workflow_evidence_owners WHERE note_key = ? AND continuation_packet IS NOT NULL
+      AND continuation_checkout IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM workflow_evidence_staging WHERE note_key = ?
+        AND (state != 'staged' OR episode_key IS NOT ? OR source_root != ? OR repository_scope != 'repo-01'))
+      AND NOT EXISTS (SELECT 1 FROM workflow_evidence_coverage_staging WHERE note_key = ?
+        AND (state != 'staged' OR is_current != 1 OR episode_key IS NOT ? OR source_root != ? OR repository_scope != 'repo-01'))`
+    ).get(noteKey, noteKey, source, root, noteKey, source, root);
+    return receipt as { packet: string; checkout: string } | undefined ?? null;
   }
 
   /** Latest material staged-set change that applies to this one repository checkout. */
@@ -6608,14 +6871,12 @@ export class WorkflowStore {
       artifactBytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
         - ownArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0),
     };
-    const held = new Set([
-      ...(this.db.prepare(
-        `SELECT staging_id FROM workflow_submission_images WHERE submission_id = ?
-         UNION
-         SELECT staging_id FROM workflow_submission_text_artifacts WHERE submission_id = ?`,
-      ).all(input.submissionId, input.submissionId) as Array<{ staging_id: string }>)
-        .map((row) => row.staging_id),
-    ]);
+    const held = new Set((this.db.prepare(
+      `SELECT staging_id FROM workflow_submission_images WHERE submission_id = ?
+       UNION
+       SELECT staging_id FROM workflow_submission_text_artifacts WHERE submission_id = ?`,
+    ).all(input.submissionId, input.submissionId) as Array<{ staging_id: string }>)
+      .map((row) => row.staging_id));
     const nextOrdinal = Number((this.db.prepare(
       `SELECT COALESCE(MAX(ordinal), -1) + 1 AS next FROM (
          SELECT ordinal FROM workflow_submission_images WHERE submission_id = ?
@@ -7179,12 +7440,51 @@ export class WorkflowStore {
     });
   }
 
+  /** Validate every probed publication under the same write lock that spends the shared cycle. */
+  claimForemanCompletions(inputs: ForemanCompletionStoreInput[], remainingMs = PUBLICATION_REVISION_BUDGET_MS): ForemanCompletionStoreResult[] {
+    return transaction(this.db, () => {
+      const reservations: ForemanCompletionStoreResult[] = [];
+      const deadline = performance.now() + remainingMs;
+      const matches = (input: ForemanCompletionStoreInput) => performance.now() < deadline
+        && input.publicationComparison?.stillMatches(deadline) === true && performance.now() < deadline;
+      for (const input of inputs) {
+        if (input.expectedLatestRunId !== undefined
+          && (this.latestRunForBinding(input.binding.id)?.id ?? null) !== input.expectedLatestRunId) {
+          throw new Error("Workflow publication changed during completion comparison");
+        }
+      }
+      // Collect a common snapshot before spending any pin. Both passes share what remains
+      // of the original budget. A slow checkout cannot start another full-budget Git read.
+      const eligible = new Set(inputs.filter(matches));
+      if (inputs.length > 1) {
+        for (const input of [...eligible].reverse()) {
+          if (matches(input)) continue;
+          if (performance.now() < deadline) throw new Error("Workflow checkout changed during shared completion claim");
+          eligible.delete(input);
+        }
+      }
+      for (const input of inputs) {
+        const stored = this.claimForemanCompletion(input, eligible.has(input), deadline);
+        if (!stored.result.claimed) {
+          if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
+          return [stored];
+        }
+        reservations.push(stored);
+      }
+      return reservations;
+    });
+  }
+
   /**
    * Claim one Foreman proof and retire its matching once-only guard atomically.
    * The manager selects the already-bound workflow; this transaction never creates a binding.
    * A worker's expected plan ownership can only reject that selection, never replace it.
    */
-  claimForemanCompletion(input: ForemanCompletionStoreInput): ForemanCompletionStoreResult {
+  claimForemanCompletion(
+    input: ForemanCompletionStoreInput,
+    reusePublication?: boolean,
+    deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS,
+  ): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
       const binding = input.binding;
       const noteKey = binding.noteKey;
@@ -7241,6 +7541,9 @@ export class WorkflowStore {
         };
       }
 
+      if (input.continuationStillMatches && !input.continuationStillMatches(deadline)) {
+        throw new Error("Continuation evidence changed before handoff");
+      }
       if (input.completionKind === "prompted" && !expectedIntent) {
         throw new Error("Foreman prompted completion has no intent guard");
       }
@@ -7272,7 +7575,24 @@ export class WorkflowStore {
       let created = false;
       let previousFingerprint: string | undefined;
 
-      if (!run) {
+      const comparison = input.publicationComparison;
+      if (comparison) {
+        const latest = this.latestRunForBinding(binding.id);
+        if (run || latest?.id !== comparison.runId || latest.status !== "completed") {
+          throw new Error("Workflow publication changed during completion comparison");
+        }
+      }
+      if (comparison && (reusePublication ?? comparison.stillMatches(performance.now() + PUBLICATION_REVISION_BUDGET_MS))) {
+        // One follow-through per repository. Clearing the pin and consuming the shared
+        // generation commit together. An identical retry is answered by duplicateEvent.
+        const spent = this.db.prepare(
+          `UPDATE workflow_runs SET publication_handoff_generation = NULL
+            WHERE id = ? AND ${publicationHandoffDueSql}`,
+        ).run(comparison.runId, input.expectedWorkCycle!.generation);
+        if (!spent.changes) throw new Error("Workflow publication handoff is no longer current");
+        run = this.mustRun(comparison.runId);
+        state = "already_claimed";
+      } else if (!run) {
         const provenance = intentProvenanceJson(input.runId, input.intent, input.now);
         this.db.prepare(
           `INSERT INTO workflow_runs (
@@ -7393,14 +7713,7 @@ export class WorkflowStore {
 
   updateSubmissionCapture(
     id: string,
-    input: {
-      context: WorkflowJson;
-      evidence: WorkflowJson;
-      fingerprint?: string;
-      repositoryFingerprint?: string;
-      readiness?: WorkflowEvidenceReadinessResult | null;
-      status?: WorkflowSubmission["status"];
-    },
+    input: SubmissionCapture & { status?: WorkflowSubmission["status"] },
     now = Date.now(),
   ): WorkflowSubmission {
     const current = this.mustSubmission(id);
@@ -7610,9 +7923,10 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_runs
             SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
+                publication_handoff_generation = CASE WHEN ? THEN ${completionGenerationSql} END,
                 completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
           WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-      ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
+      ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, status === "completed" ? 1 : 0, terminal ? 1 : 0, now, id);
       return this.mustRun(id);
 
     }, () => ({ kind: "run", id, now }));
@@ -7919,6 +8233,7 @@ export class WorkflowStore {
       `UPDATE workflow_runs
           SET status = ?, current_phase = ?, inspector_pr_key = ?,
               inspector_head_sha = ?, gate_state_json = ?, updated_at = ?,
+              publication_handoff_generation = CASE WHEN ? THEN ${completionGenerationSql} END,
               completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
         WHERE id = ? AND gate_state_json = ?
           AND status NOT IN ('completed', 'cancelled', 'failed')`,
@@ -7929,6 +8244,7 @@ export class WorkflowStore {
       input.state.targetHeadSha,
       stateJson,
       input.now,
+      completed ? 1 : 0,
       completed ? 1 : 0,
       input.now,
       input.runId,
@@ -7975,6 +8291,131 @@ export class WorkflowStore {
     });
   }
 
+  /** Explicit recovery for the first bypass bought by a legacy cached-head grant. */
+  recoverStaleInspectorGrant(
+    runId: string, requestId: string, input: RecoverStaleInspectorGrant, now: number,
+    activity?: InspectorBranchActivity,
+  ): { run: WorkflowRun; idempotent: boolean } | { verifyPrUrl: string } | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(runId);
+      if (!run) return null;
+      const events = this.listEvents(runId);
+      const recovered = events.find((event) => event.kind === "inspector_stale_grant_recovered"
+        && this.eventPayload(event).requestId === requestId);
+      if (recovered) {
+        const payload = this.eventPayload(recovered);
+        return Object.entries(input).every(([key, value]) => payload[key] === value)
+          ? { run, idempotent: true } : null;
+      }
+      const gate = inspectorGateState(run);
+      if (run.status !== "blocked" || run.currentPhase !== "inspector_head_mismatch"
+          || gate?.waitReason !== "head_mismatch" || !gate.prKey || !gate.failedHeadSha
+          || gate.targetHeadSha !== input.staleHeadSha || gate.failedHeadSha === input.staleHeadSha
+          || gate.findingFingerprints.length === 0) return null;
+
+      const policy = this.getWorkflowVersionById(run.workflowVersionId)?.completionPolicy;
+      const submissions = this.listSubmissions(runId);
+      const latest = submissions.at(-1);
+      const prior = submissions.at(-2);
+      if (!workflowInspectorOnlyRepair(policy, gate)
+          || latest?.id !== input.submissionId || latest.mode !== "inspector_only"
+          || latest.status !== "completed" || latest.prHeadSha !== input.staleHeadSha
+          || latest.round + 1 > run.maxRepairRounds || prior?.mode !== "inspector_only"
+          || prior.round !== latest.round - 1 || prior.prHeadSha !== gate.failedHeadSha
+          || submissions.some((sub) => sub.prHeadSha === input.currentHeadSha)) return null;
+      const context = latest.context;
+      if (!context || typeof context !== "object" || Array.isArray(context)
+          || context.failedHeadSha !== gate.failedHeadSha || context.newHeadSha !== latest.prHeadSha
+          || JSON.stringify(context.priorFindingFingerprints) !== JSON.stringify(gate.findingFingerprints)) return null;
+
+      const grant = events.findLast((event) => event.kind === "repair_rounds_granted");
+      const bypass = events.findLast((event) => event.kind === "inspector_persona_bypass_used");
+      if (!grant || !bypass || bypass.id <= grant.id) return null;
+      const receipt = this.eventPayload(grant);
+      const selection = this.eventPayload(bypass);
+      if (receipt.requestId !== input.grantRequestId || receipt.currentObservationRequired !== undefined
+          || receipt.resumed !== "waiting_for_new_head" || receipt.round !== prior.round
+          || receipt.from !== prior.round - 1 || receipt.to !== run.maxRepairRounds
+          || selection.submissionId !== latest.id || selection.failedHeadSha !== gate.failedHeadSha
+          || selection.newHeadSha !== latest.prHeadSha) return null;
+      const ledger = getInspectorPr(gate.prKey, this.db);
+      if (ledger?.state !== "open" || ledger.observedState !== "OPEN"
+          || ledger.observedHeadSha !== input.currentHeadSha || ledger.observedAt === null
+          || ledger.observedAt <= latest.createdAt || ledger.observedAt < (gate.lastObservedAt ?? 0)
+          || (ledger.observedAt === gate.lastObservedAt && ledger.observedHeadSha !== gate.observedHeadSha)) return null;
+
+      // A push after a correctly pinned legacy grant produces the very same mismatch.
+      // Require a retained observation of the replacement while the budget was blocked.
+      // Inspector's reviewed head/time pair survives later polls until the next review.
+      const limit = events.findLast((event) => event.kind === "inspector_round_limit" && event.id < grant.id);
+      if (!limit || this.eventPayload(limit).maxRepairRounds !== receipt.from
+          || limit.timestamp < prior.createdAt || grant.timestamp > latest.createdAt) return null;
+      const inSpentWindow = (at: number | null): at is number =>
+        at !== null && at > limit.timestamp && at < grant.timestamp;
+      let witness: { source: "gate_observation" | "inspector_review"; observedAt: number };
+      if (gate.observedHeadSha === input.currentHeadSha && inSpentWindow(gate.lastObservedAt)) {
+        witness = { source: "gate_observation", observedAt: gate.lastObservedAt };
+      } else if (ledger.headSha === input.currentHeadSha && inSpentWindow(ledger.lastReviewedAt)) {
+        witness = { source: "inspector_review", observedAt: ledger.lastReviewedAt };
+      } else return null;
+
+      // Inspector dates its poll at start. A read started before the grant can
+      // return afterwards. The adoption row's CodeRabbit scan is dated after
+      // fetchPr finishes; a retained delivery claim also postdates that scan.
+      const scan = readCodeRabbit(gate.prKey, this.db);
+      if (!scan) return null;
+      const claim = scan.receipts.find(row => row.headSha === input.currentHeadSha && inSpentWindow(row.at));
+      const completedObservation = scan.state === "OPEN" && !scan.error && scan.headSha === input.currentHeadSha && inSpentWindow(scan.observedAt)
+        ? { source: "pr_scan", observationId: scan.observationId, at: scan.observedAt }
+        : claim ? { source: "delivery_claim", observationId: claim.observationId, at: claim.at } : null;
+      if (!completedObservation) return null;
+
+      // Local polls overwrite one another. Even both witnesses for B are compatible
+      // with a return to A at grant time and a later push back to B. Ask outside the
+      // transaction, then repeat all eligibility checks with the provider's ref history.
+      if (!activity) return { verifyPrUrl: ledger.url };
+      // The verified ref history ties this unique arrival at the head to our
+      // pre-grant witness. The legacy timestamp margin is only an additional veto.
+      if (activity.prKey !== gate.prKey || activity.headSha !== input.currentHeadSha
+          || (ledger.headRefName && activity.ref !== `refs/heads/${ledger.headRefName}`)
+          || !Number.isFinite(activity.changedAt)
+          || activity.changedAt + 1_000 > grant.timestamp) return null;
+
+      const updated = this.updateInspectorGate({
+        runId, expectedState: gate, status: "waiting_for_new_head", phase: "inspector_findings",
+        state: {
+          ...gate, targetHeadSha: gate.failedHeadSha, waitReason: "findings",
+          lastObservedAt: ledger.observedAt, observedHeadSha: input.currentHeadSha,
+          grantObservation: { minimumObservedAt: ledger.observedAt, requestedAt: now, verifiedHeadSha: input.currentHeadSha },
+        },
+        now,
+      });
+      if (!updated) return null;
+      this.appendEvent(runId, "inspector_stale_grant_recovered", {
+        ...input, requestId, prKey: gate.prKey, observedAt: ledger.observedAt,
+        branchActivity: { ...activity }, completedObservation, limitEventId: limit.id, grantEventId: grant.id, bypassEventId: bypass.id,
+        failedHeadSha: gate.failedHeadSha, preGrantWitness: { ...witness, headSha: input.currentHeadSha },
+      }, now);
+      return { run: updated, idempotent: false };
+    });
+  }
+
+  inspectorRecoveryReceipt(runId: string, submissionId: string, head: string): {
+    requestId: string; branchActivity: WorkflowJson;
+  } | null {
+    const event = this.listEvents(runId).findLast(row => row.kind === "inspector_stale_grant_recovered");
+    if (!event) return null;
+    const receipt = this.eventPayload(event);
+    if (receipt.submissionId !== submissionId || receipt.currentHeadSha !== head || !receipt.completedObservation
+        || typeof receipt.requestId !== "string" || !receipt.branchActivity) return null;
+    return { requestId: receipt.requestId, branchActivity: receipt.branchActivity };
+  }
+
+  private eventPayload(event: WorkflowEvent): Record<string, WorkflowJson> {
+    const payload = event.payload;
+    return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  }
+
   createInspectorOnlySubmission(input: {
     id: string;
     runId: string;
@@ -8004,6 +8445,8 @@ export class WorkflowStore {
       ) return null;
       const currentGate = inspectorGateState(run);
       if (!currentGate || JSON.stringify(currentGate) !== JSON.stringify(input.expectedState)) return null;
+      const binding = this.getBinding(run.bindingId);
+      if (!binding || transferForNote(binding.noteKey, this.db)) return null;
       this.insertSubmissionInTransaction({
         id: input.id,
         runId: run.id,
@@ -8060,6 +8503,219 @@ export class WorkflowStore {
         submission: this.mustSubmission(input.id),
         idempotent: false,
       };
+    });
+  }
+
+  /** A recovery child reviews the parent's frozen checkout even if the workspace has moved. */
+  inheritRepositoryClaim(submissionId: string): string {
+    return transaction(this.db, () => {
+      const child = this.mustSubmission(submissionId);
+      if (child.status !== "capturing" || child.refinementReason !== "evidence_recovery")
+        throw new Error("Repository claim inheritance requires a capturing recovery child");
+      const row = this.db.prepare(`INSERT INTO workflow_repository_snapshot_claims(submission_id,digest,state,created_at)
+        SELECT ?, c.digest, 'provisional', ? FROM workflow_repository_snapshot_claims c
+        JOIN workflow_repository_artifacts a ON c.digest=a.digest AND a.state='ready'
+        WHERE c.submission_id=? AND c.state IN ('active','provisional')
+        ON CONFLICT(submission_id) DO UPDATE SET state='provisional', released_at=NULL, activated_at=NULL
+        WHERE workflow_repository_snapshot_claims.digest=excluded.digest
+          AND workflow_repository_snapshot_claims.state IN ('provisional','released')
+        RETURNING digest`).get(submissionId, Date.now(), child.parentSubmissionId);
+      if (!row) throw new Error("The original submission's repository artifact is unavailable");
+      return String(row.digest);
+    });
+  }
+
+  pendingRepositoryCancellations(runId: string, nodeId: string) {
+    return this.transact(db => db.prepare(`SELECT w.id, w.cancellation_generation AS generation
+      FROM workflow_repository_workloads w JOIN workflow_node_attempts n ON n.id=w.attempt_id
+      JOIN workflow_llm_calls l ON l.id=w.id WHERE w.state IN ('cancellation_pending','interrupted') AND l.run_id=? AND n.node_id=?`)
+      .all(runId, nodeId)) as { id: string; generation: number }[];
+  }
+
+  terminalRunRepositoryCancellations() {
+    return this.db.prepare(`SELECT w.id, w.cancellation_generation AS generation
+      FROM workflow_repository_workloads w JOIN workflow_llm_calls l ON l.id=w.id
+      JOIN workflow_runs r ON r.id=l.run_id
+      WHERE r.status IN ('completed','cancelled','failed') AND w.state IN ('cancellation_pending','interrupted')`)
+      .all() as { id: string; generation: number }[];
+  }
+
+  repositoryLocalOwner(id: string) {
+    return this.db.prepare("SELECT * FROM workflow_repository_local_owners WHERE workload_id=?").get(id);
+  }
+
+  confirmRepositoryCancellation(id: string, generation: number) {
+    this.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+      WHERE id=? AND state IN ('cancellation_pending','interrupted') AND cancellation_generation=?`).run(id, generation));
+  }
+
+  confirmLocalRepositoryCleanup(id: string) {
+    this.transact(db => {
+      if (db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+        WHERE id=? AND state IN ('cancellation_pending','interrupted')`).run(id).changes)
+        db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+    });
+  }
+
+  currentRepositoryWorkload(id: string) {
+    return this.transact(db => db.prepare(`SELECT w.id AS workloadId, w.attempt_id AS attemptId,
+      s.id AS submissionId, s.run_id AS runId, w.digest, a.locator, l.purpose FROM workflow_repository_workloads w
+      JOIN workflow_llm_calls l ON l.id=w.id
+      JOIN workflow_node_attempts n ON n.id=w.attempt_id AND n.state='running'
+      JOIN workflow_submissions s ON s.id=n.submission_id AND s.status='running'
+      JOIN workflow_runs r ON r.id=s.run_id AND r.status='running'
+      JOIN workflow_repository_snapshot_claims c ON c.submission_id=s.id AND c.digest=w.digest AND c.state='active'
+      JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
+      WHERE w.id=? AND w.state='running'`).get(id)) as
+      { workloadId: string; attemptId: string; submissionId: string; runId: string; digest: string; locator: string; purpose: string } | undefined;
+  }
+
+  interruptRepositoryWorkloads() {
+    return this.transact(db => {
+      db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+        cancellation_generation=cancellation_generation+1 WHERE state='running'`).run();
+      return db.prepare(`SELECT id FROM workflow_repository_workloads JOIN workflow_repository_local_owners
+        ON workload_id=id WHERE state='cancellation_pending'`).all();
+    });
+  }
+
+  startRepositoryWorkload(request: PersonaWorkloadRequest, local: boolean) {
+    this.transact(db => {
+      db.prepare(`INSERT INTO workflow_repository_workloads (id,attempt_id,digest,state,deadline)
+        VALUES(?,?,?,'running',?)`).run(request.workloadId, request.attemptId, request.artifact.digest, request.deadline);
+      if (local) db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(request.workloadId);
+    });
+  }
+
+  markRepositoryCancellationPending(id: string, generation: number) {
+    this.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+      cancellation_generation=?, error_code='cancellation_unconfirmed' WHERE id=? AND state='running'`).run(generation, id));
+  }
+
+  repositoryEventHash(id: string, sequence: number) {
+    return this.db.prepare("SELECT hash FROM workflow_repository_events WHERE workload_id=? AND sequence=?").get(id, sequence)?.hash;
+  }
+
+  recordRepositoryEvent(request: PersonaWorkloadRequest, event: PersonaWorkloadEvent, hash: string, authorized: () => boolean) {
+    const id = request.workloadId;
+    this.transact(db => {
+      if (!authorized()) throw new Error("Repository workload ownership expired");
+      // A provider-return witness may already hold this sequence. The same event is recorded.
+      const prior = db.prepare("SELECT hash FROM workflow_repository_events WHERE workload_id=? AND sequence=?")
+        .get(id, event.sequence)?.hash;
+      if (prior === hash) return;
+      if (prior !== undefined) throw new Error("Conflicting repository event");
+      db.prepare(`INSERT INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
+        VALUES(?,?,?,?,?,?)`).run(id, event.sequence, event.eventId, hash, event.type, Date.now());
+      if (event.type === "terminal" && event.result.usage) {
+        db.prepare("UPDATE workflow_repository_workloads SET usage_json=? WHERE id=?").run(JSON.stringify(event.result.usage), id);
+        const cost = event.result.usage.total_cost_usd;
+        if (cost !== undefined && cost >= 0) db.prepare("UPDATE workflow_llm_calls SET cost_usd=? WHERE id=?").run(cost, id);
+      }
+      if (event.type === "repository_query") {
+        const audit = event.audit;
+        if (audit.workloadId !== id || audit.attemptId !== request.attemptId || audit.snapshotDigest !== request.artifact.digest)
+          throw new Error("Repository query ownership mismatch");
+        db.prepare(`INSERT INTO workflow_repository_queries(workload_id,operation_id,audit_json) VALUES(?,?,?)`)
+          .run(id, audit.operationId, JSON.stringify(audit));
+        const insert = db.prepare("INSERT INTO workflow_repository_handles(id,operation_id,audit_index) VALUES(?,?,?)");
+        for (const [index, handle] of audit.handles.entries()) insert.run(handle.evidenceHandleId, audit.operationId, index);
+      }
+    });
+  }
+
+  /**
+   * Keep the provider-return witness of a workload: written by an in-process executor's sink in
+   * the tick its provider returns, or recovered from replay when the supervisor stopped reading
+   * before recording that return in order (a shutdown, a rejected event or an expired grant).
+   *
+   * Unlike `recordRepositoryEvent` it skips the live-ownership check, because the witness only
+   * spends the attempt's execution and grants nothing. The event's workload and attempt must be
+   * the request's, it binds to the workload row the supervisor started for that attempt, and an
+   * already recorded sequence is left as it is.
+   */
+  recordRepositoryReturn(request: PersonaWorkloadRequest, event: Extract<PersonaWorkloadEvent, { type: "persona_returned" }>, hash: string) {
+    // The event must name this request's workload and attempt, exactly as a streamed event must:
+    // a witness can never charge a different attempt than the one that dispatched it.
+    if (event.type !== "persona_returned" || event.workloadId !== request.workloadId || event.attemptId !== request.attemptId)
+      throw new Error("Repository return identity mismatch");
+    this.transact(db => {
+      db.prepare(`INSERT OR IGNORE INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
+        SELECT ?,?,?,?,'persona_returned',? WHERE EXISTS (
+          SELECT 1 FROM workflow_repository_workloads WHERE id=? AND attempt_id=?
+        )`).run(request.workloadId, event.sequence, event.eventId, hash, Date.now(), request.workloadId, request.attemptId);
+    });
+  }
+
+  verifyRepositoryCitations(id: string, refs: EvidenceRef[]) {
+    this.transact(db => {
+      const find = db.prepare(`SELECT 1 FROM workflow_repository_queries q
+        JOIN workflow_repository_handles h ON h.operation_id=q.operation_id
+        WHERE q.workload_id=? AND q.operation_id=? AND h.id=?`);
+      for (const ref of refs) if (ref.kind === "repository" && !find.get(id, ref.operationId, ref.evidenceHandleId))
+        throw new Error("Repository citation does not belong to this review");
+    });
+  }
+
+  finishRepositoryWorkload(id: string, generation: number, errorCode: string, local: boolean, authorizeVerdict: () => boolean) {
+    return this.transact(db => {
+      // Cleanup can yield. Check ownership and commit the verdict in one transaction.
+      const completed = authorizeVerdict();
+      const changed = db.prepare(`UPDATE workflow_repository_workloads SET state=?, error_code=?, cancellation_generation=?
+        WHERE id=? AND state IN ('running','cancellation_pending')`).run(completed ? "completed" : "failed", completed ? null : errorCode, completed ? 0 : generation, id);
+      if (local) db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+      return completed && changed.changes === 1;
+    });
+  }
+
+  repositoryQueries(runId: string, after: number, limit: number) {
+    if (!this.getRun(runId)) return null;
+    const rows = this.db.prepare(`SELECT q.id, q.audit_json FROM workflow_repository_queries q
+      JOIN workflow_llm_calls l ON l.id=q.workload_id WHERE l.run_id=? AND q.id>?
+      ORDER BY q.id LIMIT ?`).all(runId, after, Math.min(limit, 20) + 1);
+    const items = rows.slice(0, limit).map(row => ({ id: Number(row.id), audit: RepositoryQueryAuditMetadataSchema.parse(JSON.parse(String(row.audit_json))) }));
+    return { items, nextAfter: rows.length > limit ? items.at(-1)?.id : null };
+  }
+
+  hasActiveRepositoryClaim(submissionId: string) {
+    return Boolean(this.db.prepare(`SELECT 1 FROM workflow_repository_snapshot_claims c
+      JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
+      WHERE c.submission_id=? AND c.state='active'`).get(submissionId));
+  }
+
+  private activateReadySubmissionClaim(submission: WorkflowSubmission, now: number): void {
+    if (submission.status === "running") {
+      if (!this.hasActiveRepositoryClaim(submission.id)) throw new Error("The submitted repository claim is unavailable");
+      return;
+    }
+    const claim = this.db.prepare("SELECT digest FROM workflow_repository_snapshot_claims WHERE submission_id=? AND state='provisional'").get(submission.id);
+    if (!claim || !submission.repositoryFingerprint) throw new Error("The submitted repository claim is unavailable");
+    // Both callers hold the readiness decision transaction. Re-enter the capture
+    // transition with its already frozen inputs before activating the waiting claim.
+    if (submission.status === "waiting_for_evidence_readiness") this.setSubmissionState(submission.id, "capturing", now);
+    this.commitRepositoryCaptureActivation({
+      submissionId: submission.id, digest: String(claim.digest),
+      capture: {
+        context: submission.context, evidence: submission.evidence, fingerprint: submission.evidenceFingerprint,
+        repositoryFingerprint: submission.repositoryFingerprint, readiness: submission.readiness ?? null,
+      },
+    }, now);
+  }
+
+  commitRepositoryCaptureActivation(
+    input: { submissionId: string; digest: string; capture: Required<SubmissionCapture> },
+    now = Date.now(),
+  ): WorkflowSubmission {
+    return transaction(this.db, () => {
+      if (this.mustSubmission(input.submissionId).status !== "capturing")
+        throw new Error("Repository submission activation conflict");
+      const activated = this.db.prepare(`
+        UPDATE workflow_repository_snapshot_claims SET state='active', activated_at=?
+        WHERE submission_id=? AND digest=? AND state='provisional'
+          AND EXISTS (SELECT 1 FROM workflow_repository_artifacts WHERE digest=? AND state='ready')
+      `).run(now, input.submissionId, input.digest, input.digest);
+      if (activated.changes !== 1) throw new Error("Repository claim activation conflict");
+      return this.updateSubmissionCapture(input.submissionId, { ...input.capture, status: "running" }, now);
     });
   }
 
@@ -8534,6 +9190,92 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * The action attempt a `session_lost` block can be re-checked from, or null.
+   *
+   * Only the attempt the run is CURRENTLY blocked on, only when it is the newest attempt of its
+   * node, and only while the binding is still active and names a session. A lost session is a
+   * fact about the pane, not about the work: once the same conversation is back, observing the
+   * action again is the honest next step, and it spends no repair round. Shared by the run's
+   * recovery projection and by the runtime that performs the re-check, so the button and the
+   * route cannot disagree.
+   */
+  recoverableLostSessionAction(run: WorkflowRun): WorkflowNodeAttempt | null {
+    if (run.status !== "blocked" || run.currentPhase !== "session_action_blocked") return null;
+    const detail = run.gateState;
+    if (!detail || Array.isArray(detail) || typeof detail !== "object") return null;
+    if (detail.code !== "session_lost" || typeof detail.attemptId !== "string") return null;
+    const attempt = this.getAttempt(detail.attemptId);
+    if (!attempt || attempt.state !== "error" || !attempt.sessionAction) return null;
+    const submission = this.getSubmission(attempt.submissionId);
+    if (!submission || submission.runId !== run.id) return null;
+    if (this.latestAttemptForNode(submission.id, attempt.nodeId)?.id !== attempt.id) return null;
+    const parsed = SessionActionAttemptStateSchema.safeParse(attempt.output);
+    if (!parsed.success || parsed.data.blocked?.code !== "session_lost") return null;
+    const binding = this.getBinding(run.bindingId);
+    if (binding?.state !== "active" || !binding.sessionId) return null;
+    // A delivered packet was typed into one session. Re-checking it is only honest while the
+    // binding still reaches that session - itself, or a successor through a committed runtime
+    // transfer, which is how a binding legitimately moves with its action. A binding moved to
+    // another session any other way would reopen an attempt the observer must block again.
+    const anchor = parsed.data.anchor;
+    if (anchor && !runtimeTransferConnects(anchor.sessionId, binding.sessionId, anchor.noteKey, this.db)) {
+      return null;
+    }
+    return attempt;
+  }
+
+  /**
+   * Return a `session_lost` action attempt to `waiting`, and its run to the action wait.
+   *
+   * The second backwards transition this runtime allows, beside `reopenSessionActionAttempt`.
+   * It keeps every observation the attempt had already made - its delivery, anchor and pickup -
+   * because none of them was wrong: the session was only unavailable when the observer looked.
+   * Nothing is typed here and no round is spent; the action observer picks the attempt up
+   * again from its durable anchor on its next pass.
+   */
+  reopenLostSessionActionAttempt(input: {
+    runId: string;
+    attemptId: string;
+    source: "session_returned" | "operator";
+    requestId: string | null;
+    now: number;
+  }): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(input.runId);
+      if (!run || this.recoverableLostSessionAction(run)?.id !== input.attemptId) return null;
+      const attempt = this.mustAttempt(input.attemptId);
+      const state = SessionActionAttemptStateSchema.parse(attempt.output);
+      const changed = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET state = 'waiting', error = NULL, finished_at = NULL, output_json = ?,
+                updated_at = ?
+          WHERE id = ? AND state = 'error'`,
+      ).run(
+        JSON.stringify({
+          ...state,
+          blocked: null,
+          sessionMissingSince: null,
+        } satisfies SessionActionAttemptState),
+        input.now,
+        input.attemptId,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      this.setRunState(run.id, "waiting_for_action", "session_action", {
+        nodeId: attempt.nodeId,
+        attemptId: attempt.id,
+        ...(state.deliveryId ? { deliveryId: state.deliveryId } : {}),
+      }, input.now);
+      this.appendEvent(run.id, "session_action_rechecked", {
+        attemptId: attempt.id,
+        nodeId: attempt.nodeId,
+        source: input.source,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+      }, input.now);
+      return this.mustAttempt(input.attemptId);
+    });
+  }
+
   private mustAttempt(id: string): WorkflowNodeAttempt {
     const attempt = this.getAttempt(id);
     if (!attempt) throw new Error(`Workflow attempt ${id} is missing`);
@@ -8615,6 +9357,10 @@ export class WorkflowStore {
    * excluded because an infrastructure failure is the same execution asked again rather than a
    * second one, and its retry must not be refused a budget the first try never really spent;
    * `cancelled` is excluded because a submission that stopped discards the answer it bought.
+   * CodeRabbit keeps charged claims even on error or cancellation. Its runner explicitly
+   * releases claims for infrastructure failures, while vendor failures can still spend a slot.
+   * Local Inspector keeps claims once its provider returned, even if the returned verdict,
+   * its repository evidence, its audit or post-review processing is rejected.
    *
    * `round >= epoch` implements the two operator escape hatches. A null epoch counts the whole
    * run, which is both the pre-column behaviour and the behaviour of a run nobody intervened in.
@@ -8634,7 +9380,7 @@ export class WorkflowStore {
           WHERE s.run_id = ?
             AND a.check_run_slot = ?
             AND s.round >= ?
-            AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))
+            AND ${countedCheckRun}
             AND a.id <> ?`,
       ).get(runId, slot, epochRound ?? 0, attemptId) as { n: number };
       const spent = Number(row.n);
@@ -8648,12 +9394,18 @@ export class WorkflowStore {
     });
   }
 
-  /** Return this attempt's claim after the executor reports that no Command could start. */
+  /**
+   * Return a claim the check runner determined did not consume an execution slot.
+   *
+   * Refused for a Local Inspector attempt whose provider returned: the runner sees only that
+   * its review threw, and the durable return record is what says an execution was bought.
+   */
   releaseCheckRun(attemptId: string, slot: string): boolean {
     return this.db.prepare(
-      `UPDATE workflow_node_attempts
+      `UPDATE workflow_node_attempts AS a
           SET check_run_slot = NULL
-        WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
+        WHERE a.id = ? AND a.state = 'running' AND a.check_run_slot = ?
+          AND NOT (a.check_run_slot = 'inspector' AND ${inspectorReviewReturned})`,
     ).run(attemptId, slot).changes === 1;
   }
 
@@ -8712,8 +9464,8 @@ export class WorkflowStore {
   /**
    * Reservations a run has already spent on one Command, for a reader that is not claiming one.
    *
-   * Exists for tests and diagnostics. The engine never asks: a caller that counted and then
-   * decided would be the race `reserveCheckRun` exists to close.
+   * Used for reporting and tests. Execution decisions must use `reserveCheckRun` so
+   * concurrent callers cannot spend the same allowance.
    */
   checkRunsSpent(runId: string, slot: string, epochRound: number | null): number {
     const row = this.db.prepare(
@@ -8723,7 +9475,7 @@ export class WorkflowStore {
         WHERE s.run_id = ?
           AND a.check_run_slot = ?
           AND s.round >= ?
-          AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))`,
+          AND ${countedCheckRun}`,
     ).get(runId, slot, epochRound ?? 0) as { n: number };
     return Number(row.n);
   }
@@ -8764,6 +9516,17 @@ export class WorkflowStore {
       `SELECT * FROM workflow_node_attempts
         WHERE submission_id = ? ORDER BY created_at ASC, node_id ASC, attempt ASC`,
     ).all(submissionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
+  /** Newest first. For Local Inspector, exclude uncharged attempts interrupted before review. */
+  listCheckAttemptsWithExecutionClaim(runId: string, nodeId: string, slot: WorkflowCheckSlot): WorkflowNodeAttempt[] {
+    return (this.db.prepare(
+      `SELECT a.* FROM workflow_node_attempts a
+         JOIN workflow_submissions s ON s.id = a.submission_id
+        WHERE s.run_id = ? AND a.node_id = ? AND a.check_run_slot = ?
+          AND (a.check_run_slot <> 'inspector' OR ${countedCheckRun})
+        ORDER BY s.round DESC, s.segment DESC, a.created_at DESC, a.attempt DESC`,
+    ).all(runId, nodeId, slot) as unknown[]).map(parseWorkflowNodeAttemptRow);
   }
 
   /** Every attempt for a run in the same evidence and attempt order as per-submission reads. */
@@ -9110,7 +9873,7 @@ export class WorkflowStore {
   /**
    * Confirmed packets that can still appear in one session's bounded transcript window.
    *
-   * The delivery ledger and its post-send transcript anchors are the durable authorship source
+   * The delivery ledger and its transcript anchors are the durable authorship source
    * for workflow context capture. Only confirmed sends with an anchor qualify: prepared,
    * refused, uncertain, and unanchored packets cannot identify a transcript turn. Newest first
    * and capped beyond the transcript window so a long-lived session cannot make context capture
@@ -9119,13 +9882,30 @@ export class WorkflowStore {
   listDeliveredTranscriptAnchors(
     sessionId: string,
     noteKey: string,
-    limit = 200,
-  ): Array<{ payload: string; transcriptAnchor: number }> {
+    limit = WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT,
+  ): DeliveredWorkflowTranscriptAnchor[] {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
-      `SELECT d.payload, d.session_id,
-              CAST(json_extract(e.payload_json, '$.transcriptAnchor') AS INTEGER)
-                AS transcript_anchor
+      `SELECT d.payload, d.delivered_at, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
+              json_extract(e.payload_json, '$.clientMessageId') AS client_message_id,
+              json_extract(e.payload_json, '$.transcriptPath') AS transcript_path,
+              CASE WHEN json_extract(e.payload_json, '$.submitVerified') = 1
+                    AND json_type(e.payload_json, '$.receiptId') IS NULL
+                    AND json_type(e.payload_json, '$.clientMessageId') IS NULL
+                    AND json_type(e.payload_json, '$.transcriptPath') IS NULL
+                   THEN COALESCE((
+                     SELECT sending.ts FROM workflow_events sending
+                      WHERE sending.run_id = e.run_id AND sending.id < e.id
+                        AND sending.event_kind = 'delivery_sending'
+                        AND json_extract(sending.payload_json, '$.deliveryId') = d.id
+                      ORDER BY sending.id DESC LIMIT 1
+                   ), d.delivered_at) END AS legacy_start,
+              json_extract(e.payload_json, '$.transcriptTurn.id') AS turn_id,
+              json_extract(e.payload_json, '$.transcriptTurn.fileId') AS turn_file_id,
+              json_extract(e.payload_json, '$.transcriptTurn.ts') AS turn_ts,
+              COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
+                       json_extract(e.payload_json, '$.transcriptAnchor')) AS transcript_anchor,
+              json_type(e.payload_json, '$.transcriptStart') = 'integer' AS before_send
          FROM workflow_deliveries d
          JOIN workflow_events e
            ON e.run_id = d.run_id
@@ -9134,16 +9914,34 @@ export class WorkflowStore {
         WHERE d.note_key = ? AND d.session_id IN (${sessions.map(() => "?").join(",")})
           AND d.delivered_at IS NOT NULL AND d.payload_pruned_at IS NULL
           AND d.payload <> ''
-          AND json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
+          AND (json_type(e.payload_json, '$.transcriptStart') = 'integer'
+            OR json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
+            OR json_type(e.payload_json, '$.clientMessageId') = 'text'
+            OR json_type(e.payload_json, '$.transcriptTurn.id') = 'text')
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
-      session_id: string;
+      receipt_id: string | null;
+      client_message_id: string | null;
+      delivered_at: number;
+      legacy_start: number | null;
+      transcript_path: string | null;
+      turn_id: string | null;
+      turn_file_id: string | null;
+      turn_ts: number | null;
       payload: string;
-      transcript_anchor: number;
+      transcript_anchor: number | null;
+      before_send: number | null;
     }>).map((row) => ({
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
+      ...(row.legacy_start !== null ? { legacySend: { start: row.legacy_start, end: row.delivered_at } } : {}),
+      ...(row.transcript_path !== null ? { transcriptPath: row.transcript_path } : {}),
+      ...(row.turn_id && row.turn_ts !== null ? { turn: { id: row.turn_id, ts: row.turn_ts,
+        ...(row.turn_file_id ? { fileId: row.turn_file_id } : {}) } } : {}),
+      ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),
+      ...(row.client_message_id ? { clientMessageId: row.client_message_id } : {}),
+      ...(row.before_send ? { beforeSend: true as const } : {}),
     }));
   }
 
@@ -9326,7 +10124,7 @@ export class WorkflowStore {
           || version?.completionPolicy.kind !== "inspector") return null;
       const updated = this.updateInspectorGate({
         runId: run.id, expectedState, state,
-        status: version.completionPolicy.onFindings === "inspector_only"
+        status: workflowInspectorOnlyRepair(version.completionPolicy, state)
           ? "waiting_for_new_head" : "waiting_for_session",
         phase: "inspector_findings", now,
       });
@@ -9357,13 +10155,20 @@ export class WorkflowStore {
     }, (result) => result ? { kind: "delivery", id, now } : null);
   }
 
+  private discardDeliveryReceipt(deliveryId: string, receiptId: string, now: number): void {
+    this.db.prepare("UPDATE workflow_delivery_turns SET discarded_at = ? WHERE id = ? AND delivery_id = ?")
+      .run(now, receiptId, deliveryId);
+  }
+
   finishDeliverySend(
     id: string,
-    state: Extract<WorkflowDelivery["state"], "refused" | "uncertain">,
+    state: Extract<WorkflowDelivery["state"], "prepared" | "refused" | "uncertain">,
     error: string | null,
     now = Date.now(),
+    unsentReceiptId?: string,
   ): WorkflowDelivery | null {
     return this.mutate(() => {
+      if (unsentReceiptId) this.discardDeliveryReceipt(id, unsentReceiptId, now);
       const result = this.db.prepare(
         `UPDATE workflow_deliveries
             SET state = ?, error = ?, updated_at = ?
@@ -9379,8 +10184,12 @@ export class WorkflowStore {
     transcriptAnchor: number | null,
     submitVerified: boolean,
     now = Date.now(),
+    transcriptStart: number | null = null,
+    attribution?: { clientMessageId?: string; transcriptPath?: string; unusableReceiptId?: string;
+      terminalTurn?: { path: string; fileId: string; id: string; ts: number } | null },
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
+      if (attribution?.unusableReceiptId) this.discardDeliveryReceipt(id, attribution.unusableReceiptId, now);
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
       const run = this.getRun(delivery.runId);
@@ -9395,8 +10204,7 @@ export class WorkflowStore {
         ? this.getWorkflowVersionById(run.workflowVersionId)
         : null;
       const inspectorOnly =
-        version?.completionPolicy.kind === "inspector"
-        && version.completionPolicy.onFindings === "inspector_only";
+        workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
       const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
         ?? (delivery.kind === "inspector_feedback" && inspectorOnly
           ? "waiting_for_new_head"
@@ -9448,7 +10256,11 @@ export class WorkflowStore {
       );
       this.appendEvent(delivery.runId, "delivery_delivered", {
         deliveryId: delivery.id,
-        transcriptAnchor,
+        transcriptAnchor: attribution && !attribution.clientMessageId && !attribution.terminalTurn ? null : transcriptAnchor,
+        transcriptStart,
+        ...(attribution?.clientMessageId ? { clientMessageId: attribution.clientMessageId, transcriptPath: attribution.transcriptPath } : {}),
+        ...(attribution?.terminalTurn ? { transcriptPath: attribution.terminalTurn.path,
+          transcriptTurn: { id: attribution.terminalTurn.id, ts: attribution.terminalTurn.ts, fileId: attribution.terminalTurn.fileId } } : {}),
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);
@@ -9637,8 +10449,7 @@ export class WorkflowStore {
             ? this.getWorkflowVersionById(run.workflowVersionId)
             : null;
           const inspectorOnly =
-            version?.completionPolicy.kind === "inspector"
-            && version.completionPolicy.onFindings === "inspector_only";
+            workflowInspectorOnlyRepair(version?.completionPolicy, inspectorGateState(run));
           const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
             ?? (delivery.kind === "inspector_feedback" && inspectorOnly
               ? "waiting_for_new_head"
@@ -9860,9 +10671,9 @@ export class WorkflowStore {
             ? input.now + WORKFLOW_MAPPING_RECOVERY_DELAYS[attempts]! : null,
         } } : {}),
       };
-      this.setSubmissionState(submission.id, "failed", input.now);
       const run = this.setRunState(submission.runId, "blocked",
         input.kind === "capture" ? "image_evidence_capture" : "evidence_reconciliation_error", detail, input.now);
+      this.setSubmissionState(submission.id, "failed", input.now);
       this.appendEvent(run.id, "evidence_preparation_failed", detail, input.now,
         `evidence-preparation-failed:${submission.id}`);
       return run;
@@ -10131,7 +10942,7 @@ export class WorkflowStore {
           && submission.status === "running") {
         return Boolean(this.db.prepare("SELECT 1 FROM workflow_events WHERE event_id = ?").get(eventId));
       }
-      const capturing = run.status === "capturing" && submission.status === "running";
+      const capturing = run.status === "capturing" && (submission.status === "running" || submission.status === "capturing");
       const waiting = submission.status === "waiting_for_evidence_readiness"
         && (run.status === "waiting_for_evidence_readiness"
           || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE));
@@ -10149,6 +10960,7 @@ export class WorkflowStore {
         SET state = 'cancelled', error = 'preflight_exhausted', updated_at = ?
         WHERE run_id = ? AND submission_id = ? AND kind = 'evidence_readiness'
           AND state = 'prepared'`).run(now, run.id, submission.id);
+      if (version && workflowRequiresRepositoryCapture(version.graph, workflowCapturedLocalInspector(submission.evidence))) this.activateReadySubmissionClaim(submission, now);
       // Preserve the frozen gaps. This is an engine decision, never an operator override.
       this.setSubmissionState(submission.id, "running", now);
       this.setRunState(run.id, "running", "activating", null, now);
@@ -10216,10 +11028,11 @@ export class WorkflowStore {
       const readiness = submission.readiness
         ? { ...submission.readiness, status: "overridden" as const }
         : null;
+      if (version && workflowRequiresRepositoryCapture(version.graph, workflowCapturedLocalInspector(submission.evidence))) this.activateReadySubmissionClaim(submission, input.now);
       this.db.prepare(
         `UPDATE workflow_submissions
             SET status = 'running', readiness_json = ?, updated_at = ?
-          WHERE id = ? AND status = 'waiting_for_evidence_readiness'`,
+          WHERE id = ? AND status IN ('waiting_for_evidence_readiness','running')`,
       ).run(readiness ? JSON.stringify(readiness) : null, input.now, submission.id);
       assertRunLifecycle(run.id, "running", "activating", null);
       this.db.prepare(
@@ -10665,6 +11478,9 @@ export class WorkflowStore {
             updates.push({ id: row.id, context: parsed });
           }
 
+          this.db.prepare(`UPDATE workflow_repository_snapshot_claims SET state='released', released_at=?
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id=?) AND state!='released'`)
+            .run(input.now, runId);
           this.appendEvent(runId, "evidence_pruned", {
             submissions: updates.length,
             diffBytes,
@@ -10722,6 +11538,13 @@ export class WorkflowStore {
                 AND state IN ('delivered', 'refused')
                 AND payload_pruned_at IS NULL`,
           ).run(input.now, runId);
+          const discardedReceipts = this.db.prepare(
+            `UPDATE workflow_delivery_turns SET discarded_at = ?
+              WHERE discarded_at IS NULL AND delivery_id IN
+                (SELECT id FROM workflow_deliveries WHERE run_id = ? AND payload_pruned_at IS NOT NULL)
+              RETURNING note_key`,
+          ).all(input.now, runId) as { note_key: string }[];
+          for (const key of new Set(discardedReceipts.map(row => row.note_key))) noteDiscardedWorkflowReceipt(key);
           this.db.prepare(
             `UPDATE workflow_runs
                 SET evidence_pruned_at = ?, updated_at = ?
@@ -10745,6 +11568,7 @@ export class WorkflowStore {
            FROM workflow_runs r
           WHERE r.status IN ('completed', 'cancelled')
             AND r.completed_at IS NOT NULL
+            AND NOT EXISTS (${repositoryCleanupForRun})
             AND NOT EXISTS (
               SELECT 1 FROM workflow_deliveries d
                WHERE d.run_id = r.id AND d.state = 'uncertain'
@@ -10783,7 +11607,7 @@ export class WorkflowStore {
             `SELECT 1 FROM workflow_deliveries
               WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
           ).get(runId);
-          if (uncertain) return false;
+          if (uncertain || this.db.prepare(`SELECT 1 FROM workflow_runs r WHERE r.id=? AND EXISTS (${repositoryCleanupForRun})`).get(runId)) return false;
           this.db.prepare(`DELETE FROM workflow_llm_calls WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
           this.db.prepare(
@@ -10997,13 +11821,14 @@ export class WorkflowStore {
       retainedRunCount: scalar(`SELECT COUNT(*) AS count FROM workflow_runs`),
       // The `ranked` population in `runRetention` above, counted rather than windowed -
       // finished, with a completion time, and not pinned by an uncertain delivery. This is
-      // deliberately the SAME three predicates and not an approximation of them: the number
+      // deliberately the SAME predicates and not an approximation of them: the number
       // exists so the settings panel can show `maxCompletedRuns` against the rows that limit
       // actually ranks, and a count over a slightly different set would be a gauge that
       // disagrees with the sweep it claims to describe.
       completedRunCount: scalar(
         `SELECT COUNT(*) AS count FROM workflow_runs r
           WHERE r.status IN ('completed', 'cancelled')
+            AND NOT EXISTS (${repositoryCleanupForRun})
             AND r.completed_at IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM workflow_deliveries d
@@ -11046,6 +11871,9 @@ export class WorkflowStore {
     const events = this.listEvents(id);
     return {
       ...detail,
+      ...(detail.repositoryReview ? { repositoryQueries: this.db.prepare(`SELECT q.audit_json FROM workflow_repository_queries q
+        JOIN workflow_llm_calls l ON l.id=q.workload_id WHERE l.run_id=? ORDER BY q.id`).all(id)
+        .map(row => RepositoryQueryAuditMetadataSchema.parse(JSON.parse(String(row.audit_json)))) } : {}),
       events,
       eventCount: events.length,
       nextEventAfter: null,
@@ -11236,6 +12064,31 @@ export class WorkflowStore {
     return null;
   }
 
+  repositoryCitations(attempts: WorkflowNodeAttempt[]) {
+    const requested = new Set<string>();
+    for (const attempt of attempts) {
+      const parsed = PersonaVerdictSchema.safeParse(attempt.verdict);
+      if (!parsed.success) continue;
+      const verdict = parsed.data;
+      const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(change => change.evidence);
+      for (const ref of refs) if (ref.kind === "repository")
+        requested.add(JSON.stringify([attempt.id, ref.operationId, ref.evidenceHandleId]));
+    }
+    const citations: NonNullable<WorkflowRunDetail["repositoryReview"]>["citations"] = {};
+    if (!requested.size) return citations;
+    const rows = this.db.prepare(`SELECT q.id, json_extract(q.audit_json,'$.handles[' || h.audit_index || ']') AS value
+      FROM json_each(?) refs
+      JOIN workflow_repository_handles h ON h.id=json_extract(refs.value,'$[2]') AND h.operation_id=json_extract(refs.value,'$[1]')
+      JOIN workflow_repository_queries q ON q.operation_id=h.operation_id
+      JOIN workflow_repository_workloads w ON w.id=q.workload_id AND w.attempt_id=json_extract(refs.value,'$[0]')`)
+      .all("[" + [...requested].join(",") + "]");
+    for (const row of rows) {
+      const handle = RepositoryEvidenceHandleSchema.parse(JSON.parse(String(row.value)));
+      citations[handle.evidenceHandleId] = { ...handle, queryId: Number(row.id) };
+    }
+    return citations;
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -11256,7 +12109,30 @@ export class WorkflowStore {
     ).get(id) as { count: number };
     const eventCount = Number(eventCountRow.count);
     const llmCallCount = Number(llmCallCountRow.count);
+    let repositoryReview: WorkflowRunDetail["repositoryReview"];
+    if (version && workflowRequiresRepositoryCapture(version.graph, submissions.some(s => workflowCapturedLocalInspector(s.evidence)))) {
+      const snapshot = this.db.prepare(`SELECT c.digest, a.state,
+        json_extract(a.metadata_json,'$.retainedCommitCount') AS retained,
+        json_array_length(a.metadata_json,'$.frontier') AS frontier
+        FROM workflow_repository_snapshot_claims c JOIN workflow_repository_artifacts a ON a.digest=c.digest
+        WHERE c.submission_id=?`).get(submissions.at(-1)?.id ?? "");
+      const count = this.db.prepare(`SELECT COUNT(*) AS n, sum(json_extract(q.audit_json,'$.bytes')) AS bytes,
+        sum(json_extract(q.audit_json,'$.truncated')) AS truncated,
+        sum(json_extract(q.audit_json,'$.status')='denied') AS denied,
+        sum(json_extract(q.audit_json,'$.status')='failed') AS failed,
+        sum(json_extract(q.audit_json,'$.status')='cancelled') AS cancelled FROM workflow_repository_queries q
+        JOIN workflow_llm_calls l ON l.id=q.workload_id WHERE l.run_id=?`).get(id);
+      const citations = this.repositoryCitations(attempts);
+      repositoryReview = {
+        queries: Number(count?.n ?? 0), bytes: Number(count?.bytes ?? 0), denied: Number(count?.denied ?? 0),
+        truncated: Number(count?.truncated ?? 0), failed: Number(count?.failed ?? 0), cancelled: Number(count?.cancelled ?? 0),
+        snapshot: snapshot ? { digest: String(snapshot.digest), state: String(snapshot.state),
+          retainedCommits: Number(snapshot.retained), bounded: Number(snapshot.frontier) > 0 } : null,
+        citations,
+      };
+    }
     return {
+      ...(repositoryReview ? { repositoryReview } : {}),
       summary,
       binding,
       version,
@@ -11487,6 +12363,12 @@ export class WorkflowStore {
     }
   }
 
+  workflowResetBlocker(noteKey: string): string | null {
+    const pending = this.db.prepare(`SELECT 1 FROM workflow_runs r JOIN workflow_bindings b ON b.id=r.binding_id
+      WHERE b.note_key=? AND EXISTS (${repositoryCleanupForRun}) LIMIT 1`).get(noteKey);
+    return pending ? "Repository reviewer cleanup must finish before this session can be reset" : null;
+  }
+
   /**
    * Everything a reset removed, so the caller can retire it from the fleet stream too.
    *
@@ -11498,6 +12380,8 @@ export class WorkflowStore {
    */
   resetForNoteKey(noteKey: string): { runIds: string[]; bindingIds: string[] } {
     return transaction(this.db, () => {
+      const blocker = this.workflowResetBlocker(noteKey);
+      if (blocker) throw new Error(blocker);
       const runRows = this.db.prepare(
         `SELECT r.id FROM workflow_runs r
           JOIN workflow_bindings b ON b.id = r.binding_id

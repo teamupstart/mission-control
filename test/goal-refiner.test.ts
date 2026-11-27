@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
-import { resolvedSessionIntent } from "../src/shared/goal.ts";
+import { isHandoffReleaseOnlyGoal, resolvedSessionIntent } from "../src/shared/goal.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Drives the REAL refiner loop against a fake `claude` binary: a real spawn, a real envelope,
@@ -232,6 +232,31 @@ function withSession(id: string, pane: string, agent: "claude" | "codex" = "clau
   const s = r.snapshot().sessions.find((x) => x.id === id)!;
   return { r, s, env: { tmuxPane: pane } };
 }
+
+test("a standalone release clears a restriction-only Goal without adopting the model deliverable", async () => {
+  const { r, s, env } = withSession("restriction-only-release", "%31");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "Do not open a PR." }));
+  r.upsertGoal(s.id, {
+    objective: "Do not open a PR.",
+    relationship: "initial",
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+  });
+  setMode("replace");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "Resume automatic handoff." }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 2, "the standalone release");
+    const goal = r.getGoal(s.id);
+    assert.equal(goal?.objective, "");
+    assert.equal(goal?.text, null);
+    assert.equal(isHandoffReleaseOnlyGoal(goal), true);
+    assert.equal(r.getSession(s.id)?.goal, null);
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
 
 test("the refiner upgrades a Tier 1 goal to a model sentence", async () => {
   const { r, s, env } = withSession("r1", "%31");
@@ -527,7 +552,7 @@ test("a rapid amendment followed by steering preserves and applies both transiti
     );
     // The fake steering call deliberately lasts longer than the debounce floor. That makes
     // duplicate admission deterministic instead of depending on suite contention.
-    assert.deepEqual(r.getGoal(s.id)?.pendingPrompts, [
+    assert.deepEqual(r.getGoal(s.id)?.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
       { revision: 2, prompt: "also expose the current intent in the Foreman drawer" },
       {
         revision: 3,
@@ -621,7 +646,7 @@ test("a failed refinement leaves the Tier 1 goal up and does not retry that prom
     assert.equal(g?.source, "heuristic", "a failure must not stamp the goal as refined");
     assert.equal(g?.text, "a prompt the model chokes on", "the Tier 1 goal was lost");
     assert.equal(g?.resolvedPromptRevision, 0, "a failed transition was marked resolved");
-    assert.deepEqual(g?.pendingPrompts, [
+    assert.deepEqual(g?.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
       { revision: 1, prompt: "a prompt the model chokes on" },
     ]);
   } finally {
@@ -894,4 +919,27 @@ test("a whitespace-only reply is a failure, not an empty goal", async () => {
     stop();
     setMode("good");
   }
+});
+
+test("a review-delivery prune that throws does not skip the cleanup after it on the same tick", async () => {
+  // The prune walks transcripts. If it throws, the standing-instruction and blocker prunes that
+  // follow must still run: `lastPrune` has already moved on, so a skipped one waits a full window.
+  const { r } = withSession("r-prune", "%61");
+  const calls: string[] = [];
+  r.pruneReviewDeliveries = () => {
+    calls.push("review");
+    throw new Error("transcript read failed");
+  };
+  const standing = r.pruneStandingInstructions.bind(r);
+  r.pruneStandingInstructions = (olderThan: number) => {
+    calls.push("standing");
+    return standing(olderThan);
+  };
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => calls.includes("standing"), "the standing-instruction prune after a failed review prune");
+  } finally {
+    stop();
+  }
+  assert.deepEqual(calls.slice(0, 2), ["review", "standing"]);
 });

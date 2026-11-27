@@ -59,29 +59,44 @@ async function readLinkFile(path: string): Promise<string | null> {
 }
 
 /**
- * Read-only. The caller has already proven the slot path is the exact native path of a pool
- * whose marker matches, and that a `git worktree list` which answered does not name it; this
- * only decides whether what is left on disk is provably not a worktree at all.
+ * What is on disk at a worktree path, in more detail than a slot needs.
+ *
+ * - `absent`: nothing is at the path, and the nearest existing ancestor is physical.
+ * - `no-link`: a physical directory with no `.git` entry at all.
+ * - `dangling-link`: a physical directory whose regular-file `.git` names an administrative
+ *   directory that does not exist. `gitDir` is that directory, resolved as Git would.
+ *
+ * Every other shape, and every read that fails, is null and proves nothing.
  */
-export async function observeSlotOrphan(slotPath: string): Promise<SlotOrphanEvidence | null> {
+export type WorktreeLinkEvidence =
+  | { kind: "absent" }
+  | { kind: "no-link" }
+  | { kind: "dangling-link"; gitDir: string };
+
+/**
+ * Read-only. Decides whether what is left at `path` is provably not a worktree at all, without
+ * asking Git. Native slots and disposable task checkouts both read it; each caller adds its own
+ * identity proof (a pool marker, the exact task slot path) before acting on the answer.
+ */
+export async function observeWorktreeLink(path: string): Promise<WorktreeLinkEvidence | null> {
   try {
-    const slot = await lstat(slotPath);
+    const slot = await lstat(path);
     if (slot.isSymbolicLink() || !slot.isDirectory()) return null;
     // A symbolic link in any parent component would make every read below describe a
     // directory outside the pool. Only a path that resolves to exactly itself is the slot.
-    if ((await realpath(slotPath)) !== resolve(slotPath)) return null;
+    if ((await realpath(path)) !== resolve(path)) return null;
   } catch (error) {
     if (!missing(error)) return null;
     // A missing path proves the slot is gone only if the place it would be is the pool's own.
     // Beneath a symbolic link in a parent component, ENOENT describes somewhere else.
-    return (await physicalAncestor(slotPath)) ? "absent" : null;
+    return (await physicalAncestor(path)) ? { kind: "absent" } : null;
   }
-  const linkPath = join(slotPath, ".git");
+  const linkPath = join(path, ".git");
   let link: Awaited<ReturnType<typeof lstat>>;
   try {
     link = await lstat(linkPath);
   } catch (error) {
-    return missing(error) ? "unregistered" : null;
+    return missing(error) ? { kind: "no-link" } : null;
   }
   // A `.git` directory is a repository of its own, and a link is somebody else's choice.
   if (!link.isFile()) return null;
@@ -93,13 +108,24 @@ export async function observeSlotOrphan(slotPath: string): Promise<SlotOrphanEvi
   }
   const match = text?.match(/^gitdir: (.+?)\r?\n?$/);
   if (!match) return null;
-  const target = isAbsolute(match[1]!) ? match[1]! : resolve(slotPath, match[1]!);
+  const target = isAbsolute(match[1]!) ? match[1]! : resolve(path, match[1]!);
   try {
     await lstat(target);
     // It links to an administrative directory that exists. Whose it is, and what it says,
     // is a question for Git, which has just declined to list it here.
     return null;
   } catch (error) {
-    return missing(error) ? "unregistered" : null;
+    return missing(error) ? { kind: "dangling-link", gitDir: target } : null;
   }
+}
+
+/**
+ * Read-only. The caller has already proven the slot path is the exact native path of a pool
+ * whose marker matches, and that a `git worktree list` which answered does not name it; this
+ * only decides whether what is left on disk is provably not a worktree at all.
+ */
+export async function observeSlotOrphan(slotPath: string): Promise<SlotOrphanEvidence | null> {
+  const evidence = await observeWorktreeLink(slotPath);
+  if (!evidence) return null;
+  return evidence.kind === "absent" ? "absent" : "unregistered";
 }

@@ -21,6 +21,8 @@ import {
   TELEMETRY_LIMITS,
   TELEMETRY_OVERFLOW_VALUE,
   TELEMETRY_UNKNOWN_VALUE,
+  UNSCOPED_REF_FORMATS,
+  isUnscopedRefKey,
   type TelemetryEnvelope,
   type TelemetryDestination,
   type TelemetryProfileId,
@@ -194,10 +196,18 @@ export const CATALOG_PROJECTION: TelemetryProjection<Record<string, never>> = {
         const value = event.refs[key];
         if (typeof value === "string" && value.length > 0) refs[key] = value;
       }
+      // The declared unscoped refs, apart from the scoped ones so that nothing can hash them.
+      // The engine decides below whether each may be exported at all.
+      const unscopedRefs: Record<string, string> = {};
+      for (const key of span.unscopedRefAttributes ?? []) {
+        const value = event.refs[key];
+        if (typeof value === "string" && value.length > 0) unscopedRefs[key] = value;
+      }
       emit.span({
         name: span.name,
         kind: span.kind,
         refs,
+        ...(Object.keys(unscopedRefs).length > 0 ? { unscopedRefs } : {}),
         traceId: event.refs[TRACE_REF] ?? "",
         spanId: event.refs[SPAN_REF] ?? "",
         parentSpanId: event.refs[PARENT_SPAN_REF] ?? null,
@@ -529,16 +539,26 @@ class Collector implements TelemetryEmitter {
     // Ref promotion, HERE rather than in the projection that declared them, because the
     // per-profile salt lives here and a projection cannot know it. A projection that hashed
     // these itself would either leak the mapping or invent a second one.
+    //
+    // Every ref is hashed, with ONE exception: `UNSCOPED_REF_KEYS`, exported as it is under its
+    // own name and identical in every lane. Only a key on that list, with a value in that key's
+    // format, is written; anything else is dropped rather than hashed in its place, and a listed
+    // key is never written as `mission.ref.<key>` - a hashed work unit id joins nothing.
+    const { unscopedRefs, ...rest } = span;
     const attributes = { ...span.attributes };
     for (const [key, value] of Object.entries(span.refs ?? {})) {
+      if (isUnscopedRefKey(key)) continue;
       attributes[`mission.ref.${key}`] = scopedRef(this.profile, this.salt, `${key}:${value}`);
+    }
+    for (const [key, value] of Object.entries(unscopedRefs ?? {})) {
+      if (isUnscopedRefKey(key) && UNSCOPED_REF_FORMATS[key](value)) attributes[key] = value;
     }
     // Per-profile translation. The same underlying operation reaches two audiences under two
     // unrelated ids, so holders of one cannot join it to the other - and that now covers the
     // session, task and pull request refs above as well as the trace and span ids.
     this.spans.push({
       span: {
-        ...span,
+        ...rest,
         attributes,
         traceId: scopedTraceId(this.profile, this.salt, span.traceId),
         spanId: scopedSpanId(this.profile, this.salt, span.spanId),

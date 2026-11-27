@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");

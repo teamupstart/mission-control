@@ -1,6 +1,8 @@
+import { DEFAULT_LOCAL_INSPECTOR_SEVERITY, type LocalInspectorReview } from "./inspector-review.ts";
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
 import type { KindWorkflowDefaults } from "./task.ts";
-import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
+import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, resolveLlmEffort } from "./llm.ts";
+import type { LlmRunnerId, ResolvedLlmEffort, ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { PlanPublicationContext } from "./plan-publication.ts";
@@ -824,6 +826,13 @@ export interface WorkflowStagedEvidenceList {
 export interface WorkflowSessionEvidenceList extends WorkflowStagedEvidenceList {
   /** Resolved from the current active binding's pinned Persona graph, never task selection. */
   registrationEligible: boolean;
+  /** Read-only Foreman assessment of the entire staged packet, bound to both intent revisions. */
+  continuation?: {
+    episodeKey: string;
+    sourceEpisode: string;
+    status: "revalidated" | "stale" | "unavailable";
+    packet: string;
+  };
 }
 
 export interface WorkflowAgentEvidenceLocator {
@@ -995,7 +1004,12 @@ export interface PersonaDriftView {
   upstream: PersonaUpstreamState;
 }
 
+export const PERSONA_REPOSITORY_ACCESS_MODES = ["none", "read"] as const;
+export type PersonaRepositoryAccess = (typeof PERSONA_REPOSITORY_ACCESS_MODES)[number];
+
 export interface Persona {
+  repositoryAccess?: PersonaRepositoryAccess;
+  repositoryAccessRevision?: number;
   id: PersonaId;
   name: string;
   normalizedName: string;
@@ -1032,18 +1046,7 @@ export interface PersonaExecutionView {
   effort?: ResolvedPersonaEffort;
 }
 
-/**
- * The effort one Persona call runs at.
- *
- * `level` is what is actually passed to the provider; null means no effort flag at all, so the
- * provider's own default applies. `unsupported` is a stored level the resolved provider and
- * model do not offer - reported rather than dropped, so the surface showing the model can say
- * that the configured effort did not apply. It is only ever non-null when `level` is null.
- */
-export interface ResolvedPersonaEffort {
-  level: ThinkingLevel | null;
-  unsupported: ThinkingLevel | null;
-}
+export type ResolvedPersonaEffort = ResolvedLlmEffort;
 
 /**
  * The effort levels a Persona call may name, for one provider/model choice.
@@ -1064,24 +1067,7 @@ export function personaEffortLevels(
     rest.every((id) => launchEffortLevels(id, model).includes(level)));
 }
 
-/**
- * Resolve a stored effort against the provider and model a call will actually use.
- *
- * Capability-checked at run time as well as at write time: a Persona that inherits its
- * provider was validated against every runner, but an app-wide model environment override can
- * still narrow the levels after the fact. An effort the call cannot honour is surfaced as
- * `unsupported` rather than passed to a CLI that would reject it.
- */
-export function resolvePersonaEffort(
-  runner: LlmRunnerId,
-  model: string | null,
-  effort: ThinkingLevel | null | undefined,
-): ResolvedPersonaEffort {
-  if (!effort) return { level: null, unsupported: null };
-  return launchEffortLevels(runner, model).includes(effort)
-    ? { level: effort, unsupported: null }
-    : { level: null, unsupported: effort };
-}
+export const resolvePersonaEffort = resolveLlmEffort;
 
 /**
  * The effort half of a routing line, or null when the provider default applies by choice.
@@ -1869,6 +1855,8 @@ export interface SessionActionWarning {
  */
 export type SessionActionContinuationExpectation =
   | { kind: "none" }
+  /** A clean checkout whose HEAD is already contained in the observed default branch. */
+  | { kind: "no_change"; headOid: string; treeOid: string; baseOid: string; baseRef: string }
   /**
    * The pull request adapter's observed publication, carried forward for comparison.
    *
@@ -1950,6 +1938,11 @@ export interface SessionActionAttemptState {
   blocked: { code: SessionActionBlockCode; detail: string } | null;
   /** Advisories collected before the action advances. Missing on rows from older builds. */
   warnings?: SessionActionWarning[];
+  /**
+   * When the observer first found the bound session unavailable; null or missing while it is
+   * live. Missing on rows from older builds. See `SessionActionAttemptStateSchema`.
+   */
+  sessionMissingSince?: number | null;
 }
 
 /**
@@ -2037,8 +2030,12 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
  * hard-coding `npm test` would be wrong on every repository that is not the one it was
  * written in. The operator describes the machine; the version describes the gate.
  */
-export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit"] as const;
+export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit", "inspector"] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
+
+export function workflowCommandName(slot: WorkflowCheckSlot): string {
+  return slot === "inspector" ? "Local Inspector" : slot;
+}
 
 /**
  * The provider and model ONE Persona occurrence runs under, chosen by the workflow.
@@ -2105,7 +2102,18 @@ export interface WorkflowDraftGraph {
   edges: WorkflowEdge[];
 }
 
+export function workflowRequiresRepositoryCapture(graph: PublishedWorkflowGraph, localInspectorEnabled = false): boolean {
+  return graph.nodes.some((node) => (node.kind === "persona" && node.persona.repositoryAccess === "read")
+    || (localInspectorEnabled && node.kind === "check" && node.slot === "inspector"));
+}
+
+export function workflowCapturedLocalInspector(evidence: WorkflowJson): boolean {
+  return !!evidence && typeof evidence === "object" && !Array.isArray(evidence) && evidence.localInspectorEnabled === true;
+}
+
 export interface PersonaSnapshot {
+  /** Historical graphs omit this field and resolve to none. */
+  repositoryAccess?: PersonaRepositoryAccess;
   sourcePersonaId: PersonaId;
   sourceRevision: number;
   name: string;
@@ -2130,6 +2138,7 @@ export interface PersonaSnapshot {
  */
 export function personaSnapshotOf(persona: Persona): PersonaSnapshot {
   return {
+    ...(persona.repositoryAccess === "read" ? { repositoryAccess: persona.repositoryAccess } : {}),
     sourcePersonaId: persona.id,
     sourceRevision: persona.revision,
     name: persona.name,
@@ -2148,6 +2157,7 @@ export function personaSnapshotIsOutdated(
   current: Persona | null | undefined,
 ): boolean {
   if (!current) return true;
+  if ((snapshot.repositoryAccess ?? "none") !== (current.repositoryAccess ?? "none")) return true;
   if (current.builtin) return snapshot.guidanceMarkdown !== current.guidanceMarkdown;
   return snapshot.sourceRevision !== current.revision;
 }
@@ -2242,7 +2252,7 @@ export function withNodeExecutionOverride<
 export function verdictAuthor(node: WorkflowVerdictNode): string {
   // "Command", not the wire kind. The node is serialized as `check` forever - see
   // `WorkflowCommandView` - and every surface a person reads says Command.
-  return node.kind === "persona" ? node.persona.name : `Command · ${node.slot}`;
+  return node.kind === "persona" ? node.persona.name : `Command · ${workflowCommandName(node.slot)}`;
 }
 
 export type WorkflowSessionActionNode = Extract<PublishedWorkflowNode, { kind: "session_action" }>;
@@ -2705,6 +2715,8 @@ export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
   "repository_unchanged",
   // Appended: the bound session reported a durable blocker (waiting on someone else).
   "session_blocked",
+  // Appended: the bound session declared a wait on its own background process, inside its deadline.
+  "session_awaiting",
 ] as const;
 
 export type WorkflowResumptionWithheldReason =
@@ -2745,6 +2757,9 @@ export function workflowResumptionWithheldSentence(
     case "session_blocked":
       return "The session is blocked on someone other than you, so it has not been handed another"
         + " round. The next round opens once its blocker is cleared.";
+    case "session_awaiting":
+      return "The session is waiting on a background process it started, such as CI checks, so it"
+        + " has not been handed another round. The next round opens once it wakes or its deadline passes.";
     default:
       return null;
   }
@@ -2767,7 +2782,39 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
 ] as const;
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 
+/**
+ * The branch a Local Inspector review compared against, in the form GitHub names a pull
+ * request's base, or null for a ref this cannot read as one branch.
+ *
+ * The review records the ref it resolved: `refs/remotes/origin/main` from `origin/HEAD`, a
+ * stacked parent's `refs/remotes/origin/<branch>`, or an operator's explicit base ref. Null is
+ * the safe answer - it matches no pull request, so the head keeps its GitHub review.
+ */
+export function localReviewBaseBranch(baseRef: string): string | null {
+  const branch = /^refs\/remotes\/[^/]+\/(.+)$/.exec(baseRef)?.[1]
+    ?? /^refs\/heads\/(.+)$/.exec(baseRef)?.[1]
+    ?? /^origin\/(.+)$/.exec(baseRef)?.[1];
+  return branch && branch !== "HEAD" ? branch : null;
+}
+
+/** A pull request head whose Git tree and base match a passed Local Inspector review. */
+// A type alias, not an interface, so a gate state carrying it stays assignable to `WorkflowJson`.
+export type WorkflowLocalReviewMatch = {
+  submissionId: string;
+  attemptId: string;
+  headSha: string;
+  treeOid: string;
+  baseRef: string;
+};
+
 export interface WorkflowInspectorGateState {
+  /** Ignore the saved observation when selecting the first head after a grant. */
+  grantObservation?: { minimumObservedAt: number; requestedAt: number; verifiedHeadSha?: string };
+  /**
+   * Which review satisfied the gate, when it was a local one: the pushed head's tree matched
+   * the publication tree a passed Local Inspector attempt reviewed. Absent on the GitHub path.
+   */
+  localReview?: WorkflowLocalReviewMatch;
   /** Present when a published shipping continuation differs from its semantic review. */
   reviewedContent?: {
     submissionId: string;
@@ -2895,6 +2942,7 @@ export const WORKFLOW_LLM_PURPOSES = [
   "persona_review",
   "context_reconciliation",
   "criterion_fulfillment",
+  "inspector_review",
 ] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
@@ -3003,10 +3051,35 @@ export interface WorkflowCommandOverride {
 
 export const CODERABBIT_SEVERITIES = ["critical", "major", "minor", "trivial", "info"] as const;
 export type CodeRabbitSeverity = (typeof CODERABBIT_SEVERITIES)[number];
+export const CODERABBIT_REVIEW_COMMAND = ["coderabbit", "review"] as const;
+export const DEFAULT_CODERABBIT_COMMAND = [...CODERABBIT_REVIEW_COMMAND, "--deep"] as const;
+export const CODERABBIT_COMMAND_HELP = 'Use coderabbit review with optional --deep, --deep "focus text", or --fresh. Mission Control adds the workflow review flags.';
+
+export function isCodeRabbitCommand(argv: readonly string[]): boolean {
+  if (argv[0] !== "coderabbit" || argv[1] !== "review") return false;
+  const flags = new Set<string>();
+  for (let index = 2; index < argv.length; index++) {
+    const flag = argv[index]!;
+    if ((flag !== "--deep" && flag !== "--fresh") || flags.has(flag)) return false;
+    flags.add(flag);
+    const focus = argv[index + 1];
+    if (flag === "--deep" && focus && !focus.startsWith("-")) {
+      if (!focus.trim() || focus.includes("\0") || focus.includes("\r") || focus.includes("\n")) return false;
+      index++;
+    }
+  }
+  return true;
+}
+
+export function codeRabbitReviewArgv(command: readonly string[], severity: CodeRabbitSeverity, mergeBase: string): string[] {
+  return [...command, "--agent", "--gate", severity, "--committed", "--base-commit", mergeBase];
+}
+
 export interface CodeRabbitTuning {
   kind: "coderabbit";
   baseRef: string | null;
   severity: CodeRabbitSeverity;
+  command?: string[];
 }
 export interface CodeRabbitConfigSnapshot {
   source: ".coderabbit.yaml" | ".coderabbit.config.ts";
@@ -3025,6 +3098,8 @@ export interface CodeRabbitComparison {
   head: string | null;
   empty: boolean;
   severity: CodeRabbitSeverity;
+  /** Frozen with the comparison. Earlier submissions used the original command without options. */
+  command?: string[];
   ruleRevision: number;
   timeoutMs: number;
   maxRuns: number;
@@ -3057,6 +3132,7 @@ export interface CodeRabbitReviewSummary {
  */
 export interface WorkflowCommandView {
   slot: WorkflowCheckSlot;
+  inspectorSeverity?: LocalInspectorReview["blockingSeverity"];
   /**
    * What this slot runs when no override matches - repository-neutral, and null when the
    * operator has not named one.
@@ -3121,13 +3197,13 @@ export interface WorkflowCommandView {
  */
 export const WORKFLOW_COMMAND_DEFAULT_MAX_RUNS = 1;
 export function defaultWorkflowCommandMaxRuns(slot: WorkflowCheckSlot): number {
-  return slot === "coderabbit" ? 10 : WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
+  return slot === "coderabbit" || slot === "inspector" ? 10 : WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
 }
 
 /** Browser-safe result selection; server interpreters consume this descriptor. */
-export const WORKFLOW_COMMAND_INTERPRETERS: Record<WorkflowCheckSlot, "exit_code" | "coderabbit"> = {
+export const WORKFLOW_COMMAND_INTERPRETERS: Record<WorkflowCheckSlot, "exit_code" | "coderabbit" | "inspector"> = {
   test: "exit_code", lint: "exit_code", typecheck: "exit_code", build: "exit_code",
-  documentation: "exit_code", coderabbit: "coderabbit",
+  documentation: "exit_code", coderabbit: "coderabbit", inspector: "inspector",
 };
 
 export const WORKFLOW_COMMAND_FAILURE_POLICIES = ["skip", "block"] as const;
@@ -3145,6 +3221,7 @@ export const WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS: Record<WorkflowCheckSlot, numb
   build: 10 * 60_000,
   documentation: 10 * 60_000,
   coderabbit: 45 * 60_000,
+  inspector: 10 * 60_000,
 };
 
 export function effectiveWorkflowCommandTimeoutMs(
@@ -3164,8 +3241,9 @@ export function emptyWorkflowCommandView(
     overrides: [],
     maxRuns: defaultWorkflowCommandMaxRuns(slot),
     timeoutMs: null,
-    onUnavailable: slot === "coderabbit" ? "block" : "skip",
-    onBudgetExhausted: "skip",
+    onUnavailable: WORKFLOW_COMMAND_INTERPRETERS[slot] === "exit_code" ? "skip" : "block",
+    onBudgetExhausted: slot === "inspector" ? "block" : "skip",
+    ...(slot === "inspector" ? { inspectorSeverity: DEFAULT_LOCAL_INSPECTOR_SEVERITY } : {}),
     revision: 1,
     createdAt: now,
     updatedAt: now,
@@ -3209,6 +3287,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
+  inspector: "Local Inspector reviews the submitted checkout before the Pull Request action.",
   coderabbit: "Committed CodeRabbit review. Either a root .coderabbit.yaml or .coderabbit.config.ts enables it, unless the YAML turns it off with reviews.auto_review.enabled: false.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
@@ -3265,9 +3344,10 @@ export const CODERABBIT_COMMAND_STATUS_NOTE =
  * flag says - the flag describes an absence, and a slot the stream delivered is not absent.
  */
 export function workflowCommandFact(
-  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides" | "inspectorSeverity"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "inspector") return `Blocks at ${view.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY} and above`;
   if (view?.slot === "coderabbit") return `YAML-enabled defaults${view.overrides.length ? ` · ${view.overrides.length} tuning ${view.overrides.length === 1 ? "rule" : "rules"}` : ""}`;
   if (!view && !hasSnapshot) return WORKFLOW_COMMAND_UNKNOWN;
   const overrides = view?.overrides.length ?? 0;
@@ -3301,12 +3381,18 @@ export function workflowCommandFact(
  * carry `COMMAND_AUTHORIZATION_NOTE` instead of a promise.
  */
 export function workflowCommandStatusSentence(
-  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides" | "inspectorSeverity"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
+  slot = view?.slot,
 ): string {
-  if (view?.slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
+  if (slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
   if (!view && !hasSnapshot) {
     return `${WORKFLOW_COMMAND_UNKNOWN}, so what this Command runs here is not known yet.`;
+  }
+  if (slot === "inspector") {
+    const severity = view?.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY;
+    return "When Inspector and Local review are enabled in Settings, this stage reviews the submitted worktree "
+      + `and blocks on findings at ${severity} severity or above. It skips if Local review is off.`;
   }
   const overrides = view?.overrides.length ?? 0;
   // OVERRIDES, never repositories. An override is keyed by path, so a monorepo puts two of
@@ -3345,7 +3431,7 @@ export function legacyCheckCommands(
   const bySlot = new Map(views.map((view) => [view.slot, view]));
   const rows: WorkflowCheckCommand[] = [];
   for (const slot of WORKFLOW_CHECK_SLOTS) {
-    if (slot === "coderabbit") continue;
+    if (WORKFLOW_COMMAND_INTERPRETERS[slot] !== "exit_code") continue;
     for (const override of bySlot.get(slot)?.overrides ?? []) {
       rows.push({ repoRoot: override.repoRoot, slot, command: [...override.command] });
     }
@@ -3454,6 +3540,12 @@ export interface WorkflowRetentionConfig {
   completedRunDays: number;
   /** Always retain this many newest completed or cancelled run families. */
   maxCompletedRuns: number;
+}
+
+/** A decrease can remove content during the next retention sweep. */
+export function retentionShortens(next: Partial<WorkflowRetentionConfig>, current: WorkflowRetentionConfig): boolean {
+  return (Object.keys(current) as (keyof WorkflowRetentionConfig)[])
+    .some(key => (next[key] ?? current[key]) < current[key]);
 }
 
 export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
@@ -3760,6 +3852,7 @@ export const WORKFLOW_CHECK_STATUSES = [
 export type WorkflowCheckStatus = (typeof WORKFLOW_CHECK_STATUSES)[number];
 
 export interface WorkflowCheckOutcome {
+  localInspector?: LocalInspectorReview;
   status: WorkflowCheckStatus;
   review?: CodeRabbitReviewSummary;
   warning?: string;
@@ -3960,6 +4053,7 @@ export interface WorkflowCompletionClaim {
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;
+  expectedContinuationPacket?: string;
   /** Comparison guard for verified plan ownership; never selects or creates a binding. */
   expectedPlanPublication?: PlanPublicationContext;
 }
@@ -4036,7 +4130,7 @@ export interface WorkflowVersion {
   publishedAt: number;
 }
 
-export type WorkflowVersionMetadata = Omit<WorkflowVersion, "graph">;
+export type WorkflowVersionMetadata = Omit<WorkflowVersion, "graph"> & { readPersonaIds?: string[] };
 
 /** The bounded catalog projection carried over SSE. Graphs and guidance stay on HTTP. */
 export interface WorkflowAssetReferenceSet {
@@ -4872,6 +4966,7 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     diff: string;
     diffTruncated: boolean;
     coderabbit?: CodeRabbitConfigSnapshot;
+    localInspectorEnabled?: boolean;
     workingTreeDirty: boolean;
     workingTreeStatus: string[];
     workingTreeStatusTruncated: boolean;
@@ -4933,7 +5028,7 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
  * author whose evidence is machine-produced and exact would weaken the rule for the
  * strongest citation in the system.
  */
-export const EVIDENCE_REF_KINDS = [
+export const CONTEXT_EVIDENCE_REF_KINDS = [
   "diff",
   "transcript",
   "standard",
@@ -4943,10 +5038,18 @@ export const EVIDENCE_REF_KINDS = [
   "image",
   "artifact",
 ] as const;
+export const EVIDENCE_REF_KINDS = [...CONTEXT_EVIDENCE_REF_KINDS, "repository"] as const;
 export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
 
-export interface EvidenceRef {
-  kind: EvidenceRefKind;
+export type EvidenceRef = {
+  kind: "repository";
+  operationId: string;
+  evidenceHandleId: string;
+  quote?: never;
+  path?: never;
+  line?: never;
+} | {
+  kind: (typeof CONTEXT_EVIDENCE_REF_KINDS)[number];
   quote: string;
   path?: string;
   line?: number;
@@ -5134,6 +5237,12 @@ export interface WorkflowRunSummary {
   reviewPosture: InspectorPosture | null;
   uncertainDeliveryCount?: number;
   refusedDeliveryCount?: number;
+  /**
+   * When the run started. Optional and additive: a summary from an older daemon omits it. Headless
+   * mode's inbox reads it to tell a run that started before a task took over a session from the
+   * task's own.
+   */
+  startedAt?: number;
   updatedAt: number;
 }
 
@@ -5149,6 +5258,18 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
+  repositoryReview?: {
+    queries: number;
+    bytes: number;
+    denied: number;
+    truncated: number;
+    failed: number;
+    cancelled: number;
+    snapshot: { digest: string; state: string; retainedCommits: number; bounded: boolean } | null;
+    citations: Record<string, import("./repository-access.ts").RepositoryEvidenceHandle & { queryId: number }>;
+  };
+  /** Included in a requested export only. */
+  repositoryQueries?: import("./repository-access.ts").RepositoryQueryAuditMetadata[];
   /** Live sibling ownership of the conversation, independent of paginated event history. */
   deliveryHold?: {
     runId: string;

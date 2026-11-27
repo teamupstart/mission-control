@@ -63,7 +63,6 @@ async function shootPipeline(page: Page, name: string): Promise<void> {
     path: `${EVIDENCE}${name}-pipeline.png`,
   });
   await page.screenshot({ path: `${EVIDENCE}${name}-page.png` });
-  // eslint-disable-next-line no-console
   console.log(
     `CAPTURED e2e/.artifacts/ensemble-review-pause/${name}-pipeline.png and ${name}-page.png`,
   );

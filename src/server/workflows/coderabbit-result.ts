@@ -1,3 +1,4 @@
+import type { ReviewChangedPaths } from "./review-comparison.ts";
 import { z } from "zod";
 import { CODERABBIT_SEVERITIES, type CodeRabbitSeverity } from "@shared/workflow.ts";
 
@@ -20,12 +21,6 @@ const Complete = z.object({
   findings: z.number().int().nonnegative().optional(),
   gate: z.object({ threshold: z.enum(CODERABBIT_SEVERITIES), status: z.enum(["passed", "blocked", "incomplete"]), blockingFindings: z.number().int().nonnegative() }),
 });
-/**
- * What the pinned comparison changes, from git rather than from the vendor. `required` is
- * every path that exists at the head and so must be reviewed; `allowed` adds deleted paths,
- * which a review may mention but cannot be required to cover.
- */
-export interface CodeRabbitChangedPaths { required: readonly string[]; allowed: readonly string[] }
 /** The one result diagnostic whose remedy is the CLI's installation or stored login. */
 export const CODERABBIT_OPERATOR_ACTION = "CodeRabbit requires operator action (authentication, service, usage limit or interruption). Check stored login and vendor wait guidance in retained output; do not authorize credits automatically";
 export type CodeRabbitFinding = z.infer<typeof Finding> & { id: string; displayPath: string | null };
@@ -54,7 +49,7 @@ export class CodeRabbitResultParser {
   private expectedDuration: string | undefined;
   /** `paths` is null only when the caller could not resolve the comparison's changed files. */
   constructor(private readonly attemptId: string, private readonly threshold: CodeRabbitSeverity,
-    private readonly paths: CodeRabbitChangedPaths | null) {}
+    private readonly paths: ReviewChangedPaths | null) {}
 
   push(chunk: Buffer): void {
     if (this.finished || this.error && !this.retryableConnection) return; // The supervisor continues draining both pipes.

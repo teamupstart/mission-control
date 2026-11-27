@@ -1,7 +1,9 @@
+import { RepositoryCaptureChanged } from "./repository-artifact/format.ts";
+import { workflowErrorCode, workflowLog } from "./log.ts";
 import { captureCodeRabbitConfig, CODERABBIT_YAML } from "./coderabbit-config.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { z } from "zod";
 import type { ReviewItem, Session, TranscriptMessage } from "@shared/types.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
@@ -45,14 +47,14 @@ import { resolveStackDiffBase, type StackDiffBase } from "../stacking/diff-base.
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
-import { sessionMessages } from "../harness/index.ts";
+import { sessionMessages, transcriptFor } from "../harness/index.ts";
 import { attributeTranscript } from "../transcript-attribution.ts";
 import { changedPaths } from "../inspector/diff-lines.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import { runJobStructured } from "../llm/jobs.ts";
 import type { JobExecution } from "../llm/jobs.ts";
-import { parseModelJson } from "../llm/structured.ts";
+import { parseModelReply } from "../llm/structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "../llm/structured.ts";
 import { untrustedJsonBlock } from "../review/prompt.ts";
 import type { Registry } from "../registry.ts";
@@ -168,6 +170,8 @@ export interface WorkflowCaptureRead {
 }
 
 export interface WorkflowRawCaptureRead {
+  /** Transient selection from this diff read. Never part of prompt evidence or fingerprints. */
+  repositoryCapture?: { checkout: string; sourceBase: string | null };
   raw: RawWorkflowContext;
   context: WorkflowContextSnapshot;
   boundary: WorkflowCaptureRead["boundary"];
@@ -436,7 +440,42 @@ export function humanTranscriptDecisions(messages: TranscriptMessage[]): Workflo
 
 export interface DeliveredWorkflowTranscriptAnchor {
   payload: string;
-  transcriptAnchor: number;
+  transcriptAnchor: number | null;
+  clientMessageId?: string;
+  transcriptPath?: string;
+  legacySend?: { start: number; end: number };
+  turn?: { id: string; ts: number; fileId?: string };
+  beforeSend?: true;
+  receiptId?: string;
+}
+
+/** The transcript observed immediately before the terminal's Enter keystroke. */
+export function terminalSubmissionBoundary(transcript: ReturnType<typeof sessionMessages>) {
+  const snapshot = transcript?.read.snapshot?.(transcript.path);
+  return transcript && snapshot?.fileId ? {
+    transcript, fileId: snapshot.fileId, offset: snapshot.size, at: Date.now(), hookAt: null as number | null,
+  } : null;
+}
+
+/** A verified submit and its prompt hook must identify a single new turn in the same file. */
+export function confirmedTerminalWorkflowTurn(boundary: ReturnType<typeof terminalSubmissionBoundary>, fingerprint: string) {
+  const confirmedAt = Date.now();
+  if (!boundary || boundary.hookAt === null || boundary.hookAt < boundary.at || boundary.hookAt > confirmedAt) return null;
+  const { transcript: { path, read }, fileId, offset } = boundary;
+  try {
+    const end = read.snapshot?.(path);
+    if (end?.fileId !== fileId || end.size <= offset || end.size - offset > 256 * 1024) return null;
+    const page = read.after(path, offset, 12, "cooperative");
+    if (!page.atEnd || page.end !== end.size || page.skippedRecord || page.finishOversizedRecord
+      || read.snapshot?.(path)?.version !== end.version) return null;
+    const users = page.messages.filter(m => m.role === "user");
+    const turn = users[0];
+    if (users.length !== 1 || !turn || turn.ts < boundary.at || turn.ts > confirmedAt
+      || injectionFingerprint(turn.text) !== fingerprint) return null;
+    return { path, fileId, id: turn.id, ts: turn.ts };
+  } catch {
+    return null;
+  }
 }
 
 interface WorkflowTranscriptTurnIdentity {
@@ -494,21 +533,53 @@ export function attributeWorkflowContextTranscript(
   });
 }
 
+/** An old offset has no filename. Verify the harness's native conversation file still
+ * exists and predates confirmation before interpreting any bytes at that offset. */
+function legacyConversationFileBirth(session: Session, path: string): number | null {
+  const { agentSessionId, cwd } = session;
+  if (!agentSessionId || !cwd) return null;
+  try {
+    const nativePath = transcriptFor(session)?.locateByConversation?.({ ...session, agentSessionId, cwd });
+    return nativePath === path ? statSync(path).birthtimeMs || null : null;
+  } catch {
+    return null;
+  }
+}
+
 function deliveredWorkflowTurnIdentities(
+  session: Session,
   located: NonNullable<ReturnType<typeof sessionMessages>>,
   deliveries: readonly DeliveredWorkflowTranscriptAnchor[],
 ): WorkflowTranscriptTurnIdentity[] {
   const identities: WorkflowTranscriptTurnIdentity[] = [];
+  let legacyFileBirth: number | null | undefined;
   for (const delivery of deliveries) {
-    if (!delivery.payload.trim()) continue;
+    if (delivery.transcriptPath !== undefined && delivery.transcriptPath !== located.path) continue;
+    if (delivery.clientMessageId || (delivery.receiptId && !delivery.turn) || !delivery.payload.trim()) continue;
+    if (delivery.transcriptPath === undefined) {
+      if (!delivery.legacySend || delivery.turn) continue;
+      if (legacyFileBirth === undefined) {
+        legacyFileBirth = legacyConversationFileBirth(session, located.path);
+      }
+      if (!legacyFileBirth || Math.floor(legacyFileBirth) > delivery.legacySend.end) continue;
+    }
     const payloadFingerprint = injectionFingerprint(delivery.payload);
-    const messages = located.read.before(located.path, delivery.transcriptAnchor, 12).messages;
-    const match = messages.findLast((message) =>
-      message.role === "user"
-      && Boolean(message.text)
-      && injectionFingerprint(message.text) === payloadFingerprint
-    );
-    if (match) identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
+    if (delivery.turn) {
+      if (delivery.turn.fileId && located.read.snapshot?.(located.path)?.fileId !== delivery.turn.fileId) continue;
+      identities.push({ ...delivery.turn, payloadFingerprint });
+      continue;
+    }
+    if (delivery.transcriptAnchor === null) continue;
+    // Before native turn receipts, verified writes recorded a starting or ending byte offset.
+    const page = delivery.beforeSend
+      ? located.read.after(located.path, delivery.transcriptAnchor, 12)
+      : located.read.before(located.path, delivery.transcriptAnchor, 12);
+    const matches = page.messages.filter(message =>
+      message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint);
+    // An old end offset alone cannot tell a packet from a verbatim human repeat before it.
+    const match = matches.length === 1 || (delivery.beforeSend && delivery.transcriptPath) ? matches[0] : undefined;
+    if (!match || (delivery.legacySend && (match.ts <= 0 || match.ts < delivery.legacySend.start || match.ts > delivery.legacySend.end))) continue;
+    identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
   }
   return identities;
 }
@@ -558,7 +629,7 @@ export async function classifyWorkflowCriterionFulfillment(
   let result: StructuredResult<z.infer<typeof CriterionFulfillmentSchema>>;
   try {
     result = deps.execute ? await deps.execute(prompt) : await runJobStructured<typeof CriterionFulfillmentSchema>(
-      "workflow-context", prompt, (text) => parseModelJson(text, CriterionFulfillmentSchema),
+      "workflow-context", prompt, (text) => parseModelReply(text, CriterionFulfillmentSchema),
       "Workflow criterion publication timing", {
         timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS, observer: deps.observer, onExecution: deps.onExecution,
         schema: CRITERION_FULFILLMENT_JSON_SCHEMA, shapeGuaranteed: true,
@@ -672,7 +743,7 @@ export async function reconcileWorkflowCoverage(
     } else {
       result = await runJobStructured<typeof CriterionReconciliationSchema>(
         "workflow-context", prompt,
-        (text) => parseModelJson(text, CriterionReconciliationSchema), "Workflow criterion reconciliation", {
+        (text) => parseModelReply(text, CriterionReconciliationSchema), "Workflow criterion reconciliation", {
           timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS, maxAttempts: 1,
           schema: CRITERION_RECONCILIATION_JSON_SCHEMA,
           onExecution: deps.onReconciliationExecution,
@@ -823,7 +894,7 @@ export async function compactWorkflowContext(
     const call = await runJobStructured<typeof CompactionSchema>(
       "workflow-context",
       prompt,
-      (text) => parseModelJson(text, CompactionSchema),
+      (text) => parseModelReply(text, CompactionSchema),
       "Workflow context compaction",
       {
         timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS,
@@ -902,13 +973,52 @@ export async function compactWorkflowContext(
     : await reconcileWorkflowCoverage(compacted, raw.coverage ?? [], deps));
 }
 
-export async function captureStableWorkflowContext<T>(
+// Discard relinquishes the candidate before filesystem cleanup. Reconciliation
+// can finish removing it without changing the original capture or cancellation result.
+export async function discardWorkflowCandidate<C>(owner: { discard(candidate: C): Promise<void> }, candidate: C) {
+  try { await owner.discard(candidate); }
+  catch (error) { workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) }); }
+}
+
+interface RepositoryCaptureSeam<T, C extends { readonly boundary: string }> {
+  sampleBoundary(): Promise<string>;
+  prepare(captured: T): Promise<C>;
+  stillCurrent(candidate: C): Promise<boolean>;
+  discard(candidate: C): Promise<void>;
+}
+export function captureStableWorkflowContext<T>(read: () => Promise<T>,
+  boundaryChanged: (captured: T) => Promise<boolean>): Promise<T | null>;
+export function captureStableWorkflowContext<T, C extends { readonly boundary: string }>(read: () => Promise<T>,
+  boundaryChanged: (captured: T) => Promise<boolean>, seam: RepositoryCaptureSeam<T, C>):
+  Promise<{ captured: T; candidate: C } | null>;
+export async function captureStableWorkflowContext<T, C extends { readonly boundary: string }>(
   read: () => Promise<T>,
   boundaryChanged: (captured: T) => Promise<boolean>,
-): Promise<T | null> {
+  seam?: RepositoryCaptureSeam<T, C>,
+) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const captured = await read();
-    if (!(await boundaryChanged(captured))) return captured;
+    if (!seam) {
+      const captured = await read();
+      if (!(await boundaryChanged(captured))) return captured;
+      continue;
+    }
+
+    try {
+      const before = await seam.sampleBoundary();
+      const captured = await read();
+      const candidate = await seam.prepare(captured);
+      let accepted = false;
+      try {
+        accepted = candidate.boundary === before
+          && !(await boundaryChanged(captured))
+          && await seam.stillCurrent(candidate);
+        if (accepted) return { captured, candidate };
+      } finally {
+        if (!accepted) await discardWorkflowCandidate(seam, candidate);
+      }
+    } catch (error) {
+      if (!(error instanceof RepositoryCaptureChanged)) throw error;
+    }
   }
   return null;
 }
@@ -1191,9 +1301,20 @@ function contextTranscriptFor(
   const attributed = attributeWorkflowContextTranscript(
     session.id,
     transcriptMessages,
-    located ? deliveredWorkflowTurnIdentities(located, deliveredWorkflowAnchors) : [],
+    located ? deliveredWorkflowTurnIdentities(session, located, deliveredWorkflowAnchors) : [],
   );
-  return attributed.filter((message) => message.origin !== "workflow");
+  const nativeReceipts = new Map<string, string>();
+  for (const delivery of deliveredWorkflowAnchors) {
+    if (delivery.clientMessageId && (!delivery.transcriptPath || delivery.transcriptPath === located?.path)) {
+      nativeReceipts.set(delivery.clientMessageId, injectionFingerprint(delivery.payload));
+    }
+  }
+  return attributed.filter(message => {
+    if (message.origin === "workflow") return false;
+    if (message.role !== "user" || !nativeReceipts.size) return true;
+    const fingerprint = nativeReceipts.get(message.clientMessageId ?? message.id);
+    return fingerprint === undefined || fingerprint !== injectionFingerprint(message.text);
+  });
 }
 
 /**
@@ -1443,6 +1564,7 @@ export async function readWorkflowContextRaw(
   return {
     raw,
     context,
+    ...(checkout ? { repositoryCapture: { checkout, sourceBase: diff.baseSha ?? diff.headSha } } : {}),
     boundary: {
       noteKey: noteKeyFor(session),
       sessionId: session.id,
@@ -1556,6 +1678,15 @@ export function probeMatchesEvidence(
   probe: WorkflowEvidenceProbe,
   evidence: WorkflowContextSnapshot["evidence"],
 ): boolean {
+  return probeMatchesRepositoryContent(probe, evidence)
+    && (probe.stagedImageGeneration ?? 0) === (evidence.stagedImageGeneration ?? 0);
+}
+
+/** Repository work alone, independent of proof registered for a review round. */
+export function probeMatchesRepositoryContent(
+  probe: WorkflowEvidenceProbe,
+  evidence: WorkflowContextSnapshot["evidence"],
+): boolean {
   const retained = evidence.publication?.localArtifacts ?? [];
   const hashes = probe.localArtifactHashes ?? [];
   return (probe.publicationVersion === undefined || probe.publicationVersion === evidence.publication?.version)
@@ -1565,8 +1696,7 @@ export function probeMatchesEvidence(
     && probe.headSha === evidence.headSha
     && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
     && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index])
-    && probe.diffFingerprint === evidence.diffFingerprint
-    && (probe.stagedImageGeneration ?? 0) === (evidence.stagedImageGeneration ?? 0);
+    && probe.diffFingerprint === evidence.diffFingerprint;
 }
 
 /**

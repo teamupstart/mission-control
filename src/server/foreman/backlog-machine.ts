@@ -4,10 +4,11 @@ import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/typ
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
 import { stackStartEdge } from "@shared/stacking.ts";
-import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
+import { foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
-import { hasBlocker, settledIdle } from "@shared/session.ts";
+import { hasBlocker, isAwaiting, settledIdle } from "@shared/session.ts";
 import { taskAllowsBacklogAutopilot, taskKindAllowsBacklog } from "@shared/task.ts";
+import { launchWorkUnitConflicts } from "@shared/work-unit.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
 // plan, what should Foreman do THIS tick? Zero I/O, `now` always injected - mirroring
@@ -219,6 +220,8 @@ export function agentIsFree(
   if (reportBucket(s, sessions) !== "idle") return false;
   // A blocked session is still working its own task; it is not free for another.
   if (hasBlocker(s)) return false;
+  // Nor is one idle on purpose while its own background process finishes.
+  if (isAwaiting(s, now)) return false;
   // A paused session is not free: nothing may be handed to it until the operator resumes it.
   if (isPaused(s)) return false;
   if (!settledIdle(s, now, cfg.settleMs)) return false;
@@ -280,6 +283,11 @@ function freeAgentFor(
     // the tick. The drag gesture is permissive here on purpose - a human picked that
     // pane - but nobody picked this one.
     if (s.agent !== task.agent) continue;
+    // Decision D7, on the selection side: an agent started with one work unit is not offered a
+    // task of another, because its MCP calls would carry the first. Judged per task, so the
+    // agent stays free for its own work unit's tasks, and treated like any agent that is not
+    // free - the task can still be dispatched below. `TaskManager.assign` refuses the same pair.
+    if (launchWorkUnitConflicts(s.launchWorkUnitId, task.workUnitId)) continue;
     if (agentIsFree(s, sessions, tasks, cfg, now)) return s;
   }
   return null;

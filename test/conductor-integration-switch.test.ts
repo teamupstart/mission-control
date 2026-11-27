@@ -100,8 +100,11 @@ test("Setup hides the ai-conductor row and the Pipelines family it empties, and 
   );
   // Repositories has no catalog dependency at all; hiding must not take it with it.
   assert.ok(visibleSetupFamilyIds([], false).includes("repositories"));
-  // A family is never withheld while a row names it.
+  // A family is never withheld while a row names it...
   assert.ok(visibleSetupFamilyIds([{ family: "pipelines" }], false).includes("pipelines"));
+  // ...unless it follows a preview flag that is off: the live flag outranks a cached row.
+  assert.equal(visibleSetupFamilyIds([{ family: "voice" }], false, () => false).includes("voice"), false);
+  assert.ok(visibleSetupFamilyIds([{ family: "voice" }], false, () => true).includes("voice"));
   // The defaults are the shipped switch.
   assert.deepEqual(availableSetupDependencyIds(), availableSetupDependencyIds(CONDUCTOR_INTEGRATION_ENABLED));
 
@@ -293,6 +296,7 @@ test("the pipeline routes answer 'nothing observed' to pollers and 404 to everyt
 
   for (const [method, path] of [
     ["GET", "/api/pipelines/config"],
+    ["PATCH", "/api/pipelines/config"],
     ["GET", "/api/pipelines/installers?provider=ai-conductor"],
     ["POST", "/api/pipelines/register"],
     ["POST", "/api/pipelines/install"],

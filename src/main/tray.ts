@@ -8,6 +8,10 @@ import type { MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 
+import { join } from "node:path";
+import { hotkeySpeechJob } from "./voice-hotkey-tap.ts";
+import { voiceTray, type TrayVoiceState } from "./voice-tray.ts";
+
 interface ReportCounts {
   needsYou: number;
   working: number;
@@ -16,6 +20,8 @@ interface ReportCounts {
 }
 
 export interface TrayHandlers {
+  setMuted: (muted: boolean) => Promise<boolean>;
+  onRecentlyHeard: () => void;
   onOpen: () => void;
   onCheckForUpdates: () => void;
   onInstallIntegrations: () => void;
@@ -23,9 +29,45 @@ export interface TrayHandlers {
   onQuit: () => void;
 }
 
+let presentation: ReturnType<typeof voiceTray> = null;
+let menu: Menu | null = null;
+let muteConfirmation: NodeJS.Timeout | undefined;
+let muteError = "";
+let stopErrorJob: string | undefined;
+let updateImage: ((image: string | undefined) => void) | null = null;
+let refreshMenu: (() => void) | null = null;
+
+export function showVoiceMuteError(message: string, speechJob?: string): void {
+  if (!presentation) return;
+  stopErrorJob = speechJob;
+  muteError = message;
+  refreshMenu?.();
+  if (menu) tray?.popUpContextMenu(menu);
+}
+
+export function setTrayVoice(state: TrayVoiceState): void {
+  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted", state.pushToTalkSession);
+  const stopExpired = !!stopErrorJob && stopErrorJob !== hotkeySpeechJob(state);
+  if (next?.nextMuted !== presentation?.nextMuted || next?.action !== presentation?.action) {
+    clearTimeout(muteConfirmation);
+    muteConfirmation = undefined;
+    muteError = "";
+  }
+  if (stopExpired) {
+    muteError = "";
+    stopErrorJob = undefined;
+  }
+  if (presentation?.image !== next?.image) updateImage?.(next?.image);
+  if (!stopExpired && presentation?.status === next?.status && presentation?.action === next?.action) return;
+  presentation = next;
+  refreshMenu?.();
+}
+
 let tray: Tray | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
+
+export function voiceTrayBounds() { return tray?.getBounds(); }
 
 function trayImage(iconPath: string): Electron.NativeImage {
   if (iconPath && existsSync(iconPath)) {
@@ -40,6 +82,24 @@ function trayImage(iconPath: string): Electron.NativeImage {
 
 function summary(c: ReportCounts): string {
   return `${c.needsYou} need you · ${c.working} working · ${c.idle} idle`;
+}
+
+async function requestMute(handlers: TrayHandlers, muted: boolean): Promise<void> {
+  if (muteConfirmation || presentation?.nextMuted !== muted) return;
+  // The POST can succeed before the state event arrives. Keep both click paths
+  // disabled until the published mute bit changes, or offer retry after a missed event.
+  const deadline = setTimeout(failed, 5000);
+  muteConfirmation = deadline;
+  muteError = "";
+  render(handlers);
+  if (!await handlers.setMuted(muted)) failed();
+
+  function failed() {
+    if (muteConfirmation !== deadline) return;
+    clearTimeout(deadline);
+    muteConfirmation = undefined;
+    showVoiceMuteError(`${muted ? "Mute" : "Unmute"} not confirmed. Try again.`);
+  }
 }
 
 function render(handlers: TrayHandlers): void {
@@ -67,7 +127,18 @@ function render(handlers: TrayHandlers): void {
     { type: "separator" },
     { label: "Quit Mission Control", click: () => handlers.onQuit() },
   ];
-  tray.setContextMenu(Menu.buildFromTemplate(template));
+  if (presentation) {
+    const { status, action, nextMuted } = presentation;
+    template.splice(3, 0,
+      { label: status, enabled: false },
+      ...(muteError ? [{ label: muteError, enabled: false }] : []),
+      ...(action ? [{ label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) }] : []),
+      { label: "Recently Heard", click: handlers.onRecentlyHeard },
+      { type: "separator" },
+    );
+  }
+  menu = Menu.buildFromTemplate(template);
+  tray.setContextMenu(presentation ? null : menu);
 }
 
 async function refresh(handlers: TrayHandlers): Promise<void> {
@@ -91,9 +162,17 @@ async function refresh(handlers: TrayHandlers): Promise<void> {
   }
 }
 
-export function createTray(iconPath: string, handlers: TrayHandlers): Tray {
+export function createTray(iconPath: string, voiceImageDir: string, handlers: TrayHandlers): Tray {
   tray = new Tray(trayImage(iconPath));
-  tray.on("click", () => handlers.onOpen());
+  updateImage = image => tray?.setImage(trayImage(image ? join(voiceImageDir, image) : iconPath));
+  refreshMenu = () => render(handlers);
+  tray.on("click", () => {
+    if (presentation?.action) void requestMute(handlers, presentation.nextMuted);
+    else handlers.onOpen();
+  });
+  tray.on("right-click", () => {
+    if (presentation && menu) tray?.popUpContextMenu(menu);
+  });
   render(handlers);
   void refresh(handlers);
   poll = setInterval(() => void refresh(handlers), 3000);
@@ -103,6 +182,13 @@ export function createTray(iconPath: string, handlers: TrayHandlers): Tray {
 export function destroyTray(): void {
   if (poll) clearInterval(poll);
   poll = null;
+  menu = null;
+  clearTimeout(muteConfirmation);
+  muteConfirmation = undefined;
+  muteError = "";
+  stopErrorJob = undefined;
+  presentation = null;
+  updateImage = refreshMenu = null;
   tray?.destroy();
   tray = null;
 }

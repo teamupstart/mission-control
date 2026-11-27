@@ -1,5 +1,8 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import { useEffect, useState } from "react";
 import type { TerminalTargetView } from "@shared/terminal.ts";
+import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { fetchTerminalTargets } from "./api.ts";
 
 /**
@@ -28,6 +31,7 @@ let inFlight: Promise<TerminalTargetView[] | null> | null = null;
  * answer into `cached`, and clears the `inFlight` belonging to the newer one.
  */
 let generation = 0;
+let cachedMacosTerminalPreview: boolean | undefined;
 
 /** Drop the memo, so a test - or a manual refresh - starts from nothing. */
 export function forgetTerminalTargets(): void {
@@ -75,21 +79,27 @@ export interface TerminalTargetsState {
  * default - reads once and keeps the TTL, which is what every other consumer wants.
  */
 export function useTerminalTargets(revision = 0): TerminalTargetsState {
+  const macosTerminalPreview = useFeatureFlag(MACOS_TERMINAL_FLAG_ID);
   const [state, setState] = useState<TerminalTargetsState>(() => ({
     targets: cached?.targets ?? null,
     failed: false,
   }));
   useEffect(() => {
     let live = true;
-    if (revision > 0) forgetTerminalTargets();
+    if (revision > 0 || cachedMacosTerminalPreview !== macosTerminalPreview) {
+      forgetTerminalTargets();
+      cachedMacosTerminalPreview = macosTerminalPreview;
+    }
     void loadTerminalTargets().then((targets) => {
       if (live) setState({ targets, failed: targets === null });
     });
     return () => {
       live = false;
     };
-  }, [revision]);
-  return state;
+  }, [revision, macosTerminalPreview]);
+  return macosTerminalPreview || !state.targets?.some(({ id }) => id === MACOS_TERMINAL_ID)
+    ? state
+    : { ...state, targets: state.targets.filter(({ id }) => id !== MACOS_TERMINAL_ID) };
 }
 
 /**

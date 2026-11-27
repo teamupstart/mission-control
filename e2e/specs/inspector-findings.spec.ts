@@ -24,7 +24,6 @@ async function shoot(page: Page, name: string, region?: Locator): Promise<void> 
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await (region ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/inspector-findings/${name}.png`);
 }
 
@@ -48,7 +47,7 @@ interface SeedFinding {
 
 interface SeedPr {
   number: number;
-  posture: "live" | "dry-run" | null;
+  posture: "live" | "dry-run" | "local" | null;
   state?: "open" | "closed";
   /** GitHub's state as of the last poll. A PR merged by hand is `MERGED` with no `merged_at`. */
   observedState?: "OPEN" | "CLOSED" | "MERGED" | null;
@@ -265,6 +264,25 @@ test("the Findings control is on every row with a finding, and a dry run says so
   const closed = findingsDialog(dashboard, 604);
   await expect(closed.locator(".inspector-findings-pr")).toContainText("closed");
   await expect(closed.locator("tr.wf-run-finding-row")).toHaveCount(1);
+});
+
+test("a pull request reviewed locally says nothing reached GitHub, and not that it was a dry run", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The head matched a passed Local Inspector review under a Live Inspector, so the worker
+  // recorded it as `local` and posted nothing. The draft is left from an earlier Dry run round.
+  seedLedger(daemon, [{ number: 605, posture: "local", findings: [{ ...SIX[2]!, id: "local-draft" }] }]);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/inspector`);
+
+  await findingsButton(dashboard, 605).click();
+  const modal = findingsDialog(dashboard, 605);
+  await expect(modal.getByText("Reviewed locally before the pull request opened: nothing on this pull request was posted"))
+    .toBeVisible();
+  await expect(modal).not.toContainText("Dry run: nothing on this pull request was posted");
+  await expect(modal.locator("tr.wf-run-finding-row")).toHaveCount(1);
+  await expectContentClearsBorder(modal);
+  await shoot(dashboard, "findings-modal-reviewed-locally", modal);
 });
 
 const RECORD_LINE = "kept as a record and will not be reviewed again";

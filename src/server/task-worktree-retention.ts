@@ -1,5 +1,10 @@
+import type { Registry } from "./registry.ts";
+import type { TaskManager } from "./tasks.ts";
+import { SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { checkoutDiagnosticClass, orphanedWorktreeReclaimMode, worktreeCleanupReportOnly } from "./worktrees/orphaned-task-checkout.ts";
 import { getWorktreesConfig } from "./worktrees/config.ts";
-import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
+import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
 import {
   claimTaskWorktreeCleanup,
   completeTaskWorktreeCleanup,
@@ -7,6 +12,8 @@ import {
   deleteTaskWorktreeRetention,
   getTask,
   getTaskWorktreeRetention,
+  holdTaskWorktreeRetention,
+  listTaskWorktreeRetention,
   listOrphanedTaskWorktreeRetentionIds,
   recordTaskWorktreeObservation,
   recoverAbandonedTaskWorktreeCleanups,
@@ -30,7 +37,7 @@ import {
   isRetentionRetryable,
   taskResourceGeneration,
 } from "./task-resource-generation.ts";
-import { taskHasWorktrees } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskRepoRefs } from "@shared/task-repos.ts";
 import type { Task } from "@shared/types.ts";
 
 // The daemon's durable, task-level worktree activity clock, and the sweep that acts on it.
@@ -64,6 +71,56 @@ import type { Task } from "@shared/types.ts";
 //    stays past due; a failure to clean it is never converted into another full window of life.
 
 export { isRetentionCandidate, taskResourceGeneration };
+
+export const SEVEN_DAY_RETENTION_MS = 7 * RETENTION_DAY_MS;
+
+export function backgroundWorktreeCleanupMode() {
+  if (worktreeCleanupReportOnly()) return "report-only";
+  return featureEnabled(SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID) ? "enforce" : "configured";
+}
+
+/**
+ * Existing Worktrees diagnostics, with bounded output and no checkout paths or private claim
+ * data.
+ *
+ * `slotPath` is the dispatcher's `worktreeSlotPath`, supplied by the caller so this module
+ * imports nothing that owns teardown.
+ */
+export async function backgroundWorktreeRetentionStatus(
+  tasks: readonly Task[],
+  slotPath: (taskId: string, position: number) => string,
+) {
+  const owners = new Map(tasks.filter(isRetentionRetryable).map((task) => [task.id, task]));
+  const rows = listTaskWorktreeRetention().flatMap((row) => {
+    const task = owners.get(row.taskId);
+    if (!task || row.generation !== taskResourceGeneration(task)) return [];
+    return [{ task, row }];
+  });
+  const entries = await Promise.all(rows.slice(0, 100).map(async ({ task, row }) => {
+    const refs = taskRepoRefs(task).filter((ref) => ref.worktreePath);
+    return {
+      taskId: task.id,
+      // One entry per held checkout, identified by its repository position, never by path.
+      // `class` is what is on disk there right now, read from the filesystem for this response
+      // and never cached. `dangling-link` is what an orphan looks like; the blocker below says
+      // whether its full proof passed.
+      checkouts: await Promise.all(refs.map(async (ref) => ({
+        position: ref.position,
+        provider: ref.provider,
+        class: await checkoutDiagnosticClass(ref, slotPath(task.id, ref.position)),
+      }))),
+      unownedSince: row.unownedSince,
+      cleanupDueAt: row.unownedSince !== null ? row.cleanupDueAt : null,
+      blocker: row.lastError,
+    };
+  }));
+  return {
+    mode: backgroundWorktreeCleanupMode(),
+    orphanReclaim: orphanedWorktreeReclaimMode(),
+    entries,
+    total: rows.length,
+  };
+}
 
 /** Default window, retained for callers that need the shipped policy rather than current config. */
 export const RETENTION_WINDOW_MS = TASK_RETENTION_DEFAULT_DAYS * RETENTION_DAY_MS;
@@ -202,6 +259,12 @@ export interface RetentionObserverDeps {
    * The due-cleanup half. Absent means observe only - no claim is ever taken and no task is
    * ever handed to `TaskManager`, which is the shape the zero-cleanup tests construct.
    */
+  departure?: {
+    useBlocker: (task: Task) => string | null;
+    occupancyBlocker: (task: Task) => Promise<string | null>;
+    canReclaim?: (row: TaskWorktreeRetentionRow) => boolean;
+    readonly reportOnlyBlocker?: (task: Task, path: string) => Promise<string | null>;
+  };
   cleanup?: RetentionCleanupDeps;
 }
 
@@ -220,6 +283,42 @@ export const defaultRetentionObserverDeps: Omit<RetentionObserverDeps, "listTask
     return () => clearTimeout(timer);
   },
 };
+
+/** Read live rollout settings during observation and before provider return. */
+export function createDaemonRetentionObserver(
+  registry: Pick<Registry, "listTasks" | "refreshTaskAutomaticCleanup">,
+  tasks: Pick<TaskManager, "backgroundWorktreeUseBlocker" | "backgroundWorktreeOccupancyBlocker" |
+    "backgroundWorktreeReportOnly" | "backgroundWorktreeActivity" | "enqueueRetentionCleanup">,
+  now = Date.now,
+): TaskWorktreeRetentionObserver {
+  const retentionMs = () => backgroundWorktreeCleanupMode() === "configured"
+    ? defaultRetentionObserverDeps.retentionMs() : SEVEN_DAY_RETENTION_MS;
+  const reportOnlyBlocker = (task: Task, path: string) => tasks.backgroundWorktreeReportOnly(task, path);
+  return new TaskWorktreeRetentionObserver({
+    ...defaultRetentionObserverDeps,
+    // Orphan-aware only while `orphaned-worktree-reclaim` is evaluated; otherwise exactly the
+    // default Git probe. The same probe re-reads the checkouts inside TaskManager's guards.
+    probe: (task) => tasks.backgroundWorktreeActivity(task),
+    listTasks: () => registry.listTasks(),
+    now,
+    retentionMs,
+    departure: {
+      useBlocker: (task) => tasks.backgroundWorktreeUseBlocker(task),
+      occupancyBlocker: (task) => tasks.backgroundWorktreeOccupancyBlocker(task),
+      canReclaim: (row) => backgroundWorktreeCleanupMode() !== "report-only"
+        && row.unownedSince !== null
+        && worktreeRetentionCutoff(row.lastChangedAt, row.unownedSince, retentionMs()) <= now(),
+      get reportOnlyBlocker() {
+        return backgroundWorktreeCleanupMode() === "report-only" ? reportOnlyBlocker : undefined;
+      },
+    },
+    cleanup: {
+      ...defaultRetentionCleanupDeps,
+      reclaim: (request) => tasks.enqueueRetentionCleanup(request),
+      refreshSummary: (taskId) => registry.refreshTaskAutomaticCleanup(taskId),
+    },
+  });
+}
 
 /** What one pass did, for logging and for tests to assert against. */
 export interface RetentionPassResult {
@@ -363,6 +462,15 @@ export class TaskWorktreeRetentionObserver {
     outcome: RetentionObservationOutcome | null;
     due: DueCleanup | null;
   }> {
+    const departure = this.deps.departure;
+    const before = taskResourceGeneration(task);
+    const hold = (reason: string) => {
+      holdTaskWorktreeRetention(task.id, reason, this.deps.now(), before);
+      this.deps.cleanup?.refreshSummary(task.id);
+      return { outcome: "unknown-recorded" as const, due: null };
+    };
+    const blocked = departure?.useBlocker(task);
+    if (blocked) return hold(blocked);
     // No checkout left: this task is not being CLOCKED any more - there is nothing Git-visible
     // to read and no window that could move - but its cleanup may still be unfinished, because
     // a teardown can hand back the final tree and then fail on the terminal home. That row
@@ -370,10 +478,14 @@ export class TaskWorktreeRetentionObserver {
     // here, so nothing ever seeds a clock for a home that never had one.
     if (!taskHasWorktrees(task)) return { outcome: null, due: this.unfinishedCleanup(task) };
 
-    const before = taskResourceGeneration(task);
+    const prior = departure ? getTaskWorktreeRetention(task.id) : null;
+    let occupancyBlocker: string | null = null;
+    if (departure && (prior?.unownedSince == null || prior.generation !== before)) {
+      occupancyBlocker = await departure.occupancyBlocker(task);
+    }
     let fingerprint: ActivityFingerprint;
     try {
-      fingerprint = await this.deps.probe(task);
+      fingerprint = occupancyBlocker ? { kind: "unknown", reason: occupancyBlocker } : await this.deps.probe(task);
     } catch (err) {
       // Classified, never `String(err)`: a filesystem error's message carries the path of the
       // file it failed on, and this reason is persisted. See `readFailureClass`.
@@ -385,6 +497,10 @@ export class TaskWorktreeRetentionObserver {
     if (!current || !isRetentionCandidate(current)) return { outcome: null, due: null };
     const after = taskResourceGeneration(current);
     if (after !== before) return { outcome: null, due: null };
+    const stillBlocked = departure?.useBlocker(current);
+    if (stillBlocked) return hold(stillBlocked);
+    if (departure && fingerprint.kind === "unknown" &&
+        (prior?.unownedSince == null || prior.generation !== before)) return hold(fingerprint.reason);
 
     const now = this.deps.now();
     const result = this.deps.record({
@@ -394,6 +510,7 @@ export class TaskWorktreeRetentionObserver {
       reason: fingerprint.kind === "unknown" ? fingerprint.reason : null,
       now,
       retentionMs: this.deps.retentionMs(),
+      verifyDeparture: Boolean(departure),
     });
 
     // Is this task now due, and did THIS observation establish the fact a claim needs?
@@ -404,6 +521,22 @@ export class TaskWorktreeRetentionObserver {
     // generation that moved under the pass - yields no candidate at all, which is what makes
     // "we could not look" structurally unable to authorize a deletion.
     const row = result.row;
+    const reportOnlyBlocker = departure?.reportOnlyBlocker;
+    if (departure && reportOnlyBlocker && row && fingerprint.kind === "known" &&
+        row.unownedSince !== null && row.cleanupDueAt <= now) {
+      let reason = await departure.occupancyBlocker(current);
+      for (const ref of taskRepoRefs(current)) {
+        if (reason) break;
+        if (ref.worktreePath) reason = await reportOnlyBlocker(current, ref.worktreePath);
+      }
+      const protectedAgain = departure.useBlocker(current);
+      if (protectedAgain) return hold(protectedAgain);
+      this.deps.record({
+        taskId: task.id, generation: after, fingerprint: null, now, retentionMs: this.deps.retentionMs(),
+        reason: reason ?? "report only: checkout passed read-only eligibility checks",
+      });
+      return { outcome: result.outcome, due: null };
+    }
     if (
       !this.deps.cleanup
       || !row
@@ -435,7 +568,7 @@ export class TaskWorktreeRetentionObserver {
    */
   private unfinishedCleanup(task: Task): DueCleanup | null {
     const cleanup = this.deps.cleanup;
-    if (!cleanup || !task.homeName) return null;
+    if (!cleanup || !task.homeName || this.deps.departure?.reportOnlyBlocker) return null;
     const row = cleanup.readRow(task.id);
     if (!row || row.cleanupState !== "retry") return null;
     const now = this.deps.now();
@@ -459,6 +592,9 @@ export class TaskWorktreeRetentionObserver {
   private async reclaimDue(due: DueCleanup): Promise<string | null> {
     const cleanup = this.deps.cleanup;
     if (!cleanup || this.stopped) return null;
+    const departure = this.deps.departure;
+    const policyAllowsReturn = () => departure?.canReclaim?.(due.row) ?? true;
+    if (!policyAllowsReturn()) return null;
     const token = cleanup.mintToken();
     const claim = cleanup.claim({
       taskId: due.taskId,
@@ -466,6 +602,7 @@ export class TaskWorktreeRetentionObserver {
       fingerprint: due.fingerprint,
       token,
       now: this.deps.now(),
+      requireDeparture: Boolean(this.deps.departure),
     });
     // Refused claims are ordinary, not errors: another pass or another daemon got there first,
     // the deadline moved, or the task was replaced between the probe and the transaction.
@@ -477,6 +614,7 @@ export class TaskWorktreeRetentionObserver {
       fingerprint: due.fingerprint,
       probe: (task) => this.deps.probe(task),
       abandoned: () => this.stopped,
+      claimIsCurrent: departure ? () => policyAllowsReturn() && cleanup.readRow(due.taskId)?.claimToken === token : undefined,
     });
 
     const now = this.deps.now();
@@ -551,6 +689,10 @@ export class TaskWorktreeRetentionObserver {
       const generation = taskResourceGeneration(current);
       if (generation === due.generation) {
         cleanup.defer({ taskId: due.taskId, token, now, retryAt, error: detail });
+        return;
+      }
+      if (this.deps.departure && taskHasWorktrees(current)) {
+        cleanup.release(due.taskId, token, now);
         return;
       }
       await this.adoptRemaining(due, token, now, retryAt, detail, current, generation);

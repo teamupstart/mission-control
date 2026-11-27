@@ -12,9 +12,9 @@
 
 import { isActiveTask } from "./task-status.ts";
 import type { Session } from "./types.ts";
-import { hasBlocker, reportBucket } from "./session.ts";
-import { workflowRunParkedOnSession } from "./workflow.ts";
-import type { WorkflowRunSummary } from "./workflow.ts";
+import { hasBlocker, isAwaiting, reportBucket } from "./session.ts";
+import { workflowRunIsOpen, workflowRunParkedOnSession, workflowRunResumesItself } from "./workflow.ts";
+import type { WorkflowExternalSourceKind, WorkflowRunSummary } from "./workflow.ts";
 import { unpushedClause } from "./unpushed.ts";
 import type { UnpushedCommits } from "./unpushed.ts";
 
@@ -56,6 +56,20 @@ export type StallKind =
   | "unfinished-work"
   | "workflow-parked";
 
+/**
+ * The stall kinds that fire only on an IDLE session: the two rules that read "went quiet with
+ * something still expected". With the `idle-stalled` flag on these leave the inbox for Idle's
+ * Stalled section, because the session is already drawn in Idle and its card is where the
+ * context and the fix belong. The other two stay inbox rows: a silent-working session is in
+ * Working, and an escalation is a decision handed to a person, whatever column it sits in.
+ */
+export const IDLE_STALL_KINDS: readonly StallKind[] = ["unfinished-work", "workflow-parked"];
+
+/** Whether a stall is one Idle's Stalled section draws (`IDLE_STALL_KINDS`). */
+export function isIdleStall(stall: Pick<Stall, "kind">): boolean {
+  return IDLE_STALL_KINDS.includes(stall.kind);
+}
+
 export interface StallThresholds {
   /** Instrumented + working, but no hook event for this long. */
   workingMs: number;
@@ -82,6 +96,8 @@ export interface Stall {
   kind: StallKind;
   /** How long it has been stuck, ms. */
   forMs: number;
+  /** Start of the episode measured by the daemon, in epoch ms. Older daemons omit it. */
+  since?: number;
   /** One line naming the stall, for the alert body and the digest. */
   reason: string;
   /**
@@ -92,12 +108,85 @@ export interface Stall {
    * session leaves you to find which of its runs stopped.
    */
   workflowRunId?: string;
+  /**
+   * What the rule observed, by kind, for a surface that offers the fix in place (the inbox's
+   * Stuck row). Structured so nothing has to parse `reason`, whose wording is pinned and whose
+   * minutes climb. Optional on the wire: a stall from a daemon that predates it carries none.
+   */
+  facts?: StallFacts;
+  /**
+   * The kind, `facts` and when this stall episode began, with the climbing age left out: equal
+   * while minutes pass, different when what is stuck changes (a new round, a different open
+   * task) or when the session moved and then stalled again. A dismissal is keyed on it.
+   */
+  fingerprint?: string;
 }
 
-/** Terminal task states - work that is over, however it ended. */
-function taskOpen(s: Session): boolean {
+/** The open task a stall names, by id and title. */
+export interface StallTask {
+  id: string;
+  title: string;
+}
+
+/**
+ * The facts each rule observed. `unfinished-work` keeps its two sources apart, because only an
+ * open task can be completed from the inbox: a queue's items are handled in the session.
+ */
+export type StallFacts =
+  | {
+    kind: "silent-working";
+    /** The session's last activity line, or null when it reported none. */
+    activity: string | null;
+    /** When the hook stream last spoke, epoch ms. */
+    quietSince: number;
+  }
+  | {
+    kind: "unfinished-work";
+    /** The session's open task, or null when only its queue is open. */
+    task: StallTask | null;
+    /** Open queue items, zero when the queue is drained or absent. */
+    queueOpen: number;
+  }
+  | {
+    kind: "workflow-parked";
+    runId: string;
+    workflowName: string;
+    status: WorkflowRunSummary["status"];
+    round: number;
+    /** Whether Resubmit can open the next round: a manual or Preview run, not external. */
+    resubmittable: boolean;
+    /**
+     * The orchestrator that started this run (an ensemble), or null for a run an operator or
+     * Foreman started. Such a run reviews one exact external result: only its source can submit
+     * again, so neither Resubmit nor the session's next turn moves it.
+     */
+    externalSource: WorkflowExternalSourceKind | null;
+    /** Commits the remote has not seen, zero when none or not observed. */
+    unpushedCommits: number;
+  }
+  | {
+    kind: "escalated";
+    /** What Foreman escalated, or null when its note carries no text. */
+    text: string | null;
+  };
+
+/** Open work that needs completion, rather than a resident's standing role. */
+export function hasOpenStallTask(s: Session): boolean {
+  // A resident keeps its task running between iterations. That alone is not a stall;
+  // explicit queue work and parked workflows still count in workOutstanding.
+  if (s.task?.kind === "resident") return false;
   const st = s.task?.status;
   return st !== undefined && (st === "backlog" || isActiveTask(st));
+}
+
+/** Any open run exempts its session from stalls while the next move belongs to the workflow.
+ * A run parked on the session is waiting for the session to act. */
+export function workflowOwnsNextMove(
+  sessionId: string,
+  runs: readonly WorkflowRunSummary[] | undefined,
+): boolean {
+  return runs?.some((run) => run.sessionId === sessionId
+    && workflowRunIsOpen(run.status) && !workflowRunParkedOnSession(run.status)) ?? false;
 }
 
 /**
@@ -154,9 +243,87 @@ type Outstanding =
 function workOutstanding(s: Session, runs: readonly WorkflowRunSummary[]): Outstanding | null {
   const parked = parkedRunFor(s, runs);
   if (parked) return { kind: "workflow-parked", run: parked };
-  if (taskOpen(s)) return { kind: "unfinished-work" };
+  if (hasOpenStallTask(s)) return { kind: "unfinished-work" };
+  return openStallQueueCount(s) > 0 ? { kind: "unfinished-work" } : null;
+}
+
+/** Open queue items that still count as outstanding: none once the queue has drained. */
+export function openStallQueueCount(s: Session): number {
   const q = s.queue;
-  return q && q.openCount > 0 && !q.drained ? { kind: "unfinished-work" } : null;
+  return q && q.openCount > 0 && !q.drained ? q.openCount : 0;
+}
+
+/**
+ * Whether Resubmit can move a parked run. Only a round parked in `waiting_for_session` that
+ * will not pick itself back up: a `waiting_for_new_head` run waits on a push and the manager
+ * refuses to resubmit it, and an externally started run is refused too
+ * (`WorkflowManager.resubmit`).
+ */
+function resubmittable(run: WorkflowRunSummary): boolean {
+  return run.status === "waiting_for_session" && !workflowRunResumesItself(run) && !run.externalSource;
+}
+
+function factsFor(
+  kind: StallKind,
+  s: Session,
+  run: WorkflowRunSummary | null,
+  unpushed: UnpushedByRun,
+): StallFacts {
+  switch (kind) {
+    case "silent-working":
+      return { kind, activity: s.activity ?? null, quietSince: quietSince(s) };
+    case "unfinished-work":
+      return {
+        kind,
+        task: hasOpenStallTask(s) && s.task ? { id: s.task.id, title: s.task.title } : null,
+        queueOpen: openStallQueueCount(s),
+      };
+    case "workflow-parked": {
+      const observed = unpushed.get(run!.id);
+      return {
+        kind,
+        runId: run!.id,
+        workflowName: run!.workflowName,
+        status: run!.status,
+        round: run!.round,
+        resubmittable: resubmittable(run!),
+        externalSource: run!.externalSource?.kind ?? null,
+        unpushedCommits: observed?.state === "ahead" ? observed.commits : 0,
+      };
+    }
+    case "escalated":
+      return { kind, text: s.note?.brief || s.note?.lastAction || s.note?.purpose || null };
+  }
+}
+
+/**
+ * The facts and the episode they belong to, as one string.
+ *
+ * `since` is when this stall episode began: the moment the session last spoke for the three
+ * silence rules, and when Foreman wrote its note for an escalation. It holds still for as long
+ * as the stall lasts, so minutes passing never change the fingerprint, and it moves only when
+ * the session speaks or Foreman escalates again. That is what makes a session that worked,
+ * then went quiet again with the same activity line or the same escalation text, a new row
+ * rather than one that stays dismissed.
+ */
+export function stallFingerprint(facts: StallFacts, since: number): string {
+  return JSON.stringify({ ...facts, since });
+}
+
+/** Mixed-version peers may omit the fingerprint. Use the session's episode start and the
+ * reported work identity so a changing elapsed minute never creates a new dismissal key. */
+export function legacyStallFingerprint(stall: Stall, session?: Session): string {
+  const since = stall.kind === "escalated" ? session?.note?.updatedAt : session?.lastActivity ?? session?.firstSeen;
+  return JSON.stringify([
+    stall.kind, since, stall.workflowRunId, stall.facts,
+    stall.kind === "unfinished-work" ? session?.task?.id : null,
+    stall.kind === "unfinished-work" ? session?.queue?.openCount : null,
+  ]);
+}
+
+/** A stall with its facts and fingerprint attached. */
+function withFacts(stall: Stall, facts: StallFacts, since: number): Stall {
+  return { ...stall, facts, since, fingerprint: stallFingerprint(facts, since) };
 }
 
 /**
@@ -235,18 +402,19 @@ export function detectStall(
   // Paused on purpose: silence is the point, and a stalled-session alert would only report
   // the operator's own decision back to them.
   if (s.pause) return null;
+  if (workflowOwnsNextMove(s.id, runs)) return null;
 
   // 1. Foreman escalated a decision to you and it is still sitting there. The most
   //    certain of the three: something explicitly asked for a human and got no reply.
   if (s.note?.disposition === "escalated") {
     const age = now - s.note.updatedAt;
     if (age >= th.escalationMs) {
-      return {
+      return withFacts({
         sessionId: s.id,
         kind: "escalated",
         forMs: age,
         reason: `escalated to you ${mins(age)}m ago, still unanswered`,
-      };
+      }, factsFor("escalated", s, null, unpushed), s.note.updatedAt);
     }
   }
 
@@ -260,12 +428,12 @@ export function detectStall(
   if (reportBucket(s, sessions) === "working" && (s.state === "working" || s.state === "starting")) {
     const age = now - quietSince(s);
     if (age >= th.workingMs) {
-      return {
+      return withFacts({
         sessionId: s.id,
         kind: "silent-working",
         forMs: age,
         reason: `working but silent for ${mins(age)}m${s.activity ? ` (last: ${s.activity})` : ""}`,
-      };
+      }, factsFor("silent-working", s, null, unpushed), quietSince(s));
     }
   }
 
@@ -286,27 +454,29 @@ export function detectStall(
   //    point of resuming. The runs that will never resume do not wait for this clock at all -
   //    `workflowRunWaitsOnOperator` puts them on the Line the moment they park.
   //    A blocked session is exempt: its blocker already explains the silence, and its age is
-  //    on the card. It is not stuck, it is waiting on someone else.
-  const outstanding = reportBucket(s, sessions) === "idle" && !hasBlocker(s)
+  //    on the card. It is not stuck, it is waiting on someone else. A session awaiting its own
+  //    background process is exempt until the deadline it declared, and only until then: past
+  //    it this rule applies again, so a watcher that died cannot hide a stalled session.
+  const outstanding = reportBucket(s, sessions) === "idle" && !hasBlocker(s) && !isAwaiting(s, now)
     ? workOutstanding(s, runs)
     : null;
   if (outstanding) {
     const age = now - quietSince(s);
     if (age >= th.unfinishedMs) {
       return outstanding.kind === "workflow-parked"
-        ? {
+        ? withFacts({
           sessionId: s.id,
           kind: "workflow-parked",
           forMs: age,
           reason: parkedReason(outstanding.run, age, unpushed),
           workflowRunId: outstanding.run.id,
-        }
-        : {
+        }, factsFor("workflow-parked", s, outstanding.run, unpushed), quietSince(s))
+        : withFacts({
           sessionId: s.id,
           kind: "unfinished-work",
           forMs: age,
           reason: `idle ${mins(age)}m with work unfinished`,
-        };
+        }, factsFor("unfinished-work", s, null, unpushed), quietSince(s));
     }
   }
 

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeGhWritebackScript } from "../fixtures/fake-agents.ts";
@@ -74,7 +75,6 @@ async function shoot(page: Page, name: string, anchor?: Locator): Promise<void> 
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/task-source-writeback/${name}.png`);
 }
 
@@ -84,6 +84,7 @@ const PR_URL = "https://github.com/acme/demo-repo/pull/9";
 
 async function configureAcli(page: Page, daemon: DaemonHandle, resolveTransition = "Done"): Promise<void> {
   const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: {
+    revision: await taskSourcesRevision(page, daemon),
     sources: [{ id: "src-writeback", kind: "jira", label: "acli issues", enabled: false,
       repoRoot: daemon.repo, writeback: { onPrOpened: true, onCompleted: true, resolve: true },
       config: { queryVia: "acli", site: "example.atlassian.net", jql: "project = MC", resolveTransition, linkVia: "both" },
@@ -273,6 +274,7 @@ async function configureSource(
 ): Promise<void> {
   const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
+      revision: await taskSourcesRevision(page, daemon),
       sources: [
         {
           id: "src-writeback",

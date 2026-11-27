@@ -1937,7 +1937,7 @@ export class EnsembleStore {
       readyAt?: number | null;
       error?: string | null;
     } = {},
-    now = Date.now(),
+    _now = Date.now(),
   ): EnsembleTransition<EnsembleArtifact> {
     if (next === "ready" && (patch.locator === undefined || patch.digest === undefined)) {
       throw new Error("a ready artifact must carry its locator and fingerprint");

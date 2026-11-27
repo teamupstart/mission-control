@@ -32,7 +32,6 @@ async function captureFirstOpen(page: Page): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}first-open-link.png` });
-  // eslint-disable-next-line no-console
   console.log("CAPTURED e2e/.artifacts/conversation-file-link-first-open/first-open-link.png");
 }
 

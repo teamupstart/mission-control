@@ -34,7 +34,6 @@ async function shoot(target: Locator, page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/diff-comment-parity/${name}.png`);
 }
 

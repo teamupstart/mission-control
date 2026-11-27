@@ -1,3 +1,4 @@
+import { SKIN_SETTING } from "@shared/session-settings-metadata.ts";
 import { SKINS, type Skin, type SkinId } from "@shared/skins.ts";
 import { useRichText } from "../lib/rich-text.ts";
 import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
@@ -48,8 +49,8 @@ function SkinPicker(): React.JSX.Element {
     <div
       className="layout-picker skin-picker"
       role="radiogroup"
-      aria-label="Skin"
-      data-anchor="display/skin"
+      aria-label={SKIN_SETTING.label}
+      data-anchor={SKIN_SETTING.anchor}
     >
       {SKINS.map((skin) => (
         <label

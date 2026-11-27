@@ -265,6 +265,7 @@ function appendGpt6Version(
   versions: BuiltinWorkflowSource["versions"],
 ): BuiltinWorkflowSource["versions"] {
   const previous = versions.at(-1);
+  // oxlint-disable-next-line repository/agent-comparison -- The migration applies to persisted Codex runner defaults.
   if (!previous || previous.personaExecution?.default?.runner !== "codex") {
     throw new Error("GPT-6 workflow upgrade requires a Codex-routed previous version");
   }
@@ -274,6 +275,7 @@ function appendGpt6Version(
       "gpt-5.6-terra": "gpt-6-sol",
       "gpt-5.6-luna": "gpt-6-luna",
     }[execution.model];
+    // oxlint-disable-next-line repository/agent-comparison -- The migration applies to persisted Codex runner defaults.
     if (!model || execution.runner !== "codex") {
       throw new Error(`unexpected built-in workflow model ${execution.runner}/${execution.model}`);
     }
@@ -303,6 +305,31 @@ function appendCodeRabbitVersion(versions: BuiltinWorkflowSource["versions"]): B
       previous.pipeline.stages[0]!,
       { kind: "evaluation", joinId: null, members: [check("nmr-check-coderabbit", "coderabbit")] },
       ...previous.pipeline.stages.slice(1),
+    ] },
+  }];
+}
+
+/**
+ * Version 23: the Local Inspector runs last before the Pull Request action.
+ *
+ * Appended after every other transformation for the reason `appendCodeRabbitVersion` is: the
+ * versions before it keep their hashes, guidance and node ids exactly as shipped. The stage
+ * reviews what every other reviewer already accepted, so it sits immediately before the
+ * action, and the completion policy stays version 22's `inspector` gate so the step after the
+ * pull request can confirm the pushed content is the content the local review passed.
+ */
+function appendLocalInspectorVersion(versions: BuiltinWorkflowSource["versions"]): BuiltinWorkflowSource["versions"] {
+  const previous = versions.at(-1)!;
+  const stages = previous.pipeline.stages;
+  const pullRequest = stages.at(-1);
+  if (pullRequest?.kind !== "session_action") {
+    throw new Error("Local Inspector upgrade requires a Pull Request action as the last stage");
+  }
+  return [...versions, { ...previous, sourceDraftRevision: previous.sourceDraftRevision + 1,
+    pipeline: { ...previous.pipeline, stages: [
+      ...stages.slice(0, -1),
+      { kind: "evaluation", joinId: null, members: [check(NO_MISTAKES_REVIEW_NODES.localInspector, "inspector")] },
+      pullRequest,
     ] },
   }];
 }
@@ -413,6 +440,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   evidenceDocumentation: "nmr-evidence-documentation-join",
   pullRequest: "nmr-pull-request",
   end: "nmr-end",
+  localInspector: "nmr-check-local-inspector",
 } as const;
 
 const reviewer = (nodeId: string, slug: string): Extract<StageMember, { kind: "persona" }> =>
@@ -1118,8 +1146,8 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       "Typecheck, test, lint, optional YAML-enabled CodeRabbit review, then eight review roles: Intent Conformance and Test Coverage; Code "
       + "Risk, Quality and Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
       + "unconfigured slots skip and pass. Failures return for repair. The current version runs "
-      + "every reviewer with Codex, using Sol for Code Design and Terra for the others, then opens and verifies "
-      + "the pull request before the final GitHub Inspector gate.",
+      + "reviewers with Codex, then the Local Inspector when local review is on, then opens and verifies "
+      + "the pull request before the final Inspector gate.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
@@ -1128,7 +1156,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     // Version 7 turns on engine-owned resumption, so a parked repair round no longer waits on
     // a human click; versions 1-6 keep the `manual` posture they were published with.
-    versions: appendCodeRabbitVersion(appendDocumentationGuidanceVersion(appendGpt6Version([
+    versions: appendLocalInspectorVersion(appendCodeRabbitVersion(appendDocumentationGuidanceVersion(appendGpt6Version([
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
         personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
@@ -1420,7 +1448,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 18,
       },
-    ]))),
+    ])))),
   }),
   builtinWorkflow({
     slug: GENERAL_REVIEW_WORKFLOW_SLUG,

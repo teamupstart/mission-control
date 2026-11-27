@@ -1,3 +1,5 @@
+import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
+import { taskRepoRefs } from "@shared/task-repos.ts";
 import {
   HIBERNATE_OPEN_RUN_REFUSAL,
   hibernateRefusal,
@@ -295,6 +297,10 @@ export class HibernationManager {
       return { ok: false, status: 409, error: "This task is not hibernated." };
     }
     if (this.busy.has(taskId)) return { ok: false, status: 409, error: "It is already resuming." };
+    const paths = taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
+    if (task.hibernation.checkout) paths.push(task.hibernation.checkout.path);
+    using worktreeUse = reserveWorktreeUse(paths);
+    if (!worktreeUse) return { ok: false, status: 409, error: "Automatic cleanup currently owns this checkout." };
     this.busy.add(taskId);
     try {
       const record = task.hibernation;
@@ -353,7 +359,9 @@ export class HibernationManager {
     if (mismatch) return this.resumeFailed(taskId, mismatch);
     let session: Session;
     try {
-      session = await this.supervisor.wake(record.sessionId, record.agentSessionId);
+      // Named, because hibernating cleared the task's session pointer: the woken agent runs
+      // this task, so it carries this task's work unit.
+      session = await this.supervisor.wake(record.sessionId, record.agentSessionId, taskId);
     } catch (error) {
       return this.resumeFailed(taskId, error instanceof Error ? error.message : String(error));
     }
@@ -860,7 +868,7 @@ export class HibernationManager {
           try {
             do {
               again = false;
-              for (const candidate of [...candidates.values()]) {
+              for (const candidate of Array.from(candidates.values())) {
                 if (finished) return;
                 const ours = await prove(candidate).catch(() => false);
                 if (ours && !finished) {

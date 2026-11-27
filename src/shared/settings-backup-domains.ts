@@ -48,6 +48,11 @@ export const SETTINGS_BACKUP_DOMAINS = [
   // Task shaping's registered shapers and settings, edited in Settings > Task shaping. It was
   // `runtime` until that panel landed; the id never changes.
   { id: "shaping", surface: "settings" },
+  // Voice settings, edited in Settings > Voice. `muted` is operational and never restored.
+  { id: "voice", surface: "settings" },
+  // Settings > Reports' guidance for when an agent posts a report (`inbox` flag). Added after
+  // format v1 shipped, so a snapshot without it leaves the guidance alone.
+  { id: "reports", surface: "settings" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

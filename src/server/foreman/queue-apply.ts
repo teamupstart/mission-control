@@ -59,7 +59,7 @@ export interface QueueActions {
     transcriptAnchor: number | null,
   ): Promise<unknown>;
   recoverItem(sessionId: string, itemId: string): Promise<unknown>;
-  markWrapupAsked(sessionId: string): Promise<unknown>;
+  markWrapupAsked(sessionId: string, retire?: true): Promise<unknown>;
   setWrapupAnswer(sessionId: string, answer: string): Promise<unknown>;
   /** HEAD sha + transcript byte size to record as this item's scope at delivery. */
   captureScope(
@@ -346,12 +346,8 @@ export async function applyQueueAction(
       return { kind: "done", what: "the queue drained - asked about wrapping up" };
 
     case "skip-wrapup":
-      // Retire the automatic drain without raising a Ship it? card. Answer FIRST, so a
-      // crash between these two harmless writes can only leave an unasked, already-answered
-      // row. Marking first would briefly surface the very shipping choices this policy says
-      // do not apply. A failed mark is retried next tick; a repeated answer is idempotent.
-      await actions.setWrapupAnswer(session.id, "foreman:automatic-wrapup-skipped");
-      await actions.markWrapupAsked(session.id);
+      // Commit the answer and the consumed drain together.
+      await actions.markWrapupAsked(session.id, true);
       return { kind: "done", what: `automatic wrap-up skipped: ${action.reason}` };
 
     case "auto-wrapup": {

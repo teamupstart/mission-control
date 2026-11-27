@@ -29,7 +29,12 @@ current checkout and starts a fresh full review, spending one repair round. It d
 another edit or push, and passes earned before this review cannot be reused. Missing publication
 proof, unpublished deliverables, and missing retained artifact evidence still hold publication.
 The fresh-review requirement survives disabling Inspector or exhausting the repair budget.
-The earlier review never approves the changed tree.
+The earlier review never approves the changed tree. If Inspector has reviewed that published
+head and has unresolved posted findings, the gate prepares its repair packet and Live delivery sends
+it to the owning session even while full review is still owed. The packet asks the agent to
+address the GitHub threads, including evidence-only replies. This case always returns through
+full workflow review, including under an Inspector-only findings policy. Resolving a thread
+without changing the head does not waive that review, and earlier passes cannot be reused.
 
 If an older binding lacks a repository root, normalization uses the pinned adopted PR's
 repository provenance. Missing provenance still blocks the gate.
@@ -186,6 +191,17 @@ A repo with neither is reviewed against a built-in default brief instead - gener
 judgement, with the same insistence on a low noise floor - so the GitHub Inspector still works on a
 repo nobody has configured. It's read fresh each round, so editing it changes the next review.
 
+Every round sends the whole diff, so the review prompt tells a round after the first which
+round it is and raises its bar. A later round checks the repair: it raises a new finding only
+for a blocker or major on a path people ordinarily hit, or for a fix that broke something, and
+it leaves out narrower variants of an issue already fixed and cases that need unlikely timing,
+malformed input or a local machine failure unless the consequence cannot be undone. The first
+round is asked for every finding that clears the brief's bar at once, because one it holds
+back returns on a later push. The bar itself is "How far to dig", in this repository's brief
+and in the built-in default: judge likelihood against the kind of system the code belongs to,
+and raise an unlikely case only when its consequence cannot be undone. Neither names a
+product or a language.
+
 The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the GitHub Inspector judges a PR
 against the contract the repo actually asserts. Both names are consulted, at the repo root
 and in any directory the PR touched, but a document is loaded **once**: repos commonly ship
@@ -238,6 +254,22 @@ tier at roughly $2 a round - and nothing in the app recorded it or could show it
 A model is a **cost** choice here, not a latency one. The same 10KB PR measured 225s on
 Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
 `MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
+
+A full review runs at `xhigh` reasoning effort unless you choose otherwise, wherever the
+provider offers that level for the resolved model. It is the one thorough read a pull request
+gets: the first round is asked for every finding that clears the bar, and later rounds only
+check the repair. Follow-up replies keep the provider's default. The
+[Reasoning effort setting](models.md#reasoning-effort-for-background-work) overrides both. The
+timings above were measured at default effort, so a review now takes longer than they show,
+and the review timeout is 1200 seconds to allow for it.
+
+Inspector answers waiting follow-ups in order before reviewing the PR. A failed reply ends
+work on that PR for the sweep, so Inspector can observe and process the next PR. Unanswered
+questions stay pending, and the retry wait starts when the failure occurs. Inspector keeps
+observing the PR during backoff, including checking whether a new head can end the wait.
+Waiting questions and pending thread resolutions share one queue. Work carried over from the
+previous sweep runs before newly discovered work. A failed operation moves behind the other
+queued work.
 
 ### Whether a finding reached GitHub
 
@@ -402,6 +434,40 @@ which also shows its fingerprint and timestamps. The modal reads
 `GET /api/inspector/findings` when it opens and again on the panel's 4-second poll while it
 stays open. It has no Resolve: that stays on the row, and closes every finding on the pull
 request at once.
+
+## Local Inspector (preview)
+
+**Review in the workflow before the pull request opens** runs the Inspector's review when a
+workflow reaches a [Local Inspector Command](workflows.md#local-inspector-command-preview).
+Inspector must be on. Both Dry run and Live support local review. Findings go to the author's
+session, and enabled reviews require a verified read-only workload on the submitted checkout.
+Tune the blocking severity, timeout and allowance in **Library > Commands > Local Inspector**.
+
+With Local review on, a workflow that runs the Local Inspector last before its Pull Request
+action (No-Mistakes Review version 23) skips the GitHub review round only for a pushed head that
+matches a passed Local Inspector attempt, and only in a repository that does not hold the merge
+grant. A skipped or failed attempt, a head whose content or base differs, and every head in a
+merge-grant repository still get the GitHub review:
+
+| Setting | Before the pull request | After the pull request |
+| --- | --- | --- |
+| Local review off | Nothing | Every pushed head is reviewed on GitHub. Live posts, Dry run records |
+| Local review on, Dry run | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed, never posted |
+| Local review on, Live | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed and posted as before |
+
+A head matches when its Git tree and base branch equal what a passed (not skipped) Local
+Inspector attempt read. For a matched head the worker keeps observing the pull request (state,
+checks, CodeRabbit follow-up, stack lifecycle and the merge check) but starts no review,
+answers no thread and posts nothing. It records the head with review posture `local` under a
+Live Inspector, and with the current posture (`dry-run` or `not-allowlisted`) otherwise. The
+session chip shows a check mark and says the head was reviewed locally. Existing Inspector
+threads on the pull request are left as they are. See
+[Local review replaces the GitHub round](workflows.md#local-review-replaces-the-github-round)
+for the fallbacks.
+
+Until Shipping accepts a local review as merge provenance, the merge predicate refuses the
+`local` posture as an unpublished review, and a repository holding the **merge grant** keeps the
+GitHub review for every head, so nothing there is left without merge provenance.
 
 ## Shipping (YOLO mode)
 
@@ -996,14 +1062,16 @@ had already been written off:
 Only a **merged** pull request does this. One that was closed without merging changes
 nothing, and neither does one still open. A stacked pull request also has to have merged into
 the repository's default branch: one merged into its parent's branch is
-[not a merge here](#a-merge-into-the-parents-branch). An upgrade records the merged outcome, releases
-dependents, and starts final completion cleanup for task-owned worktrees. Required archives
-are saved before those worktrees are reset and returned.
+[not a merge here](#a-merge-into-the-parents-branch). An upgrade records the merged outcome
+and releases dependents.
 
-Final completion of a task with owned worktrees closes its agent and resets and returns those
-worktrees, including residual local changes, regardless of the Shipping setting. An agent that
-is still working, awaiting input or review, or carrying queued work is not completed from an
-intermediate merge. Its episode must first finish idle with an empty queue.
+Final completion of a task with owned worktrees closes its agent and leaves those worktrees
+under background retention, regardless of the Shipping setting. The grace period begins
+once the daemon confirms the last tracked user has left. When retention cleanup can proceed,
+the daemon saves required archives before it resets or removes the worktrees.
+
+An agent that is still working, awaiting input or review, or carrying queued work is not
+completed from an intermediate merge. Its episode must first finish idle with an empty queue.
 
 **Settings > Shipping > Close assigned sessions after their pull requests merge** controls
 agents without task-owned worktrees:
@@ -1014,8 +1082,8 @@ agents without task-owned worktrees:
 | **on** | Close the idle completed agent to free fleet capacity |
 
 Provider or archive failures preserve the unreturned resource records. See
-[task worktree retention](worktrees-and-checks.md#task-worktree-retention) for safe Kill returns,
-manual reconciliation, quarantine, and the unchanged 30-day fallback.
+[task worktree retention](worktrees-and-checks.md#task-worktree-retention) for the grace period,
+automatic return requirements, and manual reconciliation.
 
 ## Automatic PR branch updates (preview)
 

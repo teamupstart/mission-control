@@ -201,24 +201,25 @@ test("without room on either side, an option's tooltip goes above or below the w
   // Too narrow for a bubble beside a 272px menu on either side.
   await dashboard.setViewportSize({ width: 460, height: 800 });
   const { menu, chat, terminal } = await openViewMenu(dashboard, detail);
-  const menuBox = await box(menu);
-  expect(menuBox.x, "the window left room for a bubble on the left").toBeLessThan(260);
-  expect(460 - (menuBox.x + menuBox.width), "the window left room on the right").toBeLessThan(260);
 
   await terminal.hover();
   const tip = bubble(dashboard, "terminal stream");
   await expect(tip).toBeVisible();
-  const tipBox = await box(tip);
-  // Outside the menu altogether, so it covers neither option - not above or below the row,
-  // which is where the other option is.
-  expect(overlaps(tipBox, menuBox), "the fallback tooltip covers the menu").toBe(false);
-  expect(overlaps(tipBox, await box(chat)), "the fallback tooltip covers Chat").toBe(false);
-  expect(
-    tipBox.y + tipBox.height <= menuBox.y || tipBox.y >= menuBox.y + menuBox.height,
-    "the fallback tooltip is not above or below the menu",
-  ).toBe(true);
-  await expectOnScreen(dashboard, tipBox);
-  await shoot(dashboard, "narrow-window-fallback", tipBox, menuBox);
+  // The portal measures its bubble before choosing the fallback side. Sample fresh
+  // rectangles together on every attempt so the assertion uses the settled placement.
+  await expect(async () => {
+    const [menuBox, tipBox, chatBox] = await Promise.all([box(menu), box(tip), box(chat)]);
+    expect(menuBox.x, "the window left room for a bubble on the left").toBeLessThan(260);
+    expect(460 - (menuBox.x + menuBox.width), "the window left room on the right").toBeLessThan(260);
+    expect(overlaps(tipBox, menuBox), "the fallback tooltip covers the menu").toBe(false);
+    expect(overlaps(tipBox, chatBox), "the fallback tooltip covers Chat").toBe(false);
+    expect(
+      tipBox.y + tipBox.height <= menuBox.y || tipBox.y >= menuBox.y + menuBox.height,
+      "the fallback tooltip is not above or below the menu",
+    ).toBe(true);
+    await expectOnScreen(dashboard, tipBox);
+  }).toPass({ timeout: 5_000 });
+  await shoot(dashboard, "narrow-window-fallback", await box(tip), await box(menu));
 });
 
 test("a side tooltip taller than the room above its row slides down to stay on screen", async ({

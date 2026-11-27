@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Mission Control is a local control plane for Claude Code, Codex, and Pi sessions, built with Node.js 24+, TypeScript 5.7, React 19, Vite 6, Electron 43, Hono 4, Zod 4, and SQLite.
+Mission Control is a local control plane for Claude Code, Codex, and Pi sessions, built with Node.js, TypeScript, React, Vite, Electron, Hono, Zod, and SQLite. See [package.json](package.json) for supported versions and [package-lock.json](package-lock.json) for the resolved dependencies.
 
 Read the [documentation index](docs/README.md) for product behavior and setup. Before changing a subsystem, read:
 
@@ -13,6 +13,8 @@ Read the [documentation index](docs/README.md) for product behavior and setup. B
 
 ## Commands
 
+The CI gates job runs `scripts/check-doc-links.mjs` for local documentation links.
+
 Run commands from the repository root with Node.js 24 or newer.
 
 ```sh
@@ -21,6 +23,7 @@ npm run dev
 npm run build
 npm run typecheck
 npm run lint
+npm run konsistent
 npm test
 npm run test:electron
 npm run test:e2e
@@ -28,7 +31,13 @@ npm run smoke
 npm run package
 ```
 
-`npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` once per machine. `npm run package` builds the macOS application.
+`npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` to install the matching browser. `npm run package` builds the macOS application.
+
+For Apple silicon voice build or test failures, check `swift --version` and
+`xcode-select --print-path`. The Swift listener build needs Swift 6.2 or newer and the macOS SDK.
+If `swift test` reports `no such module 'XCTest'`, select a full Xcode installation for that
+command with `DEVELOPER_DIR`. See [macOS voice build and tests](CONTRIBUTING.md#macos-voice-build-and-tests)
+for the commands and the dashboard development path.
 
 Run one test file with the same loader as the full suite:
 
@@ -36,27 +45,17 @@ Run one test file with the same loader as the full suite:
 node --test --import ./test/setup-state.mjs --import tsx test/session-contracts.test.ts
 ```
 
-`--import ./test/setup-state.mjs` is not optional decoration, and this is the one place that
-contract is written down - do not restate it in `docs/`. It gives each test worker its own
-`mission-test-state-*` directory in the temp dir before any import can resolve one, and
-removes it when the worker exits. A test file that never redirected `MISSION_HOME` is
-therefore isolated anyway, instead of quietly resolving the operator's
-`~/.mission-control/harness.db` - which is where a branch's config test once ran
-`DELETE FROM app_config` on every run. `npm test` and `npm run test:electron` already carry
-it; a hand-typed command has to say it.
+Include `--import ./test/setup-state.mjs` in hand-typed test commands. Keep the preload
+contract here and link to it from other guides. It gives each test worker its own
+`mission-test-state-*` directory before the test module loads and removes it on normal
+exit. Both `npm test` and `npm run test:electron` include the preload.
 
-Without it, `openDb` refuses every open, including a file that sets a perfectly good temp
-`MISSION_HOME` of its own. That is not caution for its own sake. `MISSION_HOME` is a
-supported setting that may name anywhere, the temp dir included, so an explicit path under
-the temp dir describes a fixture home and an operator's live state dir equally well - and the
-only thing that tells them apart is reading that setting before the preload clears it. A
-worker that skipped the preload never read it, so it is refused rather than guessed at. Child
-processes a test spawns inherit the capture and keep working.
-
-Set your home the way the suite does, in the file body above the imports, rather than through
-the environment: a value arriving through the environment was there before the preload ran,
-which is exactly what an operator's configured state dir looks like, and it is recorded as
-one.
+A test worker must load the preload or inherit its capture for `openDb` to accept even
+a temp home. An operator can configure a live state home inside the temp directory.
+If you export `MISSION_HOME` before running a test, the preload records that path as
+live operator state and `openDb` refuses to use it as a fixture. If a test needs
+a fixture home, set it in the file body before dynamically importing modules that
+resolve the state directory. See `test/ui-config-store.test.ts` for the pattern.
 
 **Where this stops.** `openDb` is not a sandbox. A test that spawns plain `node` and strips
 `NODE_TEST_CONTEXT`, `MISSION_TEST_STATE` and the inherited home has not disguised itself as
@@ -65,20 +64,15 @@ one without refusing the other. A test can also skip all of this and call
 `new DatabaseSync(...)` from `node:sqlite` directly, which never reaches `openDb`. Both are
 pinned in `test/db-isolation.test.ts` so the boundary is stated rather than assumed. What the
 guard closes is the accident - the missing preamble, the hoisted import, the override applied
-one line too late - which is what every incident behind this actually was. Spawn a child
-without scrubbing it and it inherits the worker's disposable home, which is why the suite's
-seventeen child-spawning files need nothing from you.
+one line too late. A child that inherits the worker's environment also inherits its
+disposable state home and the preload's capture.
 
-The preload seeds `HARNESS_HOME` and clears any inherited `MISSION_HOME` and `FLEET_HOME`.
-That is a precedence decision, not a preference for the old name: `envVar` reads `MISSION_`
-then `FLEET_` then `HARNESS_`, so the last name in the chain is the only one a test file can
-override without ceremony - and around 130 files set `HARNESS_HOME` themselves to reach a
-hand-built fixture database. **`MISSION_HOME` is still the name to set everywhere else**, in
-a test, in a daemon, and in an operator's environment.
+The preload clears inherited `MISSION_HOME` and `FLEET_HOME` and seeds `HARNESS_HOME`.
+`envVar` checks those names in that order. Seeding the lowest-priority name lets tests
+that set `HARNESS_HOME` select their own fixture database. Use **`MISSION_HOME`** for new
+test fixtures and for daemon and operator configuration.
 
-A test that needs a particular database keeps seeding its own home above its imports, exactly
-as before. `src/server/db.ts` backs the preload up rather than trusting it: under the test
-runner `openDb` opens only the `harness.db` named by the state home set *right now*, and only
+Under the test runner, `openDb` in `src/server/db.ts` opens only the `harness.db` named by the state home set *right now*, and only
 when that home resolves - through symlinks, not just as spelled - to somewhere inside the temp
 dir. A missing override, one applied after the path was already frozen, and one naming a real
 state dir - under any of its historical names, or wherever the daemon was configured to keep
@@ -92,16 +86,12 @@ operator's state exactly as it always has.
 at once, so naming a single file makes it inert, and carrying it here implied a single-file
 run reproduces the suite's concurrency when it cannot.
 
-A test that spawns the real daemon needs one build artifact the suite does not otherwise
-produce. `src/server/index.ts` acquires state ownership through `dist/native/state-lock.node`
-before it serves anything, and CI runs `npm test` before `npm run build`, so `pretest` builds
-that addon once and a warm suite compiles nothing. A spec that spawns a daemon still calls
-`ensureNativeStateLockAddon` from `test/helpers/native-state-lock.ts` at module scope, because
-the single-file command above runs no npm lifecycle; the helper rebuilds only when the addon
-does not load. Do not let a spec inherit that artifact from whatever else its shard was dealt -
-`--test-shard` splits by file, so adding an unrelated test file elsewhere in `test/` silently
-reassigns which files keep each other working, and that is exactly how shard 6 went red on
-`main` while every other shard stayed green.
+A spec that launches `src/server/index.ts` needs `dist/native/state-lock.node` before
+the daemon starts. The `pretest` script builds the addon. A direct single-file run skips
+npm lifecycle scripts, so import and call `ensureNativeStateLockAddon` from
+`test/helpers/native-state-lock.ts` before launching the daemon. The helper rebuilds if
+its probe fails to load the addon or validate its required exports. This lets the spec
+run on its own or in any shard.
 
 Provisioning is therefore concurrent by design, and `scripts/build-state-lock-native.mjs`
 owns that: it stages the addon sources into a private directory instead of letting `node-gyp
@@ -114,40 +104,38 @@ native addon rather than to one builder. Rewriting an addon in place while a liv
 it mapped invalidates macOS's code-signature bookkeeping for that inode, and from then on
 every process that loads it is `SIGKILL`ed with an empty stderr - no exception, no log line.
 `npm run build:native` runs on every `make start`, so one restart with the previous daemon
-still up is enough to make a worktree unable to start a daemon at all. Both builders publish
+still up is enough to make a worktree unable to start a daemon at all. The native builders publish
 through `publishNativeAddon`, and `test/native-addon-publish.test.ts` refuses a builder that
 copies its own artifact into `dist/native` again.
 
-`npm test` runs six files at a time by default. `MISSION_TEST_CONCURRENCY` changes that,
-and CI explicitly pins it to 4 on its ephemeral GitHub-hosted runner. CI therefore does
-not inherit future changes to the local fallback. A failure that only appears under that
-CI contention needs the whole suite, not one file:
-
-```sh
-MISSION_TEST_CONCURRENCY=4 npm test
-```
+To reproduce a failure that depends on parallel test files, run `npm test` with
+`MISSION_TEST_CONCURRENCY` set to the value in the failing CI job.
+[package.json](package.json) defines the local default.
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI reports eighty-seven checks on every push and pull request, all on Linux. Two independent `dependencies` checks use GitHub-hosted
-`ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
-`gates` (typecheck and lint), Node.js 24 unit shards, and E2E depend only on the Node.js 24
-producer; Node.js 26 unit shards depend only on the Node.js 26 producer, so a failure in one
-release does not hide checks for the other. Unit tests, builds, bundle smoke, and sixty E2E
-shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isolated
-from shared self-hosted infrastructure. Each Node release runs twelve unit shards, with the total
-derived from its matrix. The shared unit steps live in `.github/actions/run-unit-shard/action.yml`. The separate
-pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
-by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns
-CI red - `main` carries no branch protection, so that is a signal to act on and not a mechanical
-block. The one macOS job, `package (macOS arm64)`, builds an unsigned developer dmg on
-`workflow_dispatch` only, pinned to the same image as the signing producer in
-`distribution.yml`. It never runs on a push, because a tag push run that does not conclude
-`success` gets no signed binary. `.github/workflows/ci.yml` documents the runner and worker policy.
+[CI](.github/workflows/ci.yml) runs on pushes to `main`, version tag pushes, and pull
+requests. Its Linux jobs use ephemeral GitHub-hosted runners. Each job that consumes a
+`node_modules` cache depends on the producer for its Node.js version. The workflow
+defines the unit and E2E shard matrices. The [shared unit steps](.github/actions/run-unit-shard/action.yml)
+run the tests, build, and smoke-check the bundles. The dedicated Linux voice job restores the pinned recognition and synthesis models and exercises both helpers. Typecheck and lint run in the gates job.
+See the [contributor lint guidance](CONTRIBUTING.md#commands) for what lint enforces.
+
+The [pull request title workflow](.github/workflows/pull-request-title.yml) checks titles
+for Release Please. Keep macOS packaging on manual CI dispatch. A packaging failure
+on a tag push would block signing because [signed distribution](.github/workflows/distribution.yml)
+requires successful push CI for the release commit and ref.
 
 ## Working rules
 
-New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the three-release lifecycle.
+Route new session-initiated requests for operator input or approval, including MCP session control requests, to the attention inbox. Keep their decision controls out of the conversation window.
+
+For new or changed settings, declare the stable searchable key, read/write behavior and access
+policy at the owner. Share dashboard validation and mutation effects. Record the reason for
+protected or operational controls and update coverage. The fixed `mission_settings` tool supports
+find, get and set. See the [setting onboarding contract](CONTRIBUTING.md#onboard-a-setting).
+
+New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the preview, default-on, and retirement stages.
 
 
 1. Inspect `git status` before editing. Preserve unrelated changes.
@@ -163,6 +151,9 @@ When a review workflow passes, do not rerun it to address Inspector feedback. Fi
 ## Code style and examples
 
 Use schemas and shared registries instead of hand-parsing or branching on concrete agents.
+Oxlint requires request JSON parsing through `src/server/http-body.ts` (`repository/parse-request-body`)
+and keeps direct agent equality comparisons and switch cases under `src/server/harness/`
+(`repository/agent-comparison`).
 
 Correct:
 
@@ -252,19 +243,24 @@ Incorrect:
 </Overlay>
 ```
 
-Tests use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
+Tests in `test/` use `node:test` and `node:assert/strict`. React rendering tests use
+`renderToStaticMarkup`. Oxlint bans jsdom, Testing Library, Vitest, Jest, and bare
+`node:assert` in `test/` and `e2e/` (`repository/test-imports`).
 
-Browser end-to-end tests are the one exception, and they live apart: `e2e/` uses `@playwright/test` and runs under `npm run test:e2e`, never `npm test`. Everything in `test/` runs against `src/` and must pass on a fresh checkout; `e2e/` drives the BUILT dashboard served by the BUILT daemon, so it needs `npm run build` first. That is the same line `scripts/smoke-bundles.mjs` already draws.
+Browser specs under `e2e/specs/` use `@playwright/test` and run only under `npm run test:e2e`.
+They drive the built dashboard served by the built daemon, so run `npm run build`
+first. Tests in `test/` run under `npm test` and must pass on a fresh checkout.
 
 ```ts
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resolveSessionRuntime } from "../src/shared/harness-capabilities.ts";
 
-test("falls back when a harness does not offer the stored runtime", () => {
+test("honors a stored Pi SDK runtime", () => {
   assert.deepEqual(resolveSessionRuntime("pi", "sdk"), {
-    runtime: "terminal",
+    runtime: "sdk",
     unknown: null,
-    unsupported: "sdk",
+    unsupported: null,
   });
 });
 ```
@@ -277,10 +273,9 @@ Read [e2e/README.md](e2e/README.md) before writing one.
 no exemptions. If the change is visible to a person using the dashboard, it is covered here
 before it lands.
 
-The three older UI layers each assert something real and none of them can see whether the
-thing works: `renderToStaticMarkup` asserts markup shape, the in-process HTTP tests assert
-routes without a browser, and the Electron tests measure laid-out geometry. Only `e2e/`
-connects a click to a route to a server event and back to the DOM.
+Browser specs connect a user action to a route, a server event, and the resulting DOM
+update. Static rendering tests check markup, in-process HTTP tests exercise routes, and
+Electron tests measure laid-out geometry.
 
 This includes, and is not limited to:
 
@@ -291,45 +286,43 @@ This includes, and is not limited to:
 - A fix for a bug that reproduced through the UI. Write the failing spec first.
 
 The other layers are additions to this requirement, never substitutes for it. Reach for them
-alongside a spec when they say something a browser cannot: `renderToStaticMarkup` to pin an
-exact markup shape, and the Electron geometry tests to measure used height for overflow and
-clipping, which no assertion on markup can produce.
+alongside a spec to check an exact markup shape with `renderToStaticMarkup` or to measure
+height, overflow, and clipping in Electron.
 
 Changes with no UI surface - pure functions, reducers, selectors, formatting helpers, route
-edge cases - are not UI changes and belong in `test/`, where a case costs milliseconds.
+edge cases - belong in `test/`.
 
-Two standing constraints:
-
-- **Never spend model tokens.** Every agent binary is redirected at a fake by
-  `e2e/fixtures/fake-agents.ts`. A dispatch launches the CLI through two unrelated paths -
-  the one-shot `claude -p` runner and the Agent SDK session - and both must stay faked.
-- **Never add `data-testid`.** Select by role, label, or placeholder. The app has 229
-  `aria-label`s and 155 `role`s already, and selecting through them keeps the accessible
-  names honest.
+- **Never spend model tokens.** Use the E2E fixtures for agent binaries and SDK sessions.
+  Keep both the one-shot Claude CLI and Agent SDK paths faked. Managed Pi sessions load
+  the fake SDK through `MISSION_PI_SDK_MODULE`.
+- **Never add `data-testid` or `getByTestId`** (Oxlint `repository/no-test-ids`). The app already labels its controls. Select by role,
+  label, or placeholder so the spec exercises the names users rely on.
 
 A spec that opens a new modal calls `expectContentClearsBorder` from
-`e2e/fixtures/modal-inset.ts`. It measures laid-out rectangles, which is the only layer that
-can see text printed onto a panel border.
+`e2e/fixtures/modal-inset.ts`. It compares the content and panel rectangles to check the inset.
 
 ## Boundaries
 
 - Never commit secrets, tokens, credentials, local state, or operator data.
 - Never commit evidence artifacts. Proof-of-work screenshots and transcripts attach to the pull request. Evidence produced for or submitted to workflow personas is also never committed: produce it in a gitignored location and attach it to the pull request. Committed documentation imagery in `docs/images/` is documentation, not evidence.
+  The CI pull request policy gates new image paths outside `docs/images/` and established product asset locations.
 - Never modify production, signing, release, CI, or deployment configuration unless the task explicitly requires it.
 - Never let the Foreman worker touch SQLite. The daemon is the only database writer.
 - Never add a second session-eviction path. Terminal and SDK sessions leave through `Registry.beginEviction`.
+  Oxlint reserves `session_remove` construction and `sessions.delete` for the registry
+  (`repository/registry-eviction`).
 - Never infer durable cleanup from `state === "exited"`; use `session_remove`.
 - Never enable Electron `asar` or move `skills/` into `dist`.
 - Never hand-edit generated files. Change their source or generator and regenerate them.
-- Never hand-edit `CHANGELOG.md`.
+- Never hand-edit `CHANGELOG.md`. The CI pull request policy requires a Release Please PR.
 - Never rename or reorder persisted append-only IDs. See the change contracts before extending them.
 - Never use `git reset --hard`, force-push, or remove worktrees unless the user explicitly requests it and the target is verified.
-- Never add an agent name as a commit co-author.
+- Never add an agent name as a commit co-author. The CI pull request policy checks incoming commit trailers.
 - Never use an em dash in project prose.
 
 Treat these paths as controlled:
 
-- `src/shared/`: wire contracts and browser-safe shared logic only; no `node:` imports.
+- `src/shared/`: wire contracts and browser-safe shared logic only. Oxlint bans `node:` imports (`no-restricted-imports`).
 - `src/server/db.ts`: schema and migrations; upgrading databases must keep opening safely.
 - `src/server/registry.ts`: session ownership, comparators, and eviction.
 - `src/server/harness/`: harness-specific capabilities and protocol adapters.
@@ -343,6 +336,7 @@ Treat these paths as controlled:
 - Relevant tests pass.
 - `npm run typecheck` passes.
 - `npm run lint` passes.
+- `npm run konsistent` passes.
 - `npm run build` and `npm run smoke` pass when build or runtime surfaces changed.
 - `npm run test:e2e` passes when UI surfaces changed, with a spec covering the new behavior.
 - README and linked technical docs match the implementation.

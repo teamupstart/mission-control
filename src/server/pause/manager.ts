@@ -305,7 +305,7 @@ export class PauseManager {
     this.unobserved?.();
     if (this.resumeTimer !== null) this.clearTimer(this.resumeTimer);
     this.resumeTimer = null;
-    for (const id of [...this.freezeRetries.keys()]) this.clearRetry(id);
+    for (const id of Array.from(this.freezeRetries.keys())) this.clearRetry(id);
     if (this.saveRetry !== null) this.clearTimer(this.saveRetry);
     this.saveRetry = null;
     await this.chain.catch(() => {});
@@ -1066,7 +1066,7 @@ export class PauseManager {
     // re-signalled on every later observation for the length of the pause.
     if (this.reconciled) return;
     this.reconciled = true;
-    for (const [id, record] of [...this.records]) {
+    for (const [id, record] of Array.from(this.records)) {
       const session = this.registry.getSession(id);
       const present = session !== undefined && canPause(session);
       if (record.resuming || !present) {
@@ -1107,7 +1107,7 @@ export class PauseManager {
   /** Forget resume times too old to move any deadline: past the interrupt, both clocks agree. */
   private pruneResumed(): void {
     const cutoff = this.now() - MESSAGE_INTERRUPT_AFTER_MS;
-    for (const [id, at] of [...this.resumed]) {
+    for (const [id, at] of Array.from(this.resumed)) {
       if (at >= cutoff) continue;
       this.resumed.delete(id);
       this.registry.setSessionResumedAt(id, null);

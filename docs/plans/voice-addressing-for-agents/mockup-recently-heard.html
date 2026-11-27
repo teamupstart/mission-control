@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice mock-ups: Recently heard (selected)</title>
+<link rel="stylesheet" href="../../../src/web/styles.css">
+<style>
+/* ---- Mock-up kit: page chrome shared by every voice-addressing mock-up page ----
+   The product stylesheet (src/web/styles.css) is linked above this block, so every
+   var(--token) and every product class (.btn, .field, .review, .inbox-item, .modal ...)
+   is the real one. Rules here only frame the variants. */
+html, body { height: auto !important; overflow: auto !important; }
+body.mk {
+  margin: 0;
+  padding: 28px 32px 90px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 var(--sans);
+  min-width: 1180px;
+}
+.mk-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.mk-ico { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
+.mk-ico.sm { width: 11px; height: 11px; }
+.mk-ico.lg { width: 18px; height: 18px; }
+
+.mk-top h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+.mk-top p { color: var(--muted); max-width: 1020px; margin: 0 0 6px; }
+.mk-top .mk-spec { color: var(--dim); font-size: 12px; }
+.mk-top code, .mk-notes code, .mk-pitch code { font: 11.5px var(--mono); color: var(--fg); background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px; }
+.mk-toc { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.mk-toc a { color: var(--muted); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+.mk-toc a b { color: var(--working); font-family: var(--mono); margin-right: 4px; }
+
+.mk-variant { margin-top: 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-2); overflow: hidden; }
+.mk-variant-head { display: flex; gap: 14px; align-items: baseline; padding: 13px 18px; border-bottom: 1px solid var(--border-soft); background: var(--panel); }
+.mk-letter { font: 700 14px var(--mono); color: var(--on-accent); background: var(--working); border-radius: 8px; padding: 3px 10px; flex: none; }
+.mk-variant-head h2 { margin: 0; font-size: 16px; white-space: nowrap; }
+.mk-pitch { color: var(--muted); margin: 0; flex: 1; }
+.mk-stage { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px 18px 22px; align-items: flex-start; }
+.mk-state { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mk-cap { font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.mk-cap b { color: var(--muted); }
+.mk-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 28px; margin: 0; padding: 12px 18px 15px; border-top: 1px solid var(--border-soft); list-style: none; color: var(--muted); font-size: 12px; }
+.mk-notes li::before { content: "+ "; color: var(--idle); font-weight: 700; font-family: var(--mono); }
+.mk-notes li.con::before { content: "- "; color: var(--attention); }
+
+/* What the operator said. Never part of the product UI: it labels the mock-up. */
+.mk-say { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; font: 12px var(--mono); color: var(--muted); border: 1px dashed var(--border); border-radius: 999px; padding: 3px 11px 3px 9px; }
+.mk-say .mk-ico { color: var(--working); }
+.mk-say q { color: var(--fg); quotes: "\201C" "\201D"; }
+
+/* A slice of the macOS menu bar, for anything that lives in or hangs off the tray. */
+.mk-menubar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; height: 26px; padding: 0 12px; border-radius: 8px 8px 0 0; background: linear-gradient(#3a3d44, #33363c); color: #f2f3f5; font: 500 12.5px -apple-system, system-ui, sans-serif; }
+.mk-menubar .mk-mb-left { margin-right: auto; display: flex; gap: 14px; opacity: 0.92; }
+.mk-menubar .mk-mb-left b { font-weight: 700; }
+.mk-menubar .mk-mb-item { display: inline-flex; align-items: center; gap: 4px; opacity: 0.9; }
+.mk-menubar .mk-mb-item.is-open { background: rgba(255, 255, 255, 0.2); border-radius: 4px; padding: 1px 6px; margin: 0 -6px; opacity: 1; }
+.mk-menubar .mk-mb-dot { width: 6px; height: 6px; border-radius: 50%; background: #ff9f0a; }
+/* Some other app in front (Mission Control minimized). */
+.mk-desktop { position: relative; border-radius: 0 0 8px 8px; background: linear-gradient(135deg, #20304a, #3a2a4a 60%, #4a3340); overflow: hidden; }
+.mk-otherapp { position: absolute; inset: 18px 18px 0; border-radius: 9px 9px 0 0; background: #f4f5f7; opacity: 0.16; }
+/* A slice of the Mission Control window. */
+.mk-win { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; position: relative; }
+.mk-win-bar { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border-soft); color: var(--dim); font-size: 11.5px; }
+.mk-win-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--border); }
+.mk-win-bar span { margin-left: 8px; }
+.mk-skel { height: 9px; border-radius: 5px; background: var(--panel-2); margin: 8px 0; }
+.mk-skel.w40 { width: 40%; } .mk-skel.w60 { width: 60%; } .mk-skel.w80 { width: 80%; }
+.mk-tile { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
+
+/* ---- Shared voice vocabulary. Variants restyle these; the names stay the same. ---- */
+/* An agent's display name, in its resident board colour (set --resident inline). */
+.v-name { font-weight: 650; color: color-mix(in oklab, var(--resident, var(--fg)) 88%, var(--fg)); }
+/* The always-visible inline voice hint: lighter text, no hover. */
+.v-hint { font-size: 11.5px; color: var(--dim); }
+.v-hint q { color: var(--muted); quotes: "\201C" "\201D"; font-style: normal; }
+/* A draining cancel-window bar. Width is set inline to show a moment in time. */
+.v-count { height: 3px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.v-count > i { display: block; height: 100%; background: var(--working); border-radius: 2px; }
+.v-secs { font: 600 11px var(--mono); color: var(--working); }
+.v-live { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); box-shadow: 0 0 8px color-mix(in oklab, var(--idle) 70%, transparent); flex: none; }
+
+
+/* Shared row vocabulary */
+.rh-out { font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 6px; white-space: nowrap; flex: none; }
+.rh-out.is-routed { color: var(--idle); background: color-mix(in oklab, var(--idle) 14%, transparent); }
+.rh-out.is-not { color: var(--muted); background: color-mix(in oklab, var(--neutral) 16%, transparent); }
+.rh-out.is-cancel { color: var(--attention); background: color-mix(in oklab, var(--attention) 14%, transparent); }
+.rh-out .v-name { font-weight: 700; }
+.rh-time { font: 11px var(--mono); color: var(--dim); white-space: nowrap; flex: none; }
+.rh-heard { color: var(--fg); quotes: "\201C" "\201D"; }
+.rh-why { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.rh-rule { font: 10.5px var(--mono); color: var(--dim); white-space: nowrap; }
+.rh-privacy { font-size: 11.5px; color: var(--dim); line-height: 1.45; margin: 0; }
+.rh-empty { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin: 0; }
+.rh-empty b { color: var(--fg); font-weight: 600; display: block; margin-bottom: 3px; }
+.rh-ico-ok { color: var(--idle); } .rh-ico-no { color: var(--neutral); } .rh-ico-cancel { color: var(--attention); }
+.rh-list { list-style: none; margin: 0; padding: 0; }
+.rh-btn-sm.btn { padding: 2px 9px; font-size: 11.5px; }
+
+/* A: section in the Voice settings panel */
+.rh-panel { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); overflow: hidden; }
+.rh-panel .settings-pane-head { flex-direction: row; align-items: center; gap: 10px; }
+.rh-panel .settings-pane-count { margin-left: auto; }
+.rh-a .rh-row { display: flex; gap: 12px; align-items: flex-start; padding: 9px 12px; border-top: 1px solid var(--border-soft); }
+.rh-a .rh-row:first-child { border-top: none; }
+.rh-a .rh-time { width: 30px; padding-top: 2px; }
+.rh-a .rh-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rh-panel-foot { padding: 9px 12px; border-top: 1px solid var(--border-soft); background: var(--bg-2); }
+.rh-panel-empty { padding: 22px 16px; }
+.rh-crumb { font-size: 11.5px; color: var(--dim); }
+.rh-crumb b { color: var(--muted); font-weight: 600; }
+
+/* B: tray popover */
+.rh-b .rh-desk { height: 452px; }
+.rh-b .rh-desk.is-short { height: 250px; }
+.rh-pop { position: absolute; right: 18px; top: 6px; width: 318px; background: var(--panel); border: 1px solid var(--border); border-radius: 11px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5); }
+.rh-pop::before { content: ""; position: absolute; right: 46px; top: -6px; width: 11px; height: 11px; transform: rotate(45deg); background: var(--panel); border-left: 1px solid var(--border); border-top: 1px solid var(--border); }
+.rh-pop-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); font-size: 12.5px; font-weight: 600; }
+.rh-pop-head .rh-state { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.rh-b .rh-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 1px; padding: 7px 12px; border-top: 1px solid var(--border-soft); align-items: center; }
+.rh-b .rh-row:first-child { border-top: none; }
+.rh-b .rh-heard { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+.rh-b .rh-why { grid-column: 2 / 4; font-size: 11.5px; }
+.rh-pop-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border-soft); }
+.rh-pop-foot .rh-privacy { flex: 1; font-size: 11px; }
+.rh-menu { position: absolute; right: 18px; top: 4px; width: 318px; background: rgba(246, 246, 248, 0.96); color: #1c1c1e; border-radius: 8px; padding: 5px; font: 13px -apple-system, system-ui, sans-serif; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4); }
+.rh-menu div { padding: 3px 9px; border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rh-menu .is-off { color: #8a8a8f; }
+.rh-menu .is-sel { background: #2f6fed; color: #fff; }
+.rh-menu hr { border: none; border-top: 1px solid rgba(0, 0, 0, 0.12); margin: 4px 9px; }
+
+/* C: drawer from the dashboard edge */
+.rh-c .rh-scene { height: 650px; }
+.rh-c .rh-scene.is-mid { height: 480px; }
+.rh-c .rh-scene.is-short { height: 300px; }
+.rh-c .mk-winbody { padding: 10px 12px; width: 60px; }
+.rh-drawer { position: absolute; top: 28px; right: 0; bottom: 0; width: 292px; background: var(--panel); border-left: 1px solid var(--border); box-shadow: -10px 0 30px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; }
+.rh-drawer-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; font-size: 13px; font-weight: 600; }
+.rh-drawer-head .btn { margin-left: auto; }
+.rh-filter { display: flex; gap: 6px; padding: 0 12px 9px; border-bottom: 1px solid var(--border-soft); }
+.rh-filter span { font-size: 11.5px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
+.rh-filter span.is-on { color: var(--fg); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); background: color-mix(in oklab, var(--working) 12%, transparent); }
+.rh-filter span i { font-style: normal; color: var(--dim); margin-left: 3px; }
+.rh-c .rh-list { flex: 1; overflow: hidden; }
+.rh-c .rh-row { padding: 8px 12px; border-bottom: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 3px; }
+.rh-c .rh-meta { display: flex; align-items: center; gap: 8px; }
+.rh-c .rh-meta .rh-time { margin-left: auto; }
+.rh-c .rh-heard { font-size: 12.5px; }
+.rh-c .rh-why { font-size: 11.5px; }
+.rh-drawer-foot { padding: 9px 12px; border-top: 1px solid var(--border-soft); background: var(--bg-2); margin-top: auto; }
+.rh-drawer-empty { padding: 20px 14px; flex: 1; }
+
+/* D: timeline strip */
+.rh-d .mk-state { width: 100%; }
+.rh-strip { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px 10px; background: var(--panel); border-bottom: 1px solid var(--border-soft); }
+.rh-strip-label { width: 64px; flex: none; font: 600 10px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); padding-top: 6px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.rh-chip { flex: 1 1 0; min-width: 0; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--bg-2); font-size: 12px; }
+.rh-chip[open] { border-color: var(--border); background: var(--panel-2); }
+.rh-chip summary { list-style: none; cursor: pointer; padding: 5px 8px; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; column-gap: 6px; align-items: center; }
+.rh-chip summary::-webkit-details-marker { display: none; }
+.rh-chip summary .rh-to { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.rh-chip summary .rh-heard { grid-column: 1 / 4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 11.5px; }
+.rh-chip .rh-more { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 4px; border-top: 1px dashed var(--border-soft); margin-top: 2px; padding-top: 6px; }
+.rh-chip .rh-more .rh-heard { font-size: 12px; }
+.rh-strip-foot { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--bg-2); border-bottom: 1px solid var(--border-soft); }
+.rh-strip-foot .rh-privacy { flex: 1; }
+.rh-d .mk-winbody { padding: 8px 12px 12px; }
+.rh-strip-empty { flex: 1; padding: 5px 0; }
+
+/* E: diagnostic table */
+.rh-e .mk-state { width: 100%; }
+.rh-dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.rh-dialog-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; background: var(--panel-2); border-bottom: 1px solid var(--border-soft); }
+.rh-dialog-head strong { font-size: 14px; }
+.rh-dialog-head .dim { font-size: 12px; }
+.rh-dialog-head .btn { margin-left: auto; }
+.rh-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.rh-table th { text-align: left; font: 600 10px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); padding: 7px 10px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+.rh-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: top; line-height: 1.4; }
+.rh-table tr:last-child td { border-bottom: none; }
+.rh-table td.rh-mono { font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; }
+.rh-table mark { background: color-mix(in oklab, var(--working) 20%, transparent); color: var(--fg); border-radius: 3px; padding: 0 3px; }
+.rh-table mark.is-miss { background: color-mix(in oklab, var(--attention) 20%, transparent); }
+.rh-table .rh-yes { color: var(--idle); } .rh-table .rh-no { color: var(--attention); }
+.rh-dialog-foot { padding: 9px 14px; border-top: 1px solid var(--border-soft); background: var(--bg-2); }
+.rh-table td.rh-empty-cell { padding: 20px 14px; }
+
+</style>
+</head>
+<body class="mk">
+<svg class="mk-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 16 16"><path d="M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z"/><path d="M4 7.5a4 4 0 0 0 8 0M8 11.5v3M5.5 14.5h5"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 16 16"><path d="M10 6V3.5a2 2 0 0 0-3.7-1M6 6v1.500a2 2 0 0 0 3 1.700"/><path d="M4 7.5a4 4 0 0 0 6.300 3.300M12 7.500a4 4 0 0 1-.300 1.500M8 11.500v3M5.500 14.500h5M2 1.500l12 13"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 16 16"><path d="M3 2.500h2.500l1 3-1.500 1a7 7 0 0 0 3.500 3.500l1-1.500 3 1V12a1.500 1.500 0 0 1-1.500 1.500A9.500 9.500 0 0 1 1.500 4 1.500 1.500 0 0 1 3 2.500z"/></symbol>
+  <symbol id="i-ptt" viewBox="0 0 16 16"><path d="M8 3a1.700 1.700 0 0 0-1.700 1.700v3a1.700 1.700 0 0 0 3.400 0v-3A1.700 1.700 0 0 0 8 3z"/><path d="M4.800 8a3.200 3.200 0 0 0 6.400 0M8 11.200v2.300M2 4.500a7 7 0 0 0 0 5.500M14 4.500a7 7 0 0 1 0 5.500"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.500l3.200 3.200L13 4.800"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.200l6.300 11H1.700z"/><path d="M8 6.500v3.200M8 11.700v.100"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.500V8l2.300 1.500"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M2 8l11.500-5.500L10 14l-2.500-5z"/><path d="M7.500 9l6-6.500"/></symbol>
+  <symbol id="i-queue" viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13 9.500A5.500 5.500 0 0 1 6.500 3 5.500 5.500 0 1 0 13 9.500z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.300 6.300a1.800 1.800 0 1 1 2.600 1.600c-.600.300-.900.700-.900 1.300M8 11.500v.100"/></symbol>
+  <symbol id="i-keys" viewBox="0 0 16 16"><rect x="1.500" y="4" width="13" height="8" rx="1.500"/><path d="M4 6.500h.100M6.500 6.500h.100M9 6.500h.100M11.500 6.500h.100M4.500 9.500h7"/></symbol>
+  <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2v8M4.800 7L8 10.200 11.200 7M2.500 13.500h11"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 16 16"><path d="M2 8v0M4.500 6v4M7 3.500v9M9.500 5.500v5M12 7v2M14 8v0"/></symbol>
+</svg>
+
+
+
+<header class="mk-top">
+  <h1>Recently heard</h1>
+  <p>A short, in-memory list of recent utterances and why each did or did not route, including rejected near-miss names, for debugging misses. It is never written to disk and is gone when Mission Control quits. Audio is never kept.</p>
+  <p class="mk-spec">Fixed in every variant: the same six utterances (exact name, phonetic match, small-model decision, first-word name without a pause, rejected near miss, cancelled in the cancel window), each with how long ago, the words heard, the outcome and the reason in plain words; a Clear control; the privacy line; and an empty state. Nothing is heard while voice is muted, so muted time leaves no rows. What varies is <b>where the list lives</b> and <b>how much of the routing detail it shows</b>.</p>
+  <nav class="mk-toc"><a href="#b"><b>B</b>Tray popover</a><a href="#e"><b>E</b>Diagnostic table</a></nav>
+<p class="mk-spec"><b>Selected by the operator on 2026-11-22: variants B, E.</b> This page holds the selected designs; the variants that were not adopted are left out. Implementation detail is in the phase documents beside this file.</p>
+</header>
+
+<!-- ============================== A ============================== -->
+<section class="mk-variant rh-b" id="b">
+  <div class="mk-variant-head"><span class="mk-letter">B</span><h2>Tray popover</h2>
+    <p class="mk-pitch">Click the tray icon and the last few utterances are right there, under the listening state. Reachable while Mission Control is minimized, which is when most misses happen.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state" style="width: 356px">
+      <span class="mk-cap"><b>1</b> Popover from the tray icon</span>
+      <div>
+        <div class="mk-menubar"><span class="mk-mb-left"><b>Xcode</b><span>File</span></span><span class="mk-mb-item is-open"><svg class="mk-ico"><use href="#i-mic"/></svg> 2</span><span>Tue 9:41</span></div>
+        <div class="mk-desktop rh-desk"><div class="mk-otherapp"></div>
+          <div class="rh-pop">
+            <div class="rh-pop-head">Recently heard<span class="rh-state"><span class="v-live"></span>Listening</span></div>
+            <ul class="rh-list">
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">Steve, check the build and report back</q><span class="rh-time">12s</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span> · exact first word</span></li>
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">Steven, rerun the failing shard</q><span class="rh-time">2m</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span> · "Steven" sounds like Steve</span></li>
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">Steve, ask Alice about the build</q><span class="rh-time">5m</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span> · small model: Alice is a mention</span></li>
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-ok"><use href="#i-check"/></svg><q class="rh-heard">will you grab the door</q><span class="rh-time">9m</span><span class="rh-why">To <span class="v-name" style="--resident: var(--resident-violet)">Will</span> · exact first word</span></li>
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-no"><use href="#i-x"/></svg><q class="rh-heard">Stevie, what's the status</q><span class="rh-time">14m</span><span class="rh-why">Not routed · near miss: Steve is only a weak match</span></li>
+              <li class="rh-row"><svg class="mk-ico sm rh-ico-cancel"><use href="#i-x"/></svg><q class="rh-heard">Carol, merge it</q><span class="rh-time">21m</span><span class="rh-why">Cancelled · you said "cancel" in the cancel window</span></li>
+            </ul>
+            <div class="rh-pop-foot"><p class="rh-privacy">In memory only. Cleared on quit. Audio is never stored.</p><button class="btn rh-btn-sm">Clear</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mk-state" style="width: 356px">
+      <span class="mk-cap"><b>2</b> Empty</span>
+      <div>
+        <div class="mk-menubar"><span class="mk-mb-left"><b>Xcode</b><span>File</span></span><span class="mk-mb-item is-open"><svg class="mk-ico"><use href="#i-mic"/></svg></span><span>Tue 9:41</span></div>
+        <div class="mk-desktop rh-desk is-short"><div class="mk-otherapp"></div>
+          <div class="rh-pop">
+            <div class="rh-pop-head">Recently heard<span class="rh-state"><span class="v-live"></span>Listening</span></div>
+            <div style="padding: 16px 12px"><p class="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p></div>
+            <div class="rh-pop-foot"><p class="rh-privacy">In memory only. Cleared on quit. Audio is never stored.</p><button class="btn rh-btn-sm" disabled>Clear</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mk-state" style="width: 356px">
+      <span class="mk-cap"><b>3</b> The cheaper form: a submenu of today's native tray menu</span>
+      <div>
+        <div class="mk-menubar"><span class="mk-mb-left"><b>Xcode</b><span>File</span></span><span class="mk-mb-item is-open"><svg class="mk-ico"><use href="#i-mic"/></svg> 2</span><span>Tue 9:41</span></div>
+        <div class="mk-desktop rh-desk is-short"><div class="mk-otherapp"></div>
+          <div class="rh-menu">
+            <div class="is-off">Recently heard</div>
+            <div>✓ Steve · "Steve, check the build and…" · 12s</div>
+            <div>✓ Steve · "Steven, rerun the failing…" · 2m</div>
+            <div>✓ Steve · "Steve, ask Alice about…" · 5m</div>
+            <div class="is-sel">✓ Will · "will you grab the door" · 9m</div>
+            <div>✕ Not routed · near miss, closest Steve · 14m</div>
+            <div>✕ Cancelled · "Carol, merge it" · 21m</div>
+            <hr><div>Clear Recently Heard</div>
+          </div>
+        </div>
+      </div>
+      <span class="v-hint">One line per row: either the words or the reason, never both.</span>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>One click from any app, and it sits with the listening state, so "did it hear me?" and "is it listening?" are answered in the same place.</li>
+    <li class="con">The tray is a native menu built by <code>Menu.buildFromTemplate</code> in <code>src/main/tray.ts</code>. A popover is a new anchored window in the shell; the native submenu in state 3 avoids that but fits one line per row.</li>
+    <li>The shell already polls the daemon for the tray's counts, so the ring buffer can ride the same poll.</li>
+    <li class="con">Outside the dashboard, so Playwright cannot see it. It needs Electron tests, and there is no room for a filter or a long reason.</li>
+  </ul>
+</section>
+
+<!-- ============================== C ============================== -->
+<section class="mk-variant rh-e" id="e">
+  <div class="mk-variant-head"><span class="mk-letter">E</span><h2>Diagnostic table</h2>
+    <p class="mk-pitch">A table that lays out each step of the routing rule in its own column: the name heard first, any observed pause, what it matched, which rule decided, and the outcome. An opening agent name routes without a pause.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state">
+      <span class="mk-cap"><b>1</b> Opened from Voice settings</span>
+      <div class="rh-dialog">
+        <div class="rh-dialog-head"><strong>Recently heard</strong><span class="dim">6 since Mission Control started</span><button class="btn rh-btn-sm">Clear</button></div>
+        <table class="rh-table">
+          <thead><tr><th>Ago</th><th>Heard</th><th>Pause (not required)</th><th>Matched</th><th>Decided by</th><th>Outcome</th></tr></thead>
+          <tbody>
+            <tr><td class="rh-mono">12s</td><td><mark>Steve</mark>, check the build and report back</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span>, exactly</td><td class="rh-mono">exact name</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></span></td></tr>
+            <tr><td class="rh-mono">2m</td><td><mark>Steven</mark>, rerun the failing shard</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span>, a strong match by sound</td><td class="rh-mono">sounds like</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></span></td></tr>
+            <tr><td class="rh-mono">5m</td><td><mark>Steve</mark>, ask <mark>Alice</mark> about the build</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span>; <span class="v-name" style="--resident: var(--resident-violet)">Alice</span> read as a mention</td><td class="rh-mono">small model</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></span></td></tr>
+            <tr><td class="rh-mono">9m</td><td><mark>will</mark> you grab the door</td><td class="rh-mono">No</td><td><span class="v-name" style="--resident: var(--resident-violet)">Will</span>, exactly</td><td class="rh-mono">exact first word</td><td><span class="rh-out is-routed">Routed to <span class="v-name" style="--resident: var(--resident-violet)">Will</span></span></td></tr>
+            <tr><td class="rh-mono">14m</td><td><mark class="is-miss">Stevie</mark>, what's the status</td><td class="rh-yes">Yes</td><td>None. Closest is Steve, a weak match (about half way)</td><td class="rh-mono">near miss rejected</td><td><span class="rh-out is-not">Not routed</span></td></tr>
+            <tr><td class="rh-mono">21m</td><td><mark>Carol</mark>, merge it</td><td class="rh-yes">Yes</td><td><span class="v-name" style="--resident: var(--resident-rose)">Carol</span>, exactly</td><td class="rh-mono">you said "cancel" at 2s</td><td><span class="rh-out is-cancel">Cancelled</span></td></tr>
+          </tbody>
+        </table>
+        <div class="rh-dialog-foot"><p class="rh-privacy">Kept in memory only and cleared when Mission Control quits. Audio is never stored. Nothing is heard while voice is muted, so muted time leaves no rows.</p></div>
+      </div>
+    </div>
+    <div class="mk-state">
+      <span class="mk-cap"><b>2</b> Empty</span>
+      <div class="rh-dialog">
+        <div class="rh-dialog-head"><strong>Recently heard</strong><span class="dim">0 since Mission Control started</span><button class="btn rh-btn-sm" disabled>Clear</button></div>
+        <table class="rh-table">
+          <thead><tr><th>Ago</th><th>Heard</th><th>Pause (not required)</th><th>Matched</th><th>Decided by</th><th>Outcome</th></tr></thead>
+          <tbody><tr><td colspan="6" class="rh-empty-cell"><p class="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p></td></tr></tbody>
+        </table>
+        <div class="rh-dialog-foot"><p class="rh-privacy">Kept in memory only and cleared when Mission Control quits. Audio is never stored.</p></div>
+      </div>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>An exact first-word name routes without a pause. An amber name identifies a rejected near miss; a pause observation never blocks an exact match.</li>
+    <li class="con">Reads like a debugger. For the operator who only wants to know whether Steve got the message, five columns is a lot of table.</li>
+    <li>Maps one to one onto what the router already knows per utterance, so the ring buffer's row shape and the table's columns are the same thing.</li>
+    <li class="con">Needs about 1,000px of width, so it only fits a dialog or a full settings pane, never the tray or a drawer.</li>
+  </ul>
+</section>
+
+</body>
+</html>

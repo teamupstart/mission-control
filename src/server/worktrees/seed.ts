@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename } from "node:fs/promises";
 import { basename, dirname, join, matchesGlob } from "node:path";
 import type { WorktreeClaimSeed } from "@shared/protocol.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { run } from "../util/exec.ts";
+import { removeTree, TreeRemovalError } from "../util/remove-tree.ts";
 import { killProcessGroup } from "./claim.ts";
 import { trackOwnWorktreeProcess } from "./own-processes.ts";
 
@@ -56,6 +57,24 @@ function checkBudget(budget: SeedBudget | undefined): void {
   if (!budget) return;
   if (budget.signal.aborted) throw new SeedEnded("stopped");
   if (budget.now() >= budget.deadline) throw new SeedEnded("timedOut");
+}
+
+/**
+ * `removeTree` inside the seed's Stop and deadline: a seed path is a `node_modules`, which holds
+ * Electron's `default_app.asar` that `fs.rm` cannot delete under Electron. The child it runs is
+ * killed by the Stop or the deadline, so even a monorepo's tree is removed in one call.
+ */
+async function removeWithin(path: string, budget: SeedBudget | undefined, rm?: string): Promise<void> {
+  checkBudget(budget);
+  try {
+    await removeTree(path, {
+      ...(budget ? { signal: budget.signal, timeoutMs: Math.max(1, budget.deadline - budget.now()) } : {}),
+      ...(rm ? { executable: rm } : {}),
+    });
+  } catch (error) {
+    if (error instanceof TreeRemovalError && error.ended !== "failed") throw new SeedEnded(error.ended);
+    throw error;
+  }
 }
 
 /** A Git call's limit: its own minute, or what is left of the claim's time if that is less. */
@@ -316,7 +335,7 @@ async function removeExclusions(
   if (exclude.length === 0) return;
   const matches = (path: string): boolean => exclude.some((glob) => matchesGlob(path, glob));
   if (matches(relative)) {
-    await rm(stagedRoot, { recursive: true, force: true });
+    await removeWithin(stagedRoot, budget);
     return;
   }
   const walk = async (directory: string, at: string): Promise<void> => {
@@ -334,7 +353,7 @@ async function removeExclusions(
       checkBudget(budget);
       const path = join(directory, child.name);
       const childRelative = `${at}/${child.name}`;
-      if (matches(childRelative)) await rm(path, { recursive: true, force: true });
+      if (matches(childRelative)) await removeWithin(path, budget);
       else if (child.isDirectory()) await walk(path, childRelative);
     }
   };
@@ -513,20 +532,13 @@ export type SeedWipeResult =
   | { ok: false; ended: "stopped" | "timedOut" };
 
 /**
- * Remove a seed path whole, one directory entry at a time, checking the budget between
- * entries: a monorepo's `node_modules` is too large to remove in one uninterruptible call.
+ * Remove a seed path whole. A monorepo's `node_modules` is too large for an uninterruptible
+ * delete, and `removeWithin`'s is not one: the Stop or the deadline kills it part-way.
  */
-async function removeSeedPath(path: string, budget: SeedBudget | undefined): Promise<void> {
+async function removeSeedPath(path: string, budget: SeedBudget | undefined, rm: string | undefined): Promise<void> {
   checkBudget(budget);
-  const stat = await presentStat(path);
-  if (!stat) return;
-  if (stat.isDirectory()) {
-    for (const name of await childNames(path)) {
-      checkBudget(budget);
-      await rm(join(path, name), { recursive: true, force: true });
-    }
-  }
-  await rm(path, { recursive: true, force: true });
+  if (!(await presentStat(path))) return;
+  await removeWithin(path, budget, rm);
 }
 
 /**
@@ -538,17 +550,24 @@ export async function wipeSeedPaths(
   root: string,
   seed: WorktreeClaimSeed | undefined,
   budget?: SeedBudget,
+  /** `rm` overrides the pinned delete for a test's fake, as `copyOnWriteClone`'s `cp` does. */
+  options: { rm?: string } = {},
 ): Promise<SeedWipeResult> {
   if (!seed) return { ok: true, removed: [] };
   try {
-    return await wipeWithin(root, seed, budget);
+    return await wipeWithin(root, seed, budget, options.rm);
   } catch (error) {
     if (error instanceof SeedEnded) return { ok: false, ended: error.ended };
     throw error;
   }
 }
 
-async function wipeWithin(root: string, seed: WorktreeClaimSeed, budget: SeedBudget | undefined): Promise<SeedWipeResult> {
+async function wipeWithin(
+  root: string,
+  seed: WorktreeClaimSeed,
+  budget: SeedBudget | undefined,
+  rm: string | undefined,
+): Promise<SeedWipeResult> {
   let entries: SeedEntry[];
   try {
     entries = await expandSeedPaths(root, seed.paths, budget);
@@ -560,7 +579,7 @@ async function wipeWithin(root: string, seed: WorktreeClaimSeed, budget: SeedBud
   const proof = await proveIgnored(root, entries, budget);
   if (!proof.ok) return { ok: false, reason: proof.reason };
   try {
-    for (const entry of entries) await removeSeedPath(join(root, entry.path), budget);
+    for (const entry of entries) await removeSeedPath(join(root, entry.path), budget, rm);
   } catch (error) {
     if (error instanceof SeedEnded) throw error;
     return { ok: false, reason: boundedReason(`seed paths could not be removed: ${error instanceof Error ? error.message : String(error)}`) };
@@ -583,7 +602,7 @@ export async function removeLeftoverStaging(poolPath: string, live: ReadonlySet<
   const removed: string[] = [];
   for (const name of await childNames(root)) {
     if (live.has(name)) continue;
-    await rm(join(root, name), { recursive: true, force: true });
+    await removeTree(join(root, name));
     removed.push(name);
   }
   return removed;

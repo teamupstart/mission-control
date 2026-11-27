@@ -11,7 +11,8 @@ Each phase document cites the findings it depends on. The ones that shaped the s
 - `composeTurnOne` is a synchronous closure in `Dispatcher.dispatch`
   (`src/server/dispatcher.ts:721-731`), called at lines 732 and 743, after three awaits. One
   more await fits between lines 720 and 721. `withTaskKindContract` only appends.
-- `TaskManager.assign` and `dispatchPipeline` compose their own first prompts.
+- `TaskManager.assign` and `dispatchPipeline` compose their own first prompts. `assign` is
+  shaped too (decision 21); pipelines are not.
 - Dispatch is fire-and-forget, so a result can only live on the task record.
 - The feature-flag registry ships empty, and a test asserts it.
 - `test/settings-backup-coverage.test.ts` requires every `settings`-surface backup domain to
@@ -99,6 +100,11 @@ Each phase document cites the findings it depends on. The ones that shaped the s
     line.
 20. **The after-work prompt uses the daemon's existing outbox**, not a new delivery path. It
     waits for an idle session, is recorded as daemon-written, and survives a restart.
+21. **Every launch is shaped, through `Dispatcher.dispatch` or `TaskManager.assign`.** The
+    operator decided on 2026-11-20 to shape autopilot's handover of a backlog task to a running
+    agent as well. Phase 2 owns both call sites, which share one input builder, one section
+    helper and the one commit, under the receiving session's id once the inject succeeds.
+    `shapingView(task)` beside `currentShaping(task)` reports `shaping` while either step runs.
 
 ## Size and phase count
 
@@ -165,7 +171,7 @@ The total is far above the one-phase threshold. Why each boundary exists:
 | Context budget | 1 | One total, `limits.totalBytes`, filled in pipeline order by `allocateBudget`, which takes the total it may fill as an argument and reads no config. The summary's `bytes` is what the shaping stages used. A later step outside shaping, which is FR-06 lesson selection, is allocated last, from the remainder. |
 | Unknown ids | 1 | The config stores `StoredShaperSchema` envelopes. An entry that fails the strict `ShaperSchema` is unsupported: never resolved or called, never switched on, and carried through every write unchanged. `upsert` accepts only a strict definition. |
 | HTTP | 1 | `GET /api/shaping` returns `{ config, discovered, references }`, where `config` is the config view: known shapers in full, and each unsupported entry only as its id, label and a reason. The raw envelope never leaves the daemon. `PUT /api/shaping` takes one intent. `POST /api/shaping/test` dry-runs one shaper. |
-| Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping`. The record describes the latest launch that reached a worker. It is committed in one transaction when turn one has been handed to the worker: the summary is set, null when no shaper applied, and the text replaced, deleted when the section is empty. A dispatch that fails earlier writes nothing. Each record names the session it was delivered to (`sessionId`), and every reader, task reads and markers included, applies `currentShaping(task)` so it shows the record only while it names the task's current session. `currentShaping` stays exported from `src/shared/shaping.ts` with this signature, because FR-05's dispatch inbox builds its `shaping {state, summary}` from it. |
+| Task record | 2 | `Task.shaping`, `TaskSummary.shaping`, column `tasks.shaping`, table `task_shaping_text`, `GET /api/tasks/:id/shaping`. The record describes the latest launch that reached a worker. It is committed in one transaction when turn one has been handed to the worker: the summary is set, null when no shaper applied, and the text replaced, deleted when the section is empty. A dispatch that fails earlier writes nothing. Each record names the session it was delivered to (`sessionId`) and the turn-one delivery it describes (`deliveryId`). That id is written to the task's binding (`Task.shapingDelivery`, column `tasks.shaping_delivery`) in the same transaction as the record and the row naming the receiving session, for a launch and a handover alike. A delivery that recorded nothing binds under its own id. One whose commit failed binds under its own id too, through a fallback write of the binding alone; if that write also fails, the task keeps its previous binding, live and durable alike. Every reader, task reads and markers included, applies `currentShaping(task)` so it shows the record only while it names the task's current session and carries its binding's delivery id. `currentShaping` stays exported from `src/shared/shaping.ts`. It takes a `Task` as before, and its parameter (`ShapingBinding`) adds the optional `shapingDelivery`. FR-05's dispatch inbox builds its `shaping {state, summary}` from it by passing the task, so the delivery check comes with it. |
 | Event | 3 | `shaping_config`, and the snapshot field `shaping`, both sent only while the flag is on and both carrying Phase 1's config view, never raw envelopes. Turning the flag on emits the config to open windows, and turning it off emits a cleared one. |
 | Backup domain | 1, then 3 | Id `shaping`. Surface `runtime` after Phase 1, `settings` after Phase 3. |
 | Folder | 4 | `shapers/<id>/shaper.json` under the state home, read by `discoverShapers()` in `src/server/shaping/discovery.ts`. Every scan reads and hashes every manifest, and only parsing is cached. |

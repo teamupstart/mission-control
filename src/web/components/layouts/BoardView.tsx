@@ -13,17 +13,19 @@ import {
   clusterFallbackLabel,
   fleetColumnOf,
   fleetRows,
+  idleHeadCounts,
   orderSessions,
   repoSessionTotals,
+  stalledInOrder,
   type FleetBlock,
   type FleetColumnId,
   type FleetRow,
-  type FleetToneGroup,
 } from "../../lib/fleet-order.ts";
 import { repoColor } from "../../lib/repo-color.ts";
 import { hiddenSessionIds, toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { updateUiConfig, useUiConfig } from "../../lib/uiConfig.ts";
 import { useSessionRailFolded } from "../../lib/session-rail.ts";
+import { idleRailFocusFallback } from "../../lib/idle-rail-sections.ts";
 import {
   collapsedColumnSessionIds,
   columnWidthOf,
@@ -32,6 +34,8 @@ import {
   type BoardColumnId,
 } from "../../lib/column-width.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
+import { NO_AWAITING_SESSIONS } from "../../lib/awaiting.ts";
+import { NO_STALLED_SESSIONS } from "../../lib/stalled.ts";
 import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
@@ -55,6 +59,7 @@ import {
   EnsembleClusterHead,
   EnsembleRailGroup,
   FleetSectionHead,
+  FLEET_SECTION_TITLES,
   FoldedSessionRail,
   PipelineClusterHead,
   RepoGroupHead,
@@ -85,6 +90,20 @@ function clusterNeedsYou(
 
 /** The repository frame row, named so the two render helpers below can take it as a parameter. */
 type FleetRepoRow = Extract<FleetRow, { kind: "repo" }>;
+
+function keepIdleHeadingFocus(heading: HTMLButtonElement | null): (() => void) | undefined {
+  if (!heading) return;
+  const rail = heading.closest(".has-idle-sections");
+  return () => {
+    if (document.activeElement !== heading) return;
+    queueMicrotask(() => {
+      if (document.activeElement !== document.body) return;
+      // An empty section unmounts its heading. Prefer the open session's heading,
+      // then the first remaining section, then the rail's navigation control.
+      idleRailFocusFallback(rail)?.focus();
+    });
+  };
+}
 
 /** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
 interface PendingDrop {
@@ -181,8 +200,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     props.pipelineRunByKey,
     pinnedResidentSessions(props.residentBySession),
     blockedPlacement,
+    // App's one set, on App's one clock, so this draws the order the arrow keys walk.
+    props.awaitingIds ?? NO_AWAITING_SESSIONS,
+    // App's one map, for the same reason.
+    props.stalledById ?? NO_STALLED_SESSIONS,
   );
   const groups = order.groups;
+  // The cards drawn under Idle's Stalled rule, which alone carry their stall's facts.
+  const stalledHere = stalledInOrder(groups);
   const columns = order.columns;
   // The denominator in every repository head's `2 of 7`, folded once for the whole board rather
   // than per frame: the number is about the fleet, and a frame counting only its own column
@@ -294,13 +319,19 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   );
   const card = (s: Session): React.JSX.Element => {
     const asVisitor = visitor(s, "tile");
+    const stall = stallOf(s);
     if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
+    const resident = props.residentBySession?.get(s.id);
     return <SessionTile
       key={s.id}
       session={s}
+      callSign={props.cardCallSignBySession?.get(s.id)}
+      callSignElement={props.cardCallSignElementBySession?.get(s.id)}
       selected={s.id === props.selectedId}
       onOpen={() => props.onSelect(s.id)}
+      onOpenQueue={() => props.onSelect(s.id, "queue")}
+      onComplete={() => props.onComplete(s.id)}
       onCursorTo={() => props.onCursorTo(s.id)}
       registerEl={props.registerEl}
       registerWorkflowDisclosure={props.registerWorkflowDisclosure}
@@ -337,9 +368,14 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // a position counted at the call site would restart inside every frame - which is the
       // one thing the numbering must not do.
       shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
-      resident={props.residentBySession?.get(s.id) ?? null}
+      resident={resident}
+      residentLoopFeedback={resident && props.residentLoopFeedbackFor?.(resident.runId)}
+      stall={stall}
+      onDismissStall={stall && props.onDismissStall ? () => props.onDismissStall!(s.id, stall) : undefined}
     />
   };
+  /** The stall a card in the Stalled section carries, or null for every other card. */
+  const stallOf = (s: Session) => (stalledHere.has(s.id) ? props.stalledById?.get(s.id) ?? null : null);
   /**
    * One column's rows - section rules and repository frames included - rendered by whichever
    * row component this surface uses. The rule and frame placement lives in `fleetRows`, so the
@@ -351,13 +387,15 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
    * wrapper and never a fork.
    */
   const sectioned = (
-    g: FleetToneGroup,
+    rows: readonly FleetRow[],
     render: (block: FleetBlock) => React.JSX.Element,
     wrapRepo: (row: FleetRepoRow, children: React.ReactNode) => React.JSX.Element,
   ): React.ReactNode[] =>
-    fleetRows(g).map((row) =>
+    rows.map((row, at) =>
       row.kind === "section" ? (
-        <FleetSectionHead key={`section-${row.section}`} kind={row.section} count={row.count} />
+        // Keyed by position too: a group can draw two Free rules (pinned free residents above an
+        // Awaiting section, and the free sessions below it).
+        <FleetSectionHead key={`section-${row.section}-${at}`} kind={row.section} count={row.count} />
       ) : row.kind === "repo" ? (
         wrapRepo(row, repoCollapsed.has(row.key) ? null : row.blocks.map(render))
       ) : (
@@ -387,7 +425,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     return <RailRow
       key={s.id}
       session={s}
+      callSign={props.cardCallSignBySession?.get(s.id)}
+      callSignElement={props.cardCallSignElementBySession?.get(s.id)}
       selected={s.id === props.selectedId}
+      sectionNavigation={Boolean(props.idleRailSections)}
       onSelect={() => props.onSelect(s.id)}
       // Register the element like the console rail does, so Shift+Tab/Escape out of the
       // reader can land focus back on the selected row here.
@@ -407,16 +448,17 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       pipelineCommissionRun={commissionRun}
       onOpenPipelineCommission={props.onOpenPipelineCommission}
       resident={props.residentBySession?.get(s.id) ?? null}
+      stall={stallOf(s)}
     />
   };
 
   // A function rather than inline JSX: a column may draw a Blocked lane or frame beside these
   // rows, and both have to stay one spelling.
-  const groupRows = (g: FleetToneGroup, isRail: boolean): React.ReactNode => isRail ? (
+  const groupRows = (rows: readonly FleetRow[], isRail: boolean): React.ReactNode => isRail ? (
     // The clicked column, now a console rail: the same RailRow (and the same
     // cluster header) the console uses, so opening a column and switching to
     // the console read alike.
-    sectioned(g, (block) =>
+    sectioned(rows, (block) =>
       block.kind === "session" ? (
         railRow(block.session)
       ) : (
@@ -460,7 +502,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     // arrow keys walk (`orderSessions` decided both). The frame is presentational
     // only: it carries no drag handlers, so a dragover started on a tile inside it
     // bubbles exactly as it did when the tiles were loose children.
-    sectioned(g, (block) =>
+    sectioned(rows, (block) =>
       block.kind === "session" ? (
         tile(block.session)
       ) : (
@@ -562,6 +604,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         .filter((c) => modes.get(c.id) !== "hidden")
         .map((c) => {
           const g = c.group;
+          // The head's awaiting / free / held split, from the one helper the rail head reads.
+          const head = g ? idleHeadCounts(g) : null;
           const isRail = focusedColumn === c.id;
           const width = columnWidthOf(widths, c.id);
           const wide = width === "wide";
@@ -618,13 +662,44 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
               </section>
             );
           }
-          const ownRows = g === null ? blockedRows(c.blocked, isRail)
-            : g.sessions.length > 0 ? groupRows(g, isRail) : null;
+          const idleRail = isRail && c.id === "idle" ? props.idleRailSections : undefined;
+          const ownRows = idleRail ? idleRail.sections.map((section) => (
+            <div className={`idle-rail-section fleet-section-${section.kind}`} key={section.key}>
+              <Tooltip label={`${section.expanded ? "Collapse" : "Expand"} section. Use ↑ and ↓ to move between headings.`}>
+                <button
+                  type="button"
+                  className="idle-rail-section-toggle"
+                  ref={keepIdleHeadingFocus}
+                  aria-expanded={section.expanded}
+                  data-idle-section={section.key}
+                  data-contains-selection={section.sessionIds.includes(props.selectedId ?? "") || undefined}
+                  onClick={() => idleRail.onToggle(section.key, !section.expanded)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                    const headings = event.currentTarget.closest(".has-idle-sections")
+                      ?.querySelectorAll<HTMLButtonElement>(".idle-rail-section-toggle");
+                    if (!headings) return;
+                    event.preventDefault();
+                    const index = Array.from(headings).indexOf(event.currentTarget);
+                    headings[index + (event.key === "ArrowDown" ? 1 : -1)]?.focus();
+                  }}
+                >
+                  <span>
+                    {section.pinned && "pinned "}
+                    {section.kind === "blocked" ? BLOCKED_LABEL : FLEET_SECTION_TITLES[section.kind]}
+                  </span>
+                  <strong>{section.sessionIds.length}</strong>
+                </button>
+              </Tooltip>
+              {section.expanded && groupRows(section.rows, true)}
+            </div>
+          )) : g === null ? blockedRows(c.blocked, isRail)
+            : g.sessions.length > 0 ? groupRows(fleetRows(g), isRail) : null;
           return (
             <section
               key={c.id}
               className={`board-col tone-${c.id}${isRail ? " is-rail" : ""}${wide ? " is-wide" : ""}${
-                lane ? " has-blocked-lane" : ""}`}
+                lane ? " has-blocked-lane" : ""}${idleRail ? " has-idle-sections" : ""}`}
               inert={focusedColumn != null && !isRail}
             >
               {/* Double-click the head to expand, the gesture asked for. On the HEAD
@@ -653,10 +728,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 )}
                 <span className="board-swatch" aria-hidden />
                 <h2>{c.label}</h2>
-                {/* The review chord's keycap, on Needs you while pressing it would open a queue:
-                    `e` goes to the first session asking without a card being picked first. The
-                    same rule the chord itself follows, so the keycap is never on a column the
-                    key would leave alone. */}
+                {/* Remind the operator of the attention shortcut when this column has a review. */}
                 {c.id === "attention" && g !== null && reviewShortcutTarget(g.sessions, null) && (
                   <span className="board-col-key"><Keycap action="review" /></span>
                 )}
@@ -676,18 +748,15 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     onChange={(next) => setColumnWidth(c.id, next)}
                   />
                 )}
-                {/* One number when the column is one kind of thing, two when it is not. A
-                    column holding three agents an open run owns and two that are genuinely free
-                    has no honest single count: "5" is the number a dispatch decision reads, and
-                    only two of those five can take work.
-
-                    The free pill is dropped when there are no free agents, matching `fleetRows`
-                    dropping the free RULE in the same case. "0 free · 1 held" counts a side of
-                    the split that is not there, and the pair then disagreed with the single
-                    rule below it about whether this column had two halves at all. */}
-                {/* A placeholder is a visible row and counts in the unsplit Working column.
-                    It is not included in the free/held split because no session exists yet. */}
-                {g === null || g.heldFrom === null ? (
+                {/* The Awaiting count includes pinned residents waiting outside that section. */}
+                {!idleRail && head && head.awaiting > 0 && (
+                  <Tooltip label="Idle on purpose until a background process they started reports back">
+                    <span className="board-col-n n-awaiting">{head.awaiting} awaiting</span>
+                  </Tooltip>
+                )}
+                {idleRail ? (
+                  <span className="idle-rail-total">{count} {count === 1 ? "session" : "sessions"}</span>
+                ) : g === null || head!.free === null ? (
                   <span className="board-col-n">{count}</span>
                 ) : (
                   <>
@@ -699,18 +768,28 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         <span className="board-col-n n-blocked">{c.blocked.length} blocked</span>
                       </Tooltip>
                     )}
-                    {g.heldFrom > 0 && (
+                    {/* The overview's section headings already count Free, Stalled and Held. */}
+                    {isRail && head!.free! > 0 && (
                       <Tooltip
-                        label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}
+                        label={`${head!.free} of ${g.sessions.length} idle agents can take work`}
                       >
-                        <span className="board-col-n n-free">{g.heldFrom} free</span>
+                        <span className="board-col-n n-free">{head!.free} free</span>
                       </Tooltip>
                     )}
-                    <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
-                      <span className="board-col-n n-held">
-                        {g.sessions.length - g.heldFrom} held
-                      </span>
-                    </Tooltip>
+                    {/* Between free and held, in the order the column draws them. */}
+                    {isRail && head!.stalled !== null && (
+                      <Tooltip label="Went quiet with work still open - each card says what is open and what would move it">
+                        <span className="board-col-n n-stalled">{head!.stalled} stalled</span>
+                      </Tooltip>
+                    )}
+                    {/* Split by a wait alone, with nothing held, there is no held side. */}
+                    {isRail && head!.held !== null && (
+                      <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                        <span className="board-col-n n-held">
+                          {head!.held} held
+                        </span>
+                      </Tooltip>
+                    )}
                   </>
                 )}
                 {/* The rail's own fold, where the width control would be: drilled in, the
@@ -729,7 +808,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   {c.id === "working" && (
                     <FailedLaunchList groups={failed} variant={isRail ? "rail" : "tile"} />
                   )}
-                  {frame && (isRail ? (
+                  {frame && !idleRail && (isRail ? (
                     <div className="rail-cluster rail-blocked" key="blocked">
                       <BlockedRailHead sessions={c.blocked} />
                       {blockedRows(c.blocked, true)}
@@ -803,6 +882,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
             key={selected.id}
             view={props}
             session={selected}
+            stall={stallOf(selected)}
             // The rail head's back button is off screen both when no rail is drawn and when
             // the rail is folded to its strip, so the detail head carries the way back then.
             onBack={railHidden || railFolded ? props.onDeselect : undefined}

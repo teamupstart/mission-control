@@ -93,7 +93,7 @@ export function piSessionFileForIdentity(
   return exactSessionFile(sessionFiles(piProjectDir(cwd, sessionsDir)), agentSessionId)?.path ?? null;
 }
 
-export function locatePiTranscript(s: Session, sessionsDir = piSessionsDir()): string | null {
+export function locatePiTranscript(s: Pick<Session, "transcriptPath" | "agentSessionId" | "cwd">, sessionsDir = piSessionsDir()): string | null {
   if (!s.cwd || !s.agentSessionId) return null;
 
   // An extension reports the exact path, including custom Pi homes. Validate its header
@@ -198,6 +198,7 @@ export const piMessages = jsonlMessages({
 export const piTranscript: TranscriptSpec = {
   metaSource: "transcript",
   locate: locatePiTranscript,
+  locateByConversation: (session) => piSessionFileForIdentity(session.cwd, session.agentSessionId),
   passiveRead: piPassiveRead,
   // pi has no TodoWrite-style progress tool, so there is no "what's happening now" one-liner
   // to surface - null degrades to showing nothing, which is the right answer for a harness

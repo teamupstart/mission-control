@@ -25,6 +25,11 @@
   --dim: #5b6676;
 
   /* Session states and the tones that ride on them. */
+  --voice-listening: #0f7f56;
+  --voice-muted: #5b6676;
+  --voice-call: #9e5400;
+  --voice-talk: #0b63ce;
+
   --working: #0b63ce;
   --idle: #0f7f56;
   --attention: #9e5400;

@@ -695,6 +695,7 @@ test("the session card's Inspector summary is the shared projection, CodeRabbit 
     reviewedHeadSha: null,
     observedHeadSha: "head-10",
     cleanReviewHeadSha: null,
+    localReviewHeadSha: null,
   });
   assert.equal(codeRabbit?.unresolved, 1);
   assert.deepEqual(

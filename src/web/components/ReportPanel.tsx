@@ -1,4 +1,5 @@
 import { SessionTransfers } from "./SessionTransfers.tsx";
+import { hasOpenAsks } from "../lib/async-questions.ts";
 import type { SessionTransferPage } from "@shared/session-transfer.ts";
 import { featureAction } from "../lib/experience.ts";
 import { useMemo, useState } from "react";
@@ -514,7 +515,7 @@ export function ReportPanel({
         <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">
           {needsYou.map((s) => (
             <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s, sessions) ?? "needs you"}>
-              {s.pendingReviews > 0 && (
+              {hasOpenAsks(s) && (
                 <Tooltip label="Open this session's pending reviews">
                   <button className="btn" onClick={() => onOpenReviews(s.id)}>
                     Review

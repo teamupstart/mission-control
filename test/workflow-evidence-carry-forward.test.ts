@@ -908,7 +908,7 @@ test("a byte-capped carry stops at the first refusal instead of packing smaller 
     );
     const truncation = store.listEvents(runId)
       .filter((event) => event.kind === "evidence_carry_truncated").at(-1);
-    assert.equal((truncation?.payload as { artifacts: number }).artifacts, 2);
+    assert.equal((truncation?.payload as { artifacts: number })?.artifacts, 2);
   } finally {
     rmSync(checkout, { recursive: true, force: true });
   }
@@ -2617,7 +2617,7 @@ test("the left-staged event writes the same normalized claims its id was digeste
     const event = store.listEvents(runId)
       .find((row) => row.kind === "evidence_coverage_left_staged");
     assert.deepEqual(
-      (event?.payload as { claims: Array<{ unresolvedLinks: string[] }> }).claims,
+      (event?.payload as { claims: Array<{ unresolvedLinks: string[] }> })?.claims,
       [{ clientCriterionId: "normalized-criterion", unresolvedLinks: ["alpha-proof", "zeta-proof"] }],
       "the payload carries the sorted set the event id was keyed on, not the registration order",
     );
@@ -2709,7 +2709,7 @@ test("a claim refused for room is reported as room, not as a link that failed", 
     const event = store.listEvents(runId)
       .find((row) => row.kind === "evidence_coverage_left_staged");
     assert.deepEqual(
-      (event?.payload as { claims: unknown }).claims,
+      (event?.payload as { claims: unknown })?.claims,
       [{ clientCriterionId: "overflow-criterion", unresolvedLinks: [] }],
       "and the run log says the same thing the caller was told",
     );
@@ -3245,7 +3245,6 @@ for (const operation of ["binding", "supersedes", "withdraw"] as const) {
       operation === "withdraw" ? [] : ["old-v2"], "a later Persona round cannot revive the retired claim");
   });
 }
-
 
 for (const failedCapture of [false, true]) test(`an id-bound replacement retires a semantic claim ${failedCapture ? "after image_changed" : "without supersedes"}`, async () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-semantic-replacement-")));

@@ -12,7 +12,7 @@ import {
 } from "../src/web/lib/drafts.ts";
 import { WorkQueue } from "../src/web/components/WorkQueue.tsx";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
-import type { Session } from "../src/shared/types.ts";
+
 import { mkSession } from "./helpers/session-fixture.ts";
 
 // What a card is allowed to do to text you typed and haven't sent: nothing.

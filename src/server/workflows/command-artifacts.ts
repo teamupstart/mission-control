@@ -1,3 +1,4 @@
+import { LocalInspectorFindingSchema } from "@shared/inspector-review.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -445,6 +446,22 @@ export class WorkflowCommandArtifactService {
     return rows.map(descriptor);
   }
 
+  readLocalInspectorFindings(runId: string, attemptId: string, artifactId: string) {
+    let cursor: string | null = null;
+    const chunks: string[] = [];
+    do {
+      const page = this.read({ runId, attemptId, artifactId, cursor });
+      chunks.push(page.text);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return LocalInspectorFindingSchema.array().parse(JSON.parse(chunks.join("")));
+  }
+
+  retainFindings(input: { runId: string; submissionId: string; attemptId: string }, body: Buffer): WorkflowCommandArtifactDescriptor {
+    this.reserve(input.runId, input.attemptId, body.length);
+    return this.publishFindings(input, body, true);
+  }
+
   /** Independent complete semantic body; capacity was reserved before spawning the review. */
   publishFindings(input: { runId: string; submissionId: string; attemptId: string }, body: Buffer, complete: boolean): WorkflowCommandArtifactDescriptor {
     const existing = this.listForAttempt(input.attemptId).find((a) => a.kind === "findings");
@@ -611,7 +628,8 @@ export class WorkflowCommandArtifactService {
        VALUES (?, ?, ?, ?, ?, 0, 0, 0, NULL, 'partial', 'unavailable', ?, NULL, ?, ?, NULL)`,
     );
     for (const row of interrupted) {
-      const kinds = row.check_run_slot === "coderabbit" ? ["stdout", "stderr", "findings"] : ["stdout", "stderr"];
+      const kinds = row.check_run_slot === "inspector" ? ["findings"]
+        : row.check_run_slot === "coderabbit" ? ["stdout", "stderr", "findings"] : ["stdout", "stderr"];
       for (const kind of kinds) {
         insert.run(
           randomUUID(), row.run_id, row.submission_id, row.attempt_id, kind,

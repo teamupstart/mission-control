@@ -108,7 +108,7 @@ test("an upgrading database receives command catalog and artifact tables without
     // the upgrade case below.
     [
       "slot", "default_command_json", "max_runs", "timeout_ms", "on_unavailable",
-      "on_budget_exhausted", "revision", "created_at", "updated_at",
+      "on_budget_exhausted", "revision", "created_at", "updated_at", "inspector_severity",
     ],
   );
   assert.deepEqual(

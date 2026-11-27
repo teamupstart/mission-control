@@ -92,6 +92,7 @@ async function harness(
     evidenceReadinessPolicy?: "off" | "criterion_mapped_v1";
     head?: { sha: string };
     cwd?: string;
+    repositoryAccess?: "read";
     readContextRaw?: typeof readWorkflowContextRaw;
     resumptionPolicy?: "auto" | "manual";
     deliveryMode?: "live" | "preview";
@@ -114,6 +115,7 @@ async function harness(
     normalizedName: normalizePersonaName(`Preflight ${id}`),
     description: "",
     guidanceMarkdown: "Review.",
+    repositoryAccess: options.repositoryAccess,
     runner: "claude",
     model: "fake",
     createdAt: 1,
@@ -260,6 +262,35 @@ async function harness(
   if (!binding.ok) throw new Error("binding was refused");
   return { registry, store, manager, binding: binding.value, injected };
 }
+
+test("a cancelled submission keeps its capture result when candidate cleanup fails", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  const root = realpathSync(mkdtempSync(join(home, "cancel-candidate-")));
+  execFileSync("git", ["init", "-q", "-b", "main", root]);
+  writeFileSync(join(root, "submitted.txt"), "captured");
+  const h = await harness(t, "cancel-candidate", undefined, {
+    cwd: root, repositoryAccess: "read", deliveryMode: "preview", readContextRaw: readWorkflowContextRaw,
+  });
+  const service = h.manager.repositoryArtifacts;
+  const stillCurrent = service.stillCurrent.bind(service);
+  t.mock.method(service, "stillCurrent", async (...args: Parameters<typeof stillCurrent>) => {
+    const current = await stillCurrent(...args);
+    assert.equal(current, true);
+    h.store.cancelRun(h.store.activeRunForBinding(h.binding.id)!.id, "Operator cancelled");
+    return current;
+  });
+  const discard = service.discard.bind(service);
+  const cleanup = t.mock.method(service, "discard", async (...args: Parameters<typeof discard>) => {
+    await discard(...args);
+    throw Object.assign(new Error("Candidate cleanup failed"), { code: "EIO" });
+  });
+  const result = await h.manager.submit(h.binding.id, { requestId: "cancel-during-seal" });
+  assert.equal(cleanup.mock.callCount(), 1);
+  assert.ok(!result.ok && result.reason === "conflict", JSON.stringify(result));
+  assert.equal(h.store.submissionByTrigger(`manual:${h.binding.id}:cancel-during-seal`)?.status, "cancelled");
+});
 
 for (const limit of ["count", "bytes"] as const) {
   test(`a full reserved text ${limit} budget leaves local reports required without failing capture`, async (t) => {
@@ -1311,7 +1342,7 @@ test("a Persona failing a submission the preflight passed records an operator-vi
     .filter((event) => event.kind === "readiness_review_disagreement");
   assert.equal(advisoryDisagreements.length, 1);
   assert.equal(
-    (advisoryDisagreements[0]?.payload as { policy: string }).policy,
+    (advisoryDisagreements[0]?.payload as { policy: string })?.policy,
     "off",
     "the advisory disagreement records the policy that did not enforce it",
   );
@@ -1692,7 +1723,6 @@ test("sequential A and B preflight repairs retain A's winner through real frozen
   }
   assert.deepEqual(submissionCoverageSelection(h.store, h.store.getSubmission(current.id)!)?.criteria.map((row) => row.matchedClientCriterionIds), [["a1"], ["b1"]]);
 });
-
 
 async function captureFailureHarness(t: TestContext, id: string, options: Parameters<typeof harness>[3] & {
   failure?: "changed" | "missing" | "invalid_utf8";
@@ -2107,7 +2137,6 @@ for (const succeeds of [false, true]) test(`automatic mapping recovery ${succeed
     h.store.listSubmissionTextArtifacts(submission.id).map((v) => v.sha256));
 });
 
-
 test("uncertain capture repair cannot recapture until the operator confirms delivery", async (t) => {
   const id = "capture-uncertain";
   const h = await captureFailureHarness(t, id, { uncertainDelivery: true });
@@ -2248,7 +2277,6 @@ test("restart resumes an atomically reserved capture child without spending a se
   assert.equal(h.injected.length, 1);
 });
 
-
 test("restaging the already-correct registration repairs capture without changing its bytes or generation", async (t) => {
   const id = "capture-restage-identical";
   const h = await captureFailureHarness(t, id);
@@ -2264,7 +2292,6 @@ test("restaging the already-correct registration repairs capture without changin
   assert.equal(h.store.listSubmissionTextArtifacts(child.id).length, 1);
   assert.equal(h.store.listReservedWorkflowEvidence(child.id).some((v) => v.clientItemId === "original-handoff"), false);
 });
-
 
 test("registration rejects unknown ids atomically and freezes an authoritative repair id", async (t) => {
   const id = "authoritative-registration";
@@ -2382,7 +2409,6 @@ for (const publicationAction of [true, false]) {
     }
   });
 }
-
 
 for (const priorOverride of [false, true]) test(`existing eight-criterion run recovers publication timing without repeated overrides (prior override: ${priorOverride})`, async (t) => {
   const id = `legacy-publication-${priorOverride}`;

@@ -48,7 +48,10 @@ export function blockedLabel(blockers: BacklogBlocker[]): string {
 export function stackedStartLabel(task: Task, byId: ReadonlyMap<string, Task>): string | null {
   if (task.status !== "backlog") return null;
   const edge = stackStartEdge(task, byId);
-  if (!edge) return null;
+  return edge ? stackEdgeLabel(edge) : null;
+}
+
+export function stackEdgeLabel(edge: Extract<Task["dependencies"][number], { type: "task" }>): string {
   const number = stackPrNumber(edge.stackPrUrl);
   return number === null ? `Stacked on ${edge.title}` : `Stacked on #${number}`;
 }

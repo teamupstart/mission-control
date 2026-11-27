@@ -8,13 +8,17 @@ import {
   BLOCKED_LABEL,
   fleetRailSections,
   fleetRows,
+  idleHeadCounts,
   orderSessions,
   repoSessionTotals,
   type FleetBlock,
   type FleetToneGroup,
+  stalledInOrder,
 } from "../../lib/fleet-order.ts";
+import { NO_STALLED_SESSIONS } from "../../lib/stalled.ts";
 import { BlockedRailHead } from "../BlockedGroup.tsx";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
+import { NO_AWAITING_SESSIONS } from "../../lib/awaiting.ts";
 import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { repoColor } from "../../lib/repo-color.ts";
 import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
@@ -86,7 +90,12 @@ export function ConsoleView(props: SessionViewProps & {
     props.pipelineRunByKey,
     pinnedResidentSessions(props.residentBySession),
     blockedPlacement,
+    // App's one set, on App's one clock, so this draws the order the arrow keys walk.
+    props.awaitingIds ?? NO_AWAITING_SESSIONS,
+    props.stalledById ?? NO_STALLED_SESSIONS,
   );
+  // The rows drawn under Idle's Stalled rule, which alone carry the stalled mark.
+  const stalledHere = stalledInOrder(order.groups);
   const pending = provisioningTasks(props.tasks);
   // Every open failure: the rail has no Backlog column and its rows carry no notices, so a
   // returned or kept failure has nowhere else to be found here.
@@ -138,6 +147,8 @@ export function ConsoleView(props: SessionViewProps & {
     return <RailRow
       key={s.id}
       session={s}
+      callSign={props.cardCallSignBySession?.get(s.id)}
+      callSignElement={props.cardCallSignElementBySession?.get(s.id)}
       // The rail's own ⌘-number slot, from App's one assignment over the fleet's ordered
       // columns - the same map the Board card reads. Undefined until App hands one down and
       // absent for a row past the twelfth, which `RailRow` draws as no keycap at all.
@@ -160,6 +171,7 @@ export function ConsoleView(props: SessionViewProps & {
       pipelineCommissionRun={commissionRun}
       onOpenPipelineCommission={props.onOpenPipelineCommission}
       resident={props.residentBySession?.get(s.id) ?? null}
+      stall={stalledHere.has(s.id) ? props.stalledById?.get(s.id) ?? null : null}
     />
   };
 
@@ -197,7 +209,9 @@ export function ConsoleView(props: SessionViewProps & {
       </div>
     );
 
-  const toneSection = (g: FleetToneGroup): React.JSX.Element => (
+  const toneSection = (g: FleetToneGroup): React.JSX.Element => {
+    const head = idleHeadCounts(g);
+    return (
     <div key={g.tone}>
       <div className={`rail-group tone-${g.tone}`}>
         {g.label}
@@ -208,20 +222,36 @@ export function ConsoleView(props: SessionViewProps & {
             board's pill and `fleetRows`' free rule do. */}
         {/* A placeholder is a visible row and counts in unsplit Working. It is not a
             free or held agent because the session does not exist yet. */}
-        {g.heldFrom === null ? (
+        {/* Awaiting agents lead the split, as their section leads the group below it. */}
+        {head.awaiting > 0 && (
+          <Tooltip label="Idle on purpose until a background process they started reports back">
+            <span className="rail-group-n rail-group-split">
+              <span className="n-awaiting">{head.awaiting} awaiting</span>
+            </span>
+          </Tooltip>
+        )}
+        {head.free === null ? (
           <span className="rail-group-n">
             {groupTotal(g)}
           </span>
         ) : (
           <span className="rail-group-n rail-group-split">
-            {g.heldFrom > 0 && (
-              <Tooltip label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}>
-                <span className="n-free">{g.heldFrom} free</span>
+            {head.free! > 0 && (
+              <Tooltip label={`${head.free} of ${g.sessions.length} idle agents can take work`}>
+                <span className="n-free">{head.free} free</span>
               </Tooltip>
             )}
-            <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
-              <span className="n-held">{g.sessions.length - g.heldFrom} held</span>
-            </Tooltip>
+            {head.stalled !== null && (
+              <Tooltip label="Went quiet with work still open - each card says what is open and what would move it">
+                <span className="n-stalled">{head.stalled} stalled</span>
+              </Tooltip>
+            )}
+            {/* Split by a wait alone, with nothing held, there is no held side. */}
+            {head.held !== null && (
+              <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                <span className="n-held">{head.held} held</span>
+              </Tooltip>
+            )}
           </span>
         )}
       </div>
@@ -235,10 +265,10 @@ export function ConsoleView(props: SessionViewProps & {
       {/* The same free/held rule the board draws. `orderSessions` sorts held sessions
           last within `idle` for every layout, so without this the rail would reorder
           with nothing on screen saying why. */}
-      {fleetRows(g).map((row) =>
+      {fleetRows(g).map((row, at) =>
         row.kind === "section" ? (
           <FleetSectionHead
-            key={`section-${row.section}`}
+            key={`section-${row.section}-${at}`}
             kind={row.section}
             count={row.count}
           />
@@ -270,6 +300,7 @@ export function ConsoleView(props: SessionViewProps & {
       )}
     </div>
   );
+  };
 
   return (
     <div className="console" data-zone={zone} data-rail={railFolded ? "folded" : undefined}>
@@ -335,6 +366,7 @@ export function ConsoleView(props: SessionViewProps & {
             key={active.id}
             view={props}
             session={active}
+            stall={stalledHere.has(active.id) ? props.stalledById?.get(active.id) ?? null : null}
             // A folded rail has no head, so the Board drill-in's way back moves to the detail
             // head. Undefined in the Console layout, which has no board to go back to.
             onBack={railFolded ? props.onBackToBoard : undefined}

@@ -1,5 +1,7 @@
+import { SESSION_SETTINGS_ACCESS } from "./session-settings-metadata.ts";
 import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
-import { ShapingConfigSchema } from "./shaping.ts";
+import { ShapingConfigSchema, ShapingSignInConfigSchema } from "./shaping.ts";
+import { VoiceConfigSchema, type VoiceConfig } from "./voice.ts";
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
@@ -9,6 +11,7 @@ import {
   CostConfigSchema,
   ForemanConfigSchema,
   HarnessesConfigSchema,
+  ReportsSettingsSchema,
   InspectorConfigSchema,
   LlmConfigSchema,
   ShippingConfigSchema,
@@ -27,6 +30,7 @@ import type {
   HarnessesConfig,
   InspectorConfig,
   LlmConfig,
+  ReportsSettings,
   ShippingConfig,
   SkillsConfig,
   TerminalsConfig,
@@ -213,6 +217,7 @@ const foremanFields = {
   maxSessions: "setting",
   backlogModel: "setting",
   backlogRunner: "setting",
+  efforts: "setting",
 } satisfies Record<keyof ForemanConfig, AppConfigValueClass>;
 
 const workflowFields = {
@@ -234,6 +239,7 @@ const llmFields = {
   codexTransport: "setting",
   models: "setting",
   runners: "setting",
+  efforts: "setting",
 } satisfies Record<keyof LlmConfig, AppConfigValueClass>;
 
 const awayFields = {
@@ -251,11 +257,13 @@ const standingFields = {
 } satisfies Record<keyof StandingInstructionsConfig, AppConfigValueClass>;
 
 const inspectorFields = {
+  localReview: "setting",
   runner: "setting",
   enabled: "setting",
   mode: "setting",
   repoAllowlist: "setting",
   model: "setting",
+  effort: "setting",
   maxCommentsPerRound: "setting",
 } satisfies Record<keyof InspectorConfig, AppConfigValueClass>;
 
@@ -286,6 +294,8 @@ const uiFields = {
   taskKindHeader: "setting",
   taskKindCard: "setting",
   backgroundAgentsStyle: "setting",
+  callSignCardStyle: "setting",
+  residentCardNameStyles: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",
@@ -310,7 +320,32 @@ const uiFields = {
   compactTopbarItems: "setting",
   pauseCardControls: "setting",
   pauseConsoleControls: "setting",
+  voice: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
+
+/**
+ * Voice settings. `muted` is `operational`, like `away.away`: it is what the tray, the hotkey or
+ * the dashboard last did on this machine, and a restored snapshot must not mute or unmute it.
+ */
+const voiceFields = {
+  muted: "operational",
+  listeningMode: "setting",
+  hotkey: "setting",
+  autoMuteDuringCalls: "setting",
+  endOfSpeechMs: "setting",
+  separatorWord: "setting",
+  showTranscript: "setting",
+  transcriptStyle: "setting",
+  transcriptCorner: "setting",
+  transcriptWords: "setting",
+  cancelWindow: "setting",
+  speech: "setting",
+  whenUnsure: "setting",
+  planFormsByVoice: "setting",
+  inputDevice: "setting",
+  decisionProvider: "setting",
+  backend: "setting",
+} satisfies Record<keyof VoiceConfig, AppConfigValueClass>;
 
 const repoIndexFields = {
   directories: "setting",
@@ -335,6 +370,10 @@ const storageLimitsFields = {
   poolKeepWarm: "setting",
 } satisfies Record<keyof StorageLimitsConfig, AppConfigValueClass>;
 
+const reportsFields = {
+  guidance: "setting",
+} satisfies Record<keyof ReportsSettings, AppConfigValueClass>;
+
 const ForemanLeaseSchema = z.object({
   workerId: z.string(),
   expiresAt: z.number(),
@@ -347,6 +386,14 @@ const TelemetryIdentitySchema = z.object({
 });
 
 const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number() });
+
+/**
+ * The Keep awake switch as the operator last left it on this Mac. A saved CHOICE, never an
+ * observation: whether the OS holds the assertion is `KeepAwakeStatus`, which the daemon
+ * derives fresh on every run and never stores.
+ */
+export const KeepAwakePreferenceSchema = z.object({ enabled: z.boolean() });
+export type KeepAwakePreference = z.infer<typeof KeepAwakePreferenceSchema>;
 
 /**
  * The complete supported `app_config` partition.
@@ -362,6 +409,19 @@ export const APP_CONFIG_ENTRIES = {
   // an argument never hands over a credential: `credentialsAreReferences` in `shaping.ts`
   // refuses each on write, so the value stays in the daemon's environment and out of snapshots.
   shaping: { ...wholeEntry("shaping", ShapingConfigSchema, "setting", "shaping"), optionalInSnapshot: true },
+  /**
+   * Shaper sign-in's client registrations (`src/server/shaping/sign-in/service.ts`): issuer,
+   * client id, redirect URI, scope and registration time, at most 16. No token, no secret.
+   * `operational` with no backup domain: a registration names this daemon's loopback redirect
+   * URI, and a settings snapshot restored onto another installation must not hand it clients
+   * registered for another port and state home.
+   */
+  shapingSignIn: wholeEntry("shaping.signIn", ShapingSignInConfigSchema, "operational", null),
+  /**
+   * Voice settings (contract A of the voice plan), behind the `voice` preview flag. Every field
+   * later phases read is declared here from the start, so none of them changes this entry.
+   */
+  voice: { ...fieldsEntry("voice", VoiceConfigSchema, "voice", voiceFields), optionalInSnapshot: true },
   residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
   // Custom MCP server DEFINITIONS only. A field marked secret stores its name here and its
   // value in the write-only `resident_mcp_secrets` table, so a snapshot never carries one.
@@ -400,6 +460,8 @@ export const APP_CONFIG_ENTRIES = {
   shipping: fieldsEntry("shipping", ShippingConfigSchema, "shipping", shippingFields),
   pipelines: fieldsEntry("pipelines", PipelinesConfigSchema, "pipelines", pipelinesFields),
   ui: fieldsEntry("ui", UiConfigSchema, "ui", uiFields, "ui"),
+  // Installation consent stays outside settings snapshots, so a restore cannot undo revocation.
+  sessionSettingsAccess: wholeEntry(SESSION_SETTINGS_ACCESS.key, z.boolean(), "operational", null),
   foremanLease: wholeEntry("foreman.lease", ForemanLeaseSchema, "operational", null),
   // This records what one operator has already seen about this machine. Restoring it from
   // another installation could suppress a new break or resurrect a reminder already handled.
@@ -411,6 +473,13 @@ export const APP_CONFIG_ENTRIES = {
    */
   dispatchLauncherPrompt: wholeEntry("dispatch.launcher.prompt", z.boolean(), "operational", null),
   backlogPlan: wholeEntry("backlog.plan", StoredBacklogPlanSchema, "derived", null),
+  /**
+   * Whether this Mac should be kept awake (`src/server/keep-awake.ts`). `operational` with no
+   * backup domain, as `away.away` and `voice.muted` are: it is a live power mode of THIS
+   * machine, and a settings snapshot restored from another installation must not be able to
+   * hold a laptop awake that its owner never asked to hold awake.
+   */
+  keepAwake: wholeEntry("keepAwake", KeepAwakePreferenceSchema, "operational", null),
   /**
    * Paused sessions, Pause all and the priority session (`src/server/pause/`). `operational`
    * with no backup domain: it names this machine's live processes by pid, and restored onto
@@ -441,6 +510,14 @@ export const APP_CONFIG_ENTRIES = {
    * disk, and restored onto another installation it would report captures that never ran there.
    */
   backupsStatus: wholeEntry("backups.status", DatabaseBackupStatusSchema, "operational", null),
+  /**
+   * Settings > Reports (`inbox` flag): the operator's guidance for when an agent posts a report.
+   * Muted agents are not here: they are rows of `report_mutes`, owned by `ReportManager`.
+   */
+  reports: {
+    ...fieldsEntry("reports", ReportsSettingsSchema, "reports", reportsFields),
+    optionalInSnapshot: true,
+  },
   /** Settings > Storage's size limit, free-space floor, warning channels and idle-cache budget. */
   storageLimits: {
     ...fieldsEntry("storage.limits", StorageLimitsConfigSchema, "storage-limits", storageLimitsFields),

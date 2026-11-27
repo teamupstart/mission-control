@@ -64,14 +64,12 @@ async function shoot(
   // row is a line of adjacent buttons.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/retro-offer/${name}.png`);
 }
 
 /** Say what just held, after it held - so the transcript cannot narrate a step that did not. */
 function observed(line: string): void {
   if (!process.env.MC_E2E_EVIDENCE) return;
-  // eslint-disable-next-line no-console
   console.log(`OBSERVED ${line}`);
 }
 
@@ -388,7 +386,7 @@ test("completing merged work retires its owned session and withdraws the retro o
   await expect
     .poll(async () => (await sessions(daemon)).find((row) => row.id === session.id)?.state)
     .toBe("working");
-  // Complete through the public task route, which owns durable closure and checkout return.
+  // Complete through the public task route, which owns durable closure.
   if ((await tasks(daemon)).find((task) => task.id === source!.id)?.status !== "done") {
     await api(
       daemon,
@@ -422,15 +420,15 @@ test("completing merged work retires its owned session and withdraws the retro o
   });
   // A completed managed task no longer leaves its source agent available for a post-merge
   // retro. The separate follow-up path for retained assigned sessions remains covered by
-  // retro-http.test.ts. Here the owned checkout must be returned and its controls removed.
+  // retro-http.test.ts. The checkout stays under retention after the session closes.
   await expect(retro).toBeHidden();
   await expect.poll(async () => (await sessions(daemon)).some((row) => row.id === session.id))
     .toBe(false);
   await expect.poll(async () => (await tasks(daemon)).find((task) => task.id === source!.id), {
     timeout: 60_000,
-  }).toMatchObject({ status: "done", worktreePath: null });
+  }).toMatchObject({ status: "done", worktreePath: source!.worktreePath });
   expect((await tasks(daemon)).filter((task) => task.title === `Retro: ${source!.title}`)).toEqual([]);
-  observed("completion withdrew the retro offer, retired the owned session, and returned its checkout");
+  observed("completion withdrew the retro offer, retired the owned session, and retained its checkout");
   await shoot(dashboard, dashboard, "06-completed-owned-session-retired");
 });
 

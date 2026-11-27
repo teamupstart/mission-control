@@ -2,7 +2,17 @@ import { FeatureFlagsPanel } from "./FeatureFlagsPanel.tsx";
 import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
 import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { TaskShapingPanel } from "./TaskShapingPanel.tsx";
+import { ReportsSettingsPanel } from "./ReportsSettingsPanel.tsx";
+import type { ReportMute } from "@shared/reports.ts";
+import { VoiceSettingsPanel } from "./VoiceSettingsPanel.tsx";
+import type { VoiceConfigState } from "../useVoiceConfig.ts";
+import type { VoiceState } from "@shared/voice.ts";
+import type { ResidentProfile } from "@shared/residents.ts";
+
+const NO_SESSIONS: readonly Session[] = [];
+const NO_RESIDENT_PROFILES: readonly ResidentProfile[] = [];
 import type { ShapingSettings } from "../useShapingSettings.ts";
+import type { ShapingSignInView } from "@shared/shaping.ts";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
@@ -51,7 +61,7 @@ import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
 import type { LlmState } from "../useLlm.ts";
-import type { SettingsStatus } from "@shared/types.ts";
+import type { Session, SettingsStatus } from "@shared/types.ts";
 import type { StorageHealth } from "@shared/storage-health.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
@@ -228,11 +238,28 @@ export function SettingsPage({
   onOpenForemanProfile,
   featureFlagsSettings,
   shapingSettings,
+  shapingSignIns,
+  reportMutes = [],
+  voice = null,
+  voiceConfig,
+  sessions = NO_SESSIONS,
+  residentProfiles = NO_RESIDENT_PROFILES,
   jump = null,
 }: {
+  /** Settings > Reports' muted agents, App's because the event stream holds them (`report_mutes`). */
+  reportMutes?: readonly ReportMute[];
   featureFlagsSettings?: FeatureFlagsSettings;
   /** Settings > Task shaping's state, App's because its confirmed config is the event stream's. */
   shapingSettings?: ShapingSettings;
+  /** Shaper sign-in's list, the event stream's, which Settings > Task shaping's marked rows show. */
+  shapingSignIns?: readonly ShapingSignInView[];
+  /** `MissionState.voice`, which Settings > Voice's mode line and roster draw. */
+  voice?: VoiceState | null;
+  voiceConfig: VoiceConfigState;
+  /** The live sessions, which Settings > Voice counts when no spoken name reaches them. */
+  sessions?: readonly Session[];
+  /** The live resident profiles, which name Settings > Voice's roster rows. */
+  residentProfiles?: readonly ResidentProfile[];
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
@@ -624,19 +651,21 @@ export function SettingsPage({
         // link to a row in an unselected family has to move the rail before this page's
         // flash observer can ever find that row in the DOM.
         return (
-          <>
-            <UpdateSettingsPanel />
+          <UpdateSettingsPanel>
             <SetupPanel
               state={setup}
+              voice={voice}
               jumpAnchor={unhandledJump?.anchor ?? null}
               jumpRequestId={unhandledJump?.id ?? null}
             />
-          </>
+          </UpdateSettingsPanel>
         );
       case "feature-flags":
         return <FeatureFlagsPanel state={featureFlagsSettings} jumpAnchor={unhandledJump?.anchor} />;
       case "task-shaping":
-        return <TaskShapingPanel state={shapingSettings} />;
+        return <TaskShapingPanel state={shapingSettings} signIns={shapingSignIns} />;
+      case "reports":
+        return <ReportsSettingsPanel mutes={reportMutes} />;
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":
@@ -656,6 +685,18 @@ export function SettingsPage({
         return <TaskSourcesPanel state={taskSources} />;
       case "standing-instructions":
         return <StandingInstructionsPanel state={standingInstructions} />;
+      case "voice":
+        return (
+          <VoiceSettingsPanel
+            state={voiceConfig}
+            voice={voice}
+            sessions={sessions}
+            residentProfiles={residentProfiles}
+            onNavigate={navigateWithAnchor}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
+          />
+        );
       case "conductor":
         return <ConductorPanel state={conductor} onOpenPipelines={onOpenPipelines} />;
       case "models":

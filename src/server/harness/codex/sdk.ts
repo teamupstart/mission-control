@@ -474,12 +474,13 @@ class CodexSdkSession implements SdkSessionHandle {
     const input = turnInput(turn);
     const active = this.activeTurnId;
     if (active) {
-      const params: TurnSteerParams = { threadId, input, expectedTurnId: active };
+      const params: TurnSteerParams = { threadId, input, expectedTurnId: active,
+        ...(turn.clientMessageId && { clientUserMessageId: turn.clientMessageId }) };
       await this.client.request<TurnSteerResponse>("turn/steer", params);
       this.foldSubagents(finished);
       return "steered";
     }
-    await this.startTurn(threadId, input);
+    await this.startTurn(threadId, input, turn.clientMessageId);
     this.foldSubagents(finished);
     return "started";
   }
@@ -509,7 +510,7 @@ class CodexSdkSession implements SdkSessionHandle {
     const threadId = this.requireThread();
     if (this.activeTurnId) return null;
     const finished = this.subagents.finishedRuns();
-    await this.startTurn(threadId, turnInput(turn));
+    await this.startTurn(threadId, turnInput(turn), turn.clientMessageId);
     this.foldSubagents(finished);
     return "started";
   }
@@ -530,10 +531,11 @@ class CodexSdkSession implements SdkSessionHandle {
    * one this file invented. See `setPermissionMode` for what that costs and why it is the
    * right trade.
    */
-  private async startTurn(threadId: string, input: UserInput[]): Promise<void> {
+  private async startTurn(threadId: string, input: UserInput[], clientUserMessageId?: string): Promise<void> {
     const posture = codexPosture(this.config.permissionMode);
     const effort = codexEffort(this.config.effort);
     const params: TurnStartParams = {
+      ...(clientUserMessageId && { clientUserMessageId }),
       threadId,
       input,
       ...(this.config.model ? { model: this.config.model } : {}),
@@ -1543,6 +1545,7 @@ const CODEX_ANSWERS_REQUESTS = true;
 
 export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec {
   return {
+    clientMessageIds: true,
     answersRequests: CODEX_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
       // Launch-scoped `-c` config, in the SAME grammar a dispatched terminal Codex takes,
@@ -1603,6 +1606,7 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           ...(overlay ? { codexHome: overlay } : {}),
           ...(opts.residentStateDir ? { residentStateDir: opts.residentStateDir } : {}),
           traceContext: opts.traceContext ?? null,
+          workUnitId: opts.workUnitId ?? null,
         },
       );
       const config: LaunchConfig = {

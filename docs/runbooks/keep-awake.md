@@ -1,7 +1,8 @@
 # Keep Awake - real macOS verification runbook
 
 Automated tests prove the daemon owns the native assertion lifecycle, that every window
-converges over SSE through a Linux-safe command fixture, and that a restart returns the mode to off.
+converges over SSE through a Linux-safe command fixture, and that a restart or an upgrade
+puts the operator's saved choice back.
 What they cannot prove is that the OPERATING SYSTEM honoured the assertion - that the Mac
 really did stay up with the screen locked, and really did let go afterwards. This runbook
 is that receipt. Perform it on a real Mac against a real daemon (no
@@ -16,8 +17,10 @@ them.
   display-sleep assertion and declares no user activity.
 - Lid close, manual Sleep, shutdown, power loss, and thermal or low-battery safeguards
   still win.
-- The mode is transient: off on every daemon start, released on quit, crash, and restart,
-  never persisted, never reacquired.
+- The operator's choice persists; the assertion does not. The switch is saved (`app_config`
+  key `keepAwake`) and reapplied on every daemon start, once the daemon is serving. The
+  assertion is released on quit, crash, and restart, and the next daemon takes its own.
+  Shutdown never changes the saved choice.
 
 ## 1. Enable, and see the assertion
 
@@ -62,19 +65,28 @@ them.
 3. `pmset -g assertions` shows the assertion gone after the process dies. IOKit removed
    the process-owned assertion without an orderly JavaScript cleanup path.
 
-## 5. A restart returns the mode to off
+## 5. A restart or an upgrade puts the choice back
 
-1. Start the daemon again (or let the supervisor bring it back).
-2. Reload the dashboard: the indicator reads plain `live`, the dropdown switch is off,
-   and `pmset -g assertions` shows no Mission Control assertion. The mode was not persisted
-   and was not reacquired - turning it back on is always an explicit operator action.
+1. Start the daemon again (or let the supervisor bring it back). For the upgrade case, quit
+   Mission Control normally and open it again, or install the new build over the old one.
+2. Reload the dashboard: the indicator reads `live · awake`, the dropdown switch is on, and
+   `pmset -g assertions` lists the Mission Control assertion again. Record the NEW daemon PID
+   from `/api/health`: the assertion is owned by the new process, not carried over from the
+   old one. Nobody clicked the switch.
+
+## 6. Off is a choice too, and it persists
+
+1. Switch Keep awake off, then restart the daemon (orderly quit and reopen, or `kill -9`).
+2. The indicator reads plain `live`, the dropdown switch is off, and `pmset -g assertions`
+   shows no Mission Control assertion. Nothing reacquired it.
 
 ## Recording the receipt
 
-Paste into the PR (or the change record) the four observations: the assertion line from
+Paste into the PR (or the change record) the observations: the assertion line from
 step 1, the locked-screen-while-working note from step 2, the empty assertion list from
-step 3, and the post-crash/post-restart off states from steps 4 and 5, each with the
-daemon PID visible. Repeat the enable/disable/restart checks through standalone `npm start`,
+step 3, the post-crash assertion release from step 4, the restored assertion under the new
+daemon PID from step 5, and the off-stays-off state from step 6, each with the daemon PID
+visible. Repeat the enable/disable/restart checks through standalone `npm start`,
 packaged Electron, an adopted daemon, and the LaunchAgent. For the LaunchAgent's build and
 exact-PID mechanics, see [Running Mission Control](../overview.md#quick-start).
 If IOKit denies or terminates the assertion, or endpoint policy prohibits it, stop and record

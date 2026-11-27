@@ -113,3 +113,22 @@ test("answers coalesce only at the queue tail without passing an intervening ope
     assert.equal(createReviewContinuationPendingTurn({ reviewId: id, noteKey, text: "duplicate", now: 63000 }), null);
   }
 });
+
+test("a marked answer never folds into an unmarked answer row queued before the marker existed", async () => {
+  const { parseReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+  const noteKey = "legacy-unmarked-tail";
+  const legacyId = "0f1e2d3c-4b5a-4968-8776-655443322110";
+  const newId = "1b0c9f4e-2a8d-4a43-9d3e-0f6c2b7e5a10";
+  // An answer row a pre-marker daemon queued and nothing has claimed yet: its text has no marker.
+  const legacy = createPendingTurn({ id: `${MESSAGE_ANSWER_TURN_PREFIX}${legacyId}`, noteKey, text: "Legacy answer", now: 60000 });
+  const review = question(newId);
+  insertReview({ ...review, status: "pending" });
+  updateReviewStatus(newId, "answered", review.response, 61000, null, "human");
+  const queued = createReviewContinuationPendingTurn({ reviewId: newId, noteKey, text: "New answer", now: 61000 })!;
+  const rows = listPendingTurns(noteKey);
+  assert.equal(rows.length, 2, "queued as its own row, not folded into the legacy one");
+  assert.equal(rows[0]!.id, legacy.id);
+  assert.equal(rows[0]!.text, "Legacy answer", "the legacy row is left exactly as it was");
+  assert.equal(queued.id, `${MESSAGE_ANSWER_TURN_PREFIX}${newId}`);
+  assert.deepEqual(parseReviewEnvelope(rows[1]!.text)?.reviewIds, [newId], "the new answer keeps its marker, so its delivery is recorded");
+});

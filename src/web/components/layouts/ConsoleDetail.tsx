@@ -1,10 +1,10 @@
+import { InboxReplyBoxesContext } from "../../lib/inbox-reply-boxes.ts";
 import { SessionControlToggle } from "../SessionControlToggle.tsx";
-import { SessionControlRequestCard } from "../SessionControlRequestCard.tsx";
 import { useFeatureFlag } from "../../useFeatureFlag.ts";
 import { BadgePauseHalf, PausedBand, PauseToolbarButton } from "../PauseControls.tsx";
 import { usePauseConsoleControls } from "../../lib/pause-controls.ts";
 import { featureVisit } from "../../lib/experience.ts";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
@@ -22,12 +22,16 @@ import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { StandingInstructionsChip } from "../StandingInstructionsChip.tsx";
+import { ShapingChip } from "../ShapingChip.tsx";
 import { SessionScoutsPane } from "../scouts/SessionScoutsPane.tsx";
 import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
 import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
+import { SessionAwaitingBand } from "../SessionAwaiting.tsx";
+import { StalledBand } from "../StalledTileFacts.tsx";
+import type { Stall } from "@shared/stall.ts";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -69,6 +73,8 @@ import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import { useComposerFocusRequest } from "../../lib/composer-focus.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
+import { useSessionReports } from "../../lib/sessionReports.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
 import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import {
   ensembleSummaryFor,
@@ -212,9 +218,16 @@ export function ConsoleDetail({
   view,
   session,
   onBack,
+  stall = null,
 }: {
   view: SessionViewProps;
   session: Session;
+  /**
+   * The idle stall this session sits under Idle's Stalled rule for (`idle-stalled`), or null. The
+   * view passes it only for a session its ordering drew in that section, as it does for the card,
+   * so the detail offers the same facts and fixes the Board card does.
+   */
+  stall?: Stall | null;
   /**
    * The Board's way back, drawn at the head's leading edge. Given only when the rail head's back
    * button is not on screen to do the job: the Board opened this session with no rail beside it
@@ -223,7 +236,6 @@ export function ConsoleDetail({
   onBack?: () => void;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
-  const controlRequests = useFeatureFlag("session-control-requests");
   useEffect(() => {
     return featureVisit("reader", `${session.id}:${tab}`, tab === "queue" ? "queues" : tab === "workflows" ? "workflow" : tab === "scouts" ? "archives" : tab);
   }, [session.id, tab]);
@@ -255,6 +267,8 @@ export function ConsoleDetail({
     requestNonce: undefined,
   });
   const [hasReply, setHasReply] = useState(false);
+  // A Stuck row's message box in the attention inbox is this session's reply box too.
+  const inboxReplyBox = useContext(InboxReplyBoxesContext).has(session.id);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -280,6 +294,9 @@ export function ConsoleDetail({
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
+  // Agent reports this session posted, every version, where each was posted (`inbox` flag).
+  const reportsOn = useFeatureFlag(INBOX_FLAG) && view.reportControls !== undefined;
+  const sessionReports = useSessionReports(session.id, view.reports ?? [], reportsOn);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
     dialog: activePaneDialog(session),
     note: session.note,
@@ -466,6 +483,13 @@ export function ConsoleDetail({
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
+  useEffect(() => {
+    if (view.queueTabSession === session.id) {
+      setTab("queue");
+      view.onQueueTabOpened?.();
+    }
+  }, [view.queueTabSession, view.onQueueTabOpened, session.id]);
+
   const queueCount = session.queue?.openCount ?? 0;
   const invited = session.foremanInvite !== null;
   // The shared reduction keeps the task title rule consistent across surfaces.
@@ -492,7 +516,9 @@ export function ConsoleDetail({
   // border, so an empty one is a visible bar of chrome saying nothing - the same reasoning
   // the task chip below already applies to itself - and `:empty` would be defeated anyway
   // by the whitespace JSX leaves between children.
-  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs;
+  // Dependency install warnings render inside the band, so they keep it mounted on their own.
+  const showClaimWarnings = (session.task?.claimWarnings?.length ?? 0) > 0;
+  const bandHasContent = showPath || showBranch || showTaskChip || showRepoPrs || showClaimWarnings;
 
   // The Files pip. Derived from the same durable threads the tab itself renders, so the
   // integrated tab and the extracted Files window agree about what is unread.
@@ -608,6 +634,7 @@ export function ConsoleDetail({
             chip that re-resolved would quote it text it never saw the moment the operator
             edits the rule, which is exactly when they are most likely to be reading it. */}
         <StandingInstructionsChip sessionId={session.id} />
+        <ShapingChip session={session} />
         {/* One chip per review: a multi-repo task's session
             names each repository, a single-repo one is unchanged. */}
         <WorkflowChips runs={workflowRuns} onOpen={view.onOpenWorkflowRun} />
@@ -926,14 +953,24 @@ export function ConsoleDetail({
                 and scrolls past that (`.detail-conv > .blocker-band`), so long details
                 cannot push the transcript or the reply box out of view. */}
             <SessionBlockerBand session={session} />
-            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
-            {/* The session's own ask for Control other sessions: answered before reading on,
-                like the menu above. Capped and scrolled like the blocker band below its
-                reason (`.detail-conv > .session-control-request`). */}
-            {controlRequests && (
-              // Keyed by the ask, so one ask's error or busy state never shows on the next.
-              <SessionControlRequestCard key={`${session.id}:${session.sessionControlRequest?.id ?? ""}`} session={session} />
+            {/* A declared wait on a background process. Never beside the blocker band: a
+                blocker replaces a wait. Capped like it (`.detail-conv > .awaiting-band`). */}
+            <SessionAwaitingBand session={session} />
+            {/* An idle stall the Stalled section draws: the card's facts and fixes, here because
+                the rail row has room only for its mark and the inbox no longer lists it. Capped
+                like the bands above (`.detail-conv > .stalled-band`). */}
+            {stall && (
+              <StalledBand
+                session={session}
+                stall={stall}
+                onMessage={focusReply}
+                onOpenQueue={() => setTab("queue")}
+                onComplete={() => view.onComplete(session.id)}
+                onOpenRun={view.onOpenWorkflowRun}
+                onDismiss={view.onDismissStall ? () => view.onDismissStall!(session.id, stall) : undefined}
+              />
             )}
+            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip
                 session={session}
@@ -952,7 +989,11 @@ export function ConsoleDetail({
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               episodes={visibleEpisodes}
-              reviews={timelineReviews}
+              reviews={timelineReviews.reviews}
+              reviewHistory={{ loaded: timelineReviews.loaded, failed: timelineReviews.failed, lineage: timelineReviews.lineage }}
+              reports={sessionReports}
+              reportControls={reportsOn ? view.reportControls : undefined}
+              onAnswerQuestion={() => view.onOpenReviews(session.id)}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               onCommentInFiles={view.onCommentInFiles
@@ -1083,7 +1124,7 @@ export function ConsoleDetail({
         {live && (
           <ActionBar
             session={session}
-            hasReply={hasReply}
+            hasReply={hasReply || inboxReplyBox}
             onToggleQueue={() => setTab((t) => (t === "queue" ? "conversation" : "queue"))}
             onFocusReply={focusReply}
             registerActions={view.registerActions}

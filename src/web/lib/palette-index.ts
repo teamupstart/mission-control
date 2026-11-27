@@ -736,6 +736,7 @@ export function paletteRows(stores: PaletteStores): PaletteRow[] {
 /** Where a route row lands, in the words the topbar and the rail use for it. */
 function routeDestination(route: MissionRoute): string {
   switch (route.page) {
+    case "voice-card": return "the confirmation card";
     case "library":
       return "the Library";
     case "runs":

@@ -23,6 +23,7 @@ import { ModelIdSchema } from "./model-id.ts";
 import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "./standing-instructions.ts";
 import { MAX_TASK_EXTRA_REPOS } from "./task.ts";
 import { ResidentScheduleSectionSchema } from "./resident-schedule.ts";
+import { BlankableSpokenNameSchema } from "./voice-names.ts";
 import { THINKING_LEVELS } from "./types.ts";
 import type { AgentType } from "./types.ts";
 
@@ -77,10 +78,20 @@ export const RESIDENT_LIMITS = {
   archivedInSnapshot: 200,
 } as const;
 
-/** Who the profile is. The name is unique among live profiles. */
+/**
+ * Who the profile is. The name is unique among live profiles.
+ *
+ * `referenceName` is what the operator says to address the resident by voice, when the profile
+ * name is not something to say (`@shared/voice-names.ts`); absent or blank, the profile name is
+ * said. Blank is how the editor clears it, because a save that omits a key keeps the previous
+ * revision's (`preserveUnknownResidentSettings`). Optional with no default, so a revision saved
+ * before it existed parses exactly as before. A spoken name, not a launch setting: the roster
+ * reads it from the current revision.
+ */
 export const ResidentIdentitySectionSchema = z.object({
   name: z.string().trim().min(1, "a resident needs a name").max(RESIDENT_LIMITS.nameLength),
   description: z.string().max(RESIDENT_LIMITS.descriptionLength).default(""),
+  referenceName: BlankableSpokenNameSchema.optional(),
 });
 
 /**
@@ -228,8 +239,18 @@ export type ResidentBoardSection = z.infer<typeof ResidentBoardSectionSchema>;
  */
 export const ResidentAuthoritySectionSchema = z.object({
   controlOtherSessions: z.boolean().default(false),
+  inspectOtherSessions: z.boolean().optional(),
+}).refine(value => !(value.controlOtherSessions && value.inspectOtherSessions), {
+  message: "Choose either inspection or control of other sessions",
 });
 export type ResidentAuthoritySection = z.infer<typeof ResidentAuthoritySectionSchema>;
+
+export type SessionGrantScope = "read" | "control";
+
+export function residentGrantScope(authority: ResidentAuthoritySection): SessionGrantScope | null {
+  if (authority.inspectOtherSessions) return "read";
+  return authority.controlOtherSessions ? "control" : null;
+}
 
 /** How many MCP servers one profile may select. */
 export const RESIDENT_MCP_SELECTION_MAX = 32;
@@ -279,9 +300,10 @@ export type ResidentMcpNativeSources = (typeof RESIDENT_MCP_NATIVE_SOURCES)[numb
  * and a selected global server have nothing to add; only the selected custom servers are
  * snapshotted. Both stay stored, so switching back to pinned restores them.
  */
-export const ResidentMcpSectionSchema = z
+const ResidentMcpSourceModeSchema = z.enum(RESIDENT_MCP_NATIVE_SOURCES);
+const ResidentMcpInputSchema = z
   .object({
-    nativeSources: z.enum(RESIDENT_MCP_NATIVE_SOURCES).default("pinned"),
+    nativeSources: ResidentMcpSourceModeSchema.optional(),
     /** Opt-in workaround for Claude's plugin/connector double suppression. Only applies to all native sources. */
     disableClaudeAiConnectors: z.boolean().optional(),
     inheritDefaults: z.boolean().default(true),
@@ -296,7 +318,18 @@ export const ResidentMcpSectionSchema = z
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["selected"], message: "an MCP server is selected twice" });
     }
   });
+// Revisions written before source modes existed always used the pinned set.
+export const ResidentMcpSectionSchema = ResidentMcpInputSchema.safeExtend({
+  nativeSources: ResidentMcpSourceModeSchema.default("pinned"),
+});
 export type ResidentMcpSection = z.infer<typeof ResidentMcpSectionSchema>;
+
+/** Older clients can request a pinned set by selecting servers or turning off inheritance. */
+export function newResidentMcpSettings(agent: AgentType, mcp = ResidentMcpInputSchema.parse({})): ResidentMcpSection {
+  const useNative = HARNESS_CAPABILITIES[agent].mcpSelection?.allNativeSources
+    && mcp.inheritDefaults && mcp.selected.length === 0;
+  return { ...mcp, nativeSources: mcp.nativeSources ?? (useNative ? "all" : "pinned") };
+}
 
 /** A string's user-perceived characters, so an accented letter or an emoji counts once. */
 function graphemes(text: string): string[] {
@@ -473,11 +506,18 @@ export function residentRoleProblem(settings: Pick<ResidentProfileRevision, "per
     : null;
 }
 
-/** The request-body form: unknown top-level sections are refused rather than dropped. */
-export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict().superRefine((settings, ctx) => {
+function validateResidentRole(settings: Pick<ResidentProfileRevision, "persona" | "instructions">, ctx: z.RefinementCtx) {
   const problem = residentRoleProblem(settings);
   if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["instructions", "markdown"], message: problem });
-});
+}
+
+/** Requests refuse unknown top-level sections. Only creation supplies a harness-specific MCP default. */
+export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict()
+  .extend({ mcp: ResidentMcpInputSchema.prefault({}) })
+  .superRefine(validateResidentRole);
+export type ResidentProfileRevisionRequest = z.infer<typeof ResidentProfileRevisionRequestSchema>;
+export const NewResidentProfileSettingsSchema = ResidentProfileRevisionRequestSchema
+  .transform((settings) => ({ ...settings, mcp: newResidentMcpSettings(settings.execution.agent, settings.mcp) }));
 
 /** A profile as the catalog and the browser see it: the identity plus its current revision. */
 export interface ResidentProfile {
@@ -502,6 +542,7 @@ export interface ResidentProfile {
  * its history name the id, so a shipped slug is never renamed.
  */
 export const BUILTIN_RESIDENT_PROFILE_ID_PREFIX = "builtin:";
+export const BUG_FIX_INSPECTOR_PROFILE_ID = `${BUILTIN_RESIDENT_PROFILE_ID_PREFIX}bug-fix-inspector`;
 
 export function isBuiltinResidentProfileId(id: string): boolean {
   return id.startsWith(BUILTIN_RESIDENT_PROFILE_ID_PREFIX);
@@ -794,6 +835,7 @@ export type ResidentLaunchResult =
 export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[], agent?: ResidentAgent): string {
   const resolved = labels && labels.length === mcp.selected.length ? labels : null;
   if (mcp.nativeSources === "all") {
+    // oxlint-disable-next-line repository/agent-comparison -- This summary describes a Claude-only setting in the resident schema.
     const base = `MCP: all native sources (not pinned)${agent === "claude" && mcp.disableClaudeAiConnectors ? ", claude.ai connectors off" : ""}`;
     const custom = mcp.selected.flatMap((ref, at) => (ref.source === "custom" ? [at] : []));
     if (custom.length === 0) return base;
@@ -822,7 +864,7 @@ export function residentLaunchSummary(
     settings.execution.model ?? "default model",
     settings.execution.effort ? `${settings.execution.effort} effort` : "default effort",
     residentMcpSummary(settings.mcp, mcpLabels, settings.execution.agent),
-    settings.authority.controlOtherSessions ? "control: on" : "control: off",
+    settings.authority.inspectOtherSessions ? "inspection: read-only" : settings.authority.controlOtherSessions ? "control: on" : "control: off",
   ];
   return parts.join(" · ");
 }

@@ -48,6 +48,9 @@ interface ChildProcessBoundary {
  * self-attested source comment. The syntax-tree scan below must find this exact multiset.
  */
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
+  "src/cli/claude-cli.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "mctl runs the claude CLI that findClaude resolved (MISSION_CLAUDE_BIN, PATH or a known install place) for its version, plugin list, install and validate calls; the CLI has no locator snapshot and uses no shell" },
+  ],
   "src/pi/generation-lease.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded process-start query protects active Pi generations during collection" },
   ],
@@ -85,6 +88,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/main/update-runtime.ts": [
     { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "bounded probes of locator-selected Node and npm, and fixed OS env for child-runtime identity" },
+  ],
+  "src/main/voice-listener.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Electron supplies the absolute path to dist/native/voice-listener under its app root" },
   ],
   "src/server/claude-cli.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Claude CLI" },
@@ -131,6 +137,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/shaping/transports/command.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "an operator-configured command shaper, resolved through the locator and spawned without a shell in its own process group, killed at its timeout" },
   ],
+  "src/server/shaping/transports/group-stdio.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "a stdio MCP shaper's server, resolved through the locator by the mcp transport and spawned without a shell in its own process group, stopped with its group when the run ends" },
+  ],
   "src/server/standards.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Git standards reader" },
   ],
@@ -140,11 +149,37 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
   ],
+  "src/server/voice/macos-supervisor.ts": [
+    { operation: "execFileSync", command: "command", contract: "fixed-os-utility", reason: "Only the macOS process table can establish that no listener executable remains during recovery." },
+  ],
+  "src/server/voice/synthesizer.ts": [
+    { operation: "fork", command: "speechHelperPath()", contract: "current-runtime", reason: "bundled speech helper uses the owned Node runtime and private IPC" },
+  ],
+  "src/server/voice/supervised-listener.ts": [
+    { operation: "spawn", command: "command", contract: "fixed-os-utility", reason: "the voice supervisor starts its child through the pinned platform filesystem sandbox before granting playback authority" },
+  ],
   "src/server/util/git.ts": [
     { operation: "spawnSync", command: "executable.path", contract: "locator-result", reason: "bounded Git config parser for synchronous repository identity, cached for configs without includes" },
   ],
+  "src/server/util/remove-tree.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "recursive deletes of operator trees through the pinned /bin/rm, which has no Electron asar layer; never a PATH search" },
+  ],
   "src/server/workflows/check-identity.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved process-status utility" },
+  ],
+  "src/server/workflows/publication-revision.ts": [
+    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded checkout revision read using resolved Git at the publication claim" },
+  ],
+  "src/server/workflows/repository-artifact/git.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git reads checkout metadata with closed arguments" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git streams bounded index and untracked path records" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "the same Git reads literal object ids through a private batch wrapper" },
+  ],
+  "src/server/workflows/persona-workload/git.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "injected locator-resolved Git reads closed argv against a verified sparse view through a private bare wrapper" },
+  ],
+  "src/server/workflows/persona-workload/providers.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "injected locator-resolved provider CLI verifies its build and isolated MCP inventory before one SDK workload" },
   ],
   "src/server/workflows/check-spawn.ts": [
     { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "current runtime supervising operator-authored Workflow argv" },
@@ -292,7 +327,7 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
       return boundary.command === "shell";
     case "current-runtime":
       return ["descriptor.command", "runtime.command", "request.node", "process.execPath"].includes(boundary.command)
-        || (boundary.operation === "fork" && boundary.command === "options.worker");
+        || (boundary.operation === "fork" && ["options.worker", "speechHelperPath()"].includes(boundary.command));
     // A path the catalog pins rather than finds. It is still read out of `FIXED_OS_EXECUTABLES`
     // into a variable, so a literal never reaches the call and the declaration above names the
     // one reason a fixed utility is invoked directly.

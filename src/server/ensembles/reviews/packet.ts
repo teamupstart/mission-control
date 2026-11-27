@@ -9,7 +9,7 @@ import {
   type EnsembleJson,
   type EnsembleLlmPurpose,
 } from "@shared/ensemble.ts";
-import { parseModelJson, runStructured, type StructuredAttemptObserver } from "../../llm/structured.ts";
+import { runStructured, type StructuredAttemptObserver, parseModelReply } from "../../llm/structured.ts";
 import { boundedSection } from "../../review/prompt.ts";
 import { sanitizePromptLabel, type PromptSubjectEvidence } from "./prompt.ts";
 import type {
@@ -449,11 +449,12 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
       (request) =>
         runtime.runModel(execution.runnerId, request, {
           modelId: execution.modelId,
+          ...(execution.effort && { effort: execution.effort }),
           timeoutMs: runtime.timeoutMs,
           schema: spec.replyJsonSchema,
         }),
       prompt,
-      (raw) => parseModelJson(raw, spec.replySchema),
+      (raw) => parseModelReply(raw, spec.replySchema),
       spec.label,
       observer,
       { shapeGuaranteed: runtime.guaranteesSchema(execution.runnerId) },

@@ -1,0 +1,335 @@
+import { shell, systemPreferences } from "electron";
+import { EventSource } from "eventsource";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { macVoiceHardware, type VoiceHardware } from "./voice-hardware.ts";
+import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { desktopVoiceConnection } from "./voice-connection.ts";
+import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
+import { desktopVoiceEndpointPath, stateDir } from "../shared/harness-runtime.mjs";
+import type { TrayVoiceState } from "./voice-tray.ts";
+import { showVoiceMuteError } from "./tray.ts";
+import { logMain } from "./main-log.ts";
+import { voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
+import { hasPendingMacListenerRecovery, type VoiceSigner } from "../server/voice/macos-supervisor.ts";
+import { VOICE_SUPERVISOR_PROOF_HEADER } from "../server/voice/supervisor-auth.ts";
+import { hotkeySpeechJob } from "./voice-hotkey-tap.ts";
+import { nativeVoiceListener } from "./voice-listener.ts";
+
+import { ShellVoiceStateSchema, type ShellVoiceState } from "./voice-state-schema.ts";
+
+/** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
+export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS, loadSigner?: () => Promise<VoiceSigner | undefined>) {
+  let connection: ReturnType<typeof desktopVoiceConnection>;
+  const captureOwner = randomUUID();
+  const createListener = (signer?: VoiceSigner) => nativeVoiceListener(binary, () => {
+    if (!connection) throw new Error("Voice listener has no daemon connection");
+    return connection;
+  }, signer, async (instance, state, proof, signal) => {
+    const res = await connection?.postStatus("/voice/listener/supervised", {instance, state},
+      signal ?? AbortSignal.timeout(5000), { [VOICE_SUPERVISOR_PROOF_HEADER]: proof });
+    if (!res?.ok) {
+      if (state === "started" && (res?.status === 403 || res?.status === 404 || res?.status === 409)) return false;
+      throw new Error("Voice supervisor report unacknowledged.");
+    }
+  }, captureOwner);
+  let listener = loadSigner ? undefined : createListener();
+  let signerRequested = false;
+  let stream: EventSource | undefined;
+  let hasSnapshot = false;
+  let streamDeadline: NodeJS.Timeout | undefined;
+  let reconnect: NodeJS.Timeout | undefined;
+  let reconnectDelay = 500;
+  let hardware: VoiceHardware | undefined;
+  let layoutSubscription: number | undefined;
+  let state: ShellVoiceState = voiceStateOff();
+  let lastPushToTalkSession: string | undefined;
+  let lastEnabledMute: boolean | undefined;
+  let hotkeyAttempt = 0;
+  let nextPromptAt = 0;
+  let retryDelay = 5000;
+  let prompt: Promise<boolean> | undefined;
+  const ask = () => {
+    return prompt ??= systemPreferences.askForMediaAccess("microphone").then(granted => {
+      nextPromptAt = Infinity;
+      retryDelay = 5000;
+      return granted;
+    }, error => {
+      nextPromptAt = Date.now() + retryDelay;
+      retryDelay = Math.min(retryDelay * 2, 60_000);
+      throw error;
+    }).finally(() => { prompt = undefined; });
+  };
+  const lifetime = new AbortController();
+  let reportRequested = false;
+  let reportFailed = false;
+  let sending: Promise<boolean> | undefined;
+  let lastReportUs = -1;
+  const disabled = () => state.mode === "off";
+
+  let lastEdge: VoiceShellReport | undefined;
+
+  function makeReport(owner: VoiceHardware): VoiceShellReport {
+    const microphone = systemPreferences.getMediaAccessStatus("microphone");
+    const controls = owner.report();
+    lastReportUs = Math.max(controls.reportedAtHostUs, lastReportUs + 1);
+    return {
+      ...controls,
+      reportedAtHostUs: lastReportUs,
+      capabilities: {
+        ...controls.capabilities,
+        "floating-windows": { available: true, reason: null },
+        tray: { available: true, reason: null },
+        microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
+      },
+      microphone,
+    };
+  }
+
+  async function deliver(current: NonNullable<typeof connection>, owner: VoiceHardware, report: VoiceShellReport, timeoutMs = 3000) {
+    if (connection !== current || hardware !== owner || disabled()) return false;
+    const response = await current.postStatus("/voice/shell-report", report,
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeoutMs)]));
+    const accepted = response?.ok ?? false;
+    if (connection === current && hardware === owner) {
+      if (!accepted && !reportFailed) logMain(`Voice shell report failed status=${response?.status ?? "unavailable"}`);
+      reportFailed = !accepted;
+    }
+    return accepted;
+  }
+
+  async function sendReports() {
+    let accepted = false;
+    try {
+      while (connection && hardware && reportRequested && !disabled()) {
+        reportRequested = false;
+        accepted = await deliver(connection, hardware, makeReport(hardware));
+      }
+      return accepted;
+    } finally {
+      sending = undefined;
+    }
+  }
+
+  async function sendEdge(current: NonNullable<typeof connection>, owner: VoiceHardware) {
+    const edge = lastEdge = makeReport(owner);
+    if (edge.pushToTalk) return deliver(current, owner, edge);
+    // Key-up closes capture. Bound both the wait for a lost reply and the retries.
+    // Reuse the original timestamp so even an in-flight retry cannot end a newer hold.
+    for (const backoffMs of [0, 100, 250]) {
+      if (backoffMs) await delay(backoffMs);
+      if (edge !== lastEdge) return false;
+      if (await deliver(current, owner, edge, 500)) return true;
+    }
+    return false;
+  }
+
+  function requestReport(): Promise<boolean> {
+    if (hardware && connection && hardware.holdingToTalk !== (lastEdge?.pushToTalk ?? false)) {
+      return sendEdge(connection, hardware);
+    }
+    reportRequested = true;
+    return sending ??= Promise.resolve().then(sendReports);
+  }
+
+  async function checkMicrophone(): Promise<"checked" | "unavailable"> {
+    if (state.mode === "off") return "unavailable";
+    const accepted = await requestReport();
+    if (disabled()) return "unavailable";
+    if (!accepted) throw new Error("Microphone status report was not accepted");
+    return "checked";
+  }
+
+  function stopHardware() {
+    if (layoutSubscription !== undefined) systemPreferences.unsubscribeNotification(layoutSubscription);
+    layoutSubscription = undefined;
+    hardware?.stop();
+    hardware = undefined;
+    lastEdge = undefined;
+  }
+
+  async function sync() {
+    if (state.mode === "off") {
+      stopHardware();
+      listener?.update(state, false);
+      reportRequested = false;
+      nextPromptAt = 0;
+      retryDelay = 5000;
+      return;
+    }
+    const microphone = systemPreferences.getMediaAccessStatus("microphone");
+    if (!hardware) {
+      hardware = macVoiceHardware(dirname(binary), () => listener?.pid ?? -1,
+        () => void toggleFromHotkey(), () => void requestReport());
+      layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
+        () => hardware?.refreshRegistration());
+    }
+    hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkeyId ?? state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId, state.pushToTalkSession);
+    // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
+    const installed = state.model.backend === "fluidaudio" && existsSync(binary);
+    const permitted = installed && microphone === "granted";
+    if (!listener && permitted && state.model.status === "ready" && !hasPendingMacListenerRecovery(stateDir())) {
+      listener = createListener();
+    }
+    listener?.update(state, permitted);
+    if (installed && state.model.status === "ready" && microphone === "not-determined" && !prompt && Date.now() >= nextPromptAt) {
+      void ask().then(sync).catch(() => {});
+    }
+    return requestReport();
+  }
+  function update(next: ShellVoiceState) {
+    state = next;
+    if (hasSnapshot && !signerRequested && loadSigner && (next.mode !== "off" || hasPendingMacListenerRecovery(stateDir()))) {
+      signerRequested = true;
+      void loadSigner().then(async signer => {
+        if (!signer || lifetime.signal.aborted) return;
+        // Transfer the same daemon capture lease only after the capture-only child exits.
+        if (listener) await listener.stop();
+        if (lifetime.signal.aborted) return;
+        listener = createListener(signer);
+        if (hasSnapshot) listener.reconnect();
+        void sync();
+      });
+    }
+    if (next.mode === "off") hotkeyAttempt++;
+    lastPushToTalkSession = next.pushToTalkSession;
+    lastEnabledMute = next.mode === "off" ? undefined : (next.muted ?? next.mode === "muted");
+    onState(state);
+    void sync();
+  }
+  function disconnect() {
+    clearTimeout(streamDeadline);
+    if (stream) {
+      stream.removeEventListener("ping", noteActivity);
+      stream.onmessage = stream.onerror = null;
+      stream.close();
+      stream = undefined;
+    }
+    connection?.close();
+    connection = undefined;
+    hasSnapshot = false;
+    reportFailed = false;
+  }
+  function noteActivity() {
+    // Pings and incremental updates cannot extend the initial snapshot deadline.
+    if (hasSnapshot) streamDeadline?.refresh();
+  }
+  function requestSnapshot() {
+    disconnect();
+    state = voiceStateOff();
+    if (!existsSync(desktopVoiceEndpointPath())) lastEnabledMute = undefined;
+    onState(lastEnabledMute === undefined ? state : { mode: "reconnecting", muted: lastEnabledMute, pushToTalkSession: lastPushToTalkSession });
+    void sync();
+    reconnect = setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
+  }
+  function receive(data: string) {
+    let message: unknown;
+    try { message = JSON.parse(data); }
+    catch { requestSnapshot(); return; }
+    if (!message || typeof message !== "object" || !("type" in message) || typeof message.type !== "string") {
+      requestSnapshot();
+      return;
+    }
+    if (message.type !== "voice_state" && message.type !== "snapshot") return;
+    // A snapshot without voice establishes a disabled baseline.
+    const payload = message.type === "snapshot"
+      ? ("voice" in message ? message.voice : voiceStateOff())
+      : ("state" in message && message.state);
+    const parsed = ShellVoiceStateSchema.safeParse(payload);
+    if (!parsed.success) { requestSnapshot(); return; }
+    if (!hasSnapshot) {
+      if (message.type !== "snapshot") return;
+      listener?.reconnect();
+      hasSnapshot = true;
+      clearTimeout(streamDeadline);
+      streamDeadline = setTimeout(requestSnapshot, 3 * heartbeatMs);
+    }
+    reconnectDelay = 500;
+    update(parsed.data);
+  }
+  function connect() {
+    const current = connection = desktopVoiceConnection();
+    if (!current) {
+      if (lastEnabledMute !== undefined && !existsSync(desktopVoiceEndpointPath())) update(voiceStateOff());
+      reconnect = setTimeout(connect, 1000);
+      return;
+    }
+    stream = new EventSource(current.origin + "/events", {
+      fetch: (_url, options) => current.request("/events", options),
+    });
+    streamDeadline = setTimeout(requestSnapshot, 2 * heartbeatMs);
+    stream.addEventListener("ping", noteActivity);
+    stream.onmessage = ({data}) => { noteActivity(); receive(data); };
+    // A replacement daemon has its own key. Re-read its local identity on every reconnect.
+    stream.onerror = requestSnapshot;
+  }
+  async function sendMute(command: { muted: boolean } | { toggle: true }) {
+    if (!connection || state.mode === "off") return false;
+    const response = await connection.postStatus("/api/voice/mute", command,
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+    return response?.ok ?? false;
+  }
+  async function toggleFromHotkey() {
+    const attempt = ++hotkeyAttempt;
+    const current = connection;
+    if (!current || disabled()) return;
+    const id = hotkeySpeechJob(state);
+    if (id) {
+      const response = await current.postStatus("/api/voice/speech/stop", {id}, AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+      if (!response?.ok && current === connection && attempt === hotkeyAttempt && !lifetime.signal.aborted && hotkeySpeechJob(state) === id) {
+        showVoiceMuteError("Speech stop not confirmed. Try the shortcut again.", id);
+      }
+      return;
+    }
+    if (await sendMute({ toggle: true })) return;
+    const relevant = () => attempt === hotkeyAttempt && lastEnabledMute !== undefined && !lifetime.signal.aborted;
+    if (!relevant()) return;
+    let message = "Mute shortcut not confirmed. Current Voice status unavailable.";
+    try {
+      const before = state;
+      const response = await current.request("/api/voice/mute", {
+        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(1500)]),
+      });
+      if (response.ok) {
+        const snapshot = ShellVoiceStateSchema.safeParse((await response.json() as { state?: unknown }).state);
+        if (snapshot.success && relevant() && current === connection && hasSnapshot) {
+          // A newer streamed update may have arrived while this read was in flight.
+          if (before === state) update(snapshot.data);
+          message = lastEnabledMute ? "Mute shortcut not confirmed. Voice is muted." : "Mute shortcut not confirmed. Manual mute is off.";
+        }
+      } else await response.body?.cancel();
+    } catch { /* A lost read leaves the live stream in charge of recovery. */ }
+    if (relevant()) showVoiceMuteError(message);
+  }
+  connect();
+  const heartbeat = setInterval(() => void sync(), 5000);
+  return {
+    get state() { return state; },
+    checkMicrophone,
+    async fixMicrophone(): Promise<"unavailable" | "checked"> {
+      if (state.mode === "off") return "unavailable";
+      const permission = systemPreferences.getMediaAccessStatus("microphone");
+      if (permission === "denied" || permission === "restricted") {
+        await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
+      } else if (permission === "not-determined") await ask();
+      if (disabled()) return "unavailable";
+      const accepted = await sync();
+      if (disabled()) return "unavailable";
+      if (!accepted) throw new Error("Microphone status report was not accepted");
+      return "checked";
+    },
+    mute: (muted: boolean) => sendMute({ muted }),
+    async stop() {
+      clearTimeout(reconnect);
+      clearTimeout(streamDeadline);
+      stream?.close();
+      stopHardware();
+      lifetime.abort();
+      clearInterval(heartbeat);
+      state = voiceStateOff();
+      try { await listener?.stop(); } finally { disconnect(); }
+    },
+  };
+}

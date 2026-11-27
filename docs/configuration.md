@@ -9,7 +9,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
-| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
+| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, disposable Git worktrees, and the [shapers folder](#the-shapers-folder) the operator fills) |
 | `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before version-manager locations and inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
 | `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for the **Repositories** family in **Settings → Setup**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
 | `MISSION_REPOS_MAX_DEPTH` | unset | optional non-negative integer limit below each indexed directory; the indexed root is depth 0. Unset, blank, or invalid values scan all depths. Discovery stops at repository boundaries, skips dependency directories and descendant symlinks, and recognizes bare repositories including `.bare` layouts |
@@ -24,8 +24,10 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](dispatch-and-backlog.md#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](workflows.md#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](workflows.md#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_WORKFLOW_PERSONA_TIMEOUT_MS` | `600000` | [Personas](workflows.md#workflows-and-personas): hard cap on one Persona call. Sized with `MISSION_INSPECTOR_TIMEOUT_MS` rather than with the 120s default below, because a Persona reads the same shape of evidence - a diff and a transcript window - and the cost of the budget being too small is paid three times: a timeout is an infrastructure failure, and the engine retries one twice more before failing the submission |
+| `MISSION_WORKFLOW_PERSONA_TIMEOUT_MS` | `600000` | [Personas](workflows.md#workflows-and-personas): hard cap on one Persona call. Sized with the `MISSION_INSPECTOR_TIMEOUT_MS` of the time (600000, before reviews moved to `xhigh` effort) rather than with the 120s default below, because a Persona reads the same shape of evidence - a diff and a transcript window - and the cost of the budget being too small is paid three times: a timeout is an infrastructure failure, and the engine retries one twice more before failing the submission |
 | `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](ensembles.md#multi-agent-ensembles): the model behind every ensemble evaluation - the Best-of-N comparison, the Consensus divergence pass, and each Panel-vote judge's ballot. An explicit evaluator or judge model wins, then a judging Persona's model override; otherwise **Settings → Models → Ensemble evaluation**, then this variable, then the provider's cheap default |
+| `OPENAI_API_KEY` | unset | [Voice addressing](voice.md#faster-routing): with the `voice` preview on and **Decision model** on Automatic, this key alone switches OpenAI Decisions on for [ambiguous spoken requests](security.md#voice-routing). Read as spelled, not through the `MISSION_` prefixes. A key saved in **Settings → Voice** overrides it on that machine; **Off** there stops it |
+| `TYPESAFE_API_KEY` | unset | [Voice addressing](voice.md#faster-routing): the same for Jev. On Automatic, a saved key of either provider and `OPENAI_API_KEY` come first |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](models.md): which provider does the app's own offline work when nothing nearer has chosen - the background jobs, each of Foreman's four roles, and the GitHub Inspector's review. **Settings → Models → Provider** loses to this where it is set, and the panel says so. A job, a Foreman role, or the Inspector that names its own provider outranks it; Foreman's roles have one further rung between them, its **All roles** value. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_CLAUDE_TRANSPORT` | `sdk` | Claude's headless wire protocol: `sdk` uses one fresh Agent SDK `query()` with deterministic setting sources and AbortController cancellation; `print` uses `claude -p`. Tool-less calls keep every tool disabled; GitHub Inspector reviews and replies keep their existing `Read,Grep,Glob` grant and provider-enforced deny rules. The stored `llm.claudeTransport` choice wins where set, then this environment fallback, then `sdk`. The daemon resolves that ladder and shares the result with the separate Foreman worker over `/api/llm/status`, so Foreman's review, queue verify, backlog planner, and Tier 1 triage calls follow the same choice without opening the database. Pin `print` to diagnose an SDK compatibility problem or temporarily roll back the transport while preserving every caller above it |
@@ -62,8 +64,8 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless Claude call through either transport; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the GitHub Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick runs when GitHub Inspector or Shipping CodeRabbit follow-up is enabled. With only CodeRabbit enabled it observes without Inspector reviews or GitHub writes |
 | `MISSION_INSPECTOR_MODEL` | `claude-sonnet-5` | GitHub Inspector: the model both the review and the follow-up replies run on. **Settings → Models** wins where it is set, then this, then the shipped default. Named rather than left to the `claude` CLI: an unset `--model` inherits whatever that CLI defaults to, which is the priciest tier available and is not recorded anywhere |
-| `MISSION_INSPECTOR_TIMEOUT_MS` | `600000` | GitHub Inspector: hard cap on one review. Far larger than the Foreman reviewer's 120s because this one has tool round-trips inside it: a 10KB five-file diff measured 225s on Opus and 272s on Sonnet, so a wire near either is a guaranteed failure rather than a safety net - the run is killed, the head never advances, and the PR climbs the retry backoff having produced nothing |
-| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `300000` | GitHub Inspector: hard cap on one follow-up reply - a smaller job than a review, but the same shape (the diff in the prompt, the same read-only tools), so it moves with the review's ceiling rather than sitting at a fraction of it |
+| `MISSION_INSPECTOR_TIMEOUT_MS` | `1200000` | GitHub Inspector: hard cap on one review. Far larger than the Foreman reviewer's 120s because this one has tool round-trips inside it: a 10KB five-file diff measured 225s on Opus and 272s on Sonnet, so a wire near either is a guaranteed failure rather than a safety net - the run is killed, the head never advances, and the PR climbs the retry backoff having produced nothing. Those timings are at default effort; a review now runs at `xhigh`, which is unmeasured, so the cap was doubled from 600000 |
+| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `300000` | GitHub Inspector: hard cap on one follow-up reply - a smaller job than a review, but the same shape (the diff in the prompt, the same read-only tools), so it was sized from the same measurements as the review's ceiling. It runs at the provider's default effort, so it did not move when the review cap doubled for `xhigh` |
 | `INSPECTOR_MAX_DIFF_BYTES` | `400000` | GitHub Inspector: cap on the diff put in a prompt, in UTF-8 **bytes** - so a diff of CJK, emoji or box-drawing content counts the 3-4 bytes each of those costs, and the cut lands on a character boundary rather than halfway through one. Read bare, unlike every other row here; `MISSION_INSPECTOR_MAX_DIFF_BYTES` (and the `FLEET_` / `HARNESS_` forms) still work and win where both are set. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | Codex CLI path override - both for dispatched agents and for every headless `codex exec` the app runs when Codex is the selected [provider](models.md) |
 | `MISSION_CODEX_TRANSPORT` | `exec` | Codex's headless wire protocol, the mirror of `MISSION_CLAUDE_TRANSPORT`: `exec` spawns `codex exec` and decodes its `--json` stream by hand; `sdk` drives the same binary through `@openai/codex-sdk` and reads typed thread events instead. The stored `llm.codexTransport` choice wins where set, then this environment fallback, then `exec`. **This is a parsing choice, not a faster path.** The SDK spawns the same executable, so both transports pay the identical model round trip - measured on `gpt-5.6-luna`, a title call is 4.5-7.7s wall of which only ~0.3-0.6s is the process. Pinning `sdk` buys typed events and a supported cancellation path; it does not buy latency, and it must not be chosen to fix a slow dispatch. The SDK is always pinned to the same binary `MISSION_CODEX_BIN` names, because installing it drops a second, differently versioned `codex` into `node_modules` and an unpinned SDK would silently run that one instead. Tool grants and image attachments are refused on `sdk` rather than dropped |
@@ -73,6 +75,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_CODEX_HOOK` | app's `dist/satellites/codex-hook.mjs` | path to the bundled [Codex hook bridge](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch) the dispatcher points a Codex launch at. If the path doesn't exist the hook overrides are dropped entirely and the session runs uninstrumented rather than failing to launch |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](sessions.md#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |
+| `MISSION_MACOS_TERMINAL_BIN` | `/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal` | Overrides Terminal.app detection for the macOS Terminal preview. Mission Control controls the app by its AppleScript bundle ID |
 | `ITERM_BIN` | `/Applications/iTerm.app/Contents/MacOS/iTerm2` | [iTerm2](sessions.md#iterm2-automation-and-permission-recovery) app-bundle binary override for a non-standard installation. Availability reads only this path. Mission Control never runs it for discovery or actions; it controls an already-running iTerm2 through AppleScript, and passive checks do not launch the app |
 | `CMUX_BIN` | auto | cmux CLI path override. The default looks inside the app bundle (`/Applications/cmux.app/Contents/Resources/bin/cmux`) before PATH, because the cask does not symlink it |
 | `HERDR_BIN` | `herdr` | [Herdr](harnesses-and-terminals.md#herdr) CLI path override. Initial support requires stable Herdr 0.8.2 or newer on protocol 20 or newer, controls only the default local server, and is allowlisted to macOS and Linux |
@@ -94,6 +97,13 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](attention-and-alerts.md#away-mode): the model that writes the return digest's narrative. **Settings → Models → Away digest** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](sessions.md#cost-telemetry) installers edit. Overridable so tests never touch your real one |
+
+**`WORK_UNIT_ID` is set, never read.** Mission Control does not take it as a setting. With the
+`work-unit-id` preview on when an agent starts, Mission Control sets it in that agent's
+environment to the task's [work unit](work-units.md#the-launch-environment) id, so MCP config
+that references it sends the `x-work-unit-id` header. A value in the daemon's own environment, or
+in the shell of the terminal server a pane runs in, is removed from every process Mission
+Control starts: an agent carries only its own launch's value, or none.
 
 Every configurable built-in command is declared in the executable catalog. Its override uses
 `MISSION_<TOOL>_BIN`, then the compatible `FLEET_` and `HARNESS_` forms. This applies to agent
@@ -236,9 +246,59 @@ for the operator to fix.
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
 
+## Task shaping references
+
+A [remote shaper](task-shaping.md#remote-shapers)'s header values hold references, never
+secrets. Each is resolved when the call is made and never stored, logged or sent to the
+dashboard, and every resolved value, caller values included, is redacted from what the shaper
+sends back.
+
+| Reference | Resolves to |
+| --- | --- |
+| `{caller.user}` | The identity declared in `app_config.shaping.caller.user`. Free text, unverified, not a secret |
+| `{caller.agent}` | The task's harness: `claude`, `codex` or `pi` |
+| `{caller.conversation}` | The task id |
+| `{env:NAME}` | The daemon's own environment variable `NAME`, read at call time |
+
+A reference that resolves to nothing, an empty value included, fails closed: the shaper is not
+called and its outcome is `unavailable`, naming the reference. `{env:NAME}` never resolves
+Mission Control's own API token, its token file, its scout credentials, or its state directory
+under any name, and never a value that carries the daemon's token. `GET /api/shaping` reports
+every referenced name as `set` or `unset`, never its value, and so it does for each variable a
+`command` shaper or a locally started MCP server passes through in its `env` list.
+
+**Where the daemon's environment comes from.** `{env:NAME}` reads the daemon process's
+environment and nothing else: not your login shell, and not a file. What that environment holds
+depends on how the daemon was started:
+
+- From a terminal (`npm run dev`, `make start`, or `npm start`), it inherits that shell's
+  exports. Export the variable before starting the daemon.
+- The desktop app and the `npm run install-service` LaunchAgent are started by `launchd`,
+  which does not read your shell's profile, so an `export` in `~/.zshrc` never reaches them.
+  Set the variable for your login session with `launchctl setenv NAME value`, then quit and
+  reopen the app, or restart the service.
+
+The daemon reads its environment once, when it starts, so a variable set or changed afterwards
+reaches shapers only after a restart. `GET /api/shaping` reports it as `unset` until then.
+
+## Shaper sign-in storage
+
+A shaper's sign-in is kept in the macOS Keychain, or in the daemon's memory where there is
+no Keychain. An operator signs a shaper in and out from **Settings > Task shaping**, behind the
+`shaper-sign-in` preview flag, which needs `task-shaping` on too
+([Signing in from Settings](task-shaping.md#signing-in-from-settings)). The shaper's row says
+which store holds its sign-in. [Where a shaper sign-in is kept](security.md#where-a-shaper-sign-in-is-kept)
+says what is stored and how to remove it.
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `MISSION_SHAPER_SIGN_IN_STORE` | unset | `memory` keeps every shaper sign-in in the daemon's memory only, so none outlives a restart and nothing is written to the Keychain. Unset or `keychain`, the daemon uses the Keychain on macOS when its Keychain addon loads, and memory otherwise. Any other value is read as `memory`, the choice that keeps nothing. Letter case and surrounding spaces are ignored. Follows the usual `MISSION_` / `FLEET_` / `HARNESS_` chain. Read once, the first time the daemon opens the store, which is when both flags are first on |
+
+Off macOS the store is always memory, whatever this says.
+
 ## Desktop update channel
 
-**Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
+**Alpha updates** at the top of **Settings → Setup** opts a managed desktop app into
 updates from the latest commit on `main`. It defaults off. Alpha checks about every five
 minutes and on **Check for updates**; stable mode retains its six-hour release checks.
 Both modes require an explicit **Update Now**, followed by **Restart and Install**. Stable selects
@@ -306,6 +366,16 @@ The window that confirmed the restore hydrates its browser cache from the daemon
 daemon-backed settings and first-paint preferences restart from one source. Other open windows do
 not reload automatically. They keep unsaved drafts and show a persistent **Reload now** notice so
 the operator chooses when to adopt the restored state.
+
+## The shapers folder
+
+With the `task-shaping` preview on, the daemon discovers task shapers in
+`$MISSION_HOME/shapers/` (`~/.mission-control/shapers/` by default): one folder per shaper,
+each holding a `shaper.json`. The daemon reads the folder at start, when Settings > Task
+shaping opens and at every shaping run, and never creates or writes it. An isolated
+`MISSION_HOME` therefore has its own folder and never sees the default one. Settings snapshots
+carry only the on or off choice stored for a folder shaper's id, never the folder's files.
+Which folder shapers run, and when, is in [the shaper folder](task-shaping.md#the-shaper-folder).
 
 ## Commands
 
@@ -472,8 +542,28 @@ and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/c
 
 **Settings > Worktrees > Task worktree retention** stores `worktrees.taskRetentionDays` in the
 daemon-owned configuration. It defaults to **30 days** and accepts whole days from **7 to 90**,
-with no off switch. Invalid writes are rejected; out-of-range numeric stored values are clamped,
-and missing or nonnumeric stored values use 30. It is independent of `MISSION_WORKTREE_SWEEP_MS`.
+when the seven-day feature flag is off and report-only mode is unset. Invalid writes are rejected, out-of-range numeric stored
+values are clamped, and missing or nonnumeric stored values use 30. The observation cadence is
+independent of `MISSION_WORKTREE_SWEEP_MS`.
+
+Turn on **Seven-day worktree cleanup** in **Settings > Feature flags** to enforce seven-day
+retention. Switching it off restores the stored Worktrees window. The daemon adopts changes
+without a restart and recomputes deadlines on successful observation.
+`MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` still takes precedence for a read-only trial.
+If the daemon previously used `MISSION_WORKTREE_CLEANUP_PREVIEW=enforce`, enable the flag to
+continue using seven days.
+
+**Reclaim orphaned task worktrees** in **Settings > Feature flags** adds two classes to the same
+retention clock: disposable task checkouts Git no longer recognizes, and tasks whose terminal
+home is proved absent. Report-only mode evaluates both classes whether or not that flag is on,
+records what it would do as the retention blocker, and never archives, fetches or deletes.
+See [orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
 
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.
+
+## Voice listener backend
+
+Set `MISSION_VOICE_BACKEND` to `auto`, `fluidaudio` or `sherpa-onnx` to override
+the stored voice backend for the daemon process. The development launcher also
+accepts `--backend`. See [Voice addressing](voice.md) for model setup and file input.

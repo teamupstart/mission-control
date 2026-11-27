@@ -236,10 +236,11 @@ test("a manager that was never started leaves no timer behind", () => {
   // The accommodation every optional service in `buildApp` documents: ~50 focused route
   // tests construct one, and a constructor-armed interval would keep the runner alive.
   const h = harness();
-  h.manager.stop();
-  h.manager.start();
-  h.manager.stop();
-  assert.ok(true);
+  assert.doesNotThrow(() => {
+    h.manager.stop();
+    h.manager.start();
+    h.manager.stop();
+  });
 });
 
 test("a person putting a thread in the queue is announced once; a draft edit is not", () => {

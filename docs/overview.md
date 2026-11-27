@@ -72,10 +72,9 @@ and get your decision back.
   rest and hands you one digest when you come back.
 - **Keeps the Mac awake**, if you ask it to: the live indicator opens a **Keep awake**
   dropdown whose switch prevents idle system sleep while the display still dims and locks,
-  so agents keep working with the screen dark. Deliberately transient - on until Mission
-  Control quits or restarts, never persisted or reacquired - and lid close, manual Sleep,
-  and the battery safeguards all still win. macOS only; elsewhere it says so instead of
-  pretending. See [Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep).
+  so agents keep working with the screen dark. The switch stays where you leave it across
+  restarts and upgrades, and lid close, manual Sleep, and the battery safeguards all still
+  win. macOS only; elsewhere it says so instead of pretending. See [Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep).
 - **Tracks fleet economics**: a badge on every priced session detail and a topbar cost chip whose
   popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
   cost per pull request, and rate-limit runway. A separate automation figure attributes the

@@ -198,6 +198,40 @@ A [resident](residents.md) takes its Persona from its profile and never from thi
 `create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
 `personaId`.
 
+## A call sign for the task
+
+With the **Voice addressing** preview on, **Advanced** also offers a **Call sign**: a short name
+you can say to address the task's session by [voice](voice.md#spoken-names). It is optional, 1 to
+40 characters, and every kind offers it. Under the field, the sentence you would say ("**Alice,**
+check the build") sits above a four-step meter that loses a step for each warning: an everyday
+word, a name that sounds like another agent's, one short syllable, or a voice command. The
+warnings explain and never block; **Dispatch** stays enabled whatever they say. Closed, the fold's
+summary names the call sign beside the Persona.
+
+Left blank, the task is given a call sign as it launches when a safe one is free: a distinctive
+name no other agent is heard as, from a short built-in list. If every safe name is taken, it
+launches without one. Your own call sign is always kept. See
+[Automatic call signs](voice.md#automatic-call-signs).
+
+A call sign is not the title and changes nothing the launch provisions. It is annotation, like
+priority: an update may set or clear it while the agent runs (a resident's task takes none; see
+[Call signs](voice.md#call-signs)), and with the
+[inbox](attention-and-alerts.md) naming rule and voice both on it is the name the inbox, the review
+modal, question cards and alerts print for the session. [Call signs](voice.md#call-signs) covers
+when it also titles the session's card.
+
+A task in the backlog answers to its call sign only once it launches. From then on it is listed
+while it runs and while it is hibernated, however long it sleeps. Once it stops it stays listed
+for a while, marked not running, and leaves at once if another agent takes the name first;
+[who can be addressed](voice.md#who-can-be-addressed) has the rules, including its 24 hours and how
+a daemon restart changes them. A call sign already
+saved is kept, and read back by the editor, while the preview is off, but names nothing until it
+is on again; the field is drawn only while it is on, so a save while it is off leaves the saved one
+as it is, even one edited before the preview was turned off.
+
+MCP `create_task` and `update_task` accept `callSign` (null clears it on update), and `get_task`
+and `list_tasks` report it.
+
 ## Grill me first
 
 **Grill me first** makes a task interview you before it starts its work. It is offered for every
@@ -684,7 +718,9 @@ Changing the setting later moves every chip you never set. Set a chip, or the se
 
 A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
 until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
-dependents** behave exactly as above. A released card reads *Stacked on #N*. A card whose
+dependents** behave exactly as above. A released card and its editor both show *Stacked on #N*. In the editor,
+**Dispatch now** saves edits and launches from the prerequisite branch. Changing the primary
+repository, dependency set, or a dependency mode invalidates that release for the draft. A card whose
 dependency stacks, because its chip is set to Stack or it inherits a Stack default, but that
 cannot stack yet says why in place of *after X*. The usual reasons are two unmerged
 prerequisites in one repository, a prerequisite in another repository, or a stack at the
@@ -814,6 +850,15 @@ the name is already spoken for) the old name simply stands. It applies to [the b
 autopilot's](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
 
+### Work units
+
+Every task has a [work unit](work-units.md) id, `workUnitId`, except a resident run's. A plan
+task and the phase tasks its session files through MCP `create_task` share one. Which other
+tasks share a work unit and which get their own is set out in
+[Which tasks share one](work-units.md#which-tasks-share-one). A task shelved before work units
+existed gets its id when it is next dispatched or assigned. `list_tasks` can list the tasks of
+one work unit.
+
 ### One agent, one task at a time - but not one task per agent
 
 **An agent runs tasks one after another, for as long as it's alive.** Finish one, take the
@@ -826,6 +871,18 @@ recorded finished, which for shipped work is when [its pull request
 merges](inspector-and-shipping.md#when-a-tasks-pull-request-merges) - not when you get round to clicking anything.
 Whether that agent is then *closed* is a separate preference (**Settings → Shipping**); by
 default it stays, ready for the next drop.
+
+**An agent stays in the work unit it was started for.** An agent started with a
+[work unit](work-units.md#the-launch-environment) has `WORK_UNIT_ID` in its environment for as
+long as it runs, and a drop starts no process, so its MCP calls would tag the next task with the
+first one's work unit. The daemon therefore refuses a drop onto an agent that was started for
+another work unit - "that agent was started for other work, so its MCP calls would be
+attributed to that work" - and the backlog autopilot does not offer it that task; the task can still be
+dispatched to a new agent. An agent started for the task's own work unit takes it, which is how
+a plan's phase tasks can follow one another on one agent. An agent started with none takes any
+task, and that task emits no work unit until the agent's next start. The rule reads only what
+the agent was started with, never the `work-unit-id` preview, so it holds after the preview is
+switched off; with the preview never switched on no agent has one and nothing is refused.
 
 **Each task keeps its own record.** The card shows the task the agent is executing, or the
 one it most recently finished until it takes another; the previous task keeps its own
@@ -1937,9 +1994,10 @@ a self-hosted Jira reached through the CLI needs no allowlist entry at all.
 
 Two operational notes. The environment is the **daemon's**, read when it sweeps - exporting
 the variables in a shell after the daemon started does not reach it, so restart the daemon
-(`make restart`) after adding them. And behind a TLS-inspecting VPN the REST rung needs the
-proxy's CA in `NODE_EXTRA_CA_CERTS` in that same environment; certificate verification is
-never disabled to work around it.
+(`make restart`) after adding them. Behind a TLS-inspecting VPN the REST rung trusts the
+proxy's CA when it is in the operating system's certificate store (the macOS keychain), which the
+daemon adds to Node's roots at start, or in `NODE_EXTRA_CA_CERTS` in that same environment;
+certificate verification is never disabled to work around it.
 
 **A broken credential never reads as "no issues".** That is the whole reason `preflight`
 exists, and **Check it works** distinguishes, each naming one thing to go and do:
@@ -1954,7 +2012,7 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `the jira CLI is installed but not configured … run jira init` | installed, never pointed at a site |
 | `the jira CLI is not authenticated` / `Jira rejected the JIRA_API_TOKEN / JIRA_EMAIL credential (HTTP 401)` | the credential is wrong or expired |
 | `Jira could not run this query (HTTP 400) - <what Jira said>` | the JQL is the problem, not the credential |
-| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
+| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is the proxy's CA missing from the system store and `NODE_EXTRA_CA_CERTS` |
 | `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
 | `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
 | `refusing to send JIRA_API_TOKEN to <host>` | that host is not Jira Cloud and is not in `JIRA_ALLOWED_HOSTS`. Name it there if it really is your Jira; the CLI rung keeps working regardless |
@@ -2218,3 +2276,33 @@ publication prerequisite plus direct implementation task merge dependencies. Art
 never satisfies those ordinary edges. Repository plans and mixed code-and-plan sources continue
 using their ordinary planning-task merge dependency. See [managed plans](managed-plans.md) for
 the versioned tool contract, validation compatibility, retention and recovery.
+
+### Change a pinned plan revision (preview)
+
+Enable **Change pinned plan revision** in Settings > Feature flags. In a backlog task's
+Dependencies section, choose **Change pinned revision**, enter the exact plan ID, revision,
+and comma-separated Markdown filenames, then choose **Preview revision change**. The preview
+shows the old and new pins and the prerequisites it will remove, add, and retain. Save applies
+the input and originating prerequisite together; Cancel revision change leaves them untouched.
+Save any separate dependency edits before using this action.
+Dependency editing stays disabled while the revision editor is open; cancel the revision change
+to edit prerequisites separately.
+Dispatch availability follows the validated preview's prerequisites. **Dispatch now** saves the
+selected pin and prerequisites before requesting launch.
+
+Only the superseded pin's prerequisites are removed. An origin still required by another pin
+stays, as do unrelated implementation dependencies and recorded merge evidence. A completed
+replacement origin can be added only with merge proof for the exact saved work episode.
+Missing files, revisions from another repository, stale previews, and invalid dependencies
+are refused without saving either half. No newer revision is selected automatically.
+
+The MCP **update_task** tool accepts the same action as
+`planInputChange: { from, to, expectedUpdatedAt? }`, where both inputs contain
+`repoKey`, `planId`, `revision`, and `files`. Use `previewOnly: true` to inspect
+`before` and `after` without writing, then repeat with `previewOnly: false` to save.
+The optional timestamp binds the preview to the task configuration you read.
+This release also adds explicit `planInputs` and `dependencies` array edits to MCP `update_task`,
+independently of the preview flag. This extends to MCP the raw atomic edit already supported by
+the dashboard endpoint. MCP requests remain authenticated and use existing task, repository, and
+dependency validation. Do not combine those arrays with `planInputChange`. Only the `planInputChange`
+action and `previewOnly` mode require the flag; omitted fields keep their saved values.

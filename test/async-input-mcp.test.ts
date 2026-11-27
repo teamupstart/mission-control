@@ -18,7 +18,8 @@ import { MEANWHILE_MAX_CHARS } from "../src/shared/async-input.ts";
 const home = mkdtempSync(join(tmpdir(), "async-input-mcp-"));
 type Seen = { method: string; path: string; body: Record<string, unknown> };
 const seen: Seen[] = [];
-let mode: "message" | "call" | "legacy" | "limit" = "message";
+let mode: "message" | "call" | "legacy" | "limit" | "revision-refused" = "message";
+const REVISION_REFUSAL = "Not filed: revises names rev-old, which was already answered. File the new plan as a new form, without revises. Nothing was filed.";
 let stalledQuestionPath: string | null = null;
 const RECEIPT = "Filed, not answered: stub receipt.";
 const daemon = createServer((req: IncomingMessage, res) => {
@@ -35,11 +36,12 @@ const daemon = createServer((req: IncomingMessage, res) => {
     const json = (value: unknown) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
     if (req.method === "POST" && path === "/mcp/reviews") {
       if (mode === "limit") return res.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify({ error: "Not asked: ten open questions. Work on what you can or end your turn." }));
+      if (mode === "revision-refused") return res.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify({ error: REVISION_REFUSAL }));
       if (mode === "message") return json({ id: "rev-m", sessionId: "s", wait: "message", receipt: RECEIPT });
       if (mode === "call") return json({ id: "rev-c", sessionId: "s", wait: "call" });
       return json({ id: "rev-l", sessionId: "s" });
     }
-    if (path.startsWith("/mcp/reviews/") && path.endsWith("/wait")) {
+    if (path.startsWith("/mcp/reviews/") && path.endsWith("/wait?convertible=1")) {
       return json({
         id: path.split("/")[3], sessionId: "s", kind: "input", title: "Q", body: "Q", status: "answered",
         response: "Answered: eslint", createdAt: 1, resolvedAt: 2,
@@ -109,10 +111,44 @@ test("told call, or told nothing by an older daemon, request_input long-polls fo
     const outcome = await ask({ question: "Which linter?" });
     assert.equal(outcome.text, "Answered: eslint", told);
     assert.deepEqual(outcome.requests.map((r) => `${r.method} ${r.path.replace(/rev-[a-z]/, "ID")}`), [
-      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait",
+      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait?convertible=1",
     ], told);
     assert.equal(outcome.requests[0]!.body.meanwhile, undefined, "no meanwhile line was given");
   }
+});
+
+test("request_plan_decisions says it can take a receipt, returns it when told message, and long-polls otherwise", async () => {
+  const plan = async () => {
+    const from = seen.length;
+    const result = await client.callTool({ name: "request_plan_decisions", arguments: {
+      title: "Linter plan", plan: "# Linter plan",
+      decisions: [{ id: "q", question: "Which linter?", options: [{ id: "a", label: "eslint" }] }],
+    } });
+    const text = (result.content as { type: string; text: string }[]).map((item) => item.text).join("\n");
+    return { text, requests: seen.slice(from) };
+  };
+  mode = "message";
+  const filed = await plan();
+  assert.equal(filed.text, RECEIPT);
+  assert.deepEqual(filed.requests.map((r) => `${r.method} ${r.path}`), ["POST /mcp/reviews"], "no /wait request");
+  assert.equal(filed.requests[0]!.body.kind, "plan-decisions");
+  assert.equal(filed.requests[0]!.body.asyncCapable, true);
+  assert.equal(filed.requests[0]!.body.snoozable, undefined, "never snoozable");
+  for (const told of ["call", "legacy"] as const) {
+    mode = told;
+    const waited = await plan();
+    assert.equal(waited.text, "Answered: eslint", told);
+    assert.deepEqual(waited.requests.map((r) => `${r.method} ${r.path.replace(/rev-[a-z]/, "ID")}`), [
+      "POST /mcp/reviews", "GET /mcp/reviews/ID/wait?convertible=1",
+    ], told);
+  }
+  const { tools } = await client.listTools();
+  const description = tools.find((t) => t.name === "request_plan_decisions")!.description ?? "";
+  assert.doesNotMatch(description, /BLOCK until/);
+  assert.match(description, /filed and NOT answered/);
+  assert.match(description, /gate either way/);
+  assert.match(tools.find((t) => t.name === "withdraw_question")!.description ?? "", /request_plan_decisions form/);
+  assert.match(tools.find((t) => t.name === "list_open_questions")!.description ?? "", /request_plan_decisions forms/);
 });
 
 test("the tool describes both outcomes and bounds meanwhile", async () => {
@@ -184,4 +220,34 @@ test("the bound returns an error result with recovery instructions and no wait",
   assert.equal(outcome.isError, true);
   assert.match(outcome.text, /Work on what you can or end your turn/);
   assert.equal(outcome.requests.length, 1);
+});
+
+test("request_plan_decisions sends revises, and a refused revision is returned as the daemon's reason with no wait", async () => {
+  const plan = async (args: Record<string, unknown>) => {
+    const from = seen.length;
+    const result = await client.callTool({ name: "request_plan_decisions", arguments: {
+      title: "Linter plan, revised", plan: "# Linter plan",
+      decisions: [{ id: "q", question: "Which linter?", options: [{ id: "a", label: "eslint" }] }], ...args,
+    } });
+    const text = (result.content as { type: string; text: string }[]).map((item) => item.text).join("\n");
+    return { isError: Boolean(result.isError), text, requests: seen.slice(from) };
+  };
+  mode = "message";
+  const revised = await plan({ revises: "rev-old" });
+  assert.equal(revised.text, RECEIPT);
+  assert.equal(revised.requests[0]!.body.revises, "rev-old");
+  const fresh = await plan({});
+  assert.equal("revises" in fresh.requests[0]!.body, false, "a new plan sends no revises");
+
+  mode = "revision-refused";
+  const refused = await plan({ revises: "rev-old" });
+  assert.equal(refused.isError, true);
+  assert.equal(refused.text, REVISION_REFUSAL, "the reason itself, not a transport failure");
+  assert.deepEqual(refused.requests.map((r) => `${r.method} ${r.path}`), ["POST /mcp/reviews"], "nothing to wait for");
+
+  const { tools } = await client.listTools();
+  const tool = tools.find((t) => t.name === "request_plan_decisions")!;
+  assert.match(tool.description ?? "", /revises set to the earlier form's review id/);
+  const schema = tool.inputSchema as { properties: Record<string, { description?: string }> };
+  assert.match(schema.properties.revises?.description ?? "", /an open one is withdrawn for you/);
 });

@@ -34,9 +34,9 @@ const outFile = join(root, "src", "server", "workflows", "builtin-personas.gener
  * would add `builtin:FOREMAN`, `builtin:INSPECTOR` and `builtin:README` to the Persona
  * catalog as app data no operator can archive.
  *
- * Exported so `test/builtin-personas.test.ts` can hold the same list against the directory
- * rather than restating it: a second copy of this list would agree with itself while the
- * generator shipped something else.
+ * Keep this list aligned with the `persona-operator-documents` rule in `konsistent.json`,
+ * which requires these files to exist. The generator test uses this list to verify that
+ * the compiled catalog excludes them.
  */
 export const NON_PERSONA_DOCUMENTS = ["FOREMAN.md", "INSPECTOR.md", "README.md"] as const;
 

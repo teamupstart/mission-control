@@ -32,7 +32,7 @@ function migrationProcessIsAlive(pid) {
     encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: COMMAND_TIMEOUT_MS,
   });
   // Only a positive zombie observation proves exit. An unreadable state remains live.
-  return state.status !== 0 || !/^Z/.test(state.stdout.trim());
+  return state.status !== 0 || !state.stdout.trim().startsWith('Z');
 }
 
 export function sameMigrationProcess(record) {

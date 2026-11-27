@@ -7,10 +7,13 @@ import {
   seedHiddenDisplayItems,
   TASK_KIND_CARD_STYLES,
   BACKGROUND_AGENTS_STYLES,
+  CALL_SIGN_CARD_STYLES,
+  residentCardNameStylesOf,
   TASK_KIND_HEADER_STYLES,
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
 import { isSkinId, type SkinId } from "@shared/skins.ts";
+import { VOICE_UI_DEFAULTS, VoiceUiConfigSchema } from "@shared/voice.ts";
 import type {
   ConversationView,
   LayoutMode,
@@ -19,6 +22,7 @@ import type {
   BlockedPlacement,
   TaskKindCardStyle,
   BackgroundAgentsStyle,
+  CallSignCardStyle,
   TaskKindHeaderStyle,
   UiConfig,
 } from "@shared/protocol.ts";
@@ -149,6 +153,17 @@ function parseBackgroundAgentsStyle(raw: string | undefined): BackgroundAgentsSt
     : UI_CONFIG_DEFAULTS.backgroundAgentsStyle;
 }
 
+/** An unknown or missing call sign style is Subtitle line, exactly as `UiConfigSchema` reads it. */
+function parseCallSignCardStyle(raw: string | undefined): CallSignCardStyle {
+  return (CALL_SIGN_CARD_STYLES as readonly string[]).includes(raw ?? "")
+    ? (raw as CallSignCardStyle)
+    : UI_CONFIG_DEFAULTS.callSignCardStyle;
+}
+
+function parseResidentCardNameStyles(raw: unknown): UiConfig["residentCardNameStyles"] {
+  return Array.isArray(raw) ? residentCardNameStylesOf(raw) : [...UI_CONFIG_DEFAULTS.residentCardNameStyles];
+}
+
 /** An unknown or missing placement is the drawer, exactly as `UiConfigSchema` reads it. */
 function parseResidentPlacement(raw: string | undefined): ResidentPlacement {
   return (RESIDENT_PLACEMENTS as readonly string[]).includes(raw ?? "")
@@ -161,6 +176,11 @@ function parseBlockedPlacement(raw: string | undefined): BlockedPlacement {
   return (BLOCKED_PLACEMENTS as readonly string[]).includes(raw ?? "")
     ? (raw as BlockedPlacement)
     : UI_CONFIG_DEFAULTS.blockedPlacement;
+}
+
+function parseCachedVoice(raw: unknown): UiConfig["voice"] {
+  const parsed = VoiceUiConfigSchema.safeParse(raw ?? {});
+  return parsed.success ? parsed.data : { ...VOICE_UI_DEFAULTS, indicators: [...VOICE_UI_DEFAULTS.indicators] };
 }
 
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
@@ -181,10 +201,15 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),
     backgroundAgentsStyle: parseBackgroundAgentsStyle(raw?.backgroundAgentsStyle),
+    callSignCardStyle: parseCallSignCardStyle(raw?.callSignCardStyle),
+    residentCardNameStyles: parseResidentCardNameStyles(raw?.residentCardNameStyles),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,
     alerts: {
       notifications: raw?.alerts?.notifications ?? UI_CONFIG_DEFAULTS.alerts.notifications,
       sound: raw?.alerts?.sound ?? UI_CONFIG_DEFAULTS.alerts.sound,
+      // A cache from before the "What notifies you" switches reads as every switch on.
+      notify: { ...UI_CONFIG_DEFAULTS.alerts.notify, ...raw?.alerts?.notify },
+      reportsInInbox: raw?.alerts?.reportsInInbox ?? UI_CONFIG_DEFAULTS.alerts.reportsInInbox,
     },
     richText: raw?.richText ?? UI_CONFIG_DEFAULTS.richText,
     keybindingHints: raw?.keybindingHints ?? UI_CONFIG_DEFAULTS.keybindingHints,
@@ -249,6 +274,11 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     pauseConsoleControls: Array.isArray(raw?.pauseConsoleControls)
       ? raw.pauseConsoleControls.filter((id): id is string => typeof id === "string")
       : [...UI_CONFIG_DEFAULTS.pauseConsoleControls],
+    // Read through the daemon's own schema, so an unknown placement is the pill and a miss is
+    // the shipped status line, exactly as `UiConfigSchema` reads them. `safeParse`, and the
+    // defaults for this field alone on a failure: a cached value this build cannot read (a newer
+    // build's longer indicator list, say) must not throw away every other cached preference.
+    voice: parseCachedVoice(raw?.voice),
   };
 }
 

@@ -225,3 +225,42 @@ export function mediaTypeForArchivePath(archivePath: string): string {
 export function isArchivedHtml(archivePath: string): boolean {
   return /\.html?$/i.test(archivePath);
 }
+
+/**
+ * Admits relative, `/`-separated paths one at a time while they can all be written beside one
+ * another on a case-insensitive, normalization-insensitive volume, the macOS default. A path is
+ * refused when, normalized to NFC and folded to lower case, it is a path already admitted, or one
+ * of them is a directory of the other: a file `Data` and a file `data/x.csv` need `data` to be a
+ * file and a directory at once. Directories that differ only in case (`Dir/a.csv`, `dir/b.csv`)
+ * merge harmlessly and are both admitted.
+ *
+ * Callers admit a path only once it is known to be written (a file actually stored, or actually
+ * read), so a spelling that names nothing never shuts out one that does.
+ */
+export class CaseCollisionGuard {
+  private readonly files = new Set<string>();
+  private readonly directories = new Set<string>();
+
+  admit(path: string): boolean {
+    // Normalized as well as case-folded: APFS treats canonically equivalent names (NFC `café`
+    // and NFD `café`) as one file, as it does names that differ only in case.
+    const folded = path.normalize("NFC").toLowerCase();
+    const segments = folded.split("/");
+    const parents = segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join("/"));
+    if (this.files.has(folded) || this.directories.has(folded) || parents.some((parent) => this.files.has(parent))) {
+      return false;
+    }
+    this.files.add(folded);
+    for (const parent of parents) this.directories.add(parent);
+    return true;
+  }
+}
+
+/**
+ * The subset of `paths` that can all be written beside one another (see `CaseCollisionGuard`),
+ * decided in sorted order so the outcome is the same however the paths arrive.
+ */
+export function caseDistinctPaths(paths: Iterable<string>): Set<string> {
+  const guard = new CaseCollisionGuard();
+  return new Set([...new Set(paths)].sort().filter((path) => guard.admit(path)));
+}

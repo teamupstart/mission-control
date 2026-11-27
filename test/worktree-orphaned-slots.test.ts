@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
@@ -332,6 +332,35 @@ test("the last awaited check before deleting an orphan is process occupancy", as
   assert.equal(calls, 3);
   assert.ok(existsSync(join(slot.path, "docs/reports/crash/report.md")), "nothing was deleted under the late occupant");
   assert.equal(manager.store.slot(slot.id)?.state, "quarantined");
+});
+
+test("an orphan delete that cannot finish stays quarantined with the delete's own bounded reason", {
+  skip: process.getuid?.() === 0 ? "root ignores directory permissions" : false,
+}, async (t) => {
+  // Under Electron this was `default_app.asar` (see remove-tree-electron.test.ts); a directory
+  // the daemon may not write is the same failure in plain Node: the shared delete runs, fails
+  // part-way, and says so, and the slot keeps its row and the quarantine that tracks it.
+  const { manager, lease, slot } = await orphanedTaskSlot("mission-orphan-delete-fails-");
+  const locked = join(slot.path, "node_modules", "locked");
+  mkdirSync(locked, { recursive: true });
+  writeFileSync(join(locked, "held.js"), "held\n");
+  chmodSync(locked, 0o555);
+  t.after(() => { if (existsSync(locked)) chmodSync(locked, 0o755); });
+  assert.equal((await manager.release(current(manager, lease), { ownerAuthorized: true })).outcome, "released");
+  const removed = await manager.removeSlot({ slotId: slot.id, allowDirty: true, allowUnmerged: true, allowUnverifiable: true });
+  assert.equal(removed.outcome, "outcomeUnknown", JSON.stringify(removed));
+  assert.match((removed as { reason: string }).reason, /^orphaned slot removal failed: TreeRemovalError: rm -rf exited with code 1: .*held\.js/);
+  const row = manager.store.slot(slot.id)!;
+  assert.equal(row.state, "quarantined");
+  assert.equal(row.quarantineCategory, "transition");
+  assert.equal(row.quarantineReason, "orphaned slot removal failed");
+  assert.ok(existsSync(join(locked, "held.js")), "what the delete could not reach is still there to retry");
+
+  chmodSync(locked, 0o755);
+  const retried = await manager.removeSlot({ slotId: slot.id, allowDirty: true, allowUnmerged: true, allowUnverifiable: true });
+  assert.deepEqual(retried, { outcome: "removed" }, "Destroy can be retried once the cause is gone");
+  assert.equal(manager.store.slot(slot.id), null);
+  assert.equal(existsSync(slot.path), false);
 });
 
 test("the unverifiable acknowledgement reaches only the targets Git did not recognize at preview", async () => {

@@ -12,6 +12,8 @@ Mission Control's product reference is organized by feature below.
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
 - [Task shaping](task-shaping.md): shapers that supply context for a task, registered and dry-run through the API, behind the `task-shaping` preview.
+- [Voice addressing](voice.md) covers spoken names, preview settings, routing a text capture to the operator queue, cancelling a pending message, and the in-memory Recently heard list.
+- [Work units](work-units.md): one id shared by a plan task and its phase tasks.
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)
 - [Residents](residents.md): long-running agents launched from resident profiles.
@@ -47,10 +49,12 @@ Mission Control's product reference is organized by feature below.
 - [Dispatch and runtimes](dispatch-and-runtimes.md)
 - [Harnesses and terminal backends](harnesses-and-terminals.md)
 - [Workflows, personas, actions, and ensembles](workflow-system.md)
+- [Repository review workload foundation](repository-review-workloads.md)
 - [Tasks, queues, and schedules](tasks-and-scheduling.md)
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)
 - [Feature flags](feature-flags.md): flag core, live gates and the three-release lifecycle.
+- [Claude-session control](headless-mode.md): setup, diagnostics and recovery for the headless preview.
 - [Desktop shell and packaging](desktop-and-packaging.md)
 - [Owned runtimes and integration repair](owned-runtimes.md)
 - [Signed release production and verification](release-verification.md)

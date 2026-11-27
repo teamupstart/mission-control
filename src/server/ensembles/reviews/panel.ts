@@ -16,7 +16,7 @@ import {
   type PanelScorecard,
   type PanelVerdict,
 } from "@shared/ensemble-strategies/panel-vote.ts";
-import { parseModelJson, runStructured, type StructuredAttemptObserver } from "../../llm/structured.ts";
+import { runStructured, type StructuredAttemptObserver, parseModelReply } from "../../llm/structured.ts";
 import { providerJsonSchema } from "../../llm/json-schema.ts";
 import {
   assembleEvidencePacket,
@@ -280,11 +280,12 @@ async function runJudge(
       (request) =>
         runtime.runModel(execution.runnerId, request, {
           modelId: execution.modelId,
+          ...(execution.effort && { effort: execution.effort }),
           timeoutMs: runtime.timeoutMs,
           schema: PANEL_BALLOT_JSON_SCHEMA,
         }),
       prompt,
-      (raw) => parseModelJson(raw, PanelBallotSchema),
+      (raw) => parseModelReply(raw, PanelBallotSchema),
       `The ${judge.label} ballot`,
       observer,
       { shapeGuaranteed: runtime.guaranteesSchema(execution.runnerId) },

@@ -19,7 +19,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 
 | Section | What it decides | Default |
 |---|---|---|
-| Identity | The name (unique among live profiles) and an optional description | required |
+| Identity | The name (unique among live profiles), an optional description, and, with the **Voice addressing** preview on, an optional [reference name](voice.md#reference-names) | required |
 | Persona | The Library Persona whose guidance becomes the resident's standing role | none |
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
@@ -27,7 +27,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Workspace | The repository Dispatch pre-fills, and any repositories **+ Add another repo** attaches beside it | none |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
 | Active hours (preview) | The days and hours the loop may wake the resident; see [Active hours](#active-hours) | off: always awake |
-| MCP servers | A pinned set or [all native sources](#all-native-sources), plus any selected [custom servers](#custom-mcp-servers) | pinned, inherit on, none selected |
+| MCP servers | A pinned set or [all native sources](#all-native-sources), plus any selected [custom servers](#custom-mcp-servers) | all native sources, no custom servers selected |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
 Each section is a card. When the editor has room, the cards form two columns: identity, Persona,
@@ -52,16 +52,31 @@ the list and from Dispatch and frees its name; nothing is deleted.
 resident reads its settings only from that pinned revision. Editing the profile, or the Persona
 it names, never changes a resident that is already running.
 
+The one exception is the **reference name**: what you say to address the resident by
+[voice](voice.md#reference-names), in place of its profile name. It is a spoken name rather than a
+launch setting, so it applies as soon as it is saved, also to a running resident: Settings > Voice
+lists it at once, and with the inbox naming rule on, cards name the resident by it. With the
+preview off, a saved reference name is kept but names nothing. Its field
+checks the name as you type, with the same warnings and meter as a session's call sign, and never
+blocks a save. Cleared, it is saved blank, which means none.
+
 Pi is not offered: the first release supports Claude Code and Codex, and a profile can only be
 saved for a harness with an Agent SDK driver.
 
 ## Built-in residents
 
-Mission Control ships one resident ready to launch, installed on every machine:
+Mission Control installs these optional profiles. Choose **Launch** to start one.
 
 | Resident | What it does |
 |---|---|
 | Agent Shepherd | Watches the backlog and running tasks and unblocks stuck work. It removes dependencies on work that already shipped and grants repair rounds while a workflow still finds real bugs. It keeps reviewers within the task's original intent. Decisions only a human can make go to you through `request_input`. It runs Claude Code with Sonnet 5.5 at extra-high effort, and **Control other sessions** is on |
+| Bug Fix Inspector | Helps improve Mission Control over time by checking recent logs, sessions, and workflows for bugs affecting users. It runs Claude Sonnet 5.5 at extra-high effort, waits 45 minutes between automatic passes, and has a $20 spend cap per rolling 24 hours. A desktop Launch click grants read-only access to other sessions and workflows. The grant cannot steer sessions or change their workflows. It resumes inspection from a separate checkpoint for each source after an outage. |
+
+Enable **Settings → Feature flags → Bug Fix Inspector** to list and launch the built-in. Switching the preview off hides it from the catalog and prevents new launches. Existing runs keep their pinned revision. The inspector records missed history that its tools can no longer retrieve, including sessions that ended between snapshots. For known live sessions it pages back through the retained transcript to recover older turns. A desktop Launch grant can return after restart with the same run and conversation. Choose **Off** in the session control menu to revoke it. It checks the configured issue destination for duplicates and repeats the search if the destination changes.
+
+The inspector checks spend before each automatic pass. For example, if a turn starts at $19.50 and costs $1, the run records $20.50 and pauses at the next wake. Resume becomes available when enough spend leaves the rolling window.
+
+Launching the built-in inspector requests drafts for confirmed defects on its first and scheduled passes. It uses `report_product_issue` to preview each public report. Choose **Submit public issue** to publish it to the configured GitHub tracker (default `teamupstart/mission-control`). See [public product issue reporting](security.md#public-product-issue-reporting).
 
 Built-ins appear under **Built-in** in the Residents rail, and in the dock and in Dispatch beside
 your own profiles. They are **app data, not your data**. Opening one shows it read-only: Save and
@@ -87,8 +102,7 @@ reads `Launch <name> (built-in)`. Neither one hides the other. To run the built-
 your own, launch it, or archive yours once you no longer need it. Built-ins do not count toward the 200
 live-profile limit. Settings snapshots do not carry them, and a restore never archives one.
 
-The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
-the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
+The build includes the [Agent Shepherd instructions](../residents/agent-shepherd.md) and [Bug Fix Inspector instructions](../residents/bug-fix-inspector.md). See [`residents/README.md`](../residents/README.md) for how to change or add one.
 
 The **Meet your residents** guided tour walks this page on Agent Shepherd, then opens the
 [Residents drawer](#the-residents-drawer) and points at **Pin**. Start it from **Settings > Help &
@@ -210,6 +224,19 @@ is already running.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
+- **Resident name beside the call sign (preview).** While voice can hear you (Always-on listening,
+  or Push-to-talk waiting for the shortcut or held), a resident with a
+  [reference name](voice.md#reference-names) is titled on its Board card by that call sign in
+  double quotes. With the **Resident names on cards** preview (`resident-card-names`) on,
+  **Settings → Display → Board card → Resident name with call sign** offers two checkboxes
+  that also show the profile name on that card. Turn on either, or both. **Subtitle** puts it on a
+  muted line under the call sign and makes the card one short line taller. **Expanding chip**
+  keeps the card's size: the label chip spells the name out while you point at or focus the card,
+  truncating a long name inside the chip so the call sign stays readable, and it needs **Resident
+  marker** on to have a chip to expand. Both start unchecked, which shows the call sign alone. A
+  card titled by its session name, and one whose call sign is the profile name, show one name
+  whatever is checked. Turning the preview off hides the checkboxes and the extra name; what was
+  checked is kept for when it comes back.
 
 In **Drawer** placement there is no card or rail row for the marker or the pin to act on, so
 **Resident marker** and the profile's **Pin to top of column** say they apply only in Board and
@@ -244,25 +271,28 @@ and count.
   **Manage residents**, which opens the Residents page to author, edit and archive profiles.
 - **Cards.** One card per live resident, in its marker color, in the order the dock uses. The
   top line holds the chip, the name, a state dot, the resident's **⌥**-number and a fold caret.
+  While voice can hear you (Always-on listening, or Push-to-talk waiting for the shortcut or held),
+  a configured reference name appears in double quotes as the card title.
+  When live residents share a reference name, their drawer and Console entries include the ordinary
+  title in parentheses. Board Open buttons announce the same distinction.
+  Without a reference name, the card keeps its usual title.
   Under it are tags for the loop's state, iteration and next wake, and any pause or wake
   reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
   **Control** badge when the resident's revision asks for session control.
+- **Filter.** Fleet's search box matches words across each live card's name, chip, status,
+  loop details, latest message, pending questions, controls and inline action alerts. Compressed
+  cards are still searchable by their full content. The live count and the Profiles list remain
+  available while you search.
 - **Working and Needs you.** While a resident is working, its card is edged and lightly tinted
   in the color of the Board's **Working** column; while it needs you, in the color of **Needs
   you**. Both colors come from the current skin, so they match that skin's columns. Otherwise
   the card wears its marker color.
 - **Needs you group.** Residents that need you move to the top of the drawer, into a group
   framed in the **Needs you** color under a **Needs you** heading with how many are asking.
-  With keycaps on, the heading prints <kbd>e</kbd>. <kbd>e</kbd> opens the review queue of the
-  first fleet session asking, as it always has, and otherwise addresses the first resident in
-  this group: its review queue, with its card selected, when it asked through a review, or its
-  conversation with the cursor in the reply box when it needs you some other way, such as a menu
-  it is parked on. That holds while a conversation is open and the resident is also a row in the
-  **Needs you** rail, and a fleet session's review still comes first even when that resident is
-  the one selected. <kbd>e</kbd> passes over the resident whose conversation is already open
-  while another is asking, unless it has a review to open; when that one is the only resident
-  asking, it puts the cursor back in its reply box. The rest of the residents follow below the
-  group.
+  With keycaps on, the heading prints <kbd>e</kbd>. On the Board, this opens the
+  [attention inbox](attention-and-alerts.md) when **to answer** is visible. When a resident's
+  conversation is open, the inbox starts at that resident's first pending question if one is
+  listed. The rest of the residents follow below the group.
   A card keeps its **⌥**-number when it moves into or out of the group, so the numbers never
   shift while an ask is open, and <kbd>↑</kbd>/<kbd>↓</kbd> walk the cards in the order drawn.
 - **Compressing a card.** Every card starts open. Clicking a resident's title, or
@@ -285,8 +315,8 @@ and count.
   color, with its kind as the review modal names it (input, decisions, plan or diff), its
   title and a line on what answering takes, such as a question's options. The card never
   draws the form itself.
-  Clicking a row selects the card and opens the review modal on that resident's queue, the same
-  modal <kbd>e</kbd> opens, where the question is answered, dismissed or moved to chat. A menu
+  Clicking a row selects the card and opens the review modal on that resident's queue,
+  where the question is answered, dismissed or moved to chat. A menu
   the session is parked on is one such row too, and clicking it opens the same review modal,
   which shows the menu's rows as the Conversation tab does, so pressing one answers it. Once
   nothing is left pending, the modal closes and the amber state and the visitor card clear.
@@ -416,6 +446,29 @@ read. The dashboard's Flag reply and Clear blocker always send it.
 "Check again" is the ordinary `message` action. The built-in Agent Shepherd flags, then
 messages, and never clears a blocker without evidence that its `resumeWhen` condition is met.
 
+### Sessions awaiting a background process
+
+While the **Awaiting background work** preview is on, sessions can declare that they are
+[idle on purpose](sessions.md#sessions-awaiting-a-background-process-preview) while a background process
+they started finishes. `read_sessions` adds an `awaiting` summary (`id`, `what`, `wakeSource`,
+`expectedBy`, `referenceUrl`, `startedAt` and `overdue`) to every row of its list and accepts
+`awaiting: true` to list only sessions with a declared wait, overdue ones included; reading one
+session returns its whole wait, Markdown details included. `control_session` adds
+`{"action":"clear_awaiting","awaitingId":"...","resolution":"..."}`, which ends the wait and
+sends the session nothing. `awaitingId` is required: pass the `id` that `read_sessions`
+returned, so a wait the session declared again since is refused with 409. Leave a wait inside
+its deadline alone: the session resumes on its own, and an overdue one is already back under the
+normal stuck-session rules.
+
+### Completing other sessions
+
+A resident with session control can finish another session the way **Complete** does from its
+card: `control_session` with `{"action":"complete","outcome":"..."}` records the target's task as
+done and closes the session. It takes the dialog's two confirmations, `satisfyDependents` and
+`confirmIncompleteScout`, only when set explicitly. See
+[Let a session steer other sessions](sessions.md#let-a-session-steer-other-sessions). Without
+session control the action is refused like every other `control_session` action.
+
 ## Lifecycle
 
 After each completed turn a resident waits for its next wake. Foreman never completes it
@@ -483,7 +536,13 @@ its cadence while they wait in the attention inbox, and Resume is not refused fo
 still waiting inside a call, a plan or diff review, and a permission dialog hold wakes exactly as
 above. An answer arrives as a message, which counts as human input and preserves pending pacing.
 The loop prompt asks the resident to check whether its earlier questions were answered before it
-asks again, and never to repeat a question that is still open.
+asks again, and never to repeat a question that is still open. In the Residents drawer, a resident
+with a filed question open is listed in the **Needs you** group with its question as an ask row,
+while its card keeps the working or idle colour it already wears; the row opens the question, whose
+card reads **Still working**. A resident you paused does not wake to act on its questions, so once
+it is not mid-turn they read **Stopped, waiting on this answer** everywhere they appear, its drawer
+card and the closed drawer's tab turn amber, the inbox lists it with the other stopped sessions,
+and **e** reaches it among them. Its questions still never hold it: Resume is not refused for them.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
@@ -632,7 +691,12 @@ preserves your model and cap until you change them; clearing a cap disables that
 future launches only. When Model is **harness default**, a capped profile cannot be saved until
 the harness settings load and its price availability is known. Pending or failed reads show
 guidance beside both fields; select an explicit priced model or clear the cap to proceed without
-that lookup, or reload to retry a failed read. GPT-6.1 Sol and Terra have verified Standard API pricing, including cached input,
+that lookup, or reload to retry a failed read. GPT-6.2 Sol and Astra support spend caps using
+verified Standard API rates, including cached input, 30-minute cache writes and long-context
+rates ([Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[Astra model reference](https://developers.openai.com/api/docs/models/gpt-6.2-astra)). These are
+Standard API-equivalent estimates, not subscription charges or Fast/Ultrafast billing.
+GPT-6.1 Sol and Terra also have verified Standard API pricing, including cached input,
 cache writes and long-context rates ([Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
 [Terra model reference](https://developers.openai.com/api/docs/models/gpt-6.1-terra)).
 Claude uses harness-reported costs, including for Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5;
@@ -715,11 +779,11 @@ resident's card does not offer the memory retro.
 **MCP servers** in the profile editor decides which MCP servers a resident starts with, besides
 Mission Control's own, which every resident always has.
 
-- **Server set** chooses between **Pinned at launch** (the default) and, on Claude Code, **All
-  native sources (not pinned)**; see [All native sources](#all-native-sources). Codex offers only
-  the pinned set, so the choice is not shown for it, and a profile on Codex that makes it is
-  refused on save and at launch.
-- **Inherit harness defaults** (on by default) adds every global server the harness configures
+- **Server set** defaults to [All native sources (not pinned)](#all-native-sources) for new
+  Claude Code and Codex profiles. Choose **Pinned at launch** to fix the server set across
+  starts and resumes. Saved profiles keep their source mode, including older revisions that
+  predate this choice and use the pinned set.
+- In pinned mode, **Inherit harness defaults** (on by default) adds every global server the harness configures
   when the resident launches: the user-scope `mcpServers` in Claude Code's `~/.claude.json` (or
   `$CLAUDE_CONFIG_DIR/.claude.json`), or the `mcp_servers` in Codex's own `config.toml`.
 - **Add an MCP server** adds one of those global servers, or a [custom server](#custom-mcp-servers)
@@ -736,20 +800,21 @@ Mission Control's server and any custom server the profile selects.
 
 - **Claude Code** loads user, local, project and plugin servers and claude.ai connectors.
 - **Codex** loads its normal Codex home, trusted workspace configuration, system and managed
-  configuration, and enabled plugins. Enable **Codex resident native MCP** in **Settings >
-  Feature flags** to expose the option. For a server signed into through Codex OAuth, such as
-  Glean, select **All native sources (not pinned)** under **MCP servers**, confirm, save and
-  launch. If the login has expired, sign in again through Codex, for example with
-  `codex mcp login glean` when the server is named `glean`.
+  configuration, and enabled plugins. Codex presents its saved OAuth login to servers such as
+  Vercel. For a previously pinned profile, select **All native sources (not pinned)** under
+  **MCP servers**, confirm, save and launch. If a login has expired, sign in again through Codex.
 
-Confirmation covers the change in access. Native configuration is read again at each start or
+Switching a pinned profile to native sources asks for confirmation. Native configuration is read again at each start or
 resume, and the resident can use the permissions of the harness's saved logins. Mission Control
 requires its own server and the selected custom servers. The harness handles native startup and
 sign-in according to its own configuration. Custom servers are snapshotted at launch, with their
 secret values handled by the [scoped launcher](#custom-mcp-servers).
-Changing harnesses on an all-native profile asks for confirmation for the destination harness.
-Cancel keeps the current harness. If the destination cannot use all native sources, switching
-selects **Pinned at launch**.
+
+On a fresh profile, selecting a harness applies that harness's default directly. Once you edit
+the MCP settings, save the profile, or duplicate one, changing its all-native harness asks for
+confirmation for the destination harness. Cancel keeps the current harness. If the destination
+cannot use all native sources, switching selects **Pinned at launch**. API edits that omit
+`mcp.nativeSources` keep the source mode of the revision being edited.
 
 With it chosen, **Inherit harness defaults** and the global servers in **Add an MCP server** are
 hidden because the harness loads its global servers itself. A global server already selected stays in the
@@ -860,6 +925,42 @@ keeps a server on the launcher.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
+
+### The work unit reference
+
+A resident run has no [work unit](work-units.md), so its launch carries no `WORK_UNIT_ID` and its
+MCP calls are never tagged with one. The pinned catalog still recognizes the reference the
+[config guide](work-units.md#mcp-servers-the-worker-calls) recommends, with the `work-unit-id`
+preview on or off, because an MCP config is usually shared and must not break a resident:
+
+- **Claude Code.** A header named `x-work-unit-id` (any case) whose whole value is
+  `${WORK_UNIT_ID}` or `${WORK_UNIT_ID:-...}` is dropped before expansion: not stored, not a
+  secret, not sent. Before this, it became an empty header on every call.
+- **Codex.** `env_http_headers` whose only entry maps `x-work-unit-id` to `WORK_UNIT_ID` is
+  accepted and dropped. Before this, the server was unusable ("it uses env_http_headers, which
+  residents cannot carry") and a launch that included it was refused. Any other
+  `env_http_headers` entry is still refused, as before.
+- **A literal value is not the reference.** An `x-work-unit-id` with a non-empty value an
+  operator wrote is kept and sent like any configured header.
+- **Runs launched earlier.** A run's private copy is not rewritten, but an empty
+  `x-work-unit-id` is left out whenever a start or resume redeems the server, so such a run stops
+  sending it from its next start. A non-empty stored value is sent as stored until the resident
+  is launched again. No Codex run holds the refused state: that launch never started, and
+  launching the profile again succeeds.
+
+**Sign-in.** The decision whether Claude Code may sign in to a server itself is made on the
+headers that remain once the reference is dropped. A server whose only header was the reference
+is headerless again, so it is handed to the harness exactly as it was before the reference was
+added, which by Claude Code's program text is the entry its stored sign-in is keyed by. A server
+with another header stays on the launcher, which presents no sign-in, as before. A run launched
+before this change keeps its pinned route until the resident is launched again. Whether a pinned
+resident keeps a server's sign-in once the reference is added is **not verified**: the check
+against a local OAuth fixture could not run on the machine it was attempted on (see
+[What the OAuth check found](work-units.md#what-the-oauth-check-found)). So until it is verified,
+leave the reference off a server a pinned resident signs in to with OAuth.
+
+A resident on [all native sources](#all-native-sources) reads the operator's config with the
+variable unset, like any session outside a work unit.
 
 ### Custom MCP servers
 

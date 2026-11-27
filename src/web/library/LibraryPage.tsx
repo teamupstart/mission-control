@@ -1,3 +1,4 @@
+import { useWorkflowCommandSlots } from "../workflows/useWorkflowCommandSlots.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
@@ -239,7 +240,7 @@ export function LibraryPage({
   const actions = actionCards(sessionActions);
   const strategies = ensembleStrategyCards();
   const missions = missionCards(schedules);
-  const commands = commandCards(workflowCommands, hasSnapshot);
+  const commands = commandCards(workflowCommands, hasSnapshot, useWorkflowCommandSlots());
   const tourRef = useTourTargetRef<HTMLElement>("library:library-page");
 
   return (

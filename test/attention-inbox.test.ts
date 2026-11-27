@@ -25,8 +25,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
-import { foldAttention, ensembleRunContext } from "../src/web/lib/attention.ts";
+import { attentionDismissalKeys, foldAttention, foldWhileDismissalsUnknown, ensembleRunContext, INBOX_SECTION_ORDER } from "../src/web/lib/attention.ts";
+import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
+import type { Stall } from "../src/shared/stall.ts";
 import { OVERLAY_IDS } from "../src/web/components/Overlay.tsx";
+import { mkReport, mkReportControls, reportCardProps } from "./helpers/report-fixture.ts";
 import {
   mkEnsembleLink,
   mkEnsembleSummary,
@@ -44,6 +47,19 @@ function review(over: Partial<ReviewItem> & { id: string; sessionId: string }): 
     response: null,
     createdAt: 1000,
     resolvedAt: null,
+    ...over,
+  };
+}
+
+/** A stall as the daemon serves it: an idle session with an open task, by default. */
+function stall(sessionId: string, over: Partial<Stall> = {}): Stall {
+  return {
+    sessionId,
+    kind: "unfinished-work",
+    forMs: 21 * 60_000,
+    reason: "idle 21m with work unfinished",
+    facts: { kind: "unfinished-work", task: { id: "t-1", title: "Fix it" }, queueOpen: 0 },
+    fingerprint: '{"kind":"unfinished-work","task":{"id":"t-1","title":"Fix it"},"queueOpen":0}',
     ...over,
   };
 }
@@ -375,7 +391,12 @@ test("the inbox is a registered overlay and draws the shared review card", () =>
   // The session's note has to ride along with the review. Without it this copy of the shared
   // card is the one surface where Foreman's recommendation silently never appears - the
   // control simply would not render, which looks like the note was never written.
-  assert.match(inbox, /<ReviewCard[^/]*note=\{item\.session\.note\}/);
+  assert.match(inbox, /<ReviewCard[^/]*note=\{session\.note\}/);
+  // So do the checkout listing and the way to open a file. Without them a question opened from
+  // the inbox printed its paths as plain text while the same question in the session's own
+  // review modal linked them.
+  assert.match(inbox, /<ReviewCard[^/]*checkoutPaths=\{checkoutPaths\}\s+onOpenPath=\{openPath\}/);
+  assert.match(inbox, /useWorkspacePaths\(files, session\.id, Boolean\(session\.cwd && onOpenPath\)\)/);
   // And the progress rendering is Phase 3's one leaf, not a second row of squares.
   assert.match(inbox, /<EnsembleProgressDots summary=\{item\.summary\} \/>/);
 });
@@ -390,7 +411,9 @@ test("the inbox renders every item kind the fold can produce", () => {
     "session_dialog",
     "pipeline_halt",
     "session_blocked",
+    "session_stuck",
     "parked_finalization",
+    "agent_reports",
   ]) {
     assert.match(inbox, new RegExp(`case "${kind}":`), `${kind} has no arm in the inbox`);
   }
@@ -441,7 +464,510 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
     "inbox-line",
     "inbox-error",
     "inbox-empty",
+    "inbox-reports",
+    "agent-report-card",
+    "agent-report-head",
+    "agent-report-toggle",
+    "agent-report-meta",
+    "agent-report-body",
+    "agent-report-link",
+    "agent-report-actions",
+    // The Stuck card's own classes (`StuckCard.tsx`).
+    "inbox-stuck",
+    "inbox-stuck-reason",
+    "inbox-actions",
+    "inbox-message",
+    "inbox-message-input",
   ]) {
     assert.ok(css.includes(`.${cls}`), `${cls} has no rule in styles.css`);
   }
+});
+
+test("the fold emits its sections in INBOX_SECTION_ORDER, whatever order they are derived in", () => {
+  // R24: Decisions, Questions from agents, Parked on a menu, Pipeline lifecycle, Pipeline halts,
+  // Waiting on you, Stuck, Stuck finalizations, Reports.
+  assert.deepEqual([...INBOX_SECTION_ORDER], [
+    "ensemble_decision",
+    "session_reviews",
+    "session_control_request",
+    "session_dialog",
+    "pipeline_commission",
+    "pipeline_halt",
+    "session_blocked",
+    "session_stuck",
+    "parked_finalization",
+    "agent_reports",
+  ]);
+  const commission: PipelineCommission = {
+    id: "commission-1", taskId: "pipeline-task", provider: "ai-conductor", repoRoot: "/repo",
+    correlationId: "commission-1", lifecycle: "authoring", attempts: [], activeAttempt: 1, steps: [],
+    currentStep: null, tier: null, track: null, project: null, authoringWorktree: null,
+    authoringBranch: null, planSlug: null, handoff: null, linkedRun: null, blocker: null, error: null,
+    createdAt: 1, updatedAt: 1, readinessRequired: true,
+    readiness: {
+      status: "blocked", code: "authentication_required", summary: "GitHub authentication is required",
+      checkedCapabilities: ["gh"], retryable: true, remedy: "Authenticate GitHub", diagnostic: null,
+      fingerprint: "blocked", permitted: false, checkedAt: "2026-09-04T12:00:00.000Z",
+    },
+  };
+  const halted: PipelineRun = {
+    provider: "ai-conductor", repoRoot: "/repo", slug: "fix-the-thing", worktree: "/repo/.worktrees/fix",
+    tier: "L", track: "technical", steps: [], lastStep: null,
+    halt: { class: "needs-human", reason: "the build review found two blocking defects" },
+    group: "halted", prUrl: null, costTokens: null, updatedAt: 5,
+  };
+  const result = foldAttention({
+    sessionControlRequestsEnabled: true,
+    sessions: [
+      mkSession({ id: "s-control", sessionControlRequest: { id: "control", reason: "Help another session", requestedAt: 1 } }),
+      mkSession({ id: "s-ask", name: "Asking" }),
+      mkSession({
+        id: "s-menu", name: "Menu",
+        paneDialog: { options: [], highlighted: 0, prompt: "Allow?" } as Session["paneDialog"],
+      }),
+      mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" }),
+      mkSession({ id: "s-pipe", name: "Pipe", task: mkTaskSummary({ id: "pipeline-task", kind: "pipeline" }) }),
+      mkSession({ id: "s-quiet", name: "Quiet", state: "idle" }),
+    ],
+    reviews: [review({ id: "r-1", sessionId: "s-ask" })],
+    stalls: [stall("s-quiet")],
+    ensembles: [
+      mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" }),
+      mkEnsembleSummary({ id: "run-decide", status: "awaiting_decision" }),
+    ],
+    pipelineCommissions: [commission],
+    pipelineRuns: [halted],
+    reports: [mkReport({ id: "r-1" })],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), [...INBOX_SECTION_ORDER]);
+});
+
+// ---- Stuck rows (`inbox` flag) ----
+
+test("a stall becomes one Stuck row, counted once, directly between Waiting on you and Stuck finalizations", () => {
+  const order = [...INBOX_SECTION_ORDER] as string[];
+  // Placed by its neighbours, which is how the plan fixes it.
+  assert.equal(order.indexOf("session_stuck"), order.indexOf("session_blocked") + 1);
+  assert.equal(order.indexOf("parked_finalization"), order.indexOf("session_stuck") + 1);
+  const result = foldAttention({
+    sessions: [
+      mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" }),
+      mkSession({ id: "s-quiet", name: "Quiet", state: "idle" }),
+    ],
+    reviews: [],
+    ensembles: [mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" })],
+    stalls: [stall("s-quiet")],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["blocked:s-amber", "stuck:s-quiet", "finalization:run-stuck"]);
+  assert.equal(result.total, 3);
+});
+
+test("without stalls, as with the flag off, the fold draws no Stuck rows", () => {
+  const sessions = [mkSession({ id: "s-quiet", state: "idle" })];
+  assert.deepEqual(foldAttention({ sessions, reviews: [], ensembles: [] }).items, []);
+  assert.deepEqual(foldAttention({ sessions, reviews: [], ensembles: [], stalls: [] }).items, []);
+});
+
+test("a stuck session that is also amber is drawn under Stuck and not again under Waiting on you", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s-1", state: "awaiting_input" })],
+    reviews: [],
+    ensembles: [],
+    stalls: [stall("s-1", { kind: "escalated", reason: "escalated to you 6m ago, still unanswered", facts: { kind: "escalated", text: "Approve?" }, fingerprint: "e" })],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["session_stuck"]);
+  assert.equal(result.total, 1);
+});
+
+test("a session with questions keeps its question row beside its Stuck row", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s-1", state: "idle" })],
+    reviews: [review({ id: "r-1", sessionId: "s-1" })],
+    ensembles: [],
+    stalls: [stall("s-1")],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["session_reviews", "session_stuck"]);
+  assert.equal(result.total, 2);
+});
+
+test("a stall for a session that is gone or leaving draws no row", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s-exit", state: "exited" })],
+    reviews: [],
+    ensembles: [],
+    stalls: [stall("s-exit"), stall("s-missing")],
+  });
+  assert.deepEqual(result.items, []);
+});
+
+test("a dismissed Stuck row stays dismissed while minutes pass and returns when its facts change", () => {
+  const sessions = [mkSession({ id: "s-1", state: "idle" })];
+  const first = foldAttention({ sessions, reviews: [], ensembles: [], stalls: [stall("s-1")] });
+  const keys = attentionDismissalKeys(first.items[0]!);
+  assert.equal(keys.length, 1);
+  assert.equal(keys[0]!.itemId, "stuck:s-1");
+  const dismissed = new Map(keys.map((key) => [key.itemId, key.occurrence]));
+  const later = stall("s-1", { forMs: 55 * 60_000, reason: "idle 55m with work unfinished" });
+  const held = foldAttention({ sessions, reviews: [], ensembles: [], stalls: [later], dismissed });
+  assert.deepEqual(held.items, []);
+  assert.equal(held.total, 0);
+  // Dismissed while the session is not amber, nothing else draws it either.
+  // Dismissed and then amber (a permission prompt after a dismissed escalation, say): the stall
+  // no longer claims it, so the backstop draws it under Waiting on you and to answer counts it.
+  const amber = [mkSession({ id: "s-1", state: "awaiting_input" })];
+  const amberFold = foldAttention({ sessions: amber, reviews: [], ensembles: [], stalls: [later], dismissed });
+  assert.deepEqual(amberFold.items.map((item) => item.id), ["blocked:s-1"]);
+  assert.equal(amberFold.total, 1);
+  const changed = stall("s-1", { facts: { kind: "unfinished-work", task: { id: "t-2", title: "Other" }, queueOpen: 0 }, fingerprint: "other" });
+  assert.deepEqual(
+    foldAttention({ sessions, reviews: [], ensembles: [], stalls: [changed], dismissed }).items.map((item) => item.id),
+    ["stuck:s-1"],
+  );
+});
+
+test("Stuck rows lead with the longest stuck", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "a", state: "idle" }), mkSession({ id: "b", state: "idle" })],
+    reviews: [],
+    ensembles: [],
+    stalls: [stall("a", { forMs: 21 * 60_000 }), stall("b", { forMs: 40 * 60_000 })],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["stuck:b", "stuck:a"]);
+});
+
+// ---- agent reports (`inbox` flag) ----
+
+test("reports fold into one row per author, authors ordered by their oldest report", () => {
+  const steve = { key: "resident:steve", name: "Steve", residentProfileId: "steve" };
+  const carol = { key: "session:s-carol", name: "Carol", residentProfileId: null };
+  const result = foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    reports: [
+      mkReport({ id: "r-3", author: steve, createdAt: 30 }),
+      mkReport({ id: "r-1", author: carol, createdAt: 10 }),
+      mkReport({ id: "r-2", author: steve, createdAt: 20 }),
+    ],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["agent-reports:session:s-carol", "agent-reports:resident:steve"]);
+  const steveRow = result.items[1]!;
+  assert.equal(steveRow.kind, "agent_reports");
+  if (steveRow.kind === "agent_reports") {
+    assert.deepEqual(steveRow.reports.map((r) => r.id), ["r-2", "r-3"]);
+    assert.equal(steveRow.authorName, "Steve");
+  }
+  assert.equal(result.toRead, 3);
+  assert.equal(result.total, 0, "a report is never something to answer");
+});
+
+test("a replacing report keeps its chain's place in the queue, and read or replaced reports are left out", () => {
+  const author = { key: "session:s1", name: "Fix the parser", residentProfileId: null };
+  const other = { key: "session:s2", name: "Other", residentProfileId: null };
+  const result = foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    reports: [
+      mkReport({ id: "r-1", author, createdAt: 10, supersededBy: "r-4" }),
+      mkReport({ id: "r-2", author: other, createdAt: 20 }),
+      mkReport({ id: "r-3", author: other, createdAt: 25, readAt: 26, readBy: "mark-read" }),
+      // r-4 replaced r-1: posted last, but it keeps r-1's place ahead of r-2.
+      mkReport({ id: "r-4", author, createdAt: 40, rootId: "r-1", rootCreatedAt: 10, version: 2 }),
+    ],
+  });
+  assert.deepEqual(result.items.map((item) => item.id), ["agent-reports:session:s1", "agent-reports:session:s2"]);
+  assert.equal(result.toRead, 2);
+  const first = result.items[0]!;
+  if (first.kind === "agent_reports") assert.deepEqual(first.reports.map((r) => r.id), ["r-4"]);
+});
+
+test("opening a report changes neither to read nor to answer", () => {
+  const unopened = foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })] });
+  const opened = foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1", openedAt: 5 })] });
+  assert.deepEqual([opened.toRead, opened.total], [unopened.toRead, unopened.total]);
+  assert.equal(opened.toRead, 1);
+});
+
+test("a report claims no session: an amber session with a report is still Waiting on you", () => {
+  const result = foldAttention({
+    sessions: [mkSession({ id: "s1", name: "Amber", state: "awaiting_input" })],
+    reviews: [],
+    ensembles: [],
+    reports: [mkReport({ id: "r-1", sessionId: "s1" })],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["session_blocked", "agent_reports"]);
+  assert.equal(result.total, 1);
+  assert.equal(result.toRead, 1);
+});
+
+test("agent_reports is the final fold kind, directly after parked_finalization", () => {
+  const order: readonly string[] = INBOX_SECTION_ORDER;
+  assert.equal(order.at(-1), "agent_reports");
+  assert.equal(order[order.indexOf("agent_reports") - 1], "parked_finalization");
+  // Whether or not a later phase's `session_stuck` is present, nothing follows Reports in the
+  // fold, so the inbox's own Snoozed heading is always the next one.
+  assert.ok(!order.slice(order.indexOf("agent_reports") + 1).length);
+});
+
+test("a dismissal of an unrelated row leaves the Reports row and the to read figure in place", () => {
+  const amber = mkSession({ id: "s-amber", name: "Amber", state: "awaiting_input" });
+  const withoutDismissal = foldAttention({ sessions: [amber], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })] });
+  const blocked = withoutDismissal.items.find((item) => item.kind === "session_blocked")!;
+  const dismissed = new Map(attentionDismissalKeys(blocked).map((key) => [key.itemId, key.occurrence]));
+  assert.ok(dismissed.size > 0, "precondition: a real, non-empty dismissal");
+  const result = foldAttention({ sessions: [amber], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })], dismissed });
+  assert.deepEqual(result.items.map((item) => item.kind), ["agent_reports"], "the dismissed row left, the report stayed");
+  assert.equal(result.toRead, 1);
+  assert.equal(result.total, 0);
+  // Even a dismissal recorded under the report row's own id does not hide it: Mark read is how it leaves.
+  const ownId = foldAttention({
+    sessions: [], reviews: [], ensembles: [], reports: [mkReport({ id: "r-1" })],
+    dismissed: new Map([["agent-reports:session:s1", ""]]),
+  });
+  assert.equal(ownId.toRead, 1);
+});
+
+test("a pending control request leaves the inbox and answer count when granted, stopping, or exited", () => {
+  const asker = mkSession({
+    state: "idle",
+    sessionControlEnabled: false,
+    sessionControlRequest: { id: "request", requestedAt: 1, reason: "Help another session" },
+  });
+  const fold = (session: Session) =>
+    foldAttention({ sessions: [session], reviews: [], ensembles: [], sessionControlRequestsEnabled: true });
+
+  const pending = fold(asker);
+  assert.deepEqual(pending.items.map((item) => item.kind), ["session_control_request"]);
+  assert.equal(pending.total, 1);
+
+  // Keep the same pending request on every snapshot so each suppression condition stands alone.
+  for (const session of [
+    { ...asker, sessionControlEnabled: true },
+    { ...asker, state: "stopping" },
+    { ...asker, state: "exited" },
+  ] as const) {
+    const result = fold(session);
+    assert.deepEqual(result.items, [], `rows for ${session.state} with control=${session.sessionControlEnabled}`);
+    assert.equal(result.total, 0, `answers for ${session.state} with control=${session.sessionControlEnabled}`);
+  }
+});
+
+test("while dismissals are unknown, control requests and unread reports remain actionable", () => {
+  const asker = mkSession({ id: "asker", state: "awaiting_input",
+    sessionControlRequest: { id: "request", requestedAt: 1, reason: "Help another session" } });
+  const held = foldWhileDismissalsUnknown(
+    [mkReport({ id: "r-1" }), mkReport({ id: "r-2", readAt: 3, readBy: "mark-read" })],
+    [asker, mkSession({ id: "other", state: "awaiting_input" })],
+  );
+  assert.deepEqual(held.items.map((item) => item.kind), ["session_control_request", "agent_reports"]);
+  assert.equal(held.toRead, 1);
+  assert.equal(held.total, 1);
+  // With the flag off the caller passes no reports, and the held fold is empty, as it always was.
+  assert.deepEqual(foldWhileDismissalsUnknown(undefined), { items: [], total: 0, toRead: 0 });
+});
+
+test("a held inbox says its answers are held rather than that there is nothing to answer", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const draw = (held: boolean) => renderToStaticMarkup(withOverlayHost(createElement(AttentionInbox, {
+    fold: foldWhileDismissalsUnknown([mkReport({ id: "r-1" })]),
+    onClose: () => {},
+    onDismiss: async () => null,
+    onOpenEnsemble: () => {},
+    onOpenSession: () => {},
+    reports: mkReportControls().controls,
+    held,
+  })));
+  const heldHtml = draw(true);
+  assert.match(heldHtml, /<strong>Answers held<\/strong>/);
+  assert.match(heldHtml, /once your inbox dismissals can be read/);
+  assert.doesNotMatch(heldHtml, /Nothing to answer/);
+  assert.match(heldHtml, /<h4 class="inbox-section">Reports<\/h4>/);
+  assert.match(draw(false), /<strong>Nothing to answer<\/strong>/);
+});
+
+test("with no reports passed the fold is the one every older caller gets", () => {
+  const result = foldAttention({ sessions: [], reviews: [], ensembles: [] });
+  assert.deepEqual(result, { items: [], total: 0, toRead: 0 });
+});
+
+test("the inbox draws Stuck finalizations, then Reports, then Snoozed", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const snoozedSession = mkSession({ id: "s-snooze", name: "Snoozer" });
+  const result = foldAttention({
+    sessions: [snoozedSession],
+    reviews: [],
+    ensembles: [mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" })],
+    reports: [mkReport({
+      id: "r-7", title: "Build failure diagnosed", version: 2, rootId: "r-6",
+      author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" },
+    })],
+  });
+  const draw = (openReportId: string | null) => renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold: result,
+        snoozed: [{ review: review({ id: "q-snoozed", sessionId: "s-snooze" }), session: snoozedSession }],
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: mkReportControls(openReportId).controls,
+      }))),
+  );
+  const html = draw(null);
+  const headings = [...html.matchAll(/<h4 class="inbox-section">([^<]+)<\/h4>/g)].map((m) => m[1]);
+  assert.deepEqual(headings, ["Stuck finalizations", "Reports", "Snoozed"]);
+  // Collapsed: the title is the toggle, with the author, and the chain's note; no body, no Mark read.
+  assert.match(html, /aria-expanded="false"[^>]*data-inbox-action="toggle"[^>]*>Build failure diagnosed<\/button>/);
+  assert.match(html, /updated 1 time</);
+  assert.doesNotMatch(html, /data-inbox-action="mark-read"/);
+  // A report row has no Dismiss: Mark read is how it leaves.
+  assert.match(html, /aria-label="Reports from Steve"/);
+  assert.doesNotMatch(html, /Dismiss Steve from the inbox/);
+  assert.match(html, /1 to read/);
+  // The open card is the one the dashboard's `openReportId` names, and only that one has Mark read.
+  const open = draw("r-7");
+  assert.match(open, /aria-expanded="true"[^>]*data-inbox-action="toggle"[^>]*>Build failure diagnosed<\/button>/);
+  assert.match(open, /data-inbox-action="mark-read"[^>]*>Mark read<\/button>/);
+});
+
+test("a report opened from a notification that no section lists is drawn alone above the sections", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const read = mkReport({ id: "r-9", title: "Old news", body: "Already **read**.", readAt: 5, readBy: "mark-read" });
+  const fold = foldAttention({ sessions: [], reviews: [], ensembles: [mkEnsembleSummary({ id: "run-stuck", status: "finalizing", error: "ref vanished" })] });
+  const draw = (pinned: Parameters<typeof AttentionInbox>[0]["pinned"], inbox = true) => renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold,
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: mkReportControls("r-9").controls,
+        pinned,
+      }))),
+  );
+  const html = draw({ status: "ready", report: read });
+  const headings = [...html.matchAll(/<h4 class="inbox-section">([^<]+)<\/h4>/g)].map((m) => m[1]);
+  // Above every section, and outside the fold: no Reports heading, no to read figure.
+  assert.deepEqual(headings, ["Opened from a notification", "Stuck finalizations"]);
+  assert.match(html, /aria-label="Opened from a notification"/);
+  assert.match(html, /<strong>read<\/strong>/);
+  assert.doesNotMatch(html, /to read/);
+  // A read report has nothing left to mark.
+  assert.doesNotMatch(html, /data-inbox-action="mark-read"/);
+  assert.match(draw({ status: "failed" }), /role="alert">This report could not be loaded\.</);
+  assert.doesNotMatch(draw({ status: "ready", report: read }, false), /Opened from a notification/);
+});
+
+test("an open report shows its body, its link and Mark read", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { ReportCard } = await import("../src/web/components/ReportCard.tsx");
+  const html = renderToStaticMarkup(createElement(ReportCard, {
+    report: mkReport({ id: "r-1", body: "The **cache** was stale.", url: "https://github.com/o/r/pull/1",
+      document: { name: "report.html", kind: "html" } }),
+    open: true,
+    ...reportCardProps(),
+    now: 1,
+  }));
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /<strong>cache<\/strong>/);
+  assert.match(html, /href="https:\/\/github.com\/o\/r\/pull\/1"/);
+  assert.match(html, /Attached: report.html/);
+  assert.match(html, /data-inbox-action="mark-read"[^>]*>Mark read<\/button>/);
+  assert.doesNotMatch(html, /updated \d+ time/, "a first report replaced nothing");
+});
+
+// ---- report noise controls (Phase 7): mutes and Mark all read ----
+
+test("a muted author's reports leave the Reports section and to read, unread, and come back when unmuted", () => {
+  const loud = { key: "session:s-loud", name: "Loud", residentProfileId: null };
+  const reports = [mkReport({ id: "r-1", author: loud }), mkReport({ id: "r-2", author: loud }), mkReport({ id: "r-3" })];
+  const muted = foldAttention({ sessions: [], reviews: [], ensembles: [], reports, mutedAuthors: new Set([loud.key]) });
+  assert.deepEqual(muted.items.map((item) => item.id), ["agent-reports:session:s1"]);
+  assert.equal(muted.toRead, 1);
+  assert.equal(muted.total, 0);
+  assert.ok(reports.every((report) => report.readAt === null), "hidden, not read");
+  const unmuted = foldAttention({ sessions: [], reviews: [], ensembles: [], reports, mutedAuthors: new Set() });
+  assert.equal(unmuted.toRead, 3);
+  // The held fold applies the same mute.
+  assert.equal(foldWhileDismissalsUnknown(reports, [], new Set([loud.key])).toRead, 1);
+  assert.equal(foldWhileDismissalsUnknown(reports).toRead, 3);
+});
+
+async function drawInbox(
+  fold: ReturnType<typeof foldAttention>,
+  controls: ReturnType<typeof mkReportControls>["controls"],
+  pinned: import("../src/web/components/AttentionInbox.tsx").PinnedReport | null = null,
+): Promise<string> {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  return renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold,
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: controls,
+        pinned,
+      }))),
+  );
+}
+
+test("the Reports heading carries Mark all read, click-only, once however many authors are listed", async () => {
+  const reports = [
+    mkReport({ id: "r-1", author: { key: "session:a", name: "Ada", residentProfileId: null } }),
+    mkReport({ id: "r-2", author: { key: "session:b", name: "Bea", residentProfileId: null } }),
+  ];
+  const html = await drawInbox(foldAttention({ sessions: [], reviews: [], ensembles: [], reports }), mkReportControls().controls);
+  assert.equal((html.match(/data-inbox-action="mark-all-read"/g) ?? []).length, 1);
+  assert.match(html, /<div class="inbox-section-head"><h4 class="inbox-section">Reports<\/h4>(?:<span[^>]*>)?<button[^>]*data-inbox-action="mark-all-read"[^>]*>Mark all read<\/button>/);
+  assert.match(html, /Mark the 2 listed reports read/);
+  // No Reports section, no Mark all read.
+  const none = await drawInbox(foldAttention({ sessions: [], reviews: [], ensembles: [] }), mkReportControls().controls);
+  assert.doesNotMatch(none, /mark-all-read/);
+});
+
+test("a listed report offers Mute; a muted author's report opened from its notification says it is muted instead", async () => {
+  const loud = { key: "session:s-loud", name: "Loud", residentProfileId: null };
+  const report = mkReport({ id: "r-1", author: loud, title: "Too many words" });
+  // Listed and open: Mute, named for the author.
+  const listed = await drawInbox(
+    foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [report] }),
+    mkReportControls("r-1").controls,
+  );
+  assert.match(listed, /data-inbox-action="mute"[^>]*>Mute Loud&#x27;s reports<\/button>/);
+  assert.doesNotMatch(listed, /reports are muted/);
+  // Muted since the notification arrived: no Reports row for it, no to read figure, the card on its
+  // own in the band, readable, with no Mute and a line saying where Unmute is.
+  const muted = new Set([loud.key]);
+  const fold = foldAttention({ sessions: [], reviews: [], ensembles: [], reports: [report], mutedAuthors: muted });
+  const band = await drawInbox(fold, mkReportControls("r-1", undefined, muted).controls, { status: "ready", report });
+  const headings = [...band.matchAll(/<h4 class="inbox-section">([^<]+)<\/h4>/g)].map((m) => m[1]);
+  assert.deepEqual(headings, ["Opened from a notification"]);
+  assert.doesNotMatch(band, /Reports from Loud/);
+  assert.doesNotMatch(band, /\d+ to read/, "no to read figure");
+  assert.match(band, /What I found\./, "its body is readable");
+  assert.doesNotMatch(band, /data-inbox-action="mute"/);
+  assert.match(band, /Loud&#x27;s reports are muted, so they raise no notification and are not listed in the\s+inbox\. Unmute in Settings &gt; Reports\./);
+  // Still unread, so Mark read is still there.
+  assert.match(band, /data-inbox-action="mark-read"/);
 });

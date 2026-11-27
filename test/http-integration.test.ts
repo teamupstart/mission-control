@@ -461,6 +461,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
   // only the route can enforce it - hence the wiring check here.
   registry.upsertTask({
     id: "stale-xyzzy",
+    workUnitId: null,
     title: "T",
     intent: "done, awaiting reclaim",
     kind: "ship",
@@ -2050,7 +2051,7 @@ test("a /clear orphans the queue, and re-attaching it is offered where it can su
 
   // The session identifies itself as agent session "before-clear" and gets a queue.
   await hook("before-clear");
-  const item = await addItem("resume me");
+  await addItem("resume me");
   const stranded = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
   assert.equal(((await stranded.json()) as { noteKey: string }).noteKey, "before-clear");
 

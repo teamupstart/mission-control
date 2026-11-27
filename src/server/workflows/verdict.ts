@@ -1,34 +1,41 @@
 import { workflowFindingReason } from "@shared/workflow-reasons.ts";
 import { z } from "zod";
-import { PersonaVerdictSchema } from "@shared/protocol.ts";
+import { PersonaVerdictSchema, RepositoryEvidenceReferenceSchema } from "@shared/protocol.ts";
 import { LLM_REPLY_COLLECTION_MAX } from "@shared/llm.ts";
 import {
-  EVIDENCE_REF_KINDS,
+  CONTEXT_EVIDENCE_REF_KINDS,
   PERSONA_FINDING_BASES,
   WORKFLOW_EXECUTION_LIMITS,
   type EvidenceRef,
   type PersonaVerdict,
   type RequestedChange,
 } from "@shared/workflow.ts";
-import { parseModelJson } from "../llm/structured.ts";
+import { nullAsAbsent } from "../llm/json-schema.ts";
+import { ModelReplyMiss, describeReplyIssues, parseModelReply } from "../llm/structured.ts";
 
 // The model-facing shape is intentionally looser only where normalization is safe.
 // Structural errors stay parse failures so infrastructure trouble can never turn into a
 // Persona fail verdict.
+//
+// Every optional field reads `null` as absent: models routinely send `"path": null` on
+// `decision` and `transcript` evidence, and rejecting the whole verdict over it threw away
+// valid reviews. The normalized verdict is unchanged, since null and omission both leave the
+// key out.
 const EvidenceInputSchema = z.object({
-  kind: z.enum(EVIDENCE_REF_KINDS),
+  kind: z.enum(CONTEXT_EVIDENCE_REF_KINDS),
   quote: z.string(),
-  path: z.string().optional(),
-  line: z.number().finite().optional(),
+  path: nullAsAbsent(z.string().optional()),
+  line: nullAsAbsent(z.number().finite().optional()),
 });
+const repositoryEvidence = z.union([EvidenceInputSchema, RepositoryEvidenceReferenceSchema]);
 const RequestedChangeInputSchema = z.object({
   category: z.unknown().optional(),
-  basis: z.enum(PERSONA_FINDING_BASES).optional(),
+  basis: nullAsAbsent(z.enum(PERSONA_FINDING_BASES).optional()),
   title: z.string(),
   rationale: z.string(),
   evidence: z.array(EvidenceInputSchema).min(1).max(LLM_REPLY_COLLECTION_MAX),
-  path: z.string().optional(),
-  line: z.number().finite().optional(),
+  path: nullAsAbsent(z.string().optional()),
+  line: nullAsAbsent(z.number().finite().optional()),
 });
 const PersonaVerdictInputSchema = z.discriminatedUnion("verdict", [
   z.object({
@@ -48,6 +55,19 @@ const PersonaVerdictInputSchema = z.discriminatedUnion("verdict", [
   }),
 ]);
 
+const RepositoryVerdictInputSchema = z.discriminatedUnion("verdict", [
+  PersonaVerdictInputSchema.options[0].extend({
+    approvalDetails: PersonaVerdictInputSchema.options[0].shape.approvalDetails.extend({
+      evidence: z.array(repositoryEvidence).max(LLM_REPLY_COLLECTION_MAX),
+    }),
+  }),
+  PersonaVerdictInputSchema.options[1].extend({
+    requestedChanges: z.array(RequestedChangeInputSchema.extend({
+      evidence: z.array(repositoryEvidence).min(1).max(LLM_REPLY_COLLECTION_MAX),
+    })).min(1).max(LLM_REPLY_COLLECTION_MAX),
+  }),
+]);
+
 function clipped(value: string, max: number): string {
   const trimmed = value.trim();
   if (trimmed.length <= max) return trimmed;
@@ -59,7 +79,8 @@ function line(value: number | undefined): number | undefined {
   return Math.max(1, Math.min(WORKFLOW_EXECUTION_LIMITS.verdictLine, Math.trunc(value)));
 }
 
-function evidenceRef(value: z.infer<typeof EvidenceInputSchema>): EvidenceRef {
+function evidenceRef(value: z.infer<typeof repositoryEvidence>): EvidenceRef {
+  if (value.kind === "repository") return value;
   return {
     kind: value.kind,
     quote: clipped(value.quote, WORKFLOW_EXECUTION_LIMITS.verdictReason),
@@ -70,7 +91,7 @@ function evidenceRef(value: z.infer<typeof EvidenceInputSchema>): EvidenceRef {
   };
 }
 
-function requestedChange(value: z.infer<typeof RequestedChangeInputSchema>): RequestedChange {
+function requestedChange(value: z.infer<typeof RepositoryVerdictInputSchema.options[1]>["requestedChanges"][number]): RequestedChange {
   return {
     ...(value.basis ? { basis: value.basis } : {}),
     ...(value.category === undefined ? {} : { category: workflowFindingReason(value.category) }),
@@ -93,8 +114,25 @@ export function normalizePersonaVerdict(
   currentArtifactIds: ReadonlySet<string> = new Set(),
   currentCheckAttemptIds: ReadonlySet<string> = new Set(),
 ): PersonaVerdict | null {
-  const parsed = PersonaVerdictInputSchema.safeParse(value);
-  if (!parsed.success) return null;
+  const verdict = normalizeVerdictReply(value, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+  return verdict instanceof ModelReplyMiss ? null : verdict;
+}
+
+function unknownEvidence(kind: string, label: string): ModelReplyMiss {
+  return new ModelReplyMiss("schema", [
+    `evidence: a ${kind} reference must set path to a ${label} listed in this review's evidence`,
+  ]);
+}
+
+function normalizeVerdictReply(
+  value: unknown,
+  currentImageIds: ReadonlySet<string>,
+  currentArtifactIds: ReadonlySet<string>,
+  currentCheckAttemptIds: ReadonlySet<string>,
+  repository = false,
+): PersonaVerdict | ModelReplyMiss {
+  const parsed = (repository ? RepositoryVerdictInputSchema : PersonaVerdictInputSchema).safeParse(value);
+  if (!parsed.success) return new ModelReplyMiss("schema", describeReplyIssues(parsed.error.issues));
   const confidence = Math.max(0, Math.min(1, parsed.data.confidence));
   const normalized: PersonaVerdict = parsed.data.verdict === "pass"
     ? {
@@ -117,19 +155,19 @@ export function normalizePersonaVerdict(
         confidence,
       };
   const strict = PersonaVerdictSchema.safeParse(normalized);
-  if (!strict.success) return null;
+  if (!strict.success) return new ModelReplyMiss("schema", describeReplyIssues(strict.error.issues));
   const refs = strict.data.verdict === "pass"
     ? strict.data.approvalDetails.evidence
     : strict.data.requestedChanges.flatMap((change) => change.evidence);
   if (refs.some((ref) => ref.kind === "image" && (!ref.path || !currentImageIds.has(ref.path)))) {
-    return null;
+    return unknownEvidence("image", "stable image id");
   }
   if (refs.some((ref) => ref.kind === "artifact" && (!ref.path || !currentArtifactIds.has(ref.path)))) {
-    return null;
+    return unknownEvidence("artifact", "stable artifact id");
   }
   if (refs.some((ref) =>
     ref.kind === "check" && (!ref.path || !currentCheckAttemptIds.has(ref.path)))) {
-    return null;
+    return unknownEvidence("check", "Check attemptId");
   }
   return strict.data;
 }
@@ -141,10 +179,22 @@ export function parsePersonaVerdict(
   currentArtifactIds: ReadonlySet<string> = new Set(),
   currentCheckAttemptIds: ReadonlySet<string> = new Set(),
 ): PersonaVerdict | null {
-  const input = parseModelJson(raw, PersonaVerdictInputSchema);
-  return input
-    ? normalizePersonaVerdict(input, currentImageIds, currentArtifactIds, currentCheckAttemptIds)
-    : null;
+  const verdict = parsePersonaVerdictReply(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+  return verdict instanceof ModelReplyMiss ? null : verdict;
+}
+
+/** `parsePersonaVerdict`, but a rejected reply says why, for the retry and correction prompts. */
+export function parsePersonaVerdictReply(
+  raw: string,
+  currentImageIds: ReadonlySet<string> = new Set(),
+  currentArtifactIds: ReadonlySet<string> = new Set(),
+  currentCheckAttemptIds: ReadonlySet<string> = new Set(),
+  repository = false,
+): PersonaVerdict | ModelReplyMiss {
+  const input = parseModelReply(raw, repository ? RepositoryVerdictInputSchema : PersonaVerdictInputSchema);
+  return input instanceof ModelReplyMiss
+    ? input
+    : normalizeVerdictReply(input, currentImageIds, currentArtifactIds, currentCheckAttemptIds, repository);
 }
 
 export function verdictRequestedChanges(verdict: PersonaVerdict): RequestedChange[] {

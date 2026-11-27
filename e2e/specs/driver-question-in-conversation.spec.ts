@@ -48,7 +48,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   // form this spec drives is a column of adjacent buttons.
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/driver-question-in-conversation/${name}.png`);
 }
 

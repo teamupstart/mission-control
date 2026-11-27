@@ -1,6 +1,7 @@
 import type { TerminalInventory } from "./inventory.ts";
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
+import { userProcessRunning } from "./server-process.ts";
 import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
 import { shellCommand } from "./shell.ts";
@@ -260,7 +261,7 @@ export const TMUX_NAMES: NameRules = {
     // A leading '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never falls
     // back to a name lookup, so a session named `$0` would make focus and kill target
     // whichever session holds ID 0 instead of this one.
-    if (/^\$/.test(name)) return "a tmux session name can't start with '$'";
+    if (name.startsWith('$')) return "a tmux session name can't start with '$'";
     return null;
   },
   /**
@@ -494,6 +495,17 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     },
 
     sessions: {
+      async serverStopped() {
+        // The default server, which is where a legacy home with a plain name was created.
+        const result = await tmux(["list-sessions", "-F", "#{session_id}"]);
+        if (result.outcomeUnknown) return null;
+        if (result.code === 0) return false;
+        const stderr = result.stderr.trim();
+        if (result.code !== 1 || !(/^no server running on \S/.test(stderr) ||
+            /^error connecting to \S.* \(No such file or directory\)$/.test(stderr))) return null;
+        const running = await userProcessRunning(exec, "tmux");
+        return running === null ? null : !running;
+      },
       async alive(session) {
         const address = readTmuxAddress(session);
         if (!address) return null;

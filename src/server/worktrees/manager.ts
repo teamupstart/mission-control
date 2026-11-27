@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, realpath, rm } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorktreeClaim, WorktreeClaimSeed } from "@shared/protocol.ts";
@@ -11,6 +11,7 @@ import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { WORKTREE_POOLS_DIR, envVar } from "../config.ts";
 import { openDb } from "../db.ts";
 import { run, unansweredOutcome } from "../util/exec.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import { unref } from "../util/timers.ts";
 import {
   worktreeRepositoryIdentity,
@@ -1666,7 +1667,7 @@ export class WorktreeManager {
           : `did not run, because the dependency seed failed: ${placed.reason}`,
       };
     } finally {
-      await rm(stagingDirectory, { recursive: true, force: true }).catch(() => {});
+      await removeTree(stagingDirectory).catch(() => {});
       this.liveSeedStaging.delete(stagingId);
       this.liveWarmOwners.delete(input.ownerKey);
     }
@@ -2273,7 +2274,9 @@ export class WorktreeManager {
         return { outcome: "outcomeUnknown", reason: occupied };
       }
       try {
-        await rm(slot.path, { recursive: true, maxRetries: 2 });
+        // Never `fs.rm`: under Electron it cannot delete the `default_app.asar` a checkout with
+        // dependencies installed holds, and the slot is quarantined for good. See `removeTree`.
+        await removeTree(slot.path, { allowMissing: false });
       } catch (error) {
         this.quarantine(pruning, "transition", "orphaned slot removal failed", bounded(String(error)));
         return { outcome: "outcomeUnknown", reason: `orphaned slot removal failed: ${bounded(String(error))}` };

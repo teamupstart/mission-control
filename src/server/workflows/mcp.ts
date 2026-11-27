@@ -74,7 +74,7 @@ export function registerWorkflowMcpRoutes(
     const caller = current.caller!;
     return c.json(manager.runPage({ ...parsed.data, limit: parsed.data.limit ?? 50, cursor,
       // The owner predicate is applied in SQL before LIMIT/cursor selection, not after it.
-      owner: registry.sessionControlEnabled(caller) ? undefined
+      owner: registry.sessionControlEnabled(caller, "read") ? undefined
         : { sessionId: caller, noteKey: noteKeyFor(registry.getSession(caller)!) },
     }));
   });
@@ -88,7 +88,7 @@ export function registerWorkflowMcpRoutes(
     if (current.response) return current.response;
     const manager = getManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const allowed = () => registry.sessionControlEnabled(current.caller!) || ownsBinding(registry, current.caller!,
+    const allowed = () => registry.sessionControlEnabled(current.caller!, "read") || ownsBinding(registry, current.caller!,
       manager.store.getBinding(manager.store.getRun(parsed.data.runId)?.bindingId ?? ""));
     if (!allowed()) return denied(c);
     const response = await app.request(`http://localhost/api/workflow-runs/${encodeURIComponent(parsed.data.runId)}`, { headers: { host: "localhost" } });
@@ -106,7 +106,7 @@ export function registerWorkflowMcpRoutes(
     if (current.response) return current.response;
     const manager = getManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const allowed = () => registry.sessionControlEnabled(current.caller!) || ownsBinding(
+    const allowed = () => registry.sessionControlEnabled(current.caller!, "read") || ownsBinding(
       registry,
       current.caller!,
       manager.store.getBinding(manager.store.getRun(parsed.data.runId)?.bindingId ?? ""),

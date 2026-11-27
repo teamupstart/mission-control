@@ -280,6 +280,21 @@ test("preview and submission re-derive the agent source and send the body on std
   assert.ok(!calls[0]!.args.join("\n").includes("Observed: focus disappears"));
 });
 
+test("changing the configured repository after agent preview refuses publication", async () => {
+  let repo = "acme/original";
+  const service = new ProductIssueService({
+    target: () => ({ ok: true, repo }),
+    runner: async () => assert.fail("must refuse before invoking GitHub"),
+  });
+  const report = request();
+  const preview = service.preview("agent", report);
+  assert.equal(preview.outcome, "preview");
+  repo = "acme/replacement";
+  const result = await service.submit("agent", report);
+  assert.equal(result.outcome, "refused");
+  if (result.outcome === "refused") assert.match(result.message, /changed after preview/);
+});
+
 test("retry-safe refusals release a request while unknown outcomes block duplicates", async () => {
   let attempts = 0;
   const retrying = new ProductIssueService({

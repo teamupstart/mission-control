@@ -50,7 +50,7 @@ const TARGETS = [
 ];
 
 const strip = (session) => renderToStaticMarkup(h(SessionLaunchers, { session }));
-const rows = (agent) =>
+const rows = (_agent) =>
   renderToStaticMarkup(h(LaunchList, { targets: TARGETS, failed: false, verb: "Open a shell in", onChoose() {} }));
 
 /** A transcript log with a couple of turns, so the strip is seen in proportion. */

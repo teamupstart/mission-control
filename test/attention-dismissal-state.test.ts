@@ -330,6 +330,21 @@ test("a queued click is not upgraded by another window's dismissal made while it
   assert.equal(daemon.rows.get("blocked:s-1")?.occurrence, "write", "the newer dismissal stands");
 });
 
+test("a legacy migration cannot supersede a newer dismissal queued in this window", async () => {
+  const daemon = revisionDaemon();
+  const send = createDismissalSender(daemon.post, createRevisionLedger());
+  const itemId = "stuck:s-1";
+  const clicked = send([{ itemId, occurrence: "new-stall" }]);
+  const upgrade = send([{ itemId, occurrence: "old-stall-upgrade", basis: 0 }]);
+  await settle();
+  daemon.answerNext();
+  assert.equal((await clicked).ok, true);
+  await settle();
+  daemon.answerNext();
+  assert.equal((await upgrade).ok, false);
+  assert.equal(daemon.rows.get(itemId)?.occurrence, "new-stall");
+});
+
 test("a click made after seeing another window's dismissal is the newer decision, and is accepted", async () => {
   const daemon = revisionDaemon();
   const seen = createRevisionLedger();

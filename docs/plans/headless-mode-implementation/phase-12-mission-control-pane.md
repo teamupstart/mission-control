@@ -1,6 +1,6 @@
 # Phase 12: The Mission Control pane (WP17, cut to two tabs)
 
-Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`). Design: the round 2 artifact (`2dJEKTxXd9Hzi9zDgDayZo`), R1 and D, with its spike review. Branch from `main`; start only after P8 has merged, then `git rebase --onto origin/main <old base>`.
+Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v21 (sha256 `1fd49cff22923784a63151d622d0bcc3b83729f912dce2b6530d059821f661c3`). Design: the round 2 artifact (`2dJEKTxXd9Hzi9zDgDayZo`), R1 and D, with its spike review. Branch from `main`; start only after P8 has merged, then `git rebase --onto origin/main <old base>`.
 
 **1. Outcome.** The pane P8 opens at launch shows the person's tasks. Two tabs, `n Needs you` first and `t Tasks`. Needs you lists waiting and blocked items with the question or plan, and the person answers an option, writes an answer, approves a plan or requests changes right there, and sees a receipt. Tasks lists running, ready and queued tasks with state glyphs, age, the workflow stage line from P4's `workflowStages`, the `shaping` marker when present, and a ready task's result (PR link or summary). It docks on the right at 110 columns or more and draws inline above the prompt below that, and each form is tested.
 

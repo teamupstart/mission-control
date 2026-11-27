@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
+import { ConsoleView } from "../src/web/components/layouts/ConsoleView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import type { Session } from "../src/shared/types.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "../src/shared/pipeline.ts";
@@ -269,11 +270,11 @@ test("the idle column splits into free and held, with the held ones last", () =>
   );
 });
 
-test("the idle column head reports free and held rather than one number that means neither", () => {
+test("the idle column shows free and held counts in their sections only", () => {
   const html = renderToStaticMarkup(createElement(BoardView, heldProps(true)));
-  assert.match(html, /class="board-col-n n-free"[^>]*>1 free</);
-  assert.match(html, /class="board-col-n n-held"[^>]*>1 held</);
-  assert.match(html, /1 of 2 idle agents can take work/);
+  assert.match(html, /<b>free<\/b><span class="fleet-section-n">1</);
+  assert.match(html, /<b>held by a workflow<\/b><span class="fleet-section-n">1</);
+  assert.doesNotMatch(html, /class="board-col-n/);
 });
 
 test("a held tile carries its own tag, since the section rule scrolls away", () => {
@@ -285,10 +286,7 @@ test("a held tile carries its own tag, since the section rule scrolls away", () 
   assert.match(html, /Held by No-Mistakes Review - the run owns this session/);
 });
 
-test("a column where everything is held drops the free pill rather than counting zero", () => {
-  // Matches `fleetRows` dropping the free RULE in the same case. "0 free · 1 held" counts a
-  // side of the split that is not there, and disagreed with the single rule below it about
-  // whether the column had two halves at all.
+test("a column where everything is held shows only the Held section count", () => {
   const held = mkSession({ id: "held-only", name: "held", state: "idle", activity: null });
   const viewProps = {
     ...props([held]),
@@ -298,11 +296,9 @@ test("a column where everything is held drops the free pill rather than counting
     onOpenWorkflowRun: () => {},
   };
   const html = renderToStaticMarkup(createElement(BoardView, viewProps));
-  assert.doesNotMatch(html, /n-free/);
-  assert.doesNotMatch(html, /0 free/);
-  assert.match(html, /class="board-col-n n-held"[^>]*>1 held</);
+  assert.doesNotMatch(html, /class="board-col-n/);
   assert.doesNotMatch(html, /fleet-section-free/);
-  assert.match(html, /fleet-section-held/);
+  assert.match(html, /<b>held by a workflow<\/b><span class="fleet-section-n">1</);
 });
 
 test("a CLOSED run holds nothing: the column goes back to one count and no rules", () => {
@@ -446,4 +442,71 @@ test("Fleet action waits remain visible across multiple repositories and disappe
       runs: [{ ...waiting, status }],
     })), "");
   }
+});
+
+test("an idle stall is drawn in Idle's Stalled section with what is open and the fix", () => {
+  // `idle-stalled`: App hands the views the idle stalls; a card in the section carries the tag,
+  // the fact sheet and its fixes, and its section counts the stalled cards.
+  const stalled = mkSession({
+    id: "stalled", name: "amber-lynx", state: "idle", activity: "Ran npm test (2 failing)",
+    task: { ...mkSession().task!, id: "task-stalled", title: "Fix login redirect loop", status: "running" },
+  });
+  const free = mkSession({ id: "free", name: "quiet-otter", state: "idle", activity: null });
+  const stall = {
+    sessionId: stalled.id, kind: "unfinished-work" as const, forMs: 34 * 60_000,
+    reason: "idle 34m with work unfinished",
+    facts: { kind: "unfinished-work" as const, task: { id: "task-stalled", title: "Fix login redirect loop" }, queueOpen: 0 },
+    fingerprint: "fp",
+  };
+  const html = renderToStaticMarkup(createElement(BoardView, {
+    ...props([stalled, free]),
+    stalledById: new Map([[stalled.id, stall]]),
+    onDismissStall: () => {},
+  }));
+  assert.doesNotMatch(html, /class="board-col-n/);
+  assert.match(html, /<b>stalled<\/b><span class="fleet-section-n">1</);
+  assert.match(html, /class="tile [^"]*is-stalled/);
+  assert.match(html, /<span class="tile-stalled"[^>]*>stalled<\/span>/);
+  assert.match(html, /<dt>Task<\/dt><dd>Fix login redirect loop<span class="stalled-task-status"> · in progress<\/span><\/dd>/);
+  assert.match(html, /<dt>Last<\/dt><dd class="is-muted">Ran npm test \(2 failing\)<\/dd>/);
+  assert.match(html, /data-inbox-action="nudge"/);
+  assert.match(html, /data-inbox-action="mark-done"/);
+  assert.match(html, /aria-label="Dismiss amber-lynx from Stalled"/);
+  // Free comes first, then the Stalled rule, then the stalled card.
+  assert.ok(html.indexOf("quiet-otter") < html.indexOf("fleet-section-stalled"));
+  assert.ok(html.indexOf("fleet-section-stalled") < html.indexOf("amber-lynx"));
+
+  // Without the map (the flag off), nothing about the section is drawn.
+  const off = renderToStaticMarkup(createElement(BoardView, props([stalled, free])));
+  assert.doesNotMatch(off, /stalled/i);
+});
+
+test("a held session that stalled reads stalled, never held, on the Board card and the Console rail", () => {
+  // The ordering takes it out of the held partition because "a workflow owns the next turn" is no
+  // longer true of it; the tag and its tooltip must not say it on the card or the row either.
+  const session = mkSession({ id: "held-stalled", name: "slate-finch", state: "idle", activity: null });
+  const runs = new Map([[session.id, [{ ...workflowRun, sessionId: session.id }]]]);
+  const stall = {
+    sessionId: session.id, kind: "workflow-parked" as const, forMs: 30 * 60_000,
+    reason: "idle 30m - No-Mistakes Review repair round 2 never reopened",
+    facts: {
+      kind: "workflow-parked" as const, runId: "run", workflowName: "No-Mistakes Review", status: "waiting_for_session" as const,
+      round: 2, resubmittable: true, externalSource: null, unpushedCommits: 0,
+    },
+    fingerprint: "held-stalled",
+  };
+  const withStall = { ...props([session]), workflowRunsBySession: runs, stalledById: new Map([[session.id, stall]]) };
+  for (const html of [
+    renderToStaticMarkup(createElement(BoardView, withStall)),
+    renderToStaticMarkup(createElement(ConsoleView, withStall)),
+  ]) {
+    assert.match(html, />stalled</);
+    assert.doesNotMatch(html, /class="(tile|rail)-held"/);
+    assert.doesNotMatch(html, /is-held/);
+    assert.doesNotMatch(html, /Held by No-Mistakes Review/);
+  }
+  // The same session with no stall is held, as before.
+  const heldOnly = { ...props([session]), workflowRunsBySession: runs };
+  assert.match(renderToStaticMarkup(createElement(BoardView, heldOnly)), /class="tile-held"/);
+  assert.match(renderToStaticMarkup(createElement(ConsoleView, heldOnly)), /class="rail-held"/);
 });

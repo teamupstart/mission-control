@@ -129,7 +129,7 @@ export function parseSessionMeta(headLine: string | null): CodexSessionMeta | nu
   return { cwd, start: Number.isNaN(start) ? 0 : start, sessionId, subagent };
 }
 
-export function rolloutBelongsToSession(path: string, session: Session): boolean {
+export function rolloutBelongsToSession(path: string, session: Pick<Session, "agentSessionId" | "cwd">): boolean {
   const meta = parseSessionMeta(readHeadLine(path));
   if (!meta || meta.subagent) return false;
   if (session.cwd && meta.cwd !== session.cwd) return false;
@@ -153,7 +153,7 @@ export function rolloutBelongsToSession(path: string, session: Session): boolean
  * the hardcode the capability replaced.
  */
 export function findRolloutForSession(
-  session: Session,
+  session: Pick<Session, "agentSessionId" | "cwd" | "startedAt">,
   sessionsDir: string = codexSessionsDir(),
 ): string | null {
   if (!session.cwd) return null;

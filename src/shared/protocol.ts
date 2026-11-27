@@ -1,8 +1,11 @@
+import { LocalInspectorReviewSchema } from "./inspector-review.ts";
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
+import type { TaskSkillPrompt } from "./shaping.ts";
+import { INBOX_MESSAGE_KINDS, type InboxMessageKind } from "./inbox.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
-import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
+import { PLAN_APPROVAL_DECISION, PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
@@ -30,7 +33,7 @@ import {
   taskKindCreator,
   taskKindPersonaRefusal,
 } from "./task.ts";
-import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
+import { LaunchResidentSchema, NewResidentProfileSettingsSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
 import type { GrillFirstTaskKind, HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
@@ -42,13 +45,18 @@ import {
   PipelinesConfigSchema,
 } from "./pipeline.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { WORK_UNIT_ID_PATTERN } from "./work-unit.ts";
 import { dependencyKey as dependencyInputKey } from "./task-dependency.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
+import { FOREMAN_MODEL_ROLES } from "./foreman-models.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { CLAUDE_TRANSPORTS, CODEX_TRANSPORTS, LLM_RUNNER_IDS } from "./llm.ts";
 import { RASTER_IMAGE_MIME_TYPES } from "./images.ts";
 import { REVIEW_SNOOZE_DELAY_IDS } from "./review-snooze.ts";
 import { MEANWHILE_MAX_CHARS, oneLine } from "./async-input.ts";
+import { VOICE_UI_DEFAULTS, VoiceRevisionSchema, VoiceUiConfigPatchSchema, VoiceUiConfigSchema } from "./voice.ts";
+import { SpokenNameSchema } from "./voice-names.ts";
+import { REPORT_GUIDANCE_LIMIT, REPORT_ID_PATTERN, REPORT_LIMITS, REPORT_READ_ALL_BATCH } from "./reports.ts";
 import {
   type StandingInstructionsDelivery,
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
@@ -101,6 +109,8 @@ import {
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
   PROMPTED_RECOVERY_REASONS,
+  SESSION_AWAITING_LIMITS,
+  SESSION_AWAITING_WAKE_SOURCES,
   SESSION_BLOCKER_KINDS,
   SESSION_BLOCKER_LIMITS,
   SESSION_RUNTIMES,
@@ -129,7 +139,8 @@ import {
   DEFAULT_WORKFLOW_POLICY,
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
-  EVIDENCE_REF_KINDS,
+  CONTEXT_EVIDENCE_REF_KINDS,
+  PERSONA_REPOSITORY_ACCESS_MODES,
   PERSONA_FINDING_BASES,
   INSPECTOR_FINDINGS_POLICIES,
   SESSION_ACTION_BLOCK_CODES,
@@ -149,6 +160,8 @@ import {
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  CODERABBIT_COMMAND_HELP,
+  isCodeRabbitCommand,
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
@@ -235,6 +248,17 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+const EffortOverrideSchema = EffortLevelSchema.nullable();
+
+function effortOverridesPatch(ids: readonly string[]) {
+  return boundedRecord(z.string(), EffortOverrideSchema, ids.length)
+    .refine((entries) => Object.keys(entries).every((id) => ids.includes(id)), {
+      message: "unknown background model slot",
+    });
+}
+
+const StoredEffortOverridesSchema = z.record(z.string(), EffortOverrideSchema.catch(null))
+  .optional().catch(undefined);
 /** A Library Persona id, as a task names it. The same bound a resident profile's pin has. */
 const TaskPersonaIdSchema = z.string().trim().min(1).max(200);
 /** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
@@ -455,6 +479,16 @@ export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
 // Delegated session origin is server-owned, just like delegated answer identity.
 const PromptOriginSchema = z.enum(["human", "foreman", "workflow"]).default("human");
 
+/**
+ * A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The text is
+ * the daemon's, chosen by kind, so a caller can never send other words under the
+ * daemon-written turn prefix.
+ */
+export const InboxMessageSchema = z.object({
+  kind: z.enum(INBOX_MESSAGE_KINDS as [InboxMessageKind, ...InboxMessageKind[]]),
+});
+export type InboxMessageInput = z.infer<typeof InboxMessageSchema>;
+
 /** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({
   text: z.string().min(1),
@@ -599,6 +633,8 @@ export const PLAN_DECISION_LIMITS = {
   decisions: 100,
   options: 50,
 } as const;
+// A managed form may append one final-bundle approval to the agent's questions.
+export const MAX_PLAN_DECISIONS_WITH_APPROVAL = PLAN_DECISION_LIMITS.decisions + 1;
 
 export const PlanDecisionOptionSchema = z.object({
   id: z.string().min(1),
@@ -678,16 +714,30 @@ export const CreateReviewSchema = z
      */
     snoozable: z.boolean().optional(),
     /**
-     * The MCP child can return a receipt instead of long-polling (`async-input`). The daemon
-     * decides how the ask waits and answers `wait: "message"` or `wait: "call"`; a child from an
-     * older build never sends this and is always told `call`.
+     * The MCP child can return a receipt instead of long-polling (`async-input`, and for a plan
+     * form `filed-plan-decisions` too). The daemon decides how the ask waits and answers
+     * `wait: "message"` or `wait: "call"`; a child from an older build never sends this and is
+     * always told `call`.
      */
     asyncCapable: z.boolean().optional(),
+    /** This caller can also accept a receipt after being told to wait inside the call. */
+    convertible: z.boolean().optional(),
     /** What the agent does while the question is open: one line, `input` only. */
     meanwhile: z.string()
       .transform((line) => oneLine(line))
       .pipe(z.string().max(MEANWHILE_MAX_CHARS))
       .optional(),
+    /**
+     * The review id of the filed plan form this one revises, `plan-decisions` only. The daemon
+     * accepts it for the same session's filed plan form that is still open, which it withdraws
+     * in the same step, or that its own agent withdrew; it refuses anything else and files
+     * nothing.
+     */
+    revises: z.string().trim().min(1).optional(),
+  })
+  .refine((r) => r.kind === "plan-decisions" || r.revises === undefined, {
+    message: "only kind 'plan-decisions' can revise an earlier form",
+    path: ["revises"],
   })
   .refine((r) => r.kind === "input" || r.snoozable !== true, {
     message: "only kind 'input' can offer Remind me later",
@@ -927,6 +977,13 @@ export const ProductIssuePreflightSchema = z.object({
 /** Defined beside the task kinds so resident launch schemas share it without a cycle. */
 export { MAX_TASK_EXTRA_REPOS };
 
+/** MCP `create_task`'s `workUnit`: join the calling session's task's work unit, or start one. */
+export const McpWorkUnitChoiceSchema = z.enum(["inherit", "new"]).describe(
+  "Work unit for the new task. \"inherit\" joins the work unit of the task this session is running; " +
+    "\"new\" starts its own. Omit it to let the session's task kind decide: a plan task's session " +
+    "shares its work unit with the tasks it creates, every other session's tasks get their own",
+);
+
 const McpCreateTaskBaseSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
@@ -936,6 +993,10 @@ const McpCreateTaskBaseSchema = z.object({
   intent: z.string().min(1),
   dependsOnTaskIds: z.array(z.string().min(1)).max(MAX_TASK_DEPENDENCIES).optional().default([]),
   dependsOnCurrentSession: z.boolean().optional().default(false),
+  // Which work unit the new task joins - never an id: no request body chooses one. On the base
+  // shape so all three creation routes accept it. Omitted, the calling session's task kind
+  // decides (see `mcpCreateWorkUnitSource`).
+  workUnit: McpWorkUnitChoiceSchema.optional(),
 });
 
 const mcpTaskDependenciesAreBounded = ({
@@ -1040,9 +1101,13 @@ export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
  * answers stay out of the conversation the human is credited with.
  */
 export const ResolveReviewSchema = z.object({
+  voiceSubmitId: z.uuid().optional(),
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
-  selections: z.array(PlanDecisionAnswerSchema).max(PLAN_DECISION_LIMITS.decisions).nullable().optional().default(null),
+  selections: z.array(PlanDecisionAnswerSchema).max(MAX_PLAN_DECISIONS_WITH_APPROVAL)
+    .refine(answers => answers.length <= PLAN_DECISION_LIMITS.decisions || answers.some(a => a.decisionId === PLAN_APPROVAL_DECISION),
+      "The extra decision is reserved for final-bundle approval.")
+    .nullable().optional().default(null),
   by: AnswerActorSchema,
   /**
    * "Approve all future bundles for this task", ticked on a managed plan's final-bundle form.
@@ -1142,6 +1207,110 @@ export const McpClearBlockerSchema = z.object({
   resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
 });
 
+// ---- agent reports (`inbox` flag) ----
+
+/**
+ * What an agent sends with `post_report`. The MCP tool validates the same fields first, so the
+ * agent reads a refusal rather than a transport error; this is the daemon's own check.
+ */
+export const PostReportBodySchema = z.object({
+  /** One line: whitespace and line breaks collapse to single spaces. */
+  title: z.string().max(REPORT_LIMITS.title * 4).transform(oneLine)
+    .pipe(z.string().min(1, "a report needs a title").max(REPORT_LIMITS.title)),
+  body: z.string().trim().min(1, "a report needs a body").max(REPORT_LIMITS.body),
+  /** A checkout-relative `.html` or `.md` document, copied when the report is posted. */
+  file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional(),
+  url: z.string().trim().max(REPORT_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" }).optional(),
+  /** The id of this agent's own earlier report that this one replaces. */
+  replaces: z.string().trim().regex(REPORT_ID_PATTERN, "must be a report id such as r-12").optional(),
+});
+export type PostReportBody = z.infer<typeof PostReportBodySchema>;
+
+/** `POST /mcp/reports`: bound to the caller the way `/mcp/reviews` is. */
+export const McpPostReportSchema = PostReportBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+});
+
+/**
+ * `POST /api/reports/:id/reply`: the operator's words, delivered as a message that names and
+ * restates the report. The cap leaves room for the restated report inside one message.
+ */
+export const ReportReplySchema = z.object({
+  text: z.string().trim().min(1, "a reply needs words")
+    .max(REPORT_LIMITS.body, `a reply can be at most ${REPORT_LIMITS.body} characters`),
+});
+
+/**
+ * `POST /api/reports/:id/follow-up`: the operator's words for the new task. Optional, because a
+ * retry dispatches the task the first call created and reads no words.
+ */
+export const ReportFollowUpSchema = z.object({
+  text: z.string().trim()
+    .max(REPORT_LIMITS.body, `a follow-up's instructions can be at most ${REPORT_LIMITS.body} characters`)
+    .optional().default(""),
+});
+
+/**
+ * The `reports` settings entry (Settings > Reports). `guidance` is the operator's own text for
+ * when to post a report, or null for the default (`DEFAULT_REPORT_GUIDANCE`).
+ */
+export const ReportsSettingsSchema = z.object({
+  guidance: z.string().max(REPORT_GUIDANCE_LIMIT).nullable().catch(null).default(null),
+});
+export type ReportsSettings = z.infer<typeof ReportsSettingsSchema>;
+
+/**
+ * `PUT /api/reports/guidance`: save the operator's guidance, or null to reset it to the default.
+ * Trimmed; blank text is the same as null, so a cleared box resets rather than saving nothing.
+ */
+export const ReportGuidanceUpdateSchema = z.object({
+  guidance: z.string().trim()
+    .max(REPORT_GUIDANCE_LIMIT, `report guidance can be at most ${REPORT_GUIDANCE_LIMIT} characters`)
+    .nullable()
+    .transform((text) => (text ? text : null)),
+}).strict();
+
+/**
+ * What the guidance routes answer: the saved text, the text in force, the default and the limit.
+ * Every field is required, and the dashboard parses an answer against this rather than filling
+ * a missing field in, so a malformed answer reads as a failure and never as an empty editor.
+ */
+export const ReportGuidanceViewSchema = z.object({
+  /** The operator's own text, or null while the default is in force. */
+  guidance: z.string().nullable(),
+  /** The guidance new sessions' `post_report` carries. */
+  effective: z.string(),
+  defaultGuidance: z.string(),
+  limit: z.number().int().positive(),
+});
+export type ReportGuidanceView = z.infer<typeof ReportGuidanceViewSchema>;
+
+/** `POST /api/reports/mutes`: mute one author, named by the key its reports carry. */
+export const ReportMuteBodySchema = z.object({
+  authorKey: z.string().trim().min(1).max(512)
+    .regex(/^(resident|session):.+$/, "must be an author key such as session:<id> or resident:<id>"),
+}).strict();
+
+/**
+ * `POST /api/reports/read-all`: Mark all read for exactly the reports the Reports section listed
+ * when it was pressed, so a report that arrives after the click is not cleared. One request
+ * carries at most `REPORT_READ_ALL_BATCH` ids; the dashboard sends a longer list in batches
+ * (`markAllReportsRead`).
+ */
+export const ReportReadAllSchema = z.object({
+  ids: z.array(z.string().regex(REPORT_ID_PATTERN, "must be a report id such as r-12")).min(1).max(REPORT_READ_ALL_BATCH),
+}).strict();
+
+/**
+ * `POST /api/reports/:id/publish`: Publish as scout. Takes nothing but the report id in its path.
+ * The daemon builds the page from the report's stored document, so this body is strict and empty:
+ * a request that tries to supply a page, a path or anything else is refused and archives nothing.
+ */
+export const ReportPublishSchema = z.strictObject({});
+
 /** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
@@ -1149,6 +1318,50 @@ export const FlagBlockerReplySchema = z.object({
   blockerId: ExpectedBlockerSchema.optional(),
 }).strict();
 export type FlagBlockerReply = z.infer<typeof FlagBlockerReplySchema>;
+
+/** What a session declares about itself through `report_awaiting`. */
+export const ReportAwaitingBodySchema = z.object({
+  what: blockerLine(SESSION_AWAITING_LIMITS.what),
+  wakeSource: z.enum(SESSION_AWAITING_WAKE_SOURCES),
+  /**
+   * Required: when the process should be done, as an ISO 8601 date-time with a time zone. Read
+   * on the wire as text and handed on as epoch ms. Its bounds are relative to the moment the
+   * daemon receives it (after now, at most `SESSION_AWAITING_LIMITS.maxMinutes` later), so the
+   * registry checks them where the clock is read, not here.
+   */
+  expectedBy: z.string().trim().datetime({ offset: true }).transform((v) => Date.parse(v)),
+  referenceUrl: z.string().trim().max(SESSION_AWAITING_LIMITS.url).url()
+    .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+    .nullable().optional().default(null),
+  details: z.string().trim().max(SESSION_AWAITING_LIMITS.details).nullable().optional()
+    .transform((v) => (v ? v : null)),
+});
+export type ReportAwaitingBody = z.infer<typeof ReportAwaitingBodySchema>;
+
+/** `POST /mcp/awaiting`: bound to the caller the way `/mcp/blocker` is. */
+export const McpReportAwaitingSchema = ReportAwaitingBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+});
+
+/** `POST /mcp/awaiting/clear`: the session clearing its own wait. */
+export const McpClearAwaitingSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+});
+
+/**
+ * `POST /api/sessions/:id/awaiting/clear`, and the session-control action that maps to it.
+ * `awaitingId` names the wait the caller was looking at, so a replacement is refused. Required:
+ * every view that offers Clear holds the id, and a Clear without one could end a wait the
+ * session declared after the caller looked.
+ */
+export const ClearAwaitingSchema = z.object({
+  resolution: blockerLine(SESSION_AWAITING_LIMITS.resolution).optional(),
+  awaitingId: z.string().min(1).max(64),
+}).strict();
+export type ClearAwaiting = z.infer<typeof ClearAwaitingSchema>;
 
 /**
  * The two optional triage fields every task-writing schema shares, spread into both
@@ -1339,6 +1552,15 @@ export const DispatchSchema = z
      */
     personaId: TaskPersonaIdSchema.optional(),
     /**
+     * A call sign: a short name the operator can say to address this task's session by voice
+     * (the `voice` preview). Trimmed, 1 to 40 characters. Omitted, the task is given one from
+     * `AUTO_CALL_SIGN_DICTIONARY` when it launches, whether or not the flag is on, if a safe name is
+     * free; when every safe name is taken it launches without one (`chooseAutoCallSign`'s fallback
+     * in `src/shared/voice-call-signs.ts`). Accepted whether or not the flag is on, so a task keeps
+     * the name it was given; only the dashboard's field is behind the flag.
+     */
+    callSign: SpokenNameSchema.optional(),
+    /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
      * and the machine default for other kinds.
@@ -1480,12 +1702,11 @@ export const SetSessionModelSchema = z.object({ model: ModelIdSchema });
 export type SetSessionModelInput = z.infer<typeof SetSessionModelSchema>;
 
 /**
- * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
+ * Turn the Keep Awake mode on or off: `PUT /api/keep-awake`.
  *
- * Strict and exactly one boolean on purpose. Keep Awake is daemon-run-scoped by an
- * approved human decision - there is no persisted preference to patch here, and a body
- * carrying anything beyond `enabled` is a caller confused about that contract, refused
- * rather than partially honoured.
+ * Strict and exactly one boolean on purpose. The daemon remembers this switch itself - the
+ * request IS the choice, with nothing else to patch - and a body carrying anything beyond
+ * `enabled` is a caller confused about that contract, refused rather than partially honoured.
  */
 export const KeepAwakeRequestSchema = z
   .object({
@@ -1685,8 +1906,8 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * cannot be rewritten afterwards, while model and effort are baked into the launched
  * command line and the Persona into its standing instructions, while dependencies and enabled decide whether a launch is allowed - so a
  * patch touching any of them is refused once the task has left the backlog.
- * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
- * can be changed at any point in a task's life, including while its agent is running.
+ * `priority`, `labels` and `callSign` are pure annotation that nothing is provisioned from, so
+ * they can be changed at any point in a task's life, including while its agent is running.
  *
  * `priority` is `.optional()` WITHOUT the create schema's `.default(null)`: here an
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
@@ -1740,12 +1961,21 @@ const UpdateTaskFieldsSchema = z
     advisorModel: z.null().optional(),
     /** A Persona to launch with, or `null` to take the task's Persona back off. */
     personaId: TaskPersonaIdSchema.nullable().optional(),
+    /**
+     * A call sign, or `null` to take it off. Annotation like `priority`: a spoken name changes
+     * nothing the launch provisioned, so it may change while the agent runs.
+     */
+    callSign: SpokenNameSchema.nullable().optional().describe(
+      "Call sign: a short spoken name (1 to 40 characters) this task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available. Not the title. Null takes it off. A task launched with none is given a distinctive one if a safe name is free, and launches without one when every safe name is taken. A resident's task takes none",
+    ),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
     /** Grill me first. Provisioning intent, like `workflowId`. */
     grillFirst: z.boolean().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
+    planInputChange: TaskPlanInputChangeSchema.optional(),
+    previewOnly: z.boolean().optional(),
   });
 
 export const UpdateTaskSchema = UpdateTaskFieldsSchema
@@ -1779,6 +2009,8 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   title: true,
   intent: true,
   planInputs: true,
+  planInputChange: true,
+  previewOnly: true,
   advisorModel: true,
   // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
   personaId: true,
@@ -1804,7 +2036,6 @@ export type McpCreateTaskV3 = z.infer<typeof McpCreateTaskV3Schema>;
 export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
-  planInputs: true,
   personaId: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),
@@ -1812,7 +2043,12 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
 }).strict();
 
 /** Durable task facts plus pull request references, without session-private state. */
-export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+export type McpTaskSnapshot = Task & {
+  prUrl: string | null;
+  repoPrs: TaskRepoPrSummary[];
+  /** The after-work prompt of the launch `shaping` describes, when one was written. */
+  shapingAfterWork?: TaskSkillPrompt;
+};
 
 /** Read-only task queries share validation between the MCP child and daemon. */
 export const McpListTasksSchema = z.object({
@@ -1823,6 +2059,7 @@ export const McpListTasksSchema = z.object({
   priority: z.enum(TASK_PRIORITIES).nullable().optional().describe("Null matches tasks without a priority"),
   enabled: z.boolean().optional(),
   dependsOnTaskId: z.string().trim().min(1).optional().describe("Match a direct task dependency, including one already satisfied"),
+  workUnitId: z.string().trim().regex(WORK_UNIT_ID_PATTERN, "workUnitId must be a work unit id (wu_ and 26 Crockford base32 characters)").optional().describe("Match the tasks of one work unit exactly"),
   limit: z.number().int().min(1).max(100).default(50),
   cursor: z.string().min(1).max(4096).optional().describe("nextCursor from the previous page; keep filters unchanged"),
   includeIntent: z.boolean().default(false).describe("Include full intent text; omitted by default to keep lists compact"),
@@ -1920,9 +2157,16 @@ export type BulkUpdateTasksInput = z.input<typeof BulkUpdateTasksSchema>;
 export const BulkDeleteTasksSchema = z.object({ taskIds: BulkTaskIdsSchema });
 export type BulkDeleteTasks = z.infer<typeof BulkDeleteTasksSchema>;
 
+/**
+ * A task's annotation: the fields that re-describe it and provision nothing, so an update may
+ * change them in any status. A writer that awaits between reading a task and writing it back
+ * carries these from the task as it reads then, or it undoes an edit that landed meanwhile.
+ */
+export const TASK_ANNOTATION_FIELDS = ["priority", "labels", "callSign"] as const satisfies readonly (keyof UpdateTask & keyof Task)[];
+
 /** True when this patch only re-describes a task, so no status guard applies. */
 export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
-  return Object.keys(patch).every((k) => k === "priority" || k === "labels");
+  return Object.keys(patch).every((k) => (TASK_ANNOTATION_FIELDS as readonly string[]).includes(k));
 }
 
 /**
@@ -2482,11 +2726,14 @@ export const ForemanConfigSchema = z.object({
   backlogModel: z.string().optional(),
   /** Provider for the backlog dependency planner alone. Empty inherits `runner`, then app-wide. */
   backlogRunner: z.string().optional().catch(undefined),
+  /** Per-role reasoning effort. Empty entries use the provider default. */
+  efforts: StoredEffortOverridesSchema,
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 
 /** A provider id, or the empty string meaning "inherit". Strict, because this is a WRITE. */
 const ForemanRunnerOverrideSchema = z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]);
+const ForemanModelOverrideSchema = z.union([ModelIdSchema, z.literal("")]);
 
 /**
  * Partial update of the Foreman config from the dashboard.
@@ -2506,6 +2753,11 @@ export const ForemanConfigPatchSchema = partialPatch(ForemanConfigSchema)
     verifyRunner: ForemanRunnerOverrideSchema.optional(),
     triageRunner: ForemanRunnerOverrideSchema.optional(),
     backlogRunner: ForemanRunnerOverrideSchema.optional(),
+    triageModel: ForemanModelOverrideSchema.optional(),
+    reviewModel: ForemanModelOverrideSchema.optional(),
+    verifyModel: ForemanModelOverrideSchema.optional(),
+    backlogModel: ForemanModelOverrideSchema.optional(),
+    efforts: effortOverridesPatch(FOREMAN_MODEL_ROLES).optional(),
     backlogDefaultModel: z
       .object({
         claude: ModelIdSchema.nullable().optional(),
@@ -2810,6 +3062,7 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
  * An empty `repoAllowlist` grants no permission to post under the operator's GitHub identity.
  */
 export const InspectorConfigSchema = z.object({
+  localReview: z.boolean().default(false),
   /**
    * Provider used for reviews and follow-up replies. Empty means the Inspector never chose,
    * which hands the question to the app-wide ladder (`llm` config, then `MISSION_LLM_RUNNER`,
@@ -2848,6 +3101,8 @@ export const InspectorConfigSchema = z.object({
    * as absent, so `--model ""` is unreachable.
    */
   model: z.union([ModelIdSchema, z.literal("")]).optional(),
+  /** Reasoning effort for reviews and follow-up replies. */
+  effort: EffortOverrideSchema.optional().catch(undefined),
   /**
    * Ceiling on inline comments per round. A reviewer that leaves thirty notes on one
    * push is one nobody reads, and the cap is what turns "be thorough" into "lead with
@@ -2859,7 +3114,10 @@ export type InspectorConfig = z.infer<typeof InspectorConfigSchema>;
 
 /** Partial update of the Inspector config from the dashboard. Strict provider, as Foreman's. */
 export const InspectorConfigPatchSchema = partialPatch(InspectorConfigSchema)
-  .extend({ runner: ForemanRunnerOverrideSchema.optional() })
+  .extend({
+    runner: ForemanRunnerOverrideSchema.optional(),
+    effort: EffortOverrideSchema.optional(),
+  })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
 
@@ -2945,6 +3203,7 @@ export const InspectorInspectionSchema = z.object({
   reviewedBaseRef: z.string().nullable().optional(),
   reviewedBaseSha: z.string().nullable().optional(),
   mergeCommitSha: z.string().nullable().optional(),
+  localReviewHeadSha: z.string().nullable().optional(),
   // Stacked pull requests' lineage and standing are carried as objects but not restated
   // field by field: no reader of this schema decides anything from them.
   stack: z.custom<StackLineage | null>((value) => value === null || typeof value === "object").optional(),
@@ -3935,6 +4194,7 @@ export type TerminalsConfigPatch = z.infer<typeof TerminalsConfigPatchSchema>;
  * quietly on a background tick nobody is watching.
  */
 export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
+export const TaskSourcesUpdateSchema = TaskSourcesConfigSchema.extend({ revision: z.string().max(80) });
 export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
 
 /**
@@ -3964,9 +4224,17 @@ export type TaskSourceWritebackRetry = z.infer<typeof TaskSourceWritebackRetrySc
  * and bounded by its schema. The master switch rides the same write because a panel that
  * could save one without the other would let a browser hold a picture in which the master
  * is off and a repository is on, which is not a state the daemon can be in.
+ * Existing callers may include an explicit Engineer runtime in a full replacement.
  */
-export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
+export const PipelinesConfigPatchSchema = PipelinesConfigSchema.extend({
+  launchRuntime: PipelinesConfigSchema.shape.launchRuntime.unwrap().optional(),
+});
 export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
+
+/** A runtime-only edit has no authority over observation or Foreman consent. */
+export const PipelineRuntimePatchSchema = z.strictObject({
+  launchRuntime: PipelinesConfigSchema.shape.launchRuntime.unwrap(),
+});
 
 /** Register one canonical repository with its provider. Observation consent is a later write. */
 export const PipelineRepoRegistrationSchema = z.object({
@@ -4164,6 +4432,32 @@ export type TaskKindCardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
 export const BACKGROUND_AGENTS_STYLES = ["nested", "chip"] as const;
 export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
 export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
+
+/**
+ * How a session's call sign is drawn on its Board card while Always-on is listening, when the
+ * card keeps the session's title (`docs/voice.md#call-signs-on-always-on-cards`): a muted line
+ * under the title, a pill after it, a chip before it, a tab on the card's top border, or not at
+ * all. `off` hides the element only: the call sign stays saved and voice still routes to it.
+ * Push-to-talk titles a card by its call sign whatever this says. Persisted on operators'
+ * machines, so append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the
+ * picker's order.
+ */
+export const CALL_SIGN_CARD_STYLES = ["subtitle", "badge", "chip", "tab", "off"] as const;
+export const CallSignCardStyleSchema = z.enum(CALL_SIGN_CARD_STYLES);
+export type CallSignCardStyle = (typeof CALL_SIGN_CARD_STYLES)[number];
+
+/**
+ * Resident name with call sign styles (`docs/residents.md`). Persisted on operators' machines, so
+ * append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the panel's order, and
+ * the one a stored list is kept in.
+ */
+export const RESIDENT_CARD_NAME_STYLES = ["subtitle", "chip"] as const;
+export const ResidentCardNameStyleSchema = z.enum(RESIDENT_CARD_NAME_STYLES);
+export type ResidentCardNameStyle = (typeof RESIDENT_CARD_NAME_STYLES)[number];
+
+export function residentCardNameStylesOf(list: readonly unknown[]): ResidentCardNameStyle[] {
+  return RESIDENT_CARD_NAME_STYLES.filter((style) => list.includes(style));
+}
 
 /**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
@@ -4370,8 +4664,21 @@ export const UI_CONFIG_DEFAULTS = {
   taskKindCard: "tab",
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
+  /** A call sign under the title, shown by default. Off is a choice in the same picker. */
+  callSignCardStyle: "subtitle" as CallSignCardStyle,
+  residentCardNameStyles: [] as readonly ResidentCardNameStyle[],
   keybindings: {},
-  alerts: { notifications: false, sound: true },
+  /**
+   * `notify` and `reportsInInbox` are the `inbox` flag's "What notifies you" switches. Every one
+   * defaults on, which is exactly what each kind of item did before the switches existed, and
+   * none is read while the flag is off.
+   */
+  alerts: {
+    notifications: false,
+    sound: true,
+    notify: { blockingQuestions: true, filedQuestions: true, reports: true, stuck: true },
+    reportsInInbox: true,
+  },
   richText: true,
   keybindingHints: true,
   guidedDispatch: true,
@@ -4465,6 +4772,11 @@ export const UI_CONFIG_DEFAULTS = {
    * button and the state badge's split half with its paused band, out of the box.
    */
   pauseConsoleControls: ["toolbar", "badge"] as readonly string[],
+  /**
+   * Voice's half of the UI config (contract A): the floating pill for confirmations and the
+   * status line as the one in-window indicator. Read only while the `voice` flag is on.
+   */
+  voice: VOICE_UI_DEFAULTS,
 } as const;
 
 /**
@@ -4527,6 +4839,20 @@ export const UiConfigSchema = z.object({
   backgroundAgentsStyle: BackgroundAgentsStyleSchema
     .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
     .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
+  /** `.catch` like `backgroundAgentsStyle`: a style a newer build added reads as the default. */
+  callSignCardStyle: CallSignCardStyleSchema
+    .default(UI_CONFIG_DEFAULTS.callSignCardStyle)
+    .catch(UI_CONFIG_DEFAULTS.callSignCardStyle),
+  /**
+   * Read leniently: a style a newer build added is dropped after a downgrade while the ones this
+   * build knows are kept, and anything that is not a list reads as none, rather than failing the
+   * whole `ui` record. The patch schema below is strict.
+   */
+  residentCardNameStyles: z
+    .array(z.unknown())
+    .transform(residentCardNameStylesOf)
+    .default([...UI_CONFIG_DEFAULTS.residentCardNameStyles])
+    .catch([...UI_CONFIG_DEFAULTS.residentCardNameStyles]),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -4540,6 +4866,24 @@ export const UiConfigSchema = z.object({
     .object({
       notifications: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notifications),
       sound: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.sound),
+      /**
+       * Which kinds of item raise a notification (`inbox` flag). A switch only stops the
+       * notification; the item is still in the inbox. A record stored before these keys existed
+       * parses to every switch on, which is what it already did, so no migration is owed.
+       */
+      notify: z
+        .object({
+          blockingQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.blockingQuestions),
+          filedQuestions: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.filedQuestions),
+          reports: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.reports),
+          stuck: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notify.stuck),
+        })
+        .prefault(UI_CONFIG_DEFAULTS.alerts.notify),
+      /**
+       * Whether agent reports are listed in the inbox and counted in the to read figure. Off,
+       * they stay in each conversation and are not marked read.
+       */
+      reportsInInbox: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.reportsInInbox),
     })
     .prefault(UI_CONFIG_DEFAULTS.alerts),
   /** Render agent/human turns as markdown. On by default: agents write markdown. */
@@ -4710,6 +5054,11 @@ export const UiConfigSchema = z.object({
    */
   pauseCardControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseCardControls]),
   pauseConsoleControls: z.array(z.string().min(1)).max(UI_CONFIG_LIST_MAX).default([...UI_CONFIG_DEFAULTS.pauseConsoleControls]),
+  /**
+   * Where voice confirmations appear and which in-window voice indicators are drawn. Owned whole
+   * by Settings > Voice. See `src/shared/voice.ts`.
+   */
+  voice: VoiceUiConfigSchema,
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4754,6 +5103,17 @@ export const UiConfigPatchSchema = z.preprocess(
     blockedPlacement: BlockedPlacementSchema.optional(),
     // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
     backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
+    // Strict for the same reason: a bad write is a 400, never a stored Subtitle line.
+    callSignCardStyle: CallSignCardStyleSchema.optional(),
+    // Strict for the same reason: an unknown style is a 400, never silently dropped. Stored
+    // once each, in the panel's order.
+    residentCardNameStyles: z
+      .array(ResidentCardNameStyleSchema)
+      .max(RESIDENT_CARD_NAME_STYLES.length * 2)
+      .transform(residentCardNameStylesOf)
+      .optional(),
+    // Strict for the same reason: an unknown confirmation placement is a 400.
+    voice: VoiceUiConfigPatchSchema.optional(),
   }).refine(
     (o) => Object.keys(o).length > 0,
     { message: "empty config update" },
@@ -4773,7 +5133,12 @@ export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
  */
 export const UiConfigViewSchema = z.object({
   configured: z.boolean(),
-  config: UiConfigSchema,
+  voiceIndicatorVersion: VoiceRevisionSchema.optional(),
+  /**
+   * `voice` is absent while the `voice` flag is off: the daemon withholds it, as it does every
+   * voice surface, so the response is the one an install without voice gave.
+   */
+  config: UiConfigSchema.omit({ voice: true }).extend({ voice: VoiceUiConfigSchema.optional() }),
 });
 export type UiConfigView = z.infer<typeof UiConfigViewSchema>;
 
@@ -4906,6 +5271,8 @@ export const LlmConfigSchema = z.object({
    * here" than to "use whatever ships".
    */
   runners: z.record(z.string(), z.string().catch("")).catch({}).default({}),
+  /** Per-job reasoning effort. Empty entries use the provider default. */
+  efforts: StoredEffortOverridesSchema,
 });
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
 
@@ -4926,6 +5293,7 @@ export const LlmConfigPatchSchema = z
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
         message: "unknown job id",
       }),
+    efforts: effortOverridesPatch(LLM_JOB_IDS),
     /** Per-job providers. Strict on both halves, for `models`' reason: a typo is a 400. */
     runners: boundedRecord(z.string(), z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]), LLM_JOB_IDS.length)
       .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
@@ -5636,6 +6004,16 @@ export const WrapupSchema = z.object({
 });
 export type Wrapup = z.infer<typeof WrapupSchema>;
 
+const SessionIntentGuardSchema = z.object({
+  objective: z.string().trim().min(1).max(INTENT_MAX),
+  objectiveVersion: z.number().int().min(1),
+  promptRevision: z.number().int().min(1),
+  episodeKey: z.string().min(1).max(200),
+}).refine(
+  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
+  { message: "Intent episode key does not match its revisions" },
+);
+
 /**
  * Stamp the wrap-up ask.
  *
@@ -5650,18 +6028,10 @@ export type Wrapup = z.infer<typeof WrapupSchema>;
  */
 export const WrapupAskedSchema = z.object({
   clearAnswer: z.boolean().optional(),
+  expectedIntent: SessionIntentGuardSchema.nullable().optional(),
+  retire: z.literal(true).optional(),
 });
 export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
-
-const SessionIntentGuardSchema = z.object({
-  objective: z.string().trim().min(1).max(INTENT_MAX),
-  objectiveVersion: z.number().int().min(1),
-  promptRevision: z.number().int().min(1),
-  episodeKey: z.string().min(1).max(200),
-}).refine(
-  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
-  { message: "Intent episode key does not match its revisions" },
-);
 
 /**
  * Which automated prompted handoff a consumption is authorizing, if any.
@@ -6014,7 +6384,14 @@ export const PersonaGuidanceSchema = z
     message: `Persona guidance exceeds ${WORKFLOW_LIMITS.personaGuidanceBytes} UTF-8 bytes`,
   });
 
+
+export const UpdatePersonaRepositoryAccessSchema = z.strictObject({
+  expectedAccessRevision: z.number().int().nonnegative(),
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES),
+});
+
 export const CreatePersonaSchema = z.object({
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).optional(),
   name: PersonaNameSchema,
   description: PersonaDescriptionSchema.optional().default(""),
   guidanceMarkdown: PersonaGuidanceSchema,
@@ -6127,6 +6504,7 @@ export const WorkflowPointSchema = z.object({
 });
 
 export const PersonaSnapshotSchema = z.object({
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).default("none"),
   sourcePersonaId: WorkflowIdSchema,
   sourceRevision: z.number().int().positive(),
   name: PersonaNameSchema,
@@ -6296,9 +6674,11 @@ const CommitOidSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
  * The `pull_request` arm replaced a placeholder `head` arm that no adapter ever produced: the
  * only completion kind that could have written one refused before deciding, because its
  * capability shipped `available: false`. Nothing stored names it, so the union stays closed
- * over exactly the two shapes that are written.
+ * over the shapes that are written. `no_change` retains positive Git absence proof.
  */
 export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("no_change"), headOid: CommitOidSchema, treeOid: CommitOidSchema,
+    baseOid: CommitOidSchema, baseRef: z.string().min(1).max(400) }),
   z.object({ kind: z.literal("none") }),
   z.object({
     kind: z.literal("pull_request"),
@@ -6346,6 +6726,17 @@ export const SessionActionAttemptStateSchema = z.object({
     .object({ code: z.enum(SESSION_ACTION_BLOCK_CODES), detail: z.string().max(2_000) })
     .nullable(),
   warnings: z.array(SessionActionWarningSchema).max(8).optional().default([]),
+  /**
+   * When the observer first found the bound session missing or `exited`, or null while it is
+   * live.
+   *
+   * A daemon restart or an update leaves a session briefly unavailable while it is restored,
+   * and blocking on the first such sample turned a healthy run into one only `cancel` could
+   * end. The observer blocks `session_lost` only once this is older than its grace window,
+   * and clears it the moment the session is live again. Optional and defaulted so a row
+   * written before the field existed keeps parsing.
+   */
+  sessionMissingSince: z.number().int().nullable().optional().default(null),
 });
 
 /** The build's per-adapter answer, as the browser receives it. Never re-derived client-side. */
@@ -6514,8 +6905,8 @@ export const WorkflowJsonSchema: z.ZodType<WorkflowJson, WorkflowJson> = z.lazy(
 );
 
 const WorkflowVerdictTextSchema = z.string().trim().min(1);
-export const WorkflowEvidenceRefSchema = z.object({
-  kind: z.enum(EVIDENCE_REF_KINDS),
+export const WorkflowContextEvidenceRefSchema = z.object({
+  kind: z.enum(CONTEXT_EVIDENCE_REF_KINDS),
   quote: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
   line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
@@ -6536,6 +6927,16 @@ export const WorkflowEvidenceRefSchema = z.object({
     });
   }
 });
+
+export const RepositoryEvidenceReferenceSchema = z.strictObject({
+  kind: z.literal("repository"),
+  operationId: z.uuid(),
+  evidenceHandleId: z.uuid(),
+});
+
+export const WorkflowEvidenceRefSchema = z.discriminatedUnion("kind", [
+  WorkflowContextEvidenceRefSchema, RepositoryEvidenceReferenceSchema,
+]);
 
 /**
  * A string pattern rather than `z.custom`: this schema is part of MCP tool input, and the MCP
@@ -7099,6 +7500,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
   }),
   evidence: z.object({
     coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
+    localInspectorEnabled: z.boolean().optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
     publication: z.object({
@@ -7381,7 +7783,7 @@ export const UpdateBuiltinWorkflowRoundLimitSchema = z.object({
 export type UpdateBuiltinWorkflowRoundLimit = z.infer<typeof UpdateBuiltinWorkflowRoundLimitSchema>;
 
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
-export const PublishWorkflowSchema = ValidateWorkflowSchema;
+export const PublishWorkflowSchema = ValidateWorkflowSchema.extend({ requestId: WorkflowIdSchema.optional() });
 export const ArchiveWorkflowSchema = ValidateWorkflowSchema;
 export const UnarchiveWorkflowSchema = ValidateWorkflowSchema;
 export const DeleteWorkflowSchema = ValidateWorkflowSchema;
@@ -7486,6 +7888,17 @@ export const WorkflowRunActionSchema = z.object({
 });
 export type WorkflowRunAction = z.infer<typeof WorkflowRunActionSchema>;
 
+export const RecoverStaleInspectorGrantSchema = z.object({
+  grantRequestId: z.string().min(1).max(200),
+  submissionId: WorkflowIdSchema,
+  staleHeadSha: z.string().min(1).max(100),
+  currentHeadSha: z.string().min(1).max(100),
+}).strict();
+export type RecoverStaleInspectorGrant = z.infer<typeof RecoverStaleInspectorGrantSchema>;
+export const RecheckWorkflowInspectorSchema = WorkflowRunActionSchema.extend({
+  recoverStaleGrant: RecoverStaleInspectorGrantSchema.optional(),
+});
+
 export const RestartFullWorkflowSchema = WorkflowRunActionSchema.extend({
   confirmation: z.string().max(200).optional(),
 });
@@ -7531,7 +7944,7 @@ export const WorkflowInspectorGateStateSchema = z.object({
   enteredAt: z.number().int().nonnegative(),
   lastObservedAt: z.number().int().nonnegative().nullable(),
   observedHeadSha: z.string().min(1).max(100).nullable(),
-  reviewPosture: z.enum(["off", "dry-run", "not-allowlisted", "live"]).nullable(),
+  reviewPosture: z.enum(INSPECTOR_POSTURES).nullable(),
   waitReason: z.enum(WORKFLOW_GATE_WAIT_REASONS).nullable(),
   findingFingerprints: z
     .array(z.string().min(1).max(200))
@@ -7542,6 +7955,19 @@ export const WorkflowInspectorGateStateSchema = z.object({
     headSha: z.string().min(1).max(100).nullable(),
     treeOid: z.string().min(1).max(100),
     publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
+  grantObservation: z.object({
+    minimumObservedAt: z.number().int().nonnegative(),
+    requestedAt: z.number().int().nonnegative(),
+    verifiedHeadSha: z.string().min(1).max(100).optional(),
+  }).optional(),
+  // Present only when the gate completed on a head matching a passed Local Inspector review.
+  localReview: z.object({
+    submissionId: z.string().min(1).max(200),
+    attemptId: z.string().min(1).max(200),
+    headSha: z.string().min(1).max(100),
+    treeOid: z.string().min(1).max(100),
+    baseRef: z.string().min(1).max(500),
   }).optional(),
 });
 
@@ -7565,18 +7991,23 @@ export const WorkflowCommandArgvSchema = z
     { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
   );
 
+export const CodeRabbitCommandSchema = WorkflowCommandArgvSchema.refine(isCodeRabbitCommand, {
+  message: CODERABBIT_COMMAND_HELP,
+});
+
 /** One repository's command for one slot, in the legacy flat shape. */
 export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: WorkflowCommandArgvSchema,
-}).refine((entry) => entry.slot !== "coderabbit", { message: "CodeRabbit uses typed repository-root tuning, not legacy argv" });
+}).refine((entry) => entry.slot !== "coderabbit" && entry.slot !== "inspector", { message: "Managed review slots do not accept legacy argv" });
 
 /** One repository or subdirectory exception, inside the slot that owns it. */
 export const CodeRabbitTuningSchema = z.object({
   kind: z.literal("coderabbit"),
   baseRef: z.string().min(1).max(500).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/).nullable(),
   severity: z.enum(["critical", "major", "minor", "trivial", "info"]),
+  command: CodeRabbitCommandSchema.optional(),
 }).strict();
 
 export const WorkflowCommandOverrideSchema = z.object({
@@ -7606,6 +8037,7 @@ export const WorkflowCommandOverrideSchema = z.object({
  * do it: two open windows editing one slot must not silently overwrite one another.
  */
 export const UpdateWorkflowCommandSchema = z.object({
+  inspectorSeverity: z.enum(INSPECTOR_SEVERITIES).optional(),
   expectedRevision: z.number().int().min(1),
   defaultCommand: WorkflowCommandArgvSchema.nullable(),
   maxRuns: z
@@ -7674,6 +8106,26 @@ export const WorkflowPolicySchema = z.object({
   checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checksEnabled),
 });
 export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
+
+export const WorkflowPolicyPatchSchema = partialPatch(WorkflowPolicySchema).strict().extend({
+  retention: partialPatch(WorkflowPolicySchema.shape.retention.unwrap()).strict().optional(),
+}).refine(patch => Object.keys(patch).length > 0, { message: "Supply at least one Workflow policy field" });
+export type WorkflowPolicyPatch = z.output<typeof WorkflowPolicyPatchSchema>;
+
+const WorkflowRetentionLimitsSchema = z.strictObject({
+  rawEvidenceDays: WorkflowPolicySchema.shape.retention.unwrap().shape.rawEvidenceDays.unwrap(),
+  completedRunDays: WorkflowPolicySchema.shape.retention.unwrap().shape.completedRunDays.unwrap(),
+  maxCompletedRuns: WorkflowPolicySchema.shape.retention.unwrap().shape.maxCompletedRuns.unwrap(),
+});
+export const WorkflowSettingsPatchSchema = WorkflowPolicyPatchSchema.safeExtend({
+  retentionConfirmation: z.strictObject({
+    current: WorkflowRetentionLimitsSchema,
+    proposed: WorkflowRetentionLimitsSchema,
+  }).optional(),
+}).refine(patch => !patch.retentionConfirmation || patch.retention !== undefined, {
+  message: "Retention confirmation requires proposed limits",
+});
+export type WorkflowSettingsPatch = z.output<typeof WorkflowSettingsPatchSchema>;
 
 /**
  * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.
@@ -7784,6 +8236,7 @@ export const CodeRabbitComparisonSchema = z.object({
   interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
   baseRef: z.string().max(500).nullable(), baseTip: CommitOidSchema.nullable(), mergeBase: CommitOidSchema.nullable(), head: CommitOidSchema.nullable(),
   empty: z.boolean(), severity: z.enum(["critical", "major", "minor", "trivial", "info"]), ruleRevision: z.number().int(),
+  command: CodeRabbitCommandSchema.optional(),
   timeoutMs: z.number().int(), maxRuns: z.number().int(), error: z.string().max(2000).nullable(),
 });
 export const CodeRabbitReviewSummarySchema = z.object({
@@ -7794,6 +8247,7 @@ export const CodeRabbitReviewSummarySchema = z.object({
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({
+  localInspector: LocalInspectorReviewSchema.optional(),
   review: CodeRabbitReviewSummarySchema.optional(),
   warning: z.string().max(2000).optional(),
   diagnosticError: z.string().max(2000).optional(),
@@ -7849,6 +8303,7 @@ export const WorkflowCompletionClaimSchema = z.object({
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
   expectedIntent: SessionIntentGuardSchema.nullable().optional().default(null),
+  expectedContinuationPacket: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   expectedPlanPublication: PlanPublicationContextSchema.optional(),
 }).superRefine((claim, ctx) => {
   if (claim.completionKind === "prompted" && !claim.expectedWorkCycle) {
@@ -8078,6 +8533,7 @@ export const EnsembleEvaluatorGuidanceSchema = z.discriminatedUnion("kind", [
       }),
     runner: z.enum(LLM_RUNNER_IDS).nullable(),
     model: ModelIdSchema.nullable(),
+    effort: EffortLevelSchema.optional(),
   }),
 ]);
 
@@ -8941,6 +9397,22 @@ export const SchedulePreviewSchema = ScheduleDefinitionSchema.extend({
   });
 export type SchedulePreviewBody = z.infer<typeof SchedulePreviewSchema>;
 
+// MCP reuses the wire fields with repository omission and established policy defaults.
+// The daemon parses the complete HTTP schemas above, including cross-field refinements,
+// after the MCP process has supplied its checkout path.
+const McpScheduleFields = {
+  template: z.object({
+    ...ScheduleTemplateSchema.shape,
+    repoRoot: ScheduleTemplateSchema.shape.repoRoot.default(".").describe(
+      "Absolute local checkout path. Omit to use the calling session's working directory.",
+    ),
+  }),
+  overlapPolicy: ScheduleDefinitionSchema.shape.overlapPolicy.default("skip-active"),
+  missedPolicy: ScheduleDefinitionSchema.shape.missedPolicy.default("coalesce-latest"),
+};
+export const McpCreateScheduleSchema = CreateScheduleSchema.extend(McpScheduleFields);
+export const McpSchedulePreviewSchema = z.object({ ...SchedulePreviewSchema.shape, ...McpScheduleFields });
+
 /** Pause or resume. The service recomputes the cursor from the correct anchor. */
 export const SetScheduleEnabledSchema = z.object({ enabled: z.boolean() });
 export type SetScheduleEnabledBody = z.infer<typeof SetScheduleEnabledSchema>;
@@ -9495,11 +9967,22 @@ export interface SessionControlRequestResult {
   detail?: string;
 }
 const ControlIdSchema = z.string().min(1).max(256);
+/** A history cursor comes from the previous page of this live conversation. */
+const SessionHistoryPageSchema = z.union([z.literal("latest"), z.object({
+  before: z.number().int().safe().nonnegative(),
+  remaining: z.number().int().safe().positive().optional(),
+  conversationId: ControlIdSchema,
+  fileId: z.string().min(1).max(256),
+}).strict()]);
+export type SessionHistoryPageRequest = z.infer<typeof SessionHistoryPageSchema>;
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),
   transcript: z.boolean().optional().default(false),
+  history: SessionHistoryPageSchema.optional(),
   /** List form only: true lists only sessions that stand on a blocker. */
   blocked: z.boolean().optional(),
+  /** List form only: true lists only sessions that declared a wait on a background process. */
+  awaiting: z.boolean().optional(),
 }).strict();
 
 /** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
@@ -9527,6 +10010,19 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
   z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
   z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
+  z.object({ action: z.literal("clear_awaiting"), ...ClearAwaitingSchema.shape }).strict(),
+  /**
+   * The dashboard's Complete dialog, delegated: record the target's task as done with the
+   * outcome the controller supplies, then close the session when completion did not already
+   * request it. The two confirmations mean exactly what the dialog's do (see
+   * `CompleteTaskSchema`): neither is ever implied, and an incomplete scout is refused first.
+   */
+  z.object({
+    action: z.literal("complete"),
+    outcome: z.string().trim().max(CONVERSATION_TEXT_MAX_LENGTH).optional(),
+    satisfyDependents: z.boolean().optional(),
+    confirmIncompleteScout: z.boolean().optional(),
+  }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,
@@ -9538,7 +10034,7 @@ export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;
 
 /** `POST /api/residents/profiles`: revision 1 of a new profile. */
 export const CreateResidentProfileSchema = z
-  .object({ settings: ResidentProfileRevisionRequestSchema })
+  .object({ settings: NewResidentProfileSettingsSchema })
   .strict();
 export type CreateResidentProfile = z.infer<typeof CreateResidentProfileSchema>;
 

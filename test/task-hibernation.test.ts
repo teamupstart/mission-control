@@ -1,3 +1,4 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { test, after, beforeEach } from "node:test";
@@ -397,6 +398,22 @@ test("hibernate is refused while a snoozed question filed without stopping is ou
   reviews.resolve(asked.id, "dismiss", null, "human");
 });
 
+test("hibernation resume refuses a checkout reserved by cleanup", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const path = checkout("cleanup-reserved-wake");
+  await hibernated(f, t, "cleanup-reserved-wake", path);
+  const fake = withFakeDriver(async () => boundTo(fakeHandle(), "conv-cleanup-reserved-wake"));
+  t.after(fake.restore);
+  const before = f.registry.getTask("cleanup-reserved-wake");
+  using cleanup = reserveWorktreeCleanup([path]);
+  assert.ok(cleanup);
+  const result = await f.hibernation.resume("cleanup-reserved-wake");
+  assert.deepEqual(result, { ok: false, status: 409, error: "Automatic cleanup currently owns this checkout." });
+  assert.equal(fake.calls.length, 0);
+  assert.deepEqual(f.registry.getTask("cleanup-reserved-wake"), before);
+});
+
 test("resume reopens the same conversation under the same session id and binds the task back", async (t) => {
   const f = fleet();
   t.after(() => f.tasks.stopMissionSessionClosures());
@@ -658,6 +675,11 @@ interface TerminalFleet {
   };
 }
 
+/** Resume's appear budget in `terminalFleet` when the launch will come up and be proven. */
+const PROVEN_LAUNCH_MS = 15_000;
+/** And when nothing provable comes up, so the test is waiting for the budget to run out. */
+const ABSENT_LAUNCH_MS = 300;
+
 /**
  * A terminal task whose agent is idle at `cwd`. `appears` decides what a resume's launch does:
  * bring up a new agent on the conversation, or nothing.
@@ -696,8 +718,14 @@ function terminalFleet(
   const closed: string[] = [];
   const prepared: TerminalFleet["prepared"] = [];
   const disposed: string[] = [];
+  // Whether the launched agent comes up on the conversation; `controls.appear` reads and writes it.
+  let appear = options.appears !== false;
   const controls: TerminalFleet["controls"] = {
-    appear: options.appears !== false,
+    get appear() { return appear; },
+    set appear(value: boolean) {
+      appear = value;
+      setAppearBudget();
+    },
     competitor: options.competitor ?? false,
     closeFailures: options.closeFailures ?? 0,
     live: false,
@@ -788,9 +816,21 @@ function terminalFleet(
       exited: async (session) =>
         registry.getSession(session.id)?.state === "exited" || !registry.getSession(session.id) || controls.gone.has(session.id),
       backendFor: () => "tmux",
-      appearMs: 300,
+      appearMs: ABSENT_LAUNCH_MS,
     },
   });
+  // How long Resume waits for the launch to be proven, which is only ever a wall-clock budget.
+  // A launch that will come up on the conversation gets a long one: it is proven within a few
+  // ticks, and the budget only has to outlast a loaded host stalling this process, which a
+  // 300 ms window did not (the "after its proof" test once read its own launch as a competitor
+  // under the full suite). A test where nothing provable comes up is waiting for the budget to
+  // run out, so it keeps the short one. The manager copies its seams once, so the budget is set
+  // on that copy, again whenever a test switches `controls.appear`.
+  const seams = (hibernation as unknown as { terminal: { appearMs: number } }).terminal;
+  function setAppearBudget(): void {
+    seams.appearMs = appear && options.reports === undefined ? PROVEN_LAUNCH_MS : ABSENT_LAUNCH_MS;
+  }
+  setAppearBudget();
   registry.applyDiscovery([discovered(old, cwd, "%1", 1), ...resident]);
   started(registry, cwd, "%1", "conv-t");
   if (options.switcher) started(registry, cwd, "%5", "conv-other");

@@ -55,7 +55,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/file-mermaid-preview/${name}.png`);
 }
 

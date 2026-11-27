@@ -37,6 +37,8 @@ import {
   TASK_KIND_INFO,
   allowsBacklogAutopilot,
   hasReviewableDiff,
+  isImplementationTaskKind,
+  isShippingTaskKind,
   providerOwnsTaskCompletion,
   taskDefaultWorkflowId,
   taskKindAllowsBacklog,
@@ -186,6 +188,11 @@ test("resident is launched only from a profile: Dispatch does not offer it and i
   assert.equal(taskKindBacklogRefusal("chat"), TASK_KIND_BACKLOG_REFUSAL);
 });
 
+test("implementation and publication handoffs have distinct task-kind eligibility", () => {
+  assert.deepEqual(TASK_KINDS.filter(isImplementationTaskKind), ["ship", "bugfix"]);
+  assert.deepEqual(TASK_KINDS.filter(isShippingTaskKind), ["ship", "bugfix", "document"]);
+});
+
 test("every kind has its own colour, so no two marks can be mistaken for each other", () => {
   const accents = TASK_KINDS.map((kind) => TASK_KIND_INFO[kind].accent);
   for (const accent of accents) assert.match(accent, /^#[0-9a-f]{6}$/);
@@ -205,6 +212,9 @@ test("chat has the approved conversational copy", () => {
     launch: "harness",
     autopilot: false,
     foremanInvite: true,
+    // A chat is a piece of work, and the tasks its session files are their own.
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint: null,
   });
 });
@@ -215,6 +225,8 @@ test("pipeline is provider-owned work and never backlog autopilot work", () => {
     launch: "pipeline",
     autopilot: false,
     foremanInvite: true,
+    workUnit: true,
+    sessionTasksJoinWorkUnit: false,
     constraint:
       "Pipeline tasks use Conductor's configured Engineer host. Conductor owns its downstream agent, model, and effort; attached repos, after-work workflows, and backlog autopilot do not apply.",
   });

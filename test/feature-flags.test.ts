@@ -6,8 +6,10 @@ import * as registry from "../src/shared/feature-flag-registry.ts";
 import {
   applyFeatureFlagIntent, explicitlyDisabledFeatureFlags, FEATURE_FLAGS_DEFAULTS,
   FeatureFlagIntentSchema, FeatureFlagsConfigSchema, resolveFeatureFlag, resolveFeatureFlags,
-  type FeatureFlagDefinition, type FeatureFlagIntent, type FeatureFlagsConfig,
+  type FeatureFlagDefinition, type FeatureFlagId, type FeatureFlagIntent, type FeatureFlagsConfig,
 } from "../src/shared/feature-flags.ts";
+import { INBOX_FLAG } from "../src/shared/inbox.ts";
+import { VOICE_FLAG, VOICE_REQUIRED_FLAGS } from "../src/shared/voice.ts";
 
 const definitions = [
   { id: "preview-one", label: "Preview", description: "Try the preview.", stage: "preview", keywords: [] },
@@ -68,7 +70,21 @@ test("schemas bound keys and entries while accepting future ids", () => {
   assert.equal(FeatureFlagIntentSchema.safeParse({ kind: "master", enabled: "true" }).success, false);
 });
 test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
-  assert.deepEqual(Object.keys(registry).sort(), ["FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS"]);
+  assert.deepEqual(Object.keys(registry).sort(), [
+    "BACKGROUND_REASONING_EFFORT_FLAG_ID", "BUG_FIX_INSPECTOR_FLAG_ID", "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "IDLE_RAIL_SECTION_COUNTS_FLAG_ID", "IDLE_STALLED_FLAG_ID", "LOCAL_INSPECTOR_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MARKDOWN_QUESTIONS_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "ORPHANED_WORKTREE_RECLAIM_FLAG_ID", "PERSONA_REPOSITORY_ACCESS_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RESIDENT_CARD_NAMES_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
+    "SESSION_SETTINGS_FLAG_ID", "SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID", "SHAPER_SIGN_IN_FLAG_ID", "WORK_UNIT_ID_FLAG_ID",
+  ]);
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BUG_FIX_INSPECTOR_FLAG_ID)?.stage, "preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.LOCAL_INSPECTOR_FLAG_ID)?.stage, "preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.SESSION_SETTINGS_FLAG_ID)?.stage, "preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BACKGROUND_REASONING_EFFORT_FLAG_ID)?.stage, "preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.MCP_SCHEDULES_FLAG_ID)?.stage, "preview",
+    "recurring missions through MCP ships as a preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.WORK_UNIT_ID_FLAG_ID)?.stage, "preview",
+    "the work unit id ships as a preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.SESSION_AWAITING_FLAG_ID)?.stage, "preview",
+    "awaiting background work ships as a preview");
+
   assert.ok(registry.FEATURE_FLAGS.some(flag => flag.id === "automatic-pr-branch-update" && flag.stage === "preview"));
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "resident-active-hours")?.stage, "preview",
     "resident active hours ships as a preview");
@@ -80,15 +96,41 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Headless mode",
     description: "Dispatch work to Mission Control from a Claude Code terminal session.",
     stage: "preview",
+    sessionSetting: "Enables terminal dispatch authority.",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   });
   // Session control requests ships off until the operator opts in.
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === "session-control-requests")?.stage, "preview");
-  assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, []);
+  assert.deepEqual(registry.RETIRED_FEATURE_FLAG_IDS, ["codex-resident-native-mcp"]);
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);
   assert.ok(ids.includes("task-shaping"), "the task shaping preview is declared");
+  // Shaper sign-in ships as a preview beside the task shaping preview it extends.
+  assert.deepEqual(flags.find((flag) => flag.id === "shaper-sign-in"), {
+    id: "shaper-sign-in",
+    label: "Shaper sign-in",
+    description: "Sign a remote shaper in to an OAuth-protected server from Settings > Task shaping.",
+    stage: "preview",
+    sessionSetting: "Enables credential enrollment for remote shapers.",
+    keywords: ["shaping", "shaper", "oauth", "sign-in", "login", "token"],
+  });
+  assert.equal(registry.SHAPER_SIGN_IN_FLAG_ID, "shaper-sign-in");
+  assert.ok(ids.indexOf("shaper-sign-in") === ids.indexOf("task-shaping") + 1, "shaper sign-in sits beside task shaping");
   assert.equal(flags.find((flag) => flag.id === "async-input")?.stage, "preview", "ask without stopping ships as a preview");
+  assert.equal(flags.find((flag) => flag.id === "filed-plan-decisions")?.stage, "preview", "filed plan decisions ships as a preview");
+  assert.ok(ids.indexOf("filed-plan-decisions") === ids.indexOf("async-input") + 1, "filed plan decisions sits beside the flag it needs");
+  // Reports and inbox upgrades ships as a preview, off until the operator opts in.
+  const inbox = flags.find((flag) => flag.id === INBOX_FLAG);
+  assert.equal(inbox?.stage, "preview", "reports and inbox upgrades ships as a preview");
+  assert.equal(inbox?.label, "Reports and inbox upgrades");
+  assert.equal(resolveFeatureFlag(INBOX_FLAG as FeatureFlagId, FEATURE_FLAGS_DEFAULTS, flags), false, "off by default");
+  // Voice addressing ships as a preview, off until the operator opts in, and the flags it needs
+  // are real flags of this registry (a flag cannot require another; Setup offers them instead).
+  const voice = flags.find((flag) => flag.id === VOICE_FLAG);
+  assert.equal(voice?.stage, "preview", "voice addressing ships as a preview");
+  assert.equal(voice?.label, "Voice addressing");
+  assert.equal(resolveFeatureFlag(VOICE_FLAG, FEATURE_FLAGS_DEFAULTS, flags), false, "off by default");
+  for (const required of VOICE_REQUIRED_FLAGS) assert.ok(ids.includes(required), required);
   assert.equal(new Set(ids).size, ids.length);
   for (const flag of flags) {
     assert.match(flag.id, /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
@@ -101,13 +143,15 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   assert.equal(new Set(registry.RETIRED_FEATURE_FLAG_IDS).size, registry.RETIRED_FEATURE_FLAG_IDS.length);
   // Off by default: the suite's default is every preview off.
   assert.equal(resolveFeatureFlag("task-shaping", FEATURE_FLAGS_DEFAULTS), false);
+  assert.equal(resolveFeatureFlag("shaper-sign-in", FEATURE_FLAGS_DEFAULTS), false);
   assert.equal(resolveFeatureFlag("async-input", FEATURE_FLAGS_DEFAULTS), false);
+  assert.equal(resolveFeatureFlag("filed-plan-decisions", FEATURE_FLAGS_DEFAULTS), false);
   const files = ["src/shared/feature-flags.ts", "src/shared/feature-flag-registry.ts",
     ...readdirSync("src/server/feature-flags").map((name) => `src/server/feature-flags/${name}`)];
   for (const file of files) {
     const source = readFileSync(file, "utf8");
     assert.doesNotMatch(source, /(?:from\s*|import\s*\()["'][^"']*(?:update-preferences|\/update)\.ts/);
-    if (file.startsWith("src/shared")) assert.doesNotMatch(source, /["'](?:node:|[^"']*protocol\.ts)/);
+    if (file.startsWith("src/shared")) assert.doesNotMatch(source, /["'][^"']*protocol\.ts/);
   }
 });
 

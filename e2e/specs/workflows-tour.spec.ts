@@ -28,7 +28,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflows-tour/${name}.png`);
 }
 
@@ -59,7 +58,14 @@ async function startFromPalette(page: Page): Promise<void> {
   await page.keyboard.press("Meta+k");
   await expect(palette).toBeVisible();
   await palette.getByRole("combobox", { name: "Search everything" }).fill("Follow the review");
+  // Starting the tour asks the daemon for its demonstration run, and the answer changes the
+  // tour's runtime, which redraws the open stop's popover. A click on "Open Dispatch" that
+  // lands during that redraw reaches a button that is being replaced, and the tour stays on
+  // its first stop. Wait for the answer, so every click below is on the popover it settles on.
+  const seeded = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/tours/workflows/seed-run");
   await palette.getByRole("option", { name: /Start Follow the review tour, command/ }).click();
+  expect((await seeded).ok(), "the demonstration run was seeded").toBe(true);
 }
 
 async function dispatchSession(page: Page, daemon: DaemonHandle, brief: string): Promise<string> {

@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { ResidentDrawerInertNote } from "./ResidentPlacementPanel.tsx";
 
 import {
@@ -7,20 +9,25 @@ import {
   DISPLAY_ITEMS,
   DISPLAY_ITEM_GROUPS,
   isDisplayItemShown,
+  RESIDENT_CARD_NAME_SETTING,
   setDisplayChoice,
   setDisplayItemShown,
+  setResidentCardNameStyle,
   type DisplayChoice,
   type DisplayChoiceKey,
   type DisplayItemGroup,
 } from "../lib/board-card.ts";
 import {
+  PREVIEW_CALL_SIGN,
   PREVIEW_PIPELINE_RUN,
   PREVIEW_RESIDENT,
+  PREVIEW_RESIDENT_WITH_CALL_SIGN,
   PREVIEW_WORKFLOW_RUN,
   previewSession,
 } from "../lib/board-card-preview.ts";
 import { CARD_SHORTCUT_KEYS, cardShortcutChord } from "../lib/card-shortcuts.ts";
 import { useUiConfig } from "../lib/uiConfig.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { ConversationHeaderPreview } from "./ConversationHeaderPreview.tsx";
 import { SessionTile } from "./layouts/SessionTile.tsx";
 import { SubagentTree } from "./layouts/SubagentTree.tsx";
@@ -67,9 +74,12 @@ function ChoicePicker<K extends DisplayChoiceKey>({
   choice,
 }: {
   choice: DisplayChoice<K>;
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const value = useUiConfig()[choice.key];
   const name = `display-choice-${choice.key}`;
+  // Asked of every choice so the hook order never depends on the list; only a flagged one uses it.
+  const flagOn = useFeatureFlag(choice.flag ?? VOICE_FLAG);
+  if (choice.flag && !flagOn) return null;
   return (
     <div className="display-choice">
       <span className="settings-toggle-text">
@@ -98,6 +108,44 @@ function ChoicePicker<K extends DisplayChoiceKey>({
             </label>
           </Tooltip>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/** The ChoicePicker's layout with a checkbox per style instead of radios: these styles combine. */
+function ResidentCardNamePicker(): React.JSX.Element | null {
+  const styles = useUiConfig().residentCardNameStyles;
+  const offered = useFeatureFlag(RESIDENT_CARD_NAME_SETTING.flag);
+  if (!offered) return null;
+  const setting = RESIDENT_CARD_NAME_SETTING;
+  return (
+    <div className="display-choice">
+      <span className="settings-toggle-text">
+        <span className="settings-toggle-label">{setting.label}</span>
+        <span className="settings-toggle-desc">{setting.description}</span>
+      </span>
+      <div
+        className="display-choice-options display-choice-checks"
+        role="group"
+        aria-label={`${DISPLAY_GROUP_COPY.card.heading}: ${setting.label}`}
+      >
+        {setting.options.map((option) => {
+          const on = styles.includes(option.id);
+          return (
+            <Tooltip key={option.id} label={option.description}>
+              <label className={`display-choice-option${on ? " is-on" : ""}`}>
+                <input
+                  type="checkbox"
+                  value={option.id}
+                  checked={on}
+                  onChange={(e) => setResidentCardNameStyle(styles, option.id, e.target.checked)}
+                />
+                {option.label}
+              </label>
+            </Tooltip>
+          );
+        })}
       </div>
     </div>
   );
@@ -143,6 +191,7 @@ function GroupCustomizer({
         {DISPLAY_CHOICES.filter((choice) => choice.group === group).map((choice) => (
           <ChoicePicker key={choice.key} choice={choice} />
         ))}
+        {group === "card" && <ResidentCardNamePicker />}
         {items.map((item) => {
           const on = isDisplayItemShown(hidden, item.id);
           return (
@@ -192,6 +241,15 @@ export function BoardCardPanel(): React.JSX.Element {
   const config = useUiConfig();
   const hidden = config.hiddenDisplayItems;
   const session = usePreviewSession();
+  const previewResident = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID) ? PREVIEW_RESIDENT_WITH_CALL_SIGN : PREVIEW_RESIDENT;
+  // A second, ordinary session card while voice is on, so the Call sign choice moves a card
+  // in this picture: the first card is a resident, and a resident takes no call sign.
+  const callSignPreview = useFeatureFlag(VOICE_FLAG);
+  const callSignSession = useMemo(() => ({
+    ...session,
+    id: `${session.id}-call-sign`,
+    name: "Migrate the billing reconciliation job to the new ledger",
+  }), [session]);
   const groups = DISPLAY_ITEM_GROUPS.filter((group) =>
     DISPLAY_ITEMS.some((item) => item.group === group),
   );
@@ -219,12 +277,24 @@ export function BoardCardPanel(): React.JSX.Element {
           // the branch - otherwise the Jump shortcut checkbox would be the one control in
           // this panel that looks identical checked and unchecked.
           shortcutChord={cardShortcutChord(CARD_SHORTCUT_KEYS[0])}
-          resident={PREVIEW_RESIDENT}
+          resident={previewResident}
         />
         {/* The nested sub-cards hang beneath the card exactly as the board hangs them, so the
             Background sub-agents picker moves this picture both ways: the chip is the tile's
             own to draw, and the tree is this frame's, as it is the board's. */}
         {config.backgroundAgentsStyle === "nested" && <SubagentTree session={session} />}
+        {callSignPreview && (
+          <SessionTile
+            session={callSignSession}
+            callSignElement={PREVIEW_CALL_SIGN}
+            onOpen={() => {}}
+            draggingRepo={null}
+            onDropped={() => {}}
+            onDropError={() => {}}
+            onDropConfirm={() => {}}
+            shortcutChord={cardShortcutChord(CARD_SHORTCUT_KEYS[1])}
+          />
+        )}
       </>
     ),
     // The same fixture session, so the header and the card above it describe one session.

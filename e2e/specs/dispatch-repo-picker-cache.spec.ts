@@ -146,10 +146,12 @@ test("a rescan that completes adds a checkout cloned since the last scan to the 
 
 /** Save the indexed directories from a client that is NOT the window under test. */
 async function saveDirectoriesElsewhere(daemon: DaemonHandle, paths: string[]): Promise<void> {
-  const response = await fetch(`${daemon.baseURL}/api/repo-index`, {
+  const url = `${daemon.baseURL}/api/repo-index`;
+  const { revision } = await (await fetch(url)).json();
+  const response = await fetch(url, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ directories: paths.map((path) => ({ path })) }),
+    body: JSON.stringify({ revision, directories: paths.map((path) => ({ path })) }),
   });
   expect(response.status, await response.clone().text()).toBe(200);
 }
@@ -223,10 +225,11 @@ test.describe("with the indexed directories editable in Settings", () => {
     try {
       await other.goto(daemon.baseURL);
       const status = await other.evaluate(async () => {
+        const { revision } = await (await fetch("/api/repo-index")).json();
         const res = await fetch("/api/repo-index", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ directories: [] }),
+          body: JSON.stringify({ revision, directories: [] }),
         });
         return res.status;
       });

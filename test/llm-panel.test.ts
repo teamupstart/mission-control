@@ -6,7 +6,7 @@ import { LlmSettingsPanel } from "../src/web/components/LlmSettingsPanel.tsx";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
-import { LLM_JOB_IDS, LLM_JOB_SPECS } from "../src/shared/llm-jobs.ts";
+import { liveLlmJobIds, LLM_JOB_IDS, LLM_JOB_SPECS } from "../src/shared/llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "../src/shared/llm.ts";
 import { guardProviderModel, MODEL_CATALOG } from "../src/shared/model.ts";
 import { modelSurvivesProviderChange } from "../src/web/components/SettingsMatrix.tsx";
@@ -113,6 +113,8 @@ const INSPECTOR: InspectorState = {
   error: null,
 };
 
+const defaultJobs = liveLlmJobIds(() => false);
+
 function render(over: Partial<LlmState> = {}, harnessesOver: Partial<HarnessesState> = {}): string {
   const state: LlmState = {
     config: CONFIG,
@@ -140,7 +142,7 @@ function render(over: Partial<LlmState> = {}, harnessesOver: Partial<HarnessesSt
 
 test("every background job gets a field, labelled and explained", () => {
   const html = decoded(render());
-  for (const job of LLM_JOB_IDS) {
+  for (const job of defaultJobs) {
     assert.ok(html.includes(LLM_JOB_SPECS[job].label), `no field for ${job}`);
     assert.ok(html.includes(LLM_JOB_SPECS[job].blurb), `${job} is unexplained`);
   }
@@ -174,7 +176,7 @@ test("every blurb is still PRINTED, once per row, not left to a tooltip", () => 
   const group = jobsGroup(render());
   assert.equal(
     (group.match(/settings-matrix-slot-blurb/g) ?? []).length,
-    LLM_JOB_IDS.length,
+    defaultJobs.length,
     "each job's row must print its own explanation exactly once",
   );
 });
@@ -183,7 +185,7 @@ test("every background job gets its own PROVIDER control, named for the job", ()
   // The whole point of the phase: five jobs, five providers. A default selector with five
   // model boxes under it renders almost identically and does not customize any one job.
   const html = decoded(render());
-  for (const job of LLM_JOB_IDS) {
+  for (const job of defaultJobs) {
     assert.ok(
       html.includes(`aria-label="${LLM_JOB_SPECS[job].label} provider"`),
       `${job} has no provider of its own`,
@@ -215,7 +217,7 @@ test("a job pinned to its own provider shows that provider selected, and its nei
   assert.match(goal, /<option value="codex" selected="">/, "the Goal row must show its own pick");
   // The other four are untouched by a write that named one job - the failure that made the
   // old blanket clear-on-change unusable, asserted from the panel this time.
-  for (const job of LLM_JOB_IDS.filter((j) => j !== "goal")) {
+  for (const job of defaultJobs.filter((j) => j !== "goal")) {
     const at = html.indexOf(`aria-label="${LLM_JOB_SPECS[job].label} provider"`);
     assert.ok(at > 0, `${job} lost its provider control`);
   }

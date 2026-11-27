@@ -26,3 +26,99 @@ License:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
+
+The voice addressing preview downloads, at the operator's request, a speech
+model that is not distributed with this product. Its files are fetched from
+Hugging Face at pinned commits and kept in the state home:
+
+  NVIDIA Parakeet TDT 0.6B v2, Core ML conversion by FluidInference
+  https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml
+  (commit ee09c569f73759e6d44c9bd16766f477b2b36d39), based on
+  https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
+
+  NVIDIA Parakeet TDT-CTC 110M, Core ML conversion by FluidInference
+  https://huggingface.co/FluidInference/parakeet-ctc-110m-coreml
+  (commit accdafd8cf8a2ff1cabe3c11e54416b405d409aa), based on
+  https://huggingface.co/nvidia/parakeet-tdt_ctc-110m
+
+Both models are licensed under the Creative Commons Attribution 4.0
+International License (CC-BY-4.0), https://creativecommons.org/licenses/by/4.0/.
+The models were created by NVIDIA and converted to Core ML by FluidInference.
+Mission Control uses the files unmodified.
+
+The macOS voice listener uses the WebRTC voice activity detector from libfvad
+(https://github.com/dpirch/libfvad), distributed under the following license:
+
+Copyright (c) 2011, The WebRTC project authors. All rights reserved.
+Copyright (c) 2016 Daniel Pirch
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+
+  * Neither the name of Google nor the names of its contributors may
+    be used to endorse or promote products derived from this software
+    without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+The portable voice listener includes sherpa-onnx and its Node API bindings
+(https://github.com/k2-fsa/sherpa-onnx), licensed under Apache-2.0, and
+Microsoft ONNX Runtime (https://github.com/microsoft/onnxruntime), licensed
+under MIT. The downloaded Silero VAD model is distributed by onnx-community
+under MIT (https://huggingface.co/onnx-community/silero-vad). The production
+recognizer is csukuangfj's ONNX conversion of NVIDIA Parakeet TDT 0.6B v2
+under CC-BY-4.0. The separately downloaded test fixture is csukuangfj's
+NeMo Parakeet TDT Transducer 110M English (36000). Its pinned repository
+does not declare a license. The manifests identify the exact sources.
+
+MIT License
+
+ONNX Runtime: Copyright (c) Microsoft Corporation. All rights reserved.
+Silero VAD: Copyright (c) 2020-present Silero Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Supertonic 3 speech synthesis
+-----------------------------
+Mission Control downloads the optional int8 Supertonic 3 model from
+https://huggingface.co/csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/tree/cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4
+on request. Supertone publishes the original weights at
+https://huggingface.co/Supertone/supertonic-3 under the BigScience OpenRAIL-M
+licence. Use is subject to paragraph 5 and the restrictions in Attachment A:
+https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE
+The Supertonic code is MIT licensed.

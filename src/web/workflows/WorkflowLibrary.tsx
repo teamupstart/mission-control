@@ -1,3 +1,5 @@
+import { workflowCommandName } from "@shared/workflow.ts";
+import { useWorkflowCommandSlots } from "./useWorkflowCommandSlots.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addableSessionActions,
@@ -326,7 +328,12 @@ export function WorkflowLibrary({
       : null,
     [personas, sessionActions, workflow?.completionPolicy, workflow?.draft],
   );
-  const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
+  const currentVersion = draft.versions.find(version => version.id === workflow?.currentVersionId);
+  const frozenReadIds = new Set(currentVersion?.readPersonaIds);
+  const accessChanged = workflow?.draft.nodes.some(node => node.kind === "persona"
+    && frozenReadIds.has(node.personaId) !== (personas.find(persona => persona.id === node.personaId)?.repositoryAccess === "read"));
+  const alreadyPublished = Boolean(workflow && currentVersion?.sourceDraftRevision === workflow.draftRevision && !accessChanged);
+  const retryingPublish = draft.publishRetryRevision !== null;
   // The same rule the daemon enforces in `deleteWorkflowCas`, and BOTH halves of it for the
   // same reason the store checks both: `currentVersionId` is the pointer, the version list is
   // the truth. The pointer is what makes this correct on first paint - it arrives with the
@@ -386,7 +393,9 @@ export function WorkflowLibrary({
     : undefined;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
-  const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  const visibleCommandSlots = useWorkflowCommandSlots();
+  const [requestedPaletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  const paletteSlot = visibleCommandSlots.find(slot => slot === requestedPaletteSlot) ?? visibleCommandSlots[0]!;
   // Held as a raw id and RESOLVED against the addable list at render, not seeded from it: the
   // catalog and the capability answer both arrive after first paint, so a `useState`
   // initializer would pin an empty string and never recover.
@@ -889,7 +898,7 @@ export function WorkflowLibrary({
             </Tooltip>
             <Tooltip label="Which deterministic gate a new Command node runs">
               <select aria-label="Slot for new Command node" disabled={transitioning} value={paletteSlot} onChange={(event) => setPaletteSlot(event.target.value as WorkflowCheckSlot)}>
-                {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+                {visibleCommandSlots.map((slot) => <option key={slot} value={slot}>{workflowCommandName(slot)}</option>)}
               </select>
             </Tooltip>
             <Tooltip label="Add a gate on whatever this machine configures for that Command - or drag it onto the canvas">
@@ -903,6 +912,7 @@ export function WorkflowLibrary({
               {workflowCommandStatusSentence(
                 workflowCommands.find((view) => view.slot === paletteSlot),
                 hasSnapshot,
+                paletteSlot,
               )}{" "}
               <Tooltip label={`Set what the ${paletteSlot} Command runs on this machine`}>
                 <a
@@ -1093,9 +1103,19 @@ export function WorkflowLibrary({
                     })}>Restore</button>
                   </Tooltip>
                 )}
-                <Tooltip label={workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
-                  <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null, builtin: workflow.builtin })} ref={tourPublishRef} onClick={() => void draft.publish()}>Publish</button>
-                </Tooltip>
+                {draft.discardUnreadablePublish ? <Tooltip label="The saved publish request is unreadable. Discard it before publishing again.">
+                  <button className="btn" disabled={transitioning} onClick={() => void runTransition(draft.discardUnreadablePublish!)}>
+                    Discard unreadable publish request
+                  </button>
+                </Tooltip> : <Tooltip label={retryingPublish ? "Retry the original publish request" : workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
+                  <button className="btn" ref={tourPublishRef} disabled={transitioning || workflowPublishBlocked({
+                    dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict),
+                    valid: retryingPublish || Boolean(validation?.valid), alreadyPublished: alreadyPublished && !retryingPublish,
+                    archived: workflow.archivedAt !== null && !retryingPublish, builtin: workflow.builtin,
+                  })} onClick={() => void runTransition(async () => { await draft.publish(); })}>
+                    {retryingPublish ? `Retry publish (revision ${draft.publishRetryRevision})` : "Publish"}
+                  </button>
+                </Tooltip>}
               </div>
             </header>
             <WorkflowStateNotice

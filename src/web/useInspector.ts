@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InspectorConfig, InspectorConfigPatch } from "@shared/protocol.ts";
 import type { InspectorInspection } from "@shared/types.ts";
@@ -90,6 +91,7 @@ export function useInspector(): InspectorState {
     setConfigState(c);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("inspector");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -119,7 +121,7 @@ export function useInspector(): InspectorState {
       alive = false;
       clearInterval(id);
     };
-  }, [setConfig]);
+  }, [setConfig, settingsRevision]);
 
   /**
    * Re-read config and status now, without writing anything.

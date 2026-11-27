@@ -175,7 +175,7 @@ test("every mutating HTTP/MCP operation has exactly one phase owner or explicit 
   const accounted = [...PRIMARY_ACTION_ROUTES, ...WORKFLOW_ACTION_ROUTES, ...ACTION_EXCLUSIONS].map(([method, path]) => canonical(method, path));
   assert.equal(new Set(accounted).size, accounted.length, "no route may count in two phases");
   // Route groups registered from their own module are part of the same surface.
-  const source = ["routes.ts", "shaping/routes.ts"]
+  const source = ["routes.ts", "shaping/routes.ts", "shaping/sign-in/routes.ts", "report-routes.ts"]
     .map((file) => readFileSync(new URL(`../src/server/${file}`, import.meta.url), "utf8")).join("\n");
   const routes = [...source.matchAll(/app\.(post|put|patch|delete)\(\s*"([^"]+)"/g)].map((m) => canonical(m[1]!, m[2]!));
   assert.deepEqual(routes.filter((r) => !accounted.includes(r)), [], "new operations must declare ownership or an exclusion");

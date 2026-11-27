@@ -108,6 +108,7 @@ test("the table reaches a database that already had rows", () => {
       "resident_compaction_token_limit",
       "advisor_model",
       "resume_deferrals",
+      "extra_dirs_json",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a
@@ -124,6 +125,7 @@ test("the table reaches a database that already had rows", () => {
     1,
   );
   assert.equal(getSdkSession("sdk:pre-continuation")?.turnInProgress, false);
+  assert.equal(getSdkSession("sdk:pre-continuation")?.extraDirs, undefined);
   // Null, not "": a row written before the column existed was named by derivation, and that is
   // exactly what null means here - so an upgraded database keeps deriving rather than coming
   // back with every card blank-titled.

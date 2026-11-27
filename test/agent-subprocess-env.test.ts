@@ -1,6 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -8,8 +8,12 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
+// The CommonJS object, not the ESM namespace: only its properties can be mocked.
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -188,8 +192,9 @@ test("the launch wrapper carries the environment and the agent, so what a backen
 
   const script = readFileSync(argv[1]!, "utf8");
   // Every state-home spelling is removed before anything is exported, so the login shell's
-  // own MISSION_HOME cannot survive into the agent.
-  assert.match(script, /^unset MISSION_HOME FLEET_HOME HARNESS_HOME$/m);
+  // own MISSION_HOME cannot survive into the agent - and so is WORK_UNIT_ID, so the terminal
+  // server's cannot either: only the launch's own export below may set it.
+  assert.match(script, /^unset MISSION_HOME FLEET_HOME HARNESS_HOME WORK_UNIT_ID$/m);
   assert.match(script, /^export PATH=/m);
   assert.match(script, /^export MISSION_HOME=/m);
   // The agent is the last statement, quoted the way a backend would quote it, and NOT
@@ -218,4 +223,239 @@ test("a workflow-style environment gets disposable state without daemon credenti
   assert.equal(env[MISSION_API_TOKEN_FILE_ENV], undefined);
   assert.equal(env[SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV], undefined);
   cleanupAgentSubprocessEnv(env);
+});
+
+/** A stand-in agent that records how many arguments it got and the length of its last one. */
+function recordingAgent(name: string): { agent: string; out: string } {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  const out = join(dir, "launched");
+  const agent = join(dir, "agent");
+  writeFileSync(agent, [
+    "#!/bin/sh",
+    `for last in "$@"; do :; done`,
+    `printf '%s:%s' "$#" "\${#last}" > ${shellCommand([out])}`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  return { agent, out };
+}
+
+test("a launch with a fallback runs its own argv when it fits in the pane's environment", () => {
+  const { agent, out } = recordingAgent("fits");
+  const shaped = [agent, "--session-id", "s1", "x".repeat(20_000)];
+  const argv = isolatedAgentArgv(shaped, { fallbackArgv: [agent, "--session-id", "s1", "short"] });
+  execFileSync(argv[0]!, argv.slice(1), { env: process.env });
+  assert.equal(readFileSync(out, "utf8"), "3:20000", "the shaped turn one launched");
+  // The answer outlives the state home the wrapper removed when the agent exited.
+  const stateHome = dirname(argv[1]!);
+  assert.equal(existsSync(stateHome), false);
+  assert.equal(readFileSync(`${stateHome}.turn-one`, "utf8"), "shaped");
+  rmSync(`${stateHome}.turn-one`, { force: true });
+});
+
+test("a launch whose argv would not fit in the pane's inherited environment runs the fallback and says so", () => {
+  const { agent, out } = recordingAgent("falls-back");
+  const big = "x".repeat(100_000);
+  const shaped = [agent, "--session-id", "s1", big];
+  const fallback = [agent, "--session-id", "s1", "the original prompt"];
+  const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+  // The pane's environment: what the daemon would see, plus a terminal server's own variables
+  // filling all but about 40 KiB of the limit - room for the original prompt, not the shaped one.
+  const count = (value: string) => Buffer.byteLength(value) + 1 + 8;
+  const pane: Record<string, string> = { ...(process.env as Record<string, string>) };
+  let used = Object.entries(pane).reduce((sum, [k, v]) => sum + count(`${k}=${v}`), 0) + 16 * 1024;
+  for (let n = 0; argMax - used > 40 * 1024 + 4096; n++) {
+    const name = `TERMINAL_SERVER_PAD_${n}`;
+    const value = "p".repeat(4000);
+    pane[name] = value;
+    used += count(`${name}=${value}`);
+  }
+  // The failure this guards against, reproduced: the shaped exec itself is refused under that
+  // environment, while the original one runs.
+  assert.throws(() => execFileSync(agent, shaped.slice(1), { env: pane }), (error: NodeJS.ErrnoException) => error.code === "E2BIG");
+  execFileSync(agent, fallback.slice(1), { env: pane });
+
+  const argv = isolatedAgentArgv(shaped, { fallbackArgv: fallback });
+  execFileSync(argv[0]!, argv.slice(1), { env: pane });
+  assert.equal(readFileSync(out, "utf8"), `3:${"the original prompt".length}`, "the wrapper launched the original turn one");
+  const stateHome = dirname(argv[1]!);
+  assert.equal(readFileSync(`${stateHome}.turn-one`, "utf8"), "original", "and said so, where the dispatcher reads it");
+  rmSync(`${stateHome}.turn-one`, { force: true });
+});
+
+test("a launch with no fallback keeps its one-line agent command", () => {
+  const argv = isolatedAgentArgv(["/agents/pi", "--session-id", "s1", "turn one"]);
+  const script = readFileSync(argv[1]!, "utf8");
+  assert.equal(script.includes("mission-turn-one-probe"), false);
+  assert.equal(script.trimEnd().split("\n").at(-1), "'/agents/pi' '--session-id' 's1' 'turn one'");
+  rmSync(dirname(argv[1]!), { recursive: true, force: true });
+});
+
+test("a launch read back through the wrapper is the primary launch, fallback or not, with multiline prompts", async () => {
+  const { launchedArgv } = await import("./helpers/isolated-launch.ts");
+  // Real turn ones span lines, and the shaped one carries a section whose lines a naive reader
+  // would take for statements, apostrophes included.
+  const shaped = ["/agents/pi", "--session-id", "s1",
+    "Fix the charge retry.\n\n## Task context\n\n### Acme guidance: Don't double-charge\nfi\nelse\nCharge each key once."];
+  const original = ["/agents/pi", "--session-id", "s1", "Fix the charge retry.\nIt's flaky."];
+  const withFallback = isolatedAgentArgv(shaped, { fallbackArgv: original });
+  assert.deepEqual(launchedArgv(withFallback), shaped);
+  const plain = isolatedAgentArgv(original);
+  assert.deepEqual(launchedArgv(plain), original);
+  for (const argv of [withFallback, plain]) rmSync(dirname(argv[1]!), { recursive: true, force: true });
+});
+
+test("at the exact limit where an interpreter re-exec fails, the wrapper launches the original prompt", () => {
+  // A Node-style entry point: it execs an interpreter deep in a version manager's tree with the
+  // whole argv a second time, so that second exec also charges the interpreter's long path.
+  const dir = join(root, "env-interpreter");
+  const deep = join(dir, ...Array.from({ length: 32 }, (_, n) => `node-v24.19.0-segment-${n}`), "bin");
+  mkdirSync(deep, { recursive: true });
+  const out = join(dir, "launched");
+  writeFileSync(join(deep, "mission-fake-node"), [
+    "#!/bin/sh",
+    `for last in "$@"; do :; done`,
+    `printf '%s' "\${#last}" > ${shellCommand([out])}`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  assert.ok(deep.length > 800, "an interpreter path well past what the `#!` line allows for");
+  const agent = join(dir, "agent");
+  writeFileSync(agent, `#!/bin/sh\nexec ${shellCommand([join(deep, "mission-fake-node")])} "$0" "$@"\n`, { mode: 0o755 });
+  const shaped = [agent, "--session-id", "s1", "x".repeat(60_000)];
+  const fallback = [agent, "--session-id", "s1", "the original prompt"];
+  const argMax = Number(execFileSync("/usr/bin/getconf", ["ARG_MAX"], { encoding: "utf8" }).trim());
+
+  // An environment of `bytes` padding on top of the daemon's own, in ordinary-sized variables.
+  const paneWith = (bytes: number): Record<string, string> => {
+    const pane: Record<string, string> = { ...(process.env as Record<string, string>) };
+    for (let n = 0; bytes > 0; n++) {
+      const value = "p".repeat(Math.min(4000, bytes));
+      pane[`TERMINAL_SERVER_PAD_${n}`] = value;
+      bytes -= value.length;
+    }
+    return pane;
+  };
+  // Started means the interpreter itself ran: once the outer shell is up, a refused re-exec shows
+  // only as a nonzero status, and the stand-in interpreter never writes its record.
+  const runs = (file: string, args: readonly string[], env: Record<string, string>) => {
+    rmSync(out, { force: true });
+    const ran = spawnSync(file, args, { env, stdio: "ignore" });
+    return ran.error === undefined && ran.status === 0 && existsSync(out);
+  };
+  // The largest padding under which the shaped launch itself still starts, found by bisection so
+  // the case holds on any platform's accounting.
+  let fits = 0;
+  let fails = argMax;
+  while (fails - fits > 1) {
+    const mid = Math.floor((fits + fails) / 2);
+    if (runs(agent, shaped.slice(1), paneWith(mid))) fits = mid;
+    else fails = mid;
+  }
+  const pane = paneWith(fails);
+  assert.equal(runs(agent, shaped.slice(1), pane), false, "the shaped launch cannot start in this environment");
+  // And it is the interpreter's re-exec that is refused there: the outer script itself starts, and
+  // fails only when it hands the argv on under the interpreter's long path.
+  const outer = spawnSync(agent, shaped.slice(1), { env: pane, stdio: "ignore" });
+  assert.equal(outer.error, undefined, "the outer script starts at this limit");
+  assert.notEqual(outer.status, 0, "and its interpreter's exec fails");
+  assert.equal(runs(agent, fallback.slice(1), pane), true, "the original one can");
+  rmSync(out, { force: true });
+
+  const argv = isolatedAgentArgv(shaped, { fallbackArgv: fallback });
+  execFileSync(argv[0]!, argv.slice(1), { env: pane });
+  const stateHome = dirname(argv[1]!);
+  const outcome = readFileSync(`${stateHome}.turn-one`, "utf8");
+  rmSync(`${stateHome}.turn-one`, { force: true });
+  assert.equal(outcome, "original");
+  assert.equal(readFileSync(out, "utf8"), String("the original prompt".length), "and the agent started with it");
+});
+
+test("restart recovery removes a turn-one outcome whose launch is over, and keeps a live one", async () => {
+  const { reconcileDisposableAgentStateHomes, createDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
+  const { DISPOSABLE_STATE_ROOT } = await import("../src/server/terminal/launch-process.ts");
+  // A launch whose wrapper already removed its state home, from a daemon that has since died.
+  // Unique names, so a concurrent run of this file cannot reclaim or remove this run's fixtures.
+  const tag = `${process.pid}-${Date.now()}`;
+  const orphan = join(DISPOSABLE_STATE_ROOT, `session-orphaned-turn-one-${tag}`);
+  writeFileSync(`${orphan}.turn-one`, "original");
+  const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(`${orphan}.turn-one`, longAgo, longAgo);
+  // A launch that just finished under another daemon: its state home is gone, but its dispatch may
+  // not have read the outcome yet.
+  const fresh = join(DISPOSABLE_STATE_ROOT, `session-fresh-turn-one-${tag}`);
+  writeFileSync(`${fresh}.turn-one`, "shaped");
+  // A launch still running: its state home exists.
+  const live = createDisposableAgentStateHome();
+  writeFileSync(`${live}.turn-one`, "shaped");
+  // An orphaned outcome name held by a non-empty directory, as an interrupted run leaves one. A
+  // plain `rm` refuses it with EISDIR, so it used to survive, and warn, on every daemon start.
+  const directory = join(DISPOSABLE_STATE_ROOT, `session-directory-turn-one-${tag}`);
+  mkdirSync(join(`${directory}.turn-one`, "held"), { recursive: true });
+  utimesSync(`${directory}.turn-one`, longAgo, longAgo);
+  const warn = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    reconcileDisposableAgentStateHomes();
+    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed");
+    assert.equal(existsSync(`${directory}.turn-one`), false, "a directory at an orphaned outcome's name was reclaimed too");
+    assert.equal(readFileSync(`${fresh}.turn-one`, "utf8"), "shaped", "a recent outcome is kept for a dispatch that may still read it");
+    assert.equal(readFileSync(`${live}.turn-one`, "utf8"), "shaped", "a live launch's outcome is kept for its dispatch");
+    const mine = warnings.filter((args) => String(args[0]).includes(tag));
+    assert.deepEqual(mine, [], "nothing of this run's was left to warn about");
+    // So the next start finds nothing of this run's to retry.
+    warnings.length = 0;
+    reconcileDisposableAgentStateHomes();
+    assert.deepEqual(warnings.filter((args) => String(args[0]).includes(tag)), [], "and a second start has nothing to say about them");
+  } finally {
+    console.warn = warn;
+    rmSync(`${directory}.turn-one`, { recursive: true, force: true });
+    rmSync(`${orphan}.turn-one`, { force: true });
+    rmSync(`${fresh}.turn-one`, { force: true });
+    rmSync(`${live}.turn-one`, { force: true });
+    rmSync(live, { recursive: true, force: true });
+  }
+});
+
+test("restart recovery logs an outcome it cannot remove in one line and goes on with the rest", async (t) => {
+  const { reconcileDisposableAgentStateHomes } = await import("../src/server/agent-subprocess-env.ts");
+  const { DISPOSABLE_STATE_ROOT } = await import("../src/server/terminal/launch-process.ts");
+  const tag = `${process.pid}-${Date.now()}`;
+  const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+  // Sorted ahead of the reclaimable one, so the scan must get past the failure to reach it.
+  const stuck = join(DISPOSABLE_STATE_ROOT, `session-0-stuck-turn-one-${tag}`);
+  const orphan = join(DISPOSABLE_STATE_ROOT, `session-orphaned-turn-one-${tag}`);
+  for (const home of [stuck, orphan]) {
+    writeFileSync(`${home}.turn-one`, "original");
+    utimesSync(`${home}.turn-one`, longAgo, longAgo);
+  }
+  // The failure is simulated rather than built from permissions: a genuinely unremovable fixture in
+  // the shared root would outlive an interrupted run and be retried by every daemon start after it.
+  const removeForReal = fs.rmSync;
+  t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
+    if (String(args[0]) === `${stuck}.turn-one`) {
+      throw Object.assign(new Error(`EACCES: permission denied, rm '${String(args[0])}'`), { code: "EACCES" });
+    }
+    return removeForReal(...args);
+  });
+  syncBuiltinESMExports();
+  const warn = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    reconcileDisposableAgentStateHomes();
+    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed despite the stuck one");
+    const mine = warnings.filter((args) => String(args[0]).includes(tag));
+    assert.equal(mine.length, 1, "the stuck one was logged once");
+    assert.equal(mine[0]!.length, 1, "as a message alone, with no error object to print a stack for");
+    const [line] = mine[0] as [string];
+    assert.match(line, new RegExp(`could not remove the orphaned turn-one outcome session-0-stuck-turn-one-${tag}\\.turn-one: EACCES`));
+    assert.equal(line.includes("\n"), false, "on one line");
+  } finally {
+    console.warn = warn;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(`${stuck}.turn-one`, { force: true });
+    rmSync(`${orphan}.turn-one`, { force: true });
+  }
 });

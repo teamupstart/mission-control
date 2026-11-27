@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { pullRequestPolicyContract } from "../skills/pull-request-policy.ts";
 import { PersonaVerdictSchema, WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
+import { repositoryCitationLabel, type RepositoryEvidenceHandle } from "@shared/repository-access.ts";
 import { WORKFLOW_LIMITS, isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
 import type {
   EvidenceRef,
@@ -57,6 +58,7 @@ export interface WorkflowFeedbackInput {
   run: WorkflowRun;
   submission: WorkflowSubmission;
   attempts: WorkflowNodeAttempt[];
+  citations?: Record<string, RepositoryEvidenceHandle>;
 }
 
 export interface InspectorFeedbackInput {
@@ -70,6 +72,7 @@ export interface InspectorFeedbackInput {
   inspectorRound: number;
   reviewPosture: InspectorPosture | null;
   policy: InspectorFindingsPolicy;
+  freshPublishedReview?: boolean;
   findings: InspectorComment[];
   /** The pinned immutable workflow version contains at least one Persona. */
   workflowEvidence: boolean;
@@ -189,7 +192,12 @@ export interface EvidenceReadinessPacketInput {
   workflowEvidence: boolean;
 }
 
-function evidenceLine(reference: EvidenceRef): string {
+function evidenceLine(reference: EvidenceRef, citations: WorkflowFeedbackInput["citations"], attemptId?: string): string {
+  if (reference.kind === "repository") {
+    const handle = citations?.[reference.evidenceHandleId];
+    return handle && handle.operationId === reference.operationId && handle.attemptId === attemptId ? `[repository] ${repositoryCitationLabel(handle)} (${reference.operationId} / ${reference.evidenceHandleId})`
+      : `[repository] ${reference.operationId} / ${reference.evidenceHandleId}`;
+  }
   const location = reference.path
     ? ` (${reference.path}${reference.line ? `:${reference.line}` : ""})`
     : reference.line
@@ -480,7 +488,7 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
       lines.push(`${index + 1}. ${bounded(change.title)}`);
       lines.push(`   Why: ${bounded(change.rationale)}`);
       for (const reference of change.evidence) {
-        lines.push(`   Evidence: ${bounded(evidenceLine(reference))}`);
+        lines.push(`   Evidence: ${bounded(evidenceLine(reference, input.citations, attempt?.id))}`);
       }
     });
     if (node.kind === "persona" && isTestEvidenceAuditorPersona(node.persona)) {
@@ -538,7 +546,9 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     truncated ||= result.truncated;
     return result.value;
   };
-  const policyInstruction = input.policy === "restart_workflow"
+  const policyInstruction = input.freshPublishedReview
+    ? "Address the findings and reply to their GitHub threads with evidence. The published tree differs from the earlier reviewed tree, so a fresh full workflow review is required even if no code changes are needed. Verify and push any repairs, then finish this turn so Mission Control can review the published work."
+    : input.policy === "restart_workflow"
     // `restart_workflow` no longer asks for a signal, for `FINAL_INSTRUCTION`'s reason. The
     // `inspector_only` arm below still ends in "wait for Inspector to review that new head",
     // which remains literally true: that policy is resolved by the Inspector poller observing

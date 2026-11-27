@@ -18,8 +18,10 @@ import {
   ShapingConfigSchema,
   ShapingIntentSchema,
   shapingViewRevision,
+  SIGN_IN_REASONS,
   type ShapingConfigView,
   type ShapingIntent,
+  type ShapingSignInView,
 } from "../src/shared/shaping.ts";
 import { daemonShapingView, shapingReviser } from "../src/server/shaping/revisions.ts";
 import {
@@ -41,6 +43,31 @@ import {
   shapingRowsAhead,
   shapingViewCommit,
   shapingViewReached,
+  shaperSignInRow,
+  signInConnectionKey,
+  signInControlConnection,
+  signInControlSubject,
+  signInRowKey,
+  signInSubject,
+  signInLinkFor,
+  signInLinkHeld,
+  signInLinkKept,
+  signInLinksAfter,
+  signInLinksShown,
+  signInMovedSince,
+  signInMovesAfter,
+  signInMovesSince,
+  signInRefusalApplies,
+  signInRefusalsAfter,
+  signInRowShaper,
+  signInTargetsByShaper,
+  signInTargetUnchanged,
+  signInStateIn,
+  signInAttemptIn,
+  type SignInMoves,
+  signInUrlOpenable,
+  SIGN_IN_OFF_TEXT,
+  unusedSignIns,
 } from "../src/web/lib/shaping-settings.ts";
 
 const gatherer = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -52,7 +79,7 @@ const remote = {
   id: "acme-guidance", label: "Acme guidance", stage: "select",
   transport: { type: "http", url: "https://context.acme.example/shape", headers: { authorization: "Bearer {env:ACME_TOKEN}", "x-user": "{caller.user}" } },
 };
-const unsupported = { id: "future", label: "Future shaper", stage: "route", transport: { type: "grpc" } };
+const unsupported = { id: "future", label: "Future shaper", stage: "audit", transport: { type: "grpc" } };
 
 function view(input: Record<string, unknown>): ShapingConfigView {
   return daemonShapingView(ShapingConfigSchema.parse(input));
@@ -143,8 +170,10 @@ test("the list groups shapers by stage and lists an unsupported entry last, with
   assert.deepEqual(groups.map((group) => group.stage), [...SHAPING_STAGES, null]);
   assert.deepEqual(groups[0]!.rows.map((row) => row.id), ["a"]);
   assert.deepEqual(groups[1]!.rows.map((row) => row.id), ["acme-guidance"]);
-  assert.deepEqual(groups[2]!.rows, [{
-    id: "future", label: "Future shaper", shaper: null, on: false,
+  assert.deepEqual(groups[2]!.rows, [], "no router is registered");
+  assert.deepEqual(groups.at(-1)!.rows, [{
+    id: "future", label: "Future shaper", origin: "registered", path: null, folderState: null, manifest: null, startsOff: false,
+    shaper: null, on: false,
     problem: "stage: This build does not support the stage this entry names.", revision: shapingReviser([unsupported as never]),
     duplicate: false, repeats: 0,
   }]);
@@ -304,6 +333,65 @@ test("the review states what a shaper runs or calls, the variables it names and 
   // Scoped to what the transport leaves out, and honest that forwarded text carries what it holds.
   assert.match(sent.never ?? "", /leaves out the repositories. local paths and every credential except the header references above/);
   assert.match(sent.never ?? "", /The text it does send is passed on as written/);
+});
+
+test("the review and the row of a shaper that signs in state the sign-in and the access token; an unmarked one states neither", () => {
+  const marked = [
+    {
+      id: "signed-mcp", label: "Signed MCP", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: {
+        type: "http", url: "https://tools.acme.example/mcp", headers: { "x-acme-user": "{caller.user}" },
+        auth: { type: "oauth", scope: "mcp:context" },
+      } },
+    },
+    {
+      id: "signed-http", label: "Signed HTTP", stage: "select",
+      transport: { type: "http", url: "https://tools.acme.example/shape", headers: {},
+        auth: { type: "oauth", scope: "openid mcp:context", issuer: "https://login.acme.example/oauth2/default" } },
+    },
+  ];
+  const expected = [
+    [
+      { label: "Calls MCP server", value: "https://tools.acme.example/mcp" },
+      { label: "Header x-acme-user", value: "{caller.user}" },
+      // No issuer: the authorization server is on the server's own origin.
+      { label: "Signs in", value: "OAuth, scope mcp:context, at https://tools.acme.example" },
+      { label: "Tool", value: "get_guidance" },
+      { label: "Context", value: "Folded into the task argument" },
+    ],
+    [
+      { label: "Calls", value: "POST https://tools.acme.example/shape" },
+      { label: "Signs in", value: "OAuth, scope openid mcp:context, at https://login.acme.example" },
+    ],
+  ];
+  const TOKEN_LINE = "An access token from your sign-in, sent only to the server's origin";
+  marked.forEach((definition, at) => {
+    const read = readShaperManifest(JSON.stringify(definition));
+    assert.equal(read.ok, true, read.ok ? "" : read.reason);
+    if (!read.ok) return;
+    assert.deepEqual(shaperReach(read.shaper), expected[at]);
+    const receives = shaperReceives(read.shaper);
+    assert.equal(receives.sent.at(-1), TOKEN_LINE);
+    assert.match(receives.never ?? "", /every credential except the header references above and the access token from your sign-in\./);
+    const review = renderToStaticMarkup(createElement(ShaperReview, { shaper: read.shaper }));
+    const signsIn = expected[at]!.find((line) => line.label === "Signs in")!.value;
+    assert.ok(review.includes(`<dt>Signs in</dt><dd><code>${signsIn}</code></dd>`), review);
+    assert.ok(review.includes(`<li>${TOKEN_LINE.replace("'", "&#x27;")}</li>`), review);
+    const row = render(view({ shapers: [definition] }));
+    assert.ok(row.includes(`<p class="shaping-row-reach">Signs in: ${signsIn}</p>`), row);
+  });
+
+  const unmarked = view({ shapers: [remote] }).shapers[0]!;
+  assert.ok(!("unsupported" in unmarked));
+  if ("unsupported" in unmarked) return;
+  assert.equal(shaperReach(unmarked).some((line) => line.label === "Signs in"), false);
+  assert.equal(shaperReceives(unmarked).sent.includes(TOKEN_LINE), false);
+  const review = renderToStaticMarkup(createElement(ShaperReview, { shaper: unmarked }));
+  const row = render(view({ shapers: [remote] }));
+  for (const html of [review, row]) {
+    assert.doesNotMatch(html, /Signs in/);
+    assert.doesNotMatch(html, /access token from your sign-in/);
+  }
 });
 
 // Every transport's review, as a table: what the review promises is exactly what the shaper runs
@@ -582,7 +670,7 @@ test("a view from a daemon that sends no revisions draws its rows with every rev
 
 test("only the owning entry may say an import replaces it, never a repeat behind it", () => {
   // An unsupported owner, then a repeat under its id whose literal credential the store emptied.
-  const owner = { id: "twin", label: "Owner", stage: "route", transport: { type: "grpc" } };
+  const owner = { id: "twin", label: "Owner", stage: "audit", transport: { type: "grpc" } };
   const repeat = gatherer("twin", { label: "Repeat", transport: { type: "command", command: "/usr/local/bin/notes", args: ["ghp_" + "a".repeat(36)] } });
   const stored = ShapingConfigSchema.parse({ shapers: [owner, repeat] });
   const shown = daemonShapingView(stored).shapers as Array<{ label: string; replaceable?: true }>;
@@ -757,4 +845,675 @@ test("a frame counts as an identical reimport's receipt only once its revision h
   const fresh = shapingReceiptBaseline(view({}), request);
   assert.equal(fresh.shown, false);
   assert.equal(shapingFrameIsReceipt(fresh, withRevision(undefined), "same"), true);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Found on disk: the shapers folder's rows, in each state the scan reports
+
+const folderShaper = (id: string, state: "ok" | "invalid" | "refused" | "shadowed", extra: Record<string, unknown> = {}) => ({
+  id, path: `/state/shapers/${id}`, state,
+  problem: state === "ok" ? null : `The ${state} reason for ${id}.`,
+  sha256: "a".repeat(64),
+  shaper: state === "invalid" ? null : ShaperSchema.parse({ ...gatherer(id), label: `Folder ${id}` }),
+  ...extra,
+});
+
+function renderFolder(config: ShapingConfigView, discovered: unknown[], folder = { path: "/state/shapers", ignored: 0 }): string {
+  return renderToStaticMarkup(createElement(TaskShapingView, {
+    config, references: {}, onSet: async () => "saved" as const,
+    onTest: async () => ({ ok: false as const, aborted: false, reason: "" }),
+    repositories: async () => [], discovered: discovered as never, folder,
+  }));
+}
+
+/** The markup of one row, by its accessible name. */
+function rowMarkup(html: string, label: string): string {
+  const start = html.indexOf(`role="group" aria-label="${label}"`);
+  assert.notEqual(start, -1, `no row named ${label}`);
+  const next = html.indexOf('class="shaping-row"', start + 1);
+  return html.slice(start, next === -1 ? undefined : next);
+}
+
+test("an ok folder shaper is listed in its stage as Found on disk, with its path and a pill that is on", () => {
+  const html = renderFolder(view({}), [folderShaper("folder-notes", "ok")]);
+  const row = rowMarkup(html, "Folder folder-notes");
+  assert.match(row, /<span class="shaping-chip">Found on disk<\/span>/);
+  assert.match(row, /Path: <code>\/state\/shapers\/folder-notes<\/code>/);
+  assert.match(row, /aria-label="Folder folder-notes: on" aria-pressed="true"/);
+  // The folder is the source: no remove, no dry run, no move.
+  assert.doesNotMatch(row, /Remove|Dry-run|Move /);
+  assert.match(html, /<span class="settings-pane-count">1<\/span>/);
+  // In the Gather stage, not a group of its own.
+  assert.ok(html.indexOf('aria-label="Gather"') < html.indexOf('aria-label="Folder folder-notes"'));
+  assert.ok(html.indexOf('aria-label="Folder folder-notes"') < html.indexOf('aria-label="Select"'));
+});
+
+test("a folder shaper whose manifest asks to start off says so, and a stored choice wins over it", () => {
+  const quiet = folderShaper("quiet-notes", "ok", { shaper: { ...ShaperSchema.parse({ ...gatherer("quiet-notes"), label: "Quiet notes" }), enabled: false } });
+  const off = rowMarkup(renderFolder(view({}), [quiet]), "Quiet notes");
+  assert.match(off, /aria-label="Quiet notes: off"/);
+  assert.match(off, /Its manifest asks to start switched off/);
+  const on = rowMarkup(renderFolder(view({ overrides: { "quiet-notes": true } }), [quiet]), "Quiet notes");
+  assert.match(on, /aria-label="Quiet notes: on"/);
+  assert.doesNotMatch(on, /asks to start switched off/);
+  const stored = rowMarkup(renderFolder(view({ overrides: { "folder-notes": false } }), [folderShaper("folder-notes", "ok")]), "Folder folder-notes");
+  assert.match(stored, /aria-label="Folder folder-notes: off"/);
+});
+
+test("invalid, refused and shadowed folder shapers are listed apart with their reasons and cannot be switched on", () => {
+  const html = renderFolder(view({ shapers: [gatherer("taken")] }), [
+    folderShaper("broken", "invalid"),
+    folderShaper("loose", "refused"),
+    folderShaper("taken", "shadowed"),
+  ]);
+  const group = html.slice(html.indexOf('aria-label="Found on disk, not run"'));
+  assert.ok(group.length < html.length, "the folder's blocked shapers have their own group");
+  const broken = rowMarkup(group, "broken");
+  assert.match(broken, /<span class="shaping-chip is-invalid">Invalid<\/span>/);
+  assert.match(broken, /The invalid reason for broken\./);
+  assert.match(broken, /disabled="" aria-label="broken: off"/);
+  const loose = rowMarkup(group, "Folder loose");
+  assert.match(loose, /<span class="shaping-chip is-refused">Refused<\/span>/);
+  assert.match(loose, /The refused reason for loose\./);
+  assert.match(loose, /disabled="" aria-label="Folder loose: off"/);
+  const taken = rowMarkup(group, "Folder taken");
+  assert.match(taken, /<span class="shaping-chip is-shadowed">Shadowed<\/span>/);
+  // Its id's stored choice belongs to the registered shaper: there is no pill to press.
+  assert.doesNotMatch(taken, /aria-pressed/);
+});
+
+test("the folder note names where to drop a shaper, and says when entries past the bound were not read", () => {
+  const html = renderFolder(view({}), [], { path: "/state/shapers", ignored: 3 });
+  assert.match(html, /put a folder holding its <code>shaper\.json<\/code> in <code>\/state\/shapers<\/code>/);
+  assert.match(html, /3 more entries were not read: at most 32 are\./);
+});
+
+test("a folder shaper stored on that can no longer run can still be switched off, with no manifest hash", () => {
+  // Refused before its manifest was read, so the scan reports no hash and no shaper.
+  const refused = folderShaper("loose", "refused", { sha256: null, shaper: null });
+  const unreadable = folderShaper("broken", "invalid", { sha256: null });
+  const html = renderFolder(view({ overrides: { loose: true, broken: true } }), [refused, unreadable]);
+  for (const label of ["loose", "broken"]) {
+    const row = rowMarkup(html, label);
+    assert.match(row, new RegExp(`aria-label="${label}: on" aria-pressed="true"`));
+    assert.doesNotMatch(row, new RegExp(`disabled="" aria-label="${label}: on"`));
+    assert.match(row, /Stored on, but it cannot run as it is on disk\. Switch it off\./);
+  }
+  // Off, the same rows still cannot be switched on.
+  const off = renderFolder(view({}), [refused]);
+  assert.match(rowMarkup(off, "loose"), /disabled="" aria-label="loose: off"/);
+});
+
+test("a move never places a registered shaper relative to a folder shaper", () => {
+  const config = view({ shapers: [gatherer("a"), gatherer("b")], order: ["a", "folder-notes", "b"] });
+  const groups = shapingList(config, [folderShaper("folder-notes", "ok")] as never);
+  assert.deepEqual(groups[0]!.rows.map((row) => row.id), ["a", "folder-notes", "b"]);
+  assert.deepEqual(moveIntent(config, "b", -1), { kind: "place", id: "b", after: null, expect: shapingViewRevision(config, "b") });
+  assert.equal(moveIntent(config, "folder-notes", -1), null);
+});
+
+test("an enable intent may carry the manifest hash it was shown", () => {
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "enable", id: "folder-notes", enabled: true, manifest: "a".repeat(64) }).success, true);
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "enable", id: "folder-notes", enabled: true, manifest: "short" }).success, false);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Shaper sign-in in the row
+
+const signedMcp = {
+  id: "signed-mcp", label: "Signed MCP", stage: "select",
+  transport: { type: "mcp", tool: "get_guidance", server: {
+    type: "http", url: "https://tools.acme.example/mcp", headers: {}, auth: { type: "oauth", scope: "mcp:context" },
+  } },
+};
+const CONNECTION = "0123456789abcdef0123456789abcdef";
+const FAKE_LINK = "https://tools.acme.example/authorize?client_id=fake-client-1&state=fake-state";
+/** Fake attempt numbers, each naming one pending sign-in: this window's, one before it and one after. */
+const ATTEMPT = 1_700_000_000_000;
+const OLDER_ATTEMPT = ATTEMPT - 1;
+const NEWER_ATTEMPT = ATTEMPT + 1;
+/** The sign-in reply this window's Sign in received. */
+const REPLY = { url: FAKE_LINK, attempt: ATTEMPT };
+
+/** A list entry. A pending one is this window's attempt unless `attempt` says otherwise. */
+function signInEntry(extra: Partial<ShapingSignInView> = {}): ShapingSignInView {
+  return {
+    id: CONNECTION, url: "https://tools.acme.example/mcp", scope: "mcp:context", issuer: null,
+    state: "signed_out", storage: "keychain", expiresAt: null, attempt: extra.state === "pending" ? ATTEMPT : null,
+    reason: null, shapers: ["signed-mcp"], ...extra,
+  };
+}
+
+/** A link this window holds for its own attempt, seen pending. */
+const SEEN_LINK = { url: FAKE_LINK, attempt: ATTEMPT, seenPending: true, waitingIn: null };
+
+function renderSignIn(
+  signIns: ShapingSignInView[],
+  options: { enabled?: boolean; links?: Record<string, string>; shapers?: unknown[]; discovered?: unknown[]; busy?: string[] } = {},
+): string {
+  return renderToStaticMarkup(createElement(TaskShapingView, {
+    config: view({ shapers: options.shapers ?? [signedMcp] }), references: {}, onSet: async () => "saved" as const,
+    onTest: async () => ({ ok: false as const, aborted: false, reason: "" }),
+    repositories: async () => [], discovered: (options.discovered ?? []) as never,
+    signIn: {
+      enabled: options.enabled ?? true, signIns, links: options.links ?? {}, busy: new Set<string>(options.busy ?? []), errors: {},
+      onSignIn: () => {}, onSignOut: () => {}, onOpen: () => {},
+    },
+  }));
+}
+
+/** The accessible names of the buttons inside one row's sign-in block, in order. */
+function signInControls(row: string): string[] {
+  const start = row.indexOf('class="shaping-sign-in');
+  if (start === -1) return [];
+  const end = row.indexOf('class="shaping-row-actions"', start);
+  const block = row.slice(start, end === -1 ? undefined : end);
+  return [...block.matchAll(/<button [^>]*aria-label="([^"]+)"/g)].map((match) => match[1]!);
+}
+
+test("a marked row states its sign-in for every state, with the controls each offers, each naming the shaper", () => {
+  const cases: Array<{ name: string; signIns: ShapingSignInView[]; links?: Record<string, string>; text: string; reason?: string; controls: string[] }> = [
+    { name: "no entry yet", signIns: [], text: "Not signed in.", controls: ["Sign in Signed MCP"] },
+    {
+      name: "signed out, with a reason", signIns: [signInEntry({ reason: SIGN_IN_REASONS.signInAgain })],
+      text: "Not signed in.", reason: SIGN_IN_REASONS.signInAgain, controls: ["Sign in Signed MCP"],
+    },
+    {
+      name: "pending, started here", signIns: [signInEntry({ state: "pending" })], links: { [CONNECTION]: FAKE_LINK },
+      text: "Waiting for the browser.",
+      controls: ["Open the sign-in page for Signed MCP", "Copy the sign-in link for Signed MCP", "Cancel sign-in for Signed MCP"],
+    },
+    {
+      name: "pending, with no link here", signIns: [signInEntry({ state: "pending" })],
+      text: "Waiting for the browser. Started in another window, or before this page was reloaded.",
+      controls: ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"],
+    },
+    {
+      name: "signed in, in the Keychain", signIns: [signInEntry({ state: "signed_in", expiresAt: 1 })],
+      text: "Signed in. Kept in the macOS Keychain.", controls: ["Sign out Signed MCP"],
+    },
+    {
+      name: "signed in, in memory", signIns: [signInEntry({ state: "signed_in", storage: "memory", reason: SIGN_IN_REASONS.memoryOnly })],
+      text: "Signed in until Mission Control restarts. Kept in memory.", reason: SIGN_IN_REASONS.memoryOnly, controls: ["Sign out Signed MCP"],
+    },
+    {
+      name: "renewing", signIns: [signInEntry({ state: "renewing", reason: SIGN_IN_REASONS.refused })],
+      text: "Renewing the sign-in.", reason: SIGN_IN_REASONS.refused, controls: ["Sign in Signed MCP", "Sign out Signed MCP"],
+    },
+  ];
+  for (const entry of cases) {
+    const row = rowMarkup(renderSignIn(entry.signIns, { links: entry.links }), "Signed MCP");
+    // The sign-in is drawn after the "Signs in" line, which stays as it was.
+    const signsIn = row.indexOf("Signs in: OAuth, scope mcp:context, at https://tools.acme.example");
+    assert.notEqual(signsIn, -1, entry.name);
+    assert.ok(row.indexOf('aria-label="Sign-in for Signed MCP"') > signsIn, entry.name);
+    assert.ok(row.includes(`<p class="shaping-sign-in-state" role="status">${entry.text}</p>`), `${entry.name}: ${row}`);
+    if (entry.reason) assert.ok(row.includes(`<p class="shaping-sign-in-reason">${entry.reason.replaceAll("'", "&#x27;").replaceAll(">", "&gt;")}</p>`), entry.name);
+    else assert.doesNotMatch(row, /shaping-sign-in-reason/, entry.name);
+    assert.deepEqual(signInControls(row), entry.controls, entry.name);
+    // The link a window holds is never drawn as text, only used behind its controls.
+    assert.doesNotMatch(row, /fake-state/, entry.name);
+  }
+});
+
+test("a pending row with no link offers neither Open nor Copy, and a link held for another connection does not count", () => {
+  for (const links of [{}, { ["f".repeat(32)]: FAKE_LINK }]) {
+    const row = rowMarkup(renderSignIn([signInEntry({ state: "pending" })], { links }), "Signed MCP");
+    assert.doesNotMatch(row, /Open the sign-in page|Copy link|Copy the sign-in link/);
+    assert.deepEqual(signInControls(row), ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"]);
+  }
+});
+
+test("with shaper-sign-in off a marked row says sign-in is switched off and names the flag, with no control", () => {
+  const row = rowMarkup(renderSignIn([signInEntry({ state: "signed_in" })], { enabled: false }), "Signed MCP");
+  assert.ok(row.includes(`<p class="shaping-sign-in-state" role="status">${SIGN_IN_OFF_TEXT}</p>`), row);
+  assert.match(SIGN_IN_OFF_TEXT, /\(shaper-sign-in\)/);
+  assert.deepEqual(signInControls(row), []);
+  assert.doesNotMatch(row, /Signed in\.|Not signed in/);
+  // With no sign-in props at all the row reads the same: a panel that passes none offers no control.
+  const bare = rowMarkup(render(view({ shapers: [signedMcp] })), "Signed MCP");
+  assert.ok(bare.includes(SIGN_IN_OFF_TEXT));
+  assert.deepEqual(signInControls(bare), []);
+});
+
+test("an unmarked row shows no sign-in, on or off", () => {
+  for (const enabled of [true, false]) {
+    const html = renderSignIn([signInEntry({ shapers: ["acme-guidance"] })], { enabled, shapers: [remote] });
+    assert.doesNotMatch(rowMarkup(html, "Acme guidance"), /shaping-sign-in|Sign in |Sign out |switched off/);
+  }
+});
+
+test("a row's sign-in is the entry whose shapers name it, and a folder shaper is offered the controls unless it is shadowed", () => {
+  const other = signInEntry({ id: "f".repeat(32), state: "signed_in", shapers: ["someone-else"] });
+  // An entry that names another shaper is not this row's, even on the same URL and scope.
+  const read = shaperSignInRow(ShaperSchema.parse(signedMcp), "signed-mcp", { enabled: true, signIns: [other], links: {} });
+  assert.equal(read?.kind === "status" ? read.text : null, "Not signed in.");
+  assert.equal(read?.kind === "status" ? read.connection : "", null);
+  const folderMarked = (state: "ok" | "shadowed") => ({
+    id: "signed-folder", path: "/state/shapers/signed-folder", state, problem: state === "ok" ? null : "Shadowed.",
+    sha256: "a".repeat(64), shaper: ShaperSchema.parse({ ...signedMcp, id: "signed-folder", label: "Signed folder" }),
+  });
+  const ok = renderSignIn([signInEntry({ shapers: ["signed-folder"], state: "signed_in" })], { shapers: [], discovered: [folderMarked("ok")] });
+  assert.deepEqual(signInControls(rowMarkup(ok, "Signed folder")), ["Sign out Signed folder"]);
+  const shadowed = renderSignIn([], { shapers: [], discovered: [folderMarked("shadowed")] });
+  assert.doesNotMatch(rowMarkup(shadowed, "Signed folder"), /shaping-sign-in/);
+});
+
+test("sign-ins no shaper uses are listed under the shapers with their URL, scope and a Sign out, and only when there is one", () => {
+  const used = signInEntry({ state: "signed_in" });
+  assert.doesNotMatch(renderSignIn([used]), /Sign-ins no shaper uses/);
+  const unused = signInEntry({ id: "e".repeat(32), url: "https://old.acme.example/mcp", scope: "mcp:old", state: "signed_in", shapers: [] });
+  const html = renderSignIn([used, unused]);
+  assert.match(html, /role="group" aria-label="Sign-ins no shaper uses"/);
+  assert.match(html, /<code>https:\/\/old\.acme\.example\/mcp<\/code><span>Scope mcp:old<\/span>/);
+  assert.match(html, /aria-label="Sign out https:\/\/old\.acme\.example\/mcp \(mcp:old\)"/);
+  assert.ok(html.indexOf("Sign-ins no shaper uses") > html.indexOf('aria-label="Signed MCP"'));
+  // With the flag off the list is not drawn, whatever it would hold.
+  assert.doesNotMatch(renderSignIn([unused], { enabled: false }), /Sign-ins no shaper uses/);
+  assert.deepEqual(unusedSignIns([used, unused]).map((entry) => entry.id), ["e".repeat(32)]);
+});
+
+test("the dashboard opens only an https or loopback http sign-in URL", () => {
+  for (const url of [
+    "https://login.acme.example/authorize?client_id=fake",
+    "http://127.0.0.1:7317/authorize?state=fake",
+    "http://127.4.5.6/authorize",
+    "http://localhost:4000/authorize",
+    "http://[::1]:4000/authorize",
+  ]) assert.equal(signInUrlOpenable(url), true, url);
+  for (const url of [
+    "http://login.acme.example/authorize",
+    "http://10.0.0.1/authorize",
+    "http://127.0.0.1.attacker.example/authorize",
+    "file:///etc/passwd",
+    "javascript:alert(1)",
+    "data:text/html,hi",
+    "not a url",
+    "",
+  ]) assert.equal(signInUrlOpenable(url), false, url);
+});
+
+test("a window keeps a pending sign-in's link until the list shows that sign-in in another state", () => {
+  const held = { [CONNECTION]: { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "signed_out" as const, attempt: null } } };
+  // The reply landed before the event: the list still says signed out, and the link stays.
+  assert.equal(signInLinksAfter(held, [signInEntry()]), held);
+  const pending = signInLinksAfter(held, [signInEntry({ state: "pending" })]);
+  assert.deepEqual(pending, { [CONNECTION]: SEEN_LINK });
+  assert.equal(signInLinksAfter(pending, [signInEntry({ state: "pending" })]), pending, "unchanged, the same object");
+  // Once seen pending, any other state, or none, ends it.
+  assert.deepEqual(signInLinksAfter(pending, [signInEntry({ state: "signed_in" })]), {});
+  assert.deepEqual(signInLinksAfter(pending, [signInEntry({ state: "signed_out" })]), {});
+  assert.deepEqual(signInLinksAfter(pending, []), {});
+  // Not yet seen pending, a state other than the one it was stored in ends it too.
+  assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "signed_in" })]), {});
+  assert.deepEqual(signInLinksAfter(held, []), {});
+});
+
+test("another window's sign-in that replaces this window's pending one ends its link, though the row stays pending", () => {
+  const replaced = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  // Seen pending, then replaced: the list still says pending, with another attempt.
+  assert.deepEqual(signInLinksAfter({ [CONNECTION]: SEEN_LINK }, replaced), {});
+  // Not yet seen, and the list moves straight on to another attempt: never this one's.
+  const waiting = { [CONNECTION]: { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "signed_out" as const, attempt: null } } };
+  assert.deepEqual(signInLinksAfter(waiting, replaced), {});
+  // What a row may offer is drawn from the list itself, so the replaced link is offered by no
+  // render at all, not even one drawn before the bookkeeping above catches up.
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, [signInEntry({ state: "pending" })]), { [CONNECTION]: FAKE_LINK });
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, replaced), {});
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, [signInEntry({ state: "signed_in" })]), {});
+  assert.deepEqual(signInLinksShown({ [CONNECTION]: SEEN_LINK }, []), {});
+  const row = rowMarkup(renderSignIn(replaced, { links: signInLinksShown({ [CONNECTION]: SEEN_LINK }, replaced) }), "Signed MCP");
+  assert.match(row, /Started in another window, or before this page was reloaded\./);
+  assert.deepEqual(signInControls(row), ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"]);
+  assert.doesNotMatch(row, /Open the sign-in page|Copy the sign-in link/);
+});
+
+/** The state-change counts after a window draws each list in turn, from an empty start. */
+function movesThrough(lists: ShapingSignInView[][]): SignInMoves {
+  let moves: SignInMoves = {};
+  let shown: ShapingSignInView[] = [];
+  for (const list of lists) {
+    moves = signInMovesAfter(moves, shown, list);
+    shown = list;
+  }
+  return moves;
+}
+
+test("each connection's state changes are counted, and a state that comes back still counts as moved", () => {
+  const signedOut = [signInEntry()];
+  const pending = [signInEntry({ state: "pending" })];
+  const sent = movesThrough([signedOut]);
+  assert.deepEqual(sent, { [CONNECTION]: 1 }, "absent to signed out is one change");
+  // The same list again, or a list that changes only another connection, moves nothing for this one.
+  assert.equal(signInMovesAfter(sent, signedOut, [signInEntry()]), sent);
+  const otherMoved = signInMovesAfter(sent, signedOut, [...signedOut, signInEntry({ id: "e".repeat(32), state: "pending", shapers: [] })]);
+  assert.equal(signInMovedSince(sent, otherMoved, CONNECTION), false);
+  // One pending attempt replaced by another is a move, though the state stays pending.
+  const replaced = movesThrough([signedOut, pending, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]]);
+  assert.equal(signInMovesSince(movesThrough([signedOut, pending]), replaced, CONNECTION), 1);
+  assert.equal(signInAttemptIn(pending, CONNECTION), ATTEMPT);
+  assert.equal(signInAttemptIn(signedOut, CONNECTION), null);
+  assert.equal(signInAttemptIn([signInEntry({ state: "signed_in", attempt: ATTEMPT })], CONNECTION), null, "only a pending entry names an attempt");
+  // Pending, then signed out again: the state is back where it started, and the counts say it moved.
+  const back = movesThrough([signedOut, pending, signedOut]);
+  assert.equal(signInStateIn(signedOut, CONNECTION), "signed_out");
+  assert.equal(signInMovedSince(sent, back, CONNECTION), true);
+  assert.equal(signInMovedSince(sent, sent, CONNECTION), false);
+  assert.equal(signInMovedSince(sent, back, null), false, "no connection, nothing to compare");
+});
+
+test("a link is kept only for a sign-in still waiting for its event or still pending, whichever arrived first", () => {
+  // The event came first: the list already says pending when the reply hands the window its link.
+  const pendingLink = signInLinkFor([signInEntry({ state: "pending" })], CONNECTION, REPLY, 1);
+  assert.deepEqual(pendingLink, SEEN_LINK);
+  const held = signInLinkHeld({}, CONNECTION, pendingLink);
+  // No further pending frame need come: the next list, signed in, ends the link.
+  assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "signed_in" })]), {});
+  // The reply first: nothing moved while the request was in flight, from no entry at all or a
+  // signed-out one, and the link waits for the pending event.
+  for (const list of [[], [signInEntry()]]) {
+    const early = signInLinkFor(list, CONNECTION, REPLY, 0);
+    const state = list.length === 0 ? "absent" : "signed_out";
+    assert.deepEqual(early, { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state, attempt: null } });
+    const waiting = signInLinkHeld({}, CONNECTION, early);
+    assert.equal(signInLinksAfter(waiting, list), waiting);
+  }
+  // Another window's link for another connection is kept, and an older link for this one replaced.
+  const otherId = "e".repeat(32);
+  const both = signInLinkHeld({ [otherId]: { url: "https://x.example/a", attempt: ATTEMPT, seenPending: true, waitingIn: null },
+    [CONNECTION]: { url: "https://old.example/a", attempt: OLDER_ATTEMPT, seenPending: true, waitingIn: null } }, CONNECTION, pendingLink);
+  assert.equal(both[otherId]!.url, "https://x.example/a");
+  assert.equal(both[CONNECTION]!.url, FAKE_LINK);
+  // A reply that keeps no link, as a stale one, leaves every held link as it was, the same object.
+  assert.equal(signInLinkHeld(both, CONNECTION, null), both);
+});
+
+test("an older reply on a connection two rows share keeps the newer attempt's link, and ends nothing", () => {
+  // Row A's Sign in is in flight; row B's, on the same connection, replaces it and lands first.
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  const older = [signInEntry({ state: "pending", attempt: OLDER_ATTEMPT })];
+  const newer = [signInEntry({ state: "pending" })];
+  const now = movesThrough([signedOut, older, newer]);
+  const held = signInLinkHeld({}, CONNECTION, signInLinkFor(newer, CONNECTION, REPLY, signInMovesSince(sent, movesThrough([signedOut, newer]), CONNECTION)));
+  assert.deepEqual(held, { [CONNECTION]: SEEN_LINK });
+  // Then A's reply lands: its attempt was replaced, so it keeps no link and B's stays offered.
+  const stale = signInLinkFor(newer, CONNECTION, { url: "https://tools.acme.example/authorize?state=fake-older", attempt: OLDER_ATTEMPT }, signInMovesSince(sent, now, CONNECTION));
+  assert.equal(stale, null);
+  const after = signInLinkHeld(held, CONNECTION, stale);
+  assert.equal(after, held);
+  assert.deepEqual(signInLinksShown(after, newer), { [CONNECTION]: FAKE_LINK });
+});
+
+test("two replies on one connection that land before either list frame keep the newer attempt's link through both frames", () => {
+  // Rows A and B share a connection; A's attempt begins first, then B's replaces it. Both replies
+  // land while the list still shows the connection signed out, B's first.
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  const newer = signInLinkFor(signedOut, CONNECTION, { url: FAKE_LINK, attempt: NEWER_ATTEMPT }, signInMovesSince(sent, sent, CONNECTION));
+  const olderUrl = "https://tools.acme.example/authorize?state=fake-older";
+  const older = signInLinkFor(signedOut, CONNECTION, { url: olderUrl, attempt: ATTEMPT }, signInMovesSince(sent, sent, CONNECTION));
+  assert.ok(newer && older, "nothing moved, so each reply alone would wait for its event");
+  const held = signInLinkHeld(signInLinkHeld({}, CONNECTION, newer), CONNECTION, older);
+  assert.equal(held[CONNECTION]!.url, FAKE_LINK, "the older reply does not displace the newer attempt's link");
+  assert.equal(signInLinkHeld(held, CONNECTION, older), held, "the same object: nothing changed");
+  // Only the newer reply's link is kept, so only it may open a page or show a refusal.
+  assert.equal(signInLinkKept(signInLinkHeld({}, CONNECTION, newer), CONNECTION, older), false);
+  assert.equal(signInLinkKept({}, CONNECTION, newer), true);
+  assert.equal(signInLinkKept(signInLinkHeld({}, CONNECTION, older), CONNECTION, newer), true);
+  assert.equal(signInLinkKept(held, CONNECTION, null), false);
+  // In the other order the newer reply replaces the older one's link.
+  assert.equal(signInLinkHeld(signInLinkHeld({}, CONNECTION, older), CONNECTION, newer)[CONNECTION]!.url, FAKE_LINK);
+  // The daemon's frames then arrive in the order it began the attempts: A's first, then B's.
+  const aPending = [signInEntry({ state: "pending", attempt: ATTEMPT })];
+  const bPending = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  const afterA = signInLinksAfter(held, aPending);
+  assert.equal(afterA, held, "A's frame shows an older attempt, so B's link keeps waiting");
+  assert.deepEqual(signInLinksShown(afterA, aPending), {}, "and A's attempt offers no link of B's");
+  const afterB = signInLinksAfter(afterA, bPending);
+  assert.deepEqual(afterB, { [CONNECTION]: { url: FAKE_LINK, attempt: NEWER_ATTEMPT, seenPending: true, waitingIn: null } });
+  assert.deepEqual(signInLinksShown(afterB, bPending), { [CONNECTION]: FAKE_LINK });
+});
+
+test("a reply that lands after an older attempt's frame waits for its own, and one that lands after a newer attempt's keeps nothing", () => {
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  // A's frame arrived while B's request was in flight: one move, and the list shows A's older attempt.
+  const aPending = [signInEntry({ state: "pending", attempt: OLDER_ATTEMPT })];
+  const moved = signInMovesSince(sent, movesThrough([signedOut, aPending]), CONNECTION);
+  assert.equal(moved, 1);
+  const waiting = signInLinkFor(aPending, CONNECTION, REPLY, moved);
+  assert.deepEqual(waiting, { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "pending", attempt: OLDER_ATTEMPT } });
+  assert.deepEqual(signInLinksAfter(signInLinkHeld({}, CONNECTION, waiting), [signInEntry({ state: "pending" })]), { [CONNECTION]: SEEN_LINK });
+  // A newer attempt pending, or a state other than pending, after a move: this attempt is over.
+  assert.equal(signInLinkFor([signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })], CONNECTION, REPLY, 1), null);
+  assert.equal(signInLinkFor([signInEntry({ state: "signed_out" })], CONNECTION, REPLY, 1), null);
+  // A waiting link goes once a newer attempt shows, or the list leaves pending for another state.
+  const held = signInLinkHeld({}, CONNECTION, waiting);
+  assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]), {});
+  assert.deepEqual(signInLinksAfter(held, [signInEntry({ state: "signed_in" })]), {});
+});
+
+test("a sign-in that moved on before its reply landed keeps no link, even one back in the state it started in", () => {
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  // Finished elsewhere before the reply: signed in.
+  const finished = movesThrough([signedOut, [signInEntry({ state: "pending" })], [signInEntry({ state: "signed_in" })]]);
+  assert.equal(signInLinkFor([signInEntry({ state: "signed_in" })], CONNECTION, REPLY, signInMovesSince(sent, finished, CONNECTION)), null);
+  // Cancelled elsewhere before the reply: signed out again, the very state it was sent from.
+  const cancelled = movesThrough([signedOut, [signInEntry({ state: "pending" })], signedOut]);
+  const link = signInLinkFor(signedOut, CONNECTION, REPLY, signInMovesSince(sent, cancelled, CONNECTION));
+  assert.equal(link, null, "a return to the starting state is not a reply that came first");
+  // So a later pending sign-in, another window's, is never offered the dead link.
+  const laterPending = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  const after = signInLinksAfter(signInLinkHeld({}, CONNECTION, link), laterPending);
+  assert.deepEqual(after, {});
+  const row = rowMarkup(renderSignIn(laterPending, { links: signInLinksShown(after, laterPending) }), "Signed MCP");
+  assert.deepEqual(signInControls(row), ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"]);
+  assert.doesNotMatch(row, /Open the sign-in page|Copy the sign-in link/);
+  // A sign-in sent from no entry at all that came and went is over too.
+  const fromNothing = movesThrough([[], [signInEntry({ state: "pending" })], []]);
+  assert.equal(signInLinkFor([], CONNECTION, REPLY, signInMovesSince({}, fromNothing, CONNECTION)), null);
+});
+
+test("a refusal that lands after its connection changed state is about a moment that has passed", () => {
+  const signedIn = [signInEntry({ state: "signed_in" })];
+  const sent = movesThrough([signedIn]);
+  // This window sends Sign out; another window signs the connection out before the refusal lands.
+  const now = movesThrough([signedIn, [signInEntry({ state: "signed_out" })]]);
+  assert.equal(signInControlConnection(signedIn, "row:signed-mcp"), CONNECTION);
+  assert.equal(signInControlConnection(signedIn, `connection:${"e".repeat(32)}`), "e".repeat(32));
+  assert.equal(signInControlConnection([], "row:signed-mcp"), null);
+  assert.equal(signInMovedSince(sent, now, signInControlConnection(signedIn, "row:signed-mcp")), true, "the refusal is not shown");
+  // Nothing happened in between: the refusal describes the row and is shown.
+  assert.equal(signInMovedSince(sent, sent, CONNECTION), false);
+});
+
+test("a sign-in refusal is dropped once the list shows its connection in another state, and kept while it does not", () => {
+  const rowKey = "row:signed-mcp";
+  const otherId = "e".repeat(32);
+  const unusedKey = `connection:${otherId}`;
+  const signedIn = [signInEntry({ state: "signed_in" }), signInEntry({ id: otherId, state: "signed_in", shapers: [] })];
+  assert.equal(signInControlSubject(signedIn, rowKey), `${CONNECTION}|signed_in`);
+  assert.equal(signInControlSubject(signedIn, unusedKey), `${otherId}|signed_in`);
+  assert.equal(signInControlSubject([], rowKey), "|absent");
+  const refused = {
+    [rowKey]: { text: "Refused sign-out.", subject: signInControlSubject(signedIn, rowKey) },
+    [unusedKey]: { text: "Refused unused sign-out.", subject: signInControlSubject(signedIn, unusedKey) },
+  };
+  // A frame that changes nothing for either connection keeps both, as the same object.
+  assert.equal(signInRefusalsAfter(refused, signedIn), refused);
+  assert.equal(signInRefusalsAfter(refused, [...signedIn, signInEntry({ id: "d".repeat(32), state: "pending", shapers: ["other"] })]), refused);
+  // Another window signs the row's shaper out: its refusal goes, the unused entry's stays.
+  const rowSignedOut = [signInEntry({ state: "signed_out" }), signedIn[1]!];
+  assert.deepEqual(Object.keys(signInRefusalsAfter(refused, rowSignedOut)), [unusedKey]);
+  // The unused sign-in is signed out elsewhere and leaves the list: its refusal goes too.
+  assert.deepEqual(signInRefusalsAfter(refused, [signedIn[0]!]), { [rowKey]: refused[rowKey] });
+  // A refusal of a start that left nothing pending is about the signed-out row; signing in elsewhere ends it.
+  const startRefused = { [rowKey]: { text: "Refused start.", subject: signInControlSubject([signInEntry()], rowKey) } };
+  assert.deepEqual(signInRefusalsAfter(startRefused, [signInEntry({ state: "signed_in" })]), {});
+  // The unsafe-link refusal expects its own pending sign-in: it stands while that is pending and
+  // goes once it lapses, is cancelled or is replaced by another window's attempt.
+  const unsafe = { [rowKey]: { text: "Not opened.", subject: `${CONNECTION}|pending@${ATTEMPT}` } };
+  assert.equal(signInRefusalsAfter(unsafe, [signInEntry({ state: "pending" })]), unsafe);
+  assert.deepEqual(signInRefusalsAfter(unsafe, [signInEntry({ state: "signed_out" })]), {});
+  assert.deepEqual(signInRefusalsAfter(unsafe, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]), {});
+});
+
+test("a late reply whose sign-in left pending and another attempt is pending now keeps no link", () => {
+  const signedOut = [signInEntry()];
+  const pending = [signInEntry({ state: "pending" })];
+  const sent = movesThrough([signedOut]);
+  // Window A sends Sign in from a signed-out row. Its sign-in goes pending, another window cancels
+  // it and starts a new attempt, and only then does A's reply land: the list says pending again.
+  const later = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  const now = movesThrough([signedOut, pending, signedOut, later]);
+  assert.equal(signInMovesSince(sent, now, CONNECTION), 3);
+  const link = signInLinkFor(later, CONNECTION, REPLY, signInMovesSince(sent, now, CONNECTION));
+  assert.equal(link, null, "the pending attempt is not A's, so A's link is neither kept nor opened");
+  const row = rowMarkup(renderSignIn(later, { links: {} }), "Signed MCP");
+  assert.deepEqual(signInControls(row), ["Sign in Signed MCP", "Cancel sign-in for Signed MCP"]);
+  // Against that, A's own pending event is one change, and A's link is kept and seen.
+  const own = movesThrough([signedOut, pending]);
+  assert.deepEqual(signInLinkFor(pending, CONNECTION, REPLY, signInMovesSince(sent, own, CONNECTION)), SEEN_LINK);
+  // A's own attempt pending is A's link however many changes came before it, such as another
+  // window's attempt that A's replaced while A's request was in flight.
+  const overtaken = movesThrough([signedOut, later, pending]);
+  assert.deepEqual(signInLinkFor(pending, CONNECTION, REPLY, signInMovesSince(sent, overtaken, CONNECTION)), SEEN_LINK);
+  // Two changes that end anywhere but A's attempt are over, as is any count past one.
+  assert.equal(signInLinkFor([signInEntry({ state: "signed_in" })], CONNECTION, REPLY, 2), null);
+  assert.equal(signInLinkFor(later, CONNECTION, REPLY, 2), null);
+  assert.equal(signInLinkFor(signedOut, CONNECTION, REPLY, 1), null, "one change to a state other than pending is not this sign-in's event");
+});
+
+test("Sign in on a row pending elsewhere holds its link for its own attempt, never the one it replaces", () => {
+  // The row is pending with another window's attempt when this window sends Sign in, and the
+  // reply lands before its event: nothing moved, and the list still shows the older attempt.
+  const elsewhere = [signInEntry({ state: "pending", attempt: OLDER_ATTEMPT })];
+  const sent = movesThrough([elsewhere]);
+  const link = signInLinkFor(elsewhere, CONNECTION, REPLY, signInMovesSince(sent, sent, CONNECTION));
+  assert.deepEqual(link, { url: FAKE_LINK, attempt: ATTEMPT, seenPending: false, waitingIn: { state: "pending", attempt: OLDER_ATTEMPT } });
+  const held = signInLinkHeld({}, CONNECTION, link);
+  // It waits while the older attempt shows, and offers nothing: that attempt's link is not this one.
+  assert.equal(signInLinksAfter(held, elsewhere), held);
+  assert.deepEqual(signInLinksShown(held, elsewhere), {});
+  // Its own event arrives: seen, and offered.
+  const own = [signInEntry({ state: "pending" })];
+  const seen = signInLinksAfter(held, own);
+  assert.deepEqual(seen, { [CONNECTION]: SEEN_LINK });
+  assert.deepEqual(signInLinksShown(seen, own), { [CONNECTION]: FAKE_LINK });
+  // A third window replaces it: the link ends, and the counts say the connection moved.
+  const replaced = [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })];
+  assert.deepEqual(signInLinksAfter(seen, replaced), {});
+  assert.equal(signInMovesSince(movesThrough([own]), movesThrough([own, replaced]), CONNECTION), 1);
+});
+
+test("sign-in control keys and refusal subjects come from one builder each, and read back", () => {
+  const list = [signInEntry({ state: "signed_in" })];
+  assert.equal(signInControlConnection(list, signInRowKey("signed-mcp")), CONNECTION);
+  assert.equal(signInControlConnection(list, signInConnectionKey(CONNECTION)), CONNECTION);
+  assert.equal(signInControlConnection(list, signInRowKey("no-such-shaper")), null);
+  assert.equal(signInControlConnection(list, "something-else"), null);
+  // The subject a control's refusal is shown against is the one `signInSubject` builds, so a refusal
+  // made with `signInSubject(connection, "pending", attempt)` survives exactly while the list shows that.
+  assert.equal(signInControlSubject(list, signInRowKey("signed-mcp")), signInSubject(CONNECTION, "signed_in"));
+  assert.equal(signInControlSubject([], signInRowKey("signed-mcp")), signInSubject(null, "absent"));
+  assert.equal(signInControlSubject([signInEntry({ state: "pending" })], signInRowKey("signed-mcp")), signInSubject(CONNECTION, "pending", ATTEMPT));
+  const key = signInRowKey("signed-mcp");
+  const refusal = { [key]: { text: "Not opened.", subject: signInSubject(CONNECTION, "pending", ATTEMPT) } };
+  assert.equal(signInRefusalsAfter(refusal, [signInEntry({ state: "pending" })]), refusal);
+  assert.deepEqual(signInRefusalsAfter(refusal, [signInEntry({ state: "signed_out" })]), {});
+  assert.deepEqual(signInRefusalsAfter(refusal, [signInEntry({ state: "pending", attempt: NEWER_ATTEMPT })]), {});
+});
+
+test("a Cancel or Sign out in flight on a connection makes every row and entry on it wait", () => {
+  const shared = { ...signedMcp, id: "signed-twin", label: "Signed twin" };
+  const signedIn = [signInEntry({ state: "signed_in", shapers: ["signed-mcp", "signed-twin"] })];
+  const busy = [signInConnectionKey(CONNECTION)];
+  const html = renderSignIn(signedIn, { shapers: [signedMcp, shared], busy });
+  for (const label of ["Signed MCP", "Signed twin"]) {
+    assert.match(rowMarkup(html, label), new RegExp(`aria-label="Sign out ${label}" disabled=""`), label);
+  }
+  const pending = [signInEntry({ state: "pending", shapers: ["signed-mcp", "signed-twin"] })];
+  const waiting = renderSignIn(pending, { shapers: [signedMcp, shared], busy });
+  for (const label of ["Signed MCP", "Signed twin"]) {
+    const row = rowMarkup(waiting, label);
+    assert.match(row, new RegExp(`aria-label="Cancel sign-in for ${label}" disabled=""`), label);
+    assert.match(row, new RegExp(`aria-label="Sign in ${label}" disabled=""`), label);
+  }
+  // A Sign in in flight holds its own row only.
+  const signingIn = renderSignIn([signInEntry({ shapers: ["signed-mcp", "signed-twin"] })], { shapers: [signedMcp, shared], busy: [signInRowKey("signed-mcp")] });
+  assert.match(rowMarkup(signingIn, "Signed MCP"), /aria-label="Sign in Signed MCP" disabled=""/);
+  assert.doesNotMatch(rowMarkup(signingIn, "Signed twin"), /aria-label="Sign in Signed twin" disabled=""/);
+  // The unused entry's Sign out waits on the same connection key.
+  const unusedId = "e".repeat(32);
+  const unused = renderSignIn([signInEntry({ id: unusedId, state: "signed_in", shapers: [] })], { busy: [signInConnectionKey(unusedId)] });
+  assert.match(unused, /aria-label="Sign out https:\/\/tools\.acme\.example\/mcp \(mcp:context\)" disabled=""/);
+});
+
+test("a refusal applies only while its row still names the connection the request targeted, unchanged", () => {
+  const key = signInRowKey("signed-mcp");
+  const signedIn = [signInEntry({ state: "signed_in" })];
+  const sent = movesThrough([signedIn]);
+  // Nothing happened while the request was in flight: the refusal describes the row.
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: sent, signIns: signedIn, key }), true);
+  // Another window changed the shaper's scope: the row now names another connection, which may
+  // even be unchanged since it is new, so the refusal about the old one does not apply.
+  const otherId = "d".repeat(32);
+  const rescoped = [signInEntry({ state: "signed_in", shapers: [] }), signInEntry({ id: otherId, state: "signed_out" })];
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: sent, signIns: rescoped, key }), false);
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: sent, signIns: [signInEntry({ shapers: [] })], key }), false,
+    "a row that names no connection now does not take the old one's refusal");
+  // The targeted connection changed state meanwhile: the refusal is about a moment that has passed.
+  const moved = movesThrough([signedIn, [signInEntry({ state: "signed_out" })]]);
+  assert.equal(signInRefusalApplies({ sent, target: CONNECTION }, { moves: moved, signIns: [signInEntry({ state: "signed_out" })], key }), false);
+  // A Sign in sent from a row that named no connection is judged by the row's connection now.
+  assert.equal(signInRefusalApplies({ sent: {}, target: null }, { moves: {}, signIns: [], key }), true);
+  assert.equal(signInRefusalApplies({ sent: {}, target: null }, { moves: movesThrough([[signInEntry()]]), signIns: [signInEntry()], key }), false);
+  // An unused entry's key always names its own connection.
+  const unusedKey = signInConnectionKey(otherId);
+  assert.equal(signInRefusalApplies({ sent, target: otherId }, { moves: sent, signIns: rescoped, key: unusedKey }), true);
+});
+
+test("each row's sign-in target is read from its definition, so a scope change shows with no sign-in entry at all", () => {
+  const rescoped = { ...signedMcp, transport: { ...signedMcp.transport, server: { ...signedMcp.transport.server, auth: { type: "oauth", scope: "mcp:other" } } } };
+  const before = signInTargetsByShaper(shapingList(view({ shapers: [signedMcp, remote] })));
+  const after = signInTargetsByShaper(shapingList(view({ shapers: [rescoped, remote] })));
+  assert.equal(before["signed-mcp"], JSON.stringify({ issuer: null, scope: "mcp:context", url: "https://tools.acme.example/mcp" }));
+  assert.equal(before["acme-guidance"], null, "a shaper that does not sign in has no target");
+  assert.equal(signInTargetUnchanged(before, before, "signed-mcp"), true);
+  assert.equal(signInTargetUnchanged(before, after, "signed-mcp"), false);
+  assert.equal(signInTargetUnchanged(before, after, "acme-guidance"), true);
+  assert.equal(signInTargetUnchanged(before, {}, "signed-mcp"), false, "a shaper removed meanwhile no longer signs in to it");
+  // The case the connection check cannot see: the row had no sign-in entry when its Sign in went
+  // out and has none when the refusal lands, so the refusal passes that check. The target check
+  // catches the scope change the definition shows.
+  const key = signInRowKey("signed-mcp");
+  assert.equal(signInRefusalApplies({ sent: {}, target: null }, { moves: {}, signIns: [], key }), true);
+  assert.equal(signInRowShaper(key), "signed-mcp");
+  assert.equal(signInRowShaper(signInConnectionKey(CONNECTION)), null);
+  // A folder shaper shadowed by a registered one of its id takes the registered one's target.
+  const folder = folderShaper("signed-mcp", "shadowed", { shaper: ShaperSchema.parse({ ...rescoped, label: "Folder copy" }) });
+  assert.equal(signInTargetsByShaper(shapingList(view({ shapers: [signedMcp] }), [folder as never]))["signed-mcp"], before["signed-mcp"]);
+});
+
+test("a row's refusal goes once its shaper signs in to another target, even with no sign-in entry at either time", () => {
+  const key = signInRowKey("signed-mcp");
+  const rescoped = { ...signedMcp, transport: { ...signedMcp.transport, server: { ...signedMcp.transport.server, auth: { type: "oauth", scope: "mcp:other" } } } };
+  const before = signInTargetsByShaper(shapingList(view({ shapers: [signedMcp] })));
+  const after = signInTargetsByShaper(shapingList(view({ shapers: [rescoped] })));
+  // Refused before the list had any entry: the subject is the row with no connection.
+  const refused = { [key]: { text: "Refused.", subject: signInControlSubject([], key), target: before["signed-mcp"]! } };
+  assert.equal(refused[key]!.subject, signInSubject(null, "absent"));
+  // The list still has no entry, so the list alone would keep it; the changed target ends it.
+  assert.equal(signInRefusalsAfter(refused, []), refused, "without targets, the list alone cannot see the change");
+  assert.equal(signInRefusalsAfter(refused, [], before), refused, "unchanged target, kept as the same object");
+  assert.deepEqual(signInRefusalsAfter(refused, [], after), {});
+  // A shaper removed meanwhile signs in to nothing: its refusal goes too.
+  assert.deepEqual(signInRefusalsAfter(refused, [], {}), {});
+  // An unused entry's refusal names its connection itself and is judged by the list alone.
+  const unusedKey = signInConnectionKey("e".repeat(32));
+  const unusedList = [signInEntry({ id: "e".repeat(32), state: "signed_in", shapers: [] })];
+  const unused = { [unusedKey]: { text: "Refused.", subject: signInControlSubject(unusedList, unusedKey) } };
+  assert.equal(signInRefusalsAfter(unused, unusedList, after), unused);
 });

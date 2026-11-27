@@ -1,3 +1,5 @@
+import { persistConfigPatch } from "./config-patch-storage.ts";
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import {
   TerminalsConfigSchema,
   type TerminalsConfig,
@@ -9,12 +11,15 @@ import {
   type MultiplexerId,
 } from "@shared/terminal.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { macosTerminalEmulator } from "./terminal/macos-terminal.ts";
 import { defaultTerminalDeps, type TerminalDeps } from "./terminal/registry.ts";
 import {
   defaultTerminalTargetDeps,
   type TerminalTargetDeps,
 } from "./terminal/targets.ts";
-import { getAppConfig, setAppConfig } from "./db.ts";
+import { getAppConfig } from "./db.ts";
 
 // The "Terminals" settings blob, mirroring `harnesses.ts`: a schema-validated value over the
 // `app_config` KV, so a new key needs no migration.
@@ -38,12 +43,11 @@ export function getTerminalsConfig(): TerminalsConfig {
  */
 export function setTerminalsConfig(patch: TerminalsConfigPatch): TerminalsConfig {
   const cur = getTerminalsConfig();
-  const next = TerminalsConfigSchema.parse({
-    ...cur,
-    ...patch,
+  const merged = {
     multiplexerTerminal: { ...cur.multiplexerTerminal, ...patch.multiplexerTerminal },
-  });
-  setAppConfig(CONFIG_ENTRY, next);
+  };
+  const next = TerminalsConfigSchema.parse({ ...cur, ...patch, ...merged });
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, Object.keys(merged));
   return next;
 }
 
@@ -99,10 +103,14 @@ export function focusEmulatorFor(id: MultiplexerId): EmulatorId | null {
  */
 export const configuredTerminalDeps: TerminalDeps = {
   ...defaultTerminalDeps,
+  emulators: {
+    ...defaultTerminalDeps.emulators,
+    [MACOS_TERMINAL_ID]: macosTerminalEmulator(undefined, () => featureEnabled(MACOS_TERMINAL_FLAG_ID)),
+  },
   focusEmulator: focusEmulatorFor,
 };
 
 export const configuredTerminalTargetDeps: TerminalTargetDeps = {
   ...defaultTerminalTargetDeps,
-  focusEmulator: focusEmulatorFor,
+  ...configuredTerminalDeps,
 };

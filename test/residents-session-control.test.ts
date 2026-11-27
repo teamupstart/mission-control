@@ -308,6 +308,24 @@ class GrantRefusingRegistry extends Registry {
   }
 }
 
+test("the inspector desktop click grants only inspection, including after restore", async () => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "bug-fix-inspector", enabled: true });
+  const { BUILTIN_RESIDENTS } = await import("../src/server/residents/builtin-residents.ts");
+  const h = harness();
+  store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, Date.now());
+  const profile = store.getResidentProfile("builtin:bug-fix-inspector")!;
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run, sessionId } = await launched(h, profile.id, requestId);
+  assert.equal(h.registry.sessionControlEnabled(sessionId, "read"), true);
+  assert.equal(h.registry.sessionControlEnabled(sessionId), false);
+  for (const manager of managers.splice(0)) manager.stop();
+  const after = restart(run);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId, "read"), true);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), false);
+});
+
 test("a Launch click whose grant the Registry refuses answers not granted and records nothing a restart could restore", async () => {
   const registry = new GrantRefusingRegistry();
   const h = harness(registry);
@@ -732,7 +750,7 @@ class EverySweepRegistry extends Registry {
   }
   override applyDiscovery(...args: Parameters<Registry["applyDiscovery"]>): void {
     super.applyDiscovery(...args);
-    for (const fn of [...this.observers]) fn();
+    for (const fn of Array.from(this.observers)) fn();
   }
 }
 

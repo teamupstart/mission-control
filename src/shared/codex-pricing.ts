@@ -1,5 +1,5 @@
 /** Immutable identity of the OpenAI Standard API price snapshot used for new rows. */
-export const CODEX_PRICE_VERSION = "openai-standard-2026-11-02";
+export const CODEX_PRICE_VERSION = "openai-standard-2026-11-23";
 
 export interface StandardTokenPrice {
   inputPerM: number;
@@ -32,6 +32,10 @@ const STANDARD_CONTEXT = {
  * just because their name starts with a known model. Claude/Pi use reported dollars.
  */
 export const STANDARD_TOKEN_PRICES: Readonly<Record<string, StandardTokenPrice>> = {
+  // Verified 2026-11-23: https://developers.openai.com/api/docs/models/gpt-6.2-sol
+  // and https://developers.openai.com/api/docs/models/gpt-6.2-astra (30-minute cache writes).
+  "gpt-6.2-sol": { inputPerM: 2, cachedInputPerM: 0.1, outputPerM: 10, ...LONG_CONTEXT },
+  "gpt-6.2-astra": { inputPerM: 8, cachedInputPerM: 0.4, outputPerM: 40, ...LONG_CONTEXT },
   "gpt-6.1-terra": { inputPerM: 1, cachedInputPerM: 0.05, outputPerM: 5, ...LONG_CONTEXT },
   "gpt-5.6-cyber": { inputPerM: 12.5, cachedInputPerM: 1.25, outputPerM: 75, ...LONG_CONTEXT },
   "gpt-4o-2024-05-13": { inputPerM: 5, cachedInputPerM: null, outputPerM: 15, ...STANDARD_CONTEXT },

@@ -596,6 +596,26 @@ test("a retry that finds a NEW repo changed still captures it, idempotent lead o
 
 // ---- the Foreman completion boundary ----------------------------------------------------
 
+test("a refused lead completion leaves every sibling unclaimed", async t => {
+  const f = seed({ triggerMode: "foreman_complete" });
+  t.after(() => f.manager.stop());
+  f.registry.recordWorktreeHeads(new Map([[f.primaryCwd, MOVED], [f.secondCwd, MOVED]]));
+  const calls: string[] = [];
+  t.mock.method(f.store, "claimForemanCompletion", (input: Parameters<typeof f.store.claimForemanCompletion>[0]) => {
+    calls.push(input.binding.id);
+    return { result: { claimed: false, reason: "no_binding" }, binding: input.binding,
+      run: null, submission: null, created: false, previousFingerprint: undefined };
+  });
+  const result = await f.manager.claimCompletion(f.sessionId, {
+    completionKind: "drain", marker: "b".repeat(64), summary: "work complete",
+    expectedWorkCycle: null, evidenceFingerprint: "fp", expectedIntent: null,
+  });
+  assert.deepEqual(result, { claimed: false, reason: "no_binding" });
+  assert.deepEqual(calls, [f.anchor.id]);
+  assert.equal(f.store.listRuns().length, 0);
+  assert.equal(f.captures.length, 0);
+});
+
 test("one settled turn spends ONE completion episode and starts a run per changed repo", async () => {
   const f = seed({ triggerMode: "foreman_complete" });
   f.registry.recordWorktreeHeads(new Map([

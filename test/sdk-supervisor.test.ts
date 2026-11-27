@@ -1,3 +1,4 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { test, after, beforeEach } from "node:test";
@@ -221,6 +222,86 @@ const START = {
   mcp: null,
   taskId: null,
 };
+
+test("SDK start refuses an attached checkout reserved by cleanup before launching", async (t) => {
+  const fake = withFakeDriver(async () => fakeHandle());
+  t.after(fake.restore);
+  const supervisor = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
+  t.after(() => supervisor.stopAll());
+  using cleanup = reserveWorktreeCleanup(["/wt/held-by-cleanup"]);
+  assert.ok(cleanup);
+  await assert.rejects(supervisor.start({ ...START, extraDirs: ["/wt/held-by-cleanup/subdir"] }),
+    /automatic cleanup currently owns this checkout/);
+  assert.equal(fake.calls.length, 0);
+  assert.deepEqual(listSdkSessions(), []);
+});
+
+test("SDK restore defers while cleanup owns a saved additional checkout", async (t) => {
+  const id = "sdk:cleanup-reserved-restore";
+  const extraDirs = ["/wt/held-by-cleanup/subdir"];
+  upsertSdkSession({
+    ...START, id, extraDirs, agentSessionId: "saved-thread", status: "suspended", turnInProgress: false,
+  });
+  const fake = withFakeDriver(async () => fakeHandle());
+  t.after(fake.restore);
+  const warn = t.mock.method(console, "warn", () => {});
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  t.after(() => supervisor.stopAll());
+  using cleanup = reserveWorktreeCleanup(["/wt/held-by-cleanup"]);
+  assert.ok(cleanup);
+  await supervisor.restore();
+  assert.equal(fake.calls.length, 0);
+  assert.equal(registry.getSession(id), undefined);
+  assert.equal(getSdkSession(id)?.status, "suspended");
+  assert.deepEqual(getSdkSession(id)?.extraDirs, extraDirs);
+  assert.ok(warn.mock.calls.some(({ arguments: [message] }) =>
+    typeof message === "string" && /automatic cleanup currently owns this checkout/.test(message)));
+});
+
+test("a taskless SDK session persists and replays additional checkout grants", async (t) => {
+  const first = fakeHandle();
+  const second = fakeHandle();
+  const handles = [first, second];
+  const fake = withFakeDriver(async () => handles.shift()!);
+  t.after(fake.restore);
+  const original = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
+  t.after(() => original.stopAll());
+  const extraDirs = ["/fixture/additional-checkout"];
+  const session = await original.start({ ...START, taskId: null, extraDirs });
+  first.push({ kind: "bound", agentSessionId: "additional-checkout-thread", transcriptPath: null, modelId: null, pid: null });
+  await drain();
+  assert.deepEqual(getSdkSession(session.id)?.extraDirs, extraDirs);
+  assert.deepEqual(fake.calls[0]?.extraDirs, extraDirs);
+  await original.stopAll();
+
+  const restored = new SdkSupervisor(new Registry(), MISSION_TEST_MCP_DEPS);
+  t.after(() => restored.stopAll());
+  await restored.restore();
+  assert.equal(fake.calls[1]?.resume, "additional-checkout-thread");
+  assert.deepEqual(fake.calls[1]?.extraDirs, extraDirs);
+});
+
+test("restore defers an unreadable persisted SDK checkout grant", async (t) => {
+  const id = "sdk:unreadable-restore-grant";
+  upsertSdkSession({
+    id, agent: "claude", cwd: START.cwd, taskId: null, agentSessionId: "saved-thread",
+    model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  openDb().prepare("UPDATE sdk_sessions SET extra_dirs_json = ? WHERE id = ?").run("{", id);
+  const fake = withFakeDriver(async () => assert.fail("an unreadable grant must prevent launch"));
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry, MISSION_TEST_MCP_DEPS);
+  t.after(() => supervisor.stopAll());
+  await supervisor.restore();
+  assert.equal(fake.calls.length, 0);
+  assert.equal(registry.getSession(id), undefined);
+  assert.equal(getSdkSession(id)?.status, "suspended");
+  assert.equal(getSdkSession(id)?.extraDirs, null);
+  assert.deepEqual({ ...openDb().prepare("SELECT resume_deferrals, extra_dirs_json FROM sdk_sessions WHERE id = ?").get(id) },
+    { resume_deferrals: 1, extra_dirs_json: "{" });
+});
 
 test("a resident's measured native limit is persisted and replayed by a fresh supervisor", async t => {
   const { ResidentProfileRevisionSchema, residentLaunchInput } = await import("../src/shared/residents.ts");
@@ -923,7 +1004,7 @@ test("accepted launch-window follow-ups wait for the native Goal key in order", 
     assert.equal(goal?.noteKey, "agent-launch-window");
     assert.equal(goal?.objective, START.prompt);
     assert.equal(goal?.prompt, "an early human follow-up");
-    assert.deepEqual(goal?.pendingPrompts, [
+    assert.deepEqual(goal?.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
       { revision: 1, prompt: START.prompt },
       { revision: 2, prompt: "an early human follow-up" },
     ]);

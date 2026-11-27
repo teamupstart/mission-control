@@ -267,6 +267,33 @@ No Git proof can pass for an orphaned slot, so none is waited for:
 Copy anything worth keeping out of an orphaned slot before destroying it: Git can no longer show
 what in it was never committed or pushed.
 
+#### How the daemon deletes a tree
+
+Every recursive delete of an operator tree the daemon makes - an orphaned slot's Destroy, an
+orphaned task checkout's reclaim, dependency seed staging and seed paths, and archive staging and
+deletion graves - goes through one helper, `removeTree` in `src/server/util/remove-tree.ts`. It
+runs the platform's `/bin/rm -rf` as a child process rather than Node's `fs.rm`. The daemon runs
+inside Electron, whose `fs` reads `.asar` files as virtual archives, and a checkout with
+dependencies installed holds Electron's own
+`node_modules/electron/dist/Electron.app/Contents/Resources/default_app.asar`. `fs.rm` there
+neither deletes that file nor fails: it hangs, or reports `ENOTEMPTY` for every directory above
+it. Turning Electron's `process.noAsar` off for the delete is not an option, because the flag is
+process-global and every other file read in the daemon would see it while the delete ran.
+
+Each delete has a deadline of five minutes, after which its process group is killed. An `rm`
+that exits with an error, or exits cleanly while the path is still there, is retried twice, as
+the `fs.rm` it replaced was, with a pause of 100 ms and then 200 ms; every attempt and pause
+counts against the same deadline, and a Stop or the deadline ends the delete without a retry.
+A delete that cannot finish, by its deadline or for any other reason, is a bounded, reported failure and
+never a hang. The path is then checked again: an orphaned slot whose delete failed stays in a
+**transition** quarantine, with the delete's own reason (for example `rm -rf exited with code 1`
+and what `rm` printed), and Destroy can be retried. A failed reclaim renames the checkout back
+to its slot, as described in [Orphaned task checkouts](#orphaned-task-checkouts). A dependency
+seed's Stop or claim deadline kills a seed-path delete part-way and ends the seed. Registered
+slots and check trees are removed by `git worktree remove`, which runs as its own process and
+was never affected. Lint enforces the helper in `src/server/worktrees/` and `src/server/archives/`
+(`repository/tree-removal`).
+
 ### Dependency claims
 
 A warm slot keeps whatever its last occupant installed, which is not necessarily what the next
@@ -761,99 +788,180 @@ and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and
 
 ### Task worktree retention
 
-Final task completion closes its owned session, saves required archives, and resets and returns
-all task-owned worktrees. Remaining local changes are discarded. The initial agent handoff to
-a shipping workflow keeps the checkout until the task reaches final completion. Native slots
-become available only after the allocator verifies the reset. A refused or uncertain return
-keeps its resource records for retry or manual reconciliation; a failed native reset may quarantine
-the slot rather than making it available.
+Final completion records the outcome and closes the owned session. Kill requests a stop, and
+the normal exit handling settles a task whose session disappears. All three paths leave the
+checkout for background retention. The initial handoff to a shipping workflow keeps the
+checkout while the workflow owns the work.
 
-**Kill** keeps its existing failed-task outcome. Once the session has actually left, Mission
-Control returns its worktrees automatically only if **every** attached checkout is clean
-(including untracked and ignored files), its commits are reachable from freshly fetched origin refs, and
-no session or process still occupies it. Unreadable Git state, an unreachable origin, ambiguous
-ownership or unknown occupancy all preserve the checkout. Reset retains its lease and session;
-a subsequent safe Kill can return it even after Reset detached the task binding. Cancel keeps
-its existing immediate cleanup behavior. Ignored files also block safe Kill because provider
-removal or a reset onto a different commit can discard them; this includes ignored caches.
+The clock starts at the first verified owner-free observation after the last tracked session
+leaves. Idle sessions and exiting cards still in their linger period hold their checkouts.
+Board filters and folding do not change that inventory. Hidden discoveries, subdirectory users,
+attached repositories, hibernation, and launch, resume and transfer reservations also count.
+SDK sessions keep their additional checkout grants through exit linger and restart, including
+sessions launched without a task binding.
+If a session returns, it invalidates the deadline and any pending cleanup claim. Its next
+verified departure earns a fresh window. Restart preserves a verified deadline. An older ledger
+without a verified departure earns a full window on its first eligible observation.
 
-Retained work remains available through **Clean up** and **Settings > Worktrees**. The fallback
-is unchanged: **Mission Control removes a terminal task's retained worktrees automatically after
-the configured retention window without a Git-visible change.** The best-effort safe-Kill intent
-is in memory; a daemon
-restart before it runs falls back to that retention policy. New final completions record an
-explicit return obligation atomically with completion and any session closure. Those durable
-obligations resume after discovery. Refused completion returns wait 30 seconds after the attempt
-finishes, then double the delay on each refusal up to 30 minutes. Partial progress or changed
-ownership restarts the delay; daemon restart also starts fresh from the durable obligation. Tasks
-completed before this policy keep their existing retained checkouts and activity window;
-upgrade never infers return permission from an old done status or session-closure record.
-Another live session or process always blocks automatic return. Settings > Worktrees shows up to
-four blocking PIDs and bounded commands in each native slot. Return logs carry the same detail
-and the next retry time; quarantine, recovery and release logs identify the pool and slot ordinal.
-These observations never terminate an operator shell or an orphaned program automatically.
+One task has one deadline across its primary and attached repositories. Changes to HEAD, the
+index, tracked files, or non-ignored untracked files grant a fresh window from observation.
+Ignored file churn leaves the clock alone. Ignored files still block deletion because their
+contents may include local work. The observer runs every six hours, so the deadline is the
+earliest possible release.
 
-The policy is destructive at the boundary. Staged changes, unstaged changes,
-untracked files, local commits, and commits that were never pushed are all deleted when the
-window expires. None of them exempts a tree, and push, upstream, pull request, and merge status
-are deliberately not consulted at all. What they do is **reset the clock**: any change to the
-observable Git state grants another full configured window from the moment it is observed.
+At release, the daemon rechecks task and provider ownership, Git registration and activity,
+and process occupancy. After occupancy and publication verification, it fingerprints
+Git activity and confirms the published HEAD in a clean status scan that includes ignored
+files. A final index check protects files hidden by Git index flags. The daemon verifies
+publication against refreshed origin tracking refs, without applying the repository's configured
+fetch mappings to local branches. An unfinished Git operation also blocks return.
+Disposable Git worktrees must match the task's recorded branch. Initialized submodules and
+retained submodule metadata block automatic removal. Missing metadata, unknown occupancy,
+unpublished commits, local files, or an unsettled required archive hold the checkout. Ordinary failures are retried
+with backoff capped at a day. A partial return clears only the repos the provider returned,
+and a surviving checkout with a changed resource generation gets a fresh window. Automatic
+Git removal also preserves the local branch. Native leases return under the slot lock.
+Explicit Cancel, Clean up and Delete keep their own rules. Workflow checks release their
+own attempt leases after proving the process group empty.
 
-See the [task worktree retention setting](configuration.md#task-worktree-retention) for its
-location, storage, default, and bounds. The configured window applies to every provider.
-The observer reads the current
-value after each probe. On the next successful observation after a setting change, an unclaimed
-deadline is recomputed from `last_changed_at + window`, subject to the grace rules below.
-Shortening grants at least six hours from that observation,
-so saving never deletes a tree and delayed or unreadable observations only add grace. The
-applied window is persisted beside the deadline so restarts and repeated passes do not renew
-that grace. Lengthening recomputes unclaimed deadlines, including retries, while preserving an
-outstanding six-hour grace period if it ends later than `last_changed_at + window`. A deadline
-already protected by that later grace period therefore stays unchanged. Active claims and retry
-backoff are unchanged. Native task-owned slots show the persisted deadline in Worktrees.
+**Settings > Feature flags > Seven-day worktree cleanup** selects seven-day automatic return
+with fresh publication checks. The preview is off by default. Off uses the
+[configured window](configuration.md#task-worktree-retention) with the same safety checks.
+The worker adopts the setting on its next successful observation and checks the current
+window again before returning a checkout. A provider operation already issued can finish.
 
-What counts as a change:
+The daemon environment setting `MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` overrides the flag
+and evaluates due checkouts against read-only evidence, including locally available origin refs.
+An unrecognized nonempty value also selects report-only. The old `enforce` value defers to the
+feature flag. The modes preserve the stored Worktrees retention setting.
 
-- `HEAD`, including a new local commit;
-- the complete index - anything staged, unstaged, or removed from staging;
-- tracked worktree content, including deletions, mode changes, and symlink targets; and
-- every non-ignored untracked file and its current content.
+The existing local `GET /api/worktrees` diagnostics include `retention` with eligibility times
+and blockers, and `disposable` with a bounded, read-only census of the task and check roots.
+Neither carries a checkout path or claim data: a census entry is named by its `root` (`task` or
+`check`) and its directory `name`, and a retention entry by its task and each checkout's
+repository `position`. The census reports checkout metadata and task or check provenance when
+available. It provides
+review evidence for unowned directories, check residue and broken Git links. Those entries
+do not authorize cleanup. `retention.orphanReclaim` reports `off`, `report-only` or `enforce`
+for the [orphaned-checkout class](#orphaned-task-checkouts), and each entry's `checkouts` list
+gives every held checkout's `position`, `provider` and `class`: what is on disk there right now,
+`registered`, `absent`, `dangling-link` or `no-link`. It is read from the filesystem for each
+response and never cached, so it cannot describe an earlier task that used the same slot.
+`dangling-link` is what an orphan looks like; the entry's blocker says whether its full proof
+passed. A census entry's
+`orphanEvidence` is `dangling-link` when its `.git` file names an administrative directory that
+is gone, or `no-link` when it has no `.git` at all. Blockers are bounded sentences that never
+carry a path or claim data.
 
-What does not: anything `.gitignore` covers. Warm dependency directories, build caches, and log
-files churn without anybody working, and a tree pinned by them would never be reclaimed.
+#### Orphaned task checkouts
 
-**One task has one deadline.** A multi-repository task's primary and attached checkouts are
-combined into a single fingerprint in repository order, so the most recently touched tree
-protects the whole set, and the task is reclaimed as one operation.
+A disposable Git task checkout is **orphaned** when Git no longer recognizes it. Re-cloning the
+main checkout leaves every one of them with a `.git` file that names
+`<repo>/.git/worktrees/<taskId>`, an administrative directory the new clone never registered.
+Every Git command in such a checkout fails, so the ordinary activity probe answers unknown and
+the checkout is held with `git rev-parse exit 128`. That stays true while
+**Settings > Feature flags > Reclaim orphaned task worktrees** (`orphaned-worktree-reclaim`) is
+off. With it on, retention adds one narrow, positive finding modelled on
+[orphaned slots](#orphaned-slots):
 
-**How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
-internal cadence, well inside the window, and persists the result - the fingerprint, when it
-last changed, and the resulting deadline - so a restart resumes the boundary that was actually
-granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees under the same retention rule. Final
-completed tasks resume explicitly recorded closure and return obligations after session discovery.
+- The checkout's provider is `git` and its path is exactly the task's slot path.
+- The path resolves to exactly itself, with no symbolic link at the slot or in any parent.
+- Its `.git` is a regular file whose administrative directory does not exist, sits in the
+  recorded repository's own `worktrees` directory, and has the name Git gives this slot's
+  checkout. A link naming a sibling task's administrative directory is not this task's orphan.
+- A `git worktree list` of the recorded repository answered and does not name it.
 
-**The clock starts when the tree is first observed, not when the task ended.** No timestamp in
-the database can prove when a checkout was last touched, so every tree that existed before this
-shipped - and every tree whose resources are replaced - is seeded at its first successful
-observation and gets one full window from there.
+A link into another repository, a `.git` directory, a missing `.git`, a symbolic link, or any
+read that fails is never orphaned, and the checkout is held with a bounded reason. Everything
+else the retention clock already requires still applies: the task is terminal and no longer
+owned, and no tracked session, lease, reservation or process is using the checkout.
 
-**Uncertainty retries; it never deletes.** A checkout Git cannot be read, a provider that
-refuses, a process still occupying a tree, a scout report that cannot be published, or a
-partial multi-repository release all keep every durable resource fact, record a bounded reason,
-and try again with exponential backoff capped at a day. The tree stays past due - a failed
-cleanup never buys it another full window - and the ordinary **Clean up** action still reaches it.
-While a due cleanup is retrying, the task's card says so, separately from its outcome or
-failure reason.
+No Git proof is possible inside an orphan, so the daemon proves from other read-only evidence
+that nothing unrecoverable is there. It builds a throwaway bare repository under the system
+temp directory that borrows the recorded repository's objects through `objects/info/alternates`,
+reads a commit into a throwaway index, and compares the checkout with it. Only the work-tree
+column and untracked files count; the index column describes the scratch repository, not the
+checkout. The user's repository is never written.
 
-Cleanup runs through the same provider-aware teardown as **Clean up**, so a native slot, a
-disposable Git worktree, and a historical Treehouse lease are each released under the provider
-and lease identity recorded on the task. At most one automatic cleanup touches a given physical
-repository at a time, and it releases at background priority, so a large stale fleet cannot
-stand in front of a dispatch that needs a slot now.
+1. If tracked and non-ignored untracked content equals the task's recorded `baseSha`, the
+   checkout is provably disposable.
+2. Otherwise, if the daemon recorded a **merged** pull request for exactly the task's branch in
+   that repository (a record with no branch proves nothing), the content is compared with that pull request's recorded head commit. A head the
+   repository lacks is fetched from its `origin` into the scratch repository, never into the
+   user's. An unreachable host, a missing head, an unrecorded head or two different merged heads
+   hold the checkout.
+3. Anything that matches neither is local-only work: modified tracked files and untracked files
+   such as a stray `report.html`, `evidence.csv` or script. These are never deleted silently.
+   The same required-archive step task return uses publishes them as a
+   [`checkout` archive](archives.md) and verifies the bundle again at the provider boundary. If
+   the archive cannot settle, the checkout is held with that blocker and retried with backoff.
+   Deleting that archive from the library before the checkout is removed holds it too: the
+   daemon never recreates a bundle an operator deleted. At the delete itself the local-only set
+   is computed again from the exact bytes about to be removed, and the delete runs under that
+   set's archive lock after re-verifying the bundle and every file's digest, so a delete
+   requested while the checkout is being removed waits until the removal has finished. Files
+   under dot-prefixed directories such as `.github` are stored at an escaped bundle path and
+   keep their original path in the manifest.
 
-This policy applies only to worktrees Mission Control provisioned for a task. Manual
-development worktrees, [check leases](#check-leases), and Git worktrees Mission Control does not
-own are never touched by it.
+A tracked file missing from the checkout does not hold it: its content is in the proof commit.
+A clean status is not trusted for a tracked path with the `ident`, `filter` or
+`working-tree-encoding` attribute, because those conversions can make different bytes compare
+equal (`ident` turns `$Id: anything $` into `$Id$`). Such a path's raw bytes are compared with the
+commit's blob, and a difference is local-only work. A missing or unreadable base commit,
+submodules in the proof commit, a nested repository, a symbolic link or special file among the
+local-only paths, and a path that is not valid UTF-8 all hold.
+
+Ignored files follow a deliberately different rule from registered checkouts. A registered
+return holds on any ignored file, because it has no cache-disposal policy. An orphan cannot be
+recovered any other way, so it tolerates ignored entries inside directories named
+`node_modules`, `dist`, `test-results`, `.evidence` or `.pipeline`, or whose name starts with
+`.tmp`, at any depth, after walking each such directory without following links: a nested
+repository inside one, whether a `.git` entry or a bare repository's own `HEAD`, `objects` and
+`refs`, is not regenerable output and holds the checkout. Every other ignored
+entry, such as `.env`, still holds it. As for registered checkouts, ignored content never moves
+the retention clock; it holds the delete.
+
+Removal deletes the exact slot directory, because `git worktree remove` cannot remove what Git
+does not know. Under the retention claim, the daemon proves the orphan again, remembers the slot
+directory's identity (device and inode), requires the exact content digest the claim was taken
+against with no ignored file outside the regenerable directories, and checks process occupancy.
+It then renames the slot, atomically and within its parent, to a private name, so nothing can
+reach it by the slot path any more, and requires that what moved is the very directory it
+proved rather than a byte-identical copy swapped in. On that set-aside directory it checks
+occupancy, re-reads the content against the claimed digest and the ignored-file rule, and
+requires the same `.git` link naming the same administrative directory. It then computes the
+local-only files from those bytes and holds their archive as described above. Under that hold
+it checks occupancy, re-reads the content and the ignored-file rule once more, checks occupancy
+a final time, and deletes the directory. The task then releases the checkout and
+the ledger row finishes through the ordinary claim and complete flow. A checkout that is
+already gone, for example removed by hand, completes the same way with nothing to delete.
+
+Any refusal, and a delete that fails part-way, renames the directory back to its slot first, so
+a file written or a directory swapped in during these checks is never deleted and the task keeps
+tracking whatever remains. If even that rename fails, the directory stays beside the slot under
+its private name, and the slot is not treated as already gone while it is there: the task and
+its ledger row are held with that blocker until the operator resolves it. Manual **Clean up**,
+**Cancel** and **Delete** keep their own rules.
+
+One residual is accepted: a writer that process occupancy cannot see - one holding a descriptor
+it opened before the rename, or one that writes and exits during the final occupancy sample -
+inside a directory reachable only by its private name.
+
+**Terminal homes proved absent.** Retention also holds a terminal task while its terminal home
+is present or its absence cannot be verified. A home with no `terminal_resource_id`, or one
+whose multiplexer cannot be read, can never pass `homeAlive`: a title cannot identify a
+resource, and a title miss after a rename must not undo `killHome`'s refusal. With the flag on,
+such a home is also treated as absent when the backend that recorded it positively answers that
+its server is not running and no process of that backend runs for the current user. tmux must
+report `no server running` for its default server, and Herdr's own status must report the
+server stopped. Only then can no session or pane of any name carry the home. A backend that
+cannot answer, a running server, any process of that backend, an emulator-axis home, and a
+legacy home with no recorded backend all stay held, as before.
+
+`MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` evaluates both classes, with or without the flag,
+from local objects only. It records what it would do, such as
+`report only: orphaned checkout would be removed after archiving 2 local-only file(s)`, and
+never archives, fetches or deletes.
 
 ### Check leases
 

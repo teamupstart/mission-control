@@ -1,8 +1,10 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
+import { enableVoice, sendHello } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -127,7 +129,12 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  // The launch turn moves this row from the Working group to the Idle one, which remounts it.
+  // A click that lands during that move reaches neither copy and selects nothing, so select it
+  // only once it has regrouped.
+  const row = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  await expect(row).toHaveClass(/tone-idle/);
+  await row.click();
   const card = page.locator(".console-detail");
   await expect(card).toBeVisible();
   await expect(card.locator(".badge-idle")).toBeVisible({ timeout: 15_000 });
@@ -138,7 +145,8 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await composer.press("Enter");
   await expect(card.getByRole("button", { name: "to review" })).toBeVisible({ timeout: 15_000 });
 
-  // `live · 1 session · 1 need you · 1 to answer` - four segments. A session parked on an
+  // `live · 1 session · 1 need you · 1 to answer` - four segments (the fifth, `to read`, is the
+  // `inbox` flag's, and the last test below adds it). A session parked on an
   // open question raises both amber figures since the attention pills were reconciled: `need
   // you` counts the session, `to answer` counts the question the inbox can drain. That is
   // wider still than the three-segment readout this spec was first measured against, and
@@ -417,4 +425,141 @@ test("the bar never stacks until it has nothing left to shed, at any width", asy
     `the wide bar still holds the narrow bar's rungs ("${back.rung}" after "${narrow.rung}")`,
   ).toBeLessThan(narrow.rung.split(" ").filter(Boolean).length);
   await expectDrawn(pulseWords, true, "the pulse's words never came back when the room did");
+});
+
+/**
+ * The fifth segment: an agent report waiting to be read (`inbox` flag) adds a neutral `to read`
+ * figure to the busy readout - `live · 1 session · 1 need you · 1 to answer · 1 to read`. It is
+ * one more segment of the same shape, so the ladder has to absorb it the way it absorbs the
+ * others: the bar never stacks while it still has rungs in hand, at any width.
+ */
+test("a fifth pulse segment, to read, still never stacks the bar while rungs remain", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedCost(daemon);
+  const extra = await busyFleet(dashboard, daemon);
+  const flag = await fetch(`${daemon.baseURL}/api/feature-flags`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "flag", id: "inbox", enabled: true }),
+  });
+  expect(flag.ok, `/api/feature-flags answered ${flag.status}`).toBe(true);
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Array<{ cwd: string | null }>;
+  const cwd = sessions[0]?.cwd;
+  expect(cwd, "the busy fleet's session has a checkout").toBeTruthy();
+  // Posted on the exact channel the MCP `post_report` tool uses.
+  const posted = await fetch(`${daemon.baseURL}/mcp/reports`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
+    body: JSON.stringify({ env: {}, cwd, title: "Linter options compared", body: "eslint or biome, side by side." }),
+  });
+  expect(posted.status, await posted.clone().text()).toBe(200);
+  await expect(dashboard.locator(".pulse .pulse-seg")).toHaveCount(5);
+  await expect(dashboard.locator("button.pulse-seg", { hasText: "to read" }).locator(".pulse-n")).toHaveText("1");
+  const readWidth = await dashboard.evaluate(() => {
+    const seg = [...document.querySelectorAll(".pulse .pulse-seg")].find((el) =>
+      (el.textContent ?? "").includes("to read"),
+    ) as HTMLElement | undefined;
+    return seg ? Math.ceil(seg.offsetWidth) + 1 : 0;
+  });
+
+  await dashboard.setViewportSize({ width: 1360 + extra + readWidth, height: 900 });
+  const wide = await readBar(dashboard);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await dashboard.locator("header.topbar").screenshot({ path: `${EVIDENCE}topbar-five-segments.png` });
+    console.log(`CAPTURED ${EVIDENCE}topbar-five-segments.png (${wide.rows} row(s), ${wide.height}px)`);
+  }
+  expect(wide.rows, `the five-segment bar wrapped to ${wide.rows} rows`).toBe(1);
+  expect(wide.topbarH).toBe(`${wide.height}px`);
+
+  const stacked: string[] = [];
+  for (let width = 1900; width >= 760; width -= 40) {
+    await dashboard.setViewportSize({ width, height: 900 });
+    const bar = await readBar(dashboard);
+    if (bar.rows === 1) continue;
+    if (bar.rung === "1 2 3 4 5") continue;
+    stacked.push(`${width}px (rungs applied: "${bar.rung}")`);
+  }
+  expect(stacked, "the five-segment bar stacked while it still had rungs in hand").toEqual([]);
+});
+
+test("the edge mute tab leaves busy title-bar controls clickable on one row", async ({ dashboard, daemon }) => {
+  await busyFleet(dashboard, daemon);
+  await enableVoice(daemon);
+  await openVoiceTab(dashboard, "On screen", daemon.baseURL);
+  await dashboard.getByRole("checkbox", { name: "Status line" }).uncheck();
+  await expect(dashboard.locator("button.vi-status-line")).toHaveCount(0);
+  await dashboard.getByRole("checkbox", { name: "Top-bar segment" }).check();
+  await dashboard.getByRole("checkbox", { name: "Edge light" }).check();
+  const edge = dashboard.locator("button.vi-edge");
+  await expect(edge).toBeVisible();
+  await expect(dashboard.locator(".pulse .pulse-seg")).toHaveCount(5);
+  await dashboard.evaluate(() => document.documentElement.classList.add("is-desktop"));
+  for (const width of [1500, 1280, 1024, 900, 760, 720]) {
+    await dashboard.setViewportSize({ width, height: 700 });
+    expect((await readBar(dashboard)).rows, `voice segment at ${width}px`).toBe(1);
+    const covered = await edge.evaluate(tab => {
+      const edgeRect = tab.getBoundingClientRect();
+      return Array.from(document.querySelectorAll("header.topbar button")).flatMap(button => {
+        const rect = button.getBoundingClientRect();
+        const left = Math.max(rect.left, edgeRect.left);
+        const right = Math.min(rect.right, edgeRect.right);
+        const top = Math.max(rect.top, edgeRect.top);
+        const bottom = Math.min(rect.bottom, edgeRect.bottom);
+        if (right <= left || bottom <= top) return [];
+        const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+        return tab.contains(hit) ? [button.getAttribute("aria-label") || button.textContent] : [];
+      });
+    });
+    expect(covered, `covered title-bar controls at ${width}px`).toEqual([]);
+  }
+  expect(await sendHello(daemon)).toBe(200);
+  await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await dashboard.locator("header.topbar").screenshot({ path: join(mkdtempSync(join(root, "edge-")), "narrow-topbar.png") });
+  }
+  // Chromium's synthetic clicks bypass the native window drag hit test.
+  // Check that the desktop drag surface starts below the entire edge button.
+  const header = dashboard.locator("header.topbar");
+  await expect(header).toHaveCSS("app-region", "no-drag");
+  const dragTop = await header.evaluate(bar => {
+    const surface = getComputedStyle(bar, "::before");
+    if (surface.getPropertyValue("app-region") !== "drag") throw new Error("Missing title-bar drag surface");
+    return bar.getBoundingClientRect().top + parseFloat(surface.top);
+  });
+  const tab = (await edge.boundingBox())!;
+  expect(dragTop).toBeGreaterThanOrEqual(tab.y + tab.height);
+  await edge.click();
+  await expect(edge).toHaveAccessibleName("Voice: muted. Unmute");
+  await edge.click();
+  await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
+  const library = dashboard.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: /Library/ });
+  await library.click({ position: { x: 8, y: 3 } });
+  await expect(library).toHaveAttribute("aria-current", "page");
+  await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
+  const bar = dashboard.locator("header.topbar");
+  const message = "Voice mute failed. The listener could not save your request. Try again after reconnecting the microphone.";
+  await dashboard.route("**/api/voice/mute", route => route.fulfill({ status: 503, json: { error: message } }), { times: 1 });
+  await bar.getByRole("button", { name: "Voice: listening. Mute" }).click();
+  const alert = dashboard.getByRole("alert").filter({ hasText: message });
+  await expect(alert).toBeInViewport({ ratio: 1 });
+  await expect(bar.getByRole("alert")).toHaveCount(0);
+  expect((await readBar(dashboard)).rows, "720 px with a long top-bar mute error").toBe(1);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    await dashboard.mouse.move(0, 200);
+    await bar.getByRole("button", { name: "Voice: listening. Mute" }).blur();
+    await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+    const bounds = (await alert.boundingBox())!;
+    await dashboard.screenshot({ path: join(mkdtempSync(join(root, "mute-alert-")), "title-bar.png"),
+      clip: { x: 0, y: 0, width: 720, height: Math.ceil(bounds.y + bounds.height) + 5 } });
+  }
+  await edge.click();
+  await expect(bar.getByRole("button", { name: "Voice: muted. Unmute" })).toBeVisible();
+  await expect(alert).toHaveCount(0);
 });

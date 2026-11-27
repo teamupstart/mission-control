@@ -54,10 +54,10 @@ export async function recallPendingTurnIntoDraft(o: {
   // No HTTP response means the request may or may not have committed. A 2xx without
   // its body is equally ambiguous. In both cases the exact text from the selected row
   // is safer in the draft than silently disappearing with a committed server delete.
-  o.restore(o.turn.text);
+  o.restore(o.turn.spokenWords ?? o.turn.text);
   return {
     ok: true,
-    text: o.turn.text,
+    text: o.turn.spokenWords ?? o.turn.text,
     status: result.status,
     acknowledgementLost: true,
   };

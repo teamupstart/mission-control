@@ -40,6 +40,29 @@ switch (mode) {
       repo: request.stage === "gather" ? { facts: { language: "typescript" }, summary: `summary of ${request.repo.name}` } : undefined,
     });
     break;
+  case "route":
+    // A router (FR-04 `route_skills`): `route <name>:<point>[,<name>:<point>...]`, each with a fixed reason id.
+    reply({
+      version: "route-1",
+      skills: (rest[0] ?? "").split(",").filter(Boolean).map((pair) => {
+        const [name, point] = pair.split(":");
+        return { name, lifecycle_point: point, reason_id: `fixture/${name}` };
+      }),
+    });
+    break;
+  case "large": {
+    // Entries of `size` bytes each until `total` bytes, so the budget has something to cut.
+    const total = Number(rest[0] ?? 64 * 1024);
+    const size = Number(rest[1] ?? 15 * 1024);
+    const guidance = [];
+    for (let at = 0, n = 1; at < total; at += size, n++) {
+      const want = Math.min(size, total - at);
+      const line = "line " + n + " of a large entry\n";
+      guidance.push({ id: "large/" + n, title: "Large " + n, body: line.repeat(Math.ceil(want / line.length)).slice(0, want) });
+    }
+    reply({ guidance });
+    break;
+  }
   case "degraded":
     reply({ degraded: true, notes: ["The guidance model is unavailable."], guidance: [{ id: "fallback", body: "fallback entry" }] });
     break;
@@ -64,6 +87,16 @@ switch (mode) {
     // Exactly this many bytes of stdout, so a test can stand on either side of the cap.
     process.stdout.write("x".repeat(Number(rest[0] ?? 300 * 1024)));
     break;
+  case "leak-normalized":
+    // The named value with every run of whitespace in it printed as one space, then a failure.
+    process.stderr.write(`could not authenticate with ${(process.env[rest[0]] ?? "").replace(/\s+/g, " ")}`);
+    process.exit(4);
+    break;
+  case "leak-spaced":
+    // The named value with each run of whitespace in it widened to that many spaces, then a failure.
+    process.stderr.write((process.env[rest[0]] ?? "").replace(/\s+/g, " ".repeat(Number(rest[1] ?? 1))));
+    process.exit(4);
+    break;
   case "leak":
     // Repeats the value it was handed on stderr, then fails: its reason must not carry it.
     process.stderr.write(`could not authenticate with ${process.env[rest[0]] ?? "<unset>"}`);
@@ -85,6 +118,25 @@ switch (mode) {
     process.stderr.write(bytes.subarray(cut));
     await sleep(50);
     process.exitCode = 4;
+    break;
+  }
+  case "leak-escaped": {
+    // The value spelled as JSON \u escapes, six characters for each of its own, then escaped as
+    // the text of a JSON string once more for each further level, repeated so the recorded tail's
+    // front edge cuts through one escaped copy of it.
+    const value = process.env[rest[0]] ?? "<unset>";
+    let escaped = [...value].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    for (let level = 1; level < Number(rest[2] ?? 1); level++) escaped = JSON.stringify(escaped).slice(1, -1);
+    // Exits once the pipe has taken all of it: a large write is asynchronous on a pipe here.
+    process.stderr.write(`${escaped}\n`.repeat(Number(rest[1] ?? 12)), () => process.exit(5));
+    break;
+  }
+  case "stderr-flood": {
+    // The value, then this many bytes of filler, so the recorded tail is cut far past it.
+    const value = process.env[rest[0]] ?? "<unset>";
+    process.stderr.write(`${value}\n`);
+    for (let left = Number(rest[1] ?? 0); left > 0; left -= 65_536) process.stderr.write("x".repeat(Math.min(left, 65_536)));
+    process.stderr.write("\n", () => process.exit(6));
     break;
   }
   case "leak-long": {

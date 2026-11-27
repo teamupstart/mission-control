@@ -48,6 +48,7 @@ import type {
   SetWorkItemState,
   SpendReportBody,
   SubmitOptions,
+  WrapupAsked,
 } from "@shared/protocol.ts";
 import type { PipelineActionResult, PipelineForemanView, PipelineRun } from "@shared/pipeline.ts";
 import type {
@@ -111,6 +112,7 @@ export interface ForemanLlmSelection {
   runner: LlmRunnerId;
   claudeTransport: ClaudeTransport;
   codexTransport: CodexTransport;
+  backgroundReasoningEffort: boolean;
 }
 
 /** Compatibility answer when the daemon predates the transport field or status route. */
@@ -967,6 +969,7 @@ export class ForemanClient implements ForemanActions {
       runner?: { id?: string };
       claudeTransport?: string;
       codexTransport?: string;
+      backgroundReasoningEffort?: boolean;
     }>("/api/llm/status");
     const id = status?.runner?.id;
     const transport = status?.claudeTransport;
@@ -981,6 +984,7 @@ export class ForemanClient implements ForemanActions {
       codexTransport: codex && isCodexTransport(codex)
         ? codex
         : foremanCodexTransportFallback(),
+      backgroundReasoningEffort: status?.backgroundReasoningEffort === true,
     };
   }
 
@@ -1231,8 +1235,8 @@ export class ForemanClient implements ForemanActions {
   }
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
-  async workflowEvidence(id: string): Promise<WorkflowSessionEvidenceList | null> {
-    const path = `/api/sessions/${enc(id)}/workflow-evidence?view=registered`;
+  async workflowEvidence(id: string, completion = false): Promise<WorkflowSessionEvidenceList | null> {
+    const path = `/api/sessions/${enc(id)}/workflow-evidence?view=registered${completion ? "&continuation=check" : ""}`;
     const res = await fetch(BASE_URL + path);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
@@ -1406,11 +1410,11 @@ export class ForemanClient implements ForemanActions {
    * stamped and then invisibly swallowed. The DRAIN path must never pass it: there the
    * answer it would clobber is the answer to the ask being raised.
    */
-  async markWrapupAsked(sessionId: string, opts?: { clearAnswer?: boolean }): Promise<void> {
+  async markWrapupAsked(sessionId: string, opts?: WrapupAsked): Promise<void> {
     const res = await send(
       "POST",
-      `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`,
-      opts?.clearAnswer ? { clearAnswer: true } : undefined,
+      `/api/sessions/${enc(sessionId)}/queue/wrapup/${opts?.expectedIntent === undefined ? "asked" : "drain"}`,
+      opts,
     );
     if (!res.ok) throw new Error(`markWrapupAsked ${sessionId} -> ${res.status}`);
   }

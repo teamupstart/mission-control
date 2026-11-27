@@ -357,6 +357,19 @@ release pull request Release Please opens for it. Its tag CI then runs only Linu
 distribution signs, notarizes and publishes the DMG, ZIP and ready manifest. Confirm the release's
 assets, then confirm `scripts/install.sh` selects the stable release instead of an alpha.
 
+## Swift toolchain selection (2026-11-25 UTC)
+
+The [failed distribution run](https://github.com/teamupstart/mission-control/actions/runs/45536158734)
+stopped during compilation. The macOS runner selected Swift 6.1, while
+`native/voice-listener/Package.swift` requires Swift tools 6.2. Both macOS package jobs set
+`DEVELOPER_DIR` to the installed Xcode 26.3 bundle. When updating the runner or toolchain,
+check the arm64 image inventory for the bundle path and the Xcode compiler version against
+the package manifest. [Runner inventory](https://github.com/actions/runner-images/blob/macos-15-arm64/20261118.0550/images/macos/macos-15-arm64-Readme.md) · [Apple Xcode version table](https://developer.apple.com/xcode/system-requirements)
+
+The [hosted voice-listener probe](https://github.com/teamupstart/mission-control/actions/runs/45540123231/job/138956326430)
+selected Xcode 26.3 (17C529) on `macos-15-arm64` and reported Apple Swift 6.2.4.
+It linked the release `voice-listener` executable in 121.59 seconds.
+
 ## Choosing the release version
 
 Release Please computes the next version from the Conventional Commit subjects merged since the
@@ -729,3 +742,8 @@ not qualify a signed install, stable/alpha update or recovery.
 R2 still requires the retained R1 baseline and later newly produced renamed signed targets that
 include Phase 5. Missing signed inputs remain outstanding release qualification; producer and
 protection policy are unchanged.
+
+The app verifier reads the parent bundle's microphone usage string and extracts entitlements
+from its actual code signature. Verification requires a nonempty description and boolean
+`com.apple.security.device.audio-input` set to true. Electron child processes retain their
+existing entitlement set. See the [hardened microphone probe](voice-spike-findings.md#s4-hardened-microphone-permission).

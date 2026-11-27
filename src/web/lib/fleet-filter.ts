@@ -81,8 +81,8 @@ export function sessionSearchFields(session: Session): string[] {
 }
 
 /** True when a session matches the nav-bar query: every query word appears on its card. */
-export function matchesSessionFilter(session: Session, query: string): boolean {
-  return matchesEveryWord(sessionSearchFields(session), query);
+export function matchesSessionFilter(session: Session, query: string, additionalFields: readonly (string | null | undefined)[] = []): boolean {
+  return matchesEveryWord([...sessionSearchFields(session), ...additionalFields], query);
 }
 
 /**

@@ -203,7 +203,7 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
   );
 });
 
-test("workflow config HTTP writes use the shared parser and replace the complete object", async () => {
+test("Workflow config PUT replaces policy and PATCH preserves unrelated fields", async (t) => {
   const { Registry } = await import("../src/server/registry.ts");
   const { ReviewManager } = await import("../src/server/reviews.ts");
   const { TaskManager } = await import("../src/server/tasks.ts");
@@ -242,6 +242,27 @@ test("workflow config HTTP writes use the shared parser and replace the complete
     })).json(),
     { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: true, repoAllowlist: ["/one", "/two"] },
   );
+
+  const previous = getAppConfig(APP_CONFIG_ENTRIES.workflows)!;
+  t.after(() => setAppConfig(APP_CONFIG_ENTRIES.workflows, previous));
+  const patch = (body: object) => app.request("/api/workflows/config", {
+    method: "PATCH",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  assert.equal((await patch({ checkCommands: [] })).status, 400);
+  assert.equal((await patch({ kindWorkflowDefaults: { ship: "missing" } })).status, 409);
+  assert.equal((await patch({ skipPassedJudges: false, checksEnabled: false })).status, 200);
+  const retention = await patch({ retention: { maxCompletedRuns: 1_100 } });
+  assert.equal(retention.status, 200);
+  assert.deepEqual(await retention.json(), {
+    ...DEFAULT_WORKFLOW_CONFIG,
+    liveEnabled: true,
+    repoAllowlist: ["/one", "/two"],
+    checksEnabled: false,
+    skipPassedJudges: false,
+    retention: { ...DEFAULT_WORKFLOW_CONFIG.retention, maxCompletedRuns: 1_100 },
+  });
 });
 
 test("canonical repo roots allow linked worktree identity but reject path-prefix lookalikes", async () => {

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AppPageShell } from "../src/web/components/AppPageShell.tsx";
+import { AppPageShell, type DashboardPage } from "../src/web/components/AppPageShell.tsx";
 import type { MissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
 import {
   RUN_RECORD_PANES,
@@ -449,7 +449,7 @@ test("the Workflows page is gone, not merely unreachable", () => {
     fileURLToPath(new URL("../src/web/components/AppPageShell.tsx", import.meta.url)),
     "utf8",
   );
-  assert.match(shell, /Record<MissionRoute\["page"\], ReactNode>/);
+  assert.match(shell, /Record<DashboardPage, ReactNode>/);
   assert.doesNotMatch(shell, /"workflows"/);
 });
 
@@ -473,7 +473,7 @@ test("global overlays stay mounted on every page, and only one page body renders
   // missing a key, which does not compile. The list it replaced type-checked while silently
   // covering one page fewer than the app had - the same drift `AppPageShell` itself was
   // rebuilt to make impossible.
-  const bodies: Record<MissionRoute["page"], string> = {
+  const bodies: Record<DashboardPage, string> = {
     fleet: "fleet body",
     library: "library body",
     runs: "runs body",
@@ -483,7 +483,7 @@ test("global overlays stay mounted on every page, and only one page body renders
     settings: "settings body",
     residents: "residents body",
   };
-  const pages = Object.keys(bodies) as MissionRoute["page"][];
+  const pages = Object.keys(bodies) as DashboardPage[];
   for (const page of pages) {
     const html = renderToStaticMarkup(createElement(AppPageShell, {
       page,

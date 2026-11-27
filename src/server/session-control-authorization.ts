@@ -2,18 +2,20 @@ import { randomUUID } from "node:crypto";
 import type {
   ResidentLaunchAuthorization, ResidentLaunchAuthorizationMessage, ResidentLaunchAuthorizationReply,
   SessionControlAuthorization, SessionControlAuthorizationMessage, SessionControlAuthorizationReply,
+  SessionSettingsAuthorization, SessionSettingsAuthorizationMessage, SessionSettingsAuthorizationReply,
 } from "@shared/session-control-authorization.ts";
 
 export type AuthorizeSessionControl = (input: SessionControlAuthorization) => Promise<boolean>;
 export type AuthorizeResidentLaunch = (input: ResidentLaunchAuthorization) => Promise<boolean>;
+export type AuthorizeSessionSettings = (input: SessionSettingsAuthorization) => Promise<boolean>;
 
 type ParentPort = NodeJS.Process["parentPort"];
 
 /** Ask the shell once, correlated by id; anything but its exact `granted: true` is a refusal. */
 function askShell(
   port: ParentPort,
-  message: SessionControlAuthorizationMessage | ResidentLaunchAuthorizationMessage,
-  replyType: (SessionControlAuthorizationReply | ResidentLaunchAuthorizationReply)["type"],
+  message: SessionControlAuthorizationMessage | ResidentLaunchAuthorizationMessage | SessionSettingsAuthorizationMessage,
+  replyType: (SessionControlAuthorizationReply | ResidentLaunchAuthorizationReply | SessionSettingsAuthorizationReply)["type"],
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const finish = (granted: boolean): void => {
@@ -22,7 +24,7 @@ function askShell(
       resolve(granted);
     };
     const onMessage = (event: { data?: unknown }): void => {
-      const reply = event.data as SessionControlAuthorizationReply | ResidentLaunchAuthorizationReply | undefined;
+      const reply = event.data as SessionControlAuthorizationReply | ResidentLaunchAuthorizationReply | SessionSettingsAuthorizationReply | undefined;
       if (reply?.type === replyType && reply.id === message.id) finish(reply.granted === true);
     };
     const timer = setTimeout(() => finish(false), 15_000);
@@ -42,6 +44,17 @@ export function sessionControlAuthorization(
     port,
     { type: "mission:session-control-authorization", id: randomUUID(), ...input },
     "mission:session-control-authorization-reply",
+  );
+}
+
+export function sessionSettingsAuthorization(
+  port: ParentPort | undefined = process.parentPort,
+): AuthorizeSessionSettings {
+  if (!port) return async () => false;
+  return (input) => askShell(
+    port,
+    { type: "mission:session-settings-authorization", id: randomUUID(), ...input },
+    "mission:session-settings-authorization-reply",
   );
 }
 

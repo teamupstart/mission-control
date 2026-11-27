@@ -8,8 +8,16 @@
 #include <node_api.h>
 #include <stdio.h>
 #include <sys/file.h>
+#include <poll.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <sys/event.h>
+#endif
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+#include <uv.h>
 
 #if defined(__APPLE__)
 #include <signal.h>
@@ -58,6 +66,94 @@ napi_value ThrowSystemError(napi_env env, const char* code, const std::string& m
   }
   napi_throw(env, error);
   return nullptr;
+}
+
+// The kernel records the process birth before exec. Neither a changed executable
+// nor a recycled PID can masquerade as an exit of the original process.
+napi_value VoiceProcessBirth(napi_env env, napi_callback_info info) {
+#if defined(__APPLE__)
+  size_t argc = 1;
+  napi_value arg, result;
+  int32_t pid;
+  if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) != napi_ok || argc != 1 ||
+      napi_get_value_int32(env, arg, &pid) != napi_ok || pid <= 0)
+    return ThrowTypeError(env, "Expected listener PID");
+  int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+  struct kinfo_proc process = {};
+  size_t size = sizeof(process);
+  char boot[64] = {};
+  size_t boot_size = sizeof(boot);
+  if (sysctl(mib, 4, &process, &size, nullptr, 0) < 0 || size != sizeof(process) ||
+      sysctlbyname("kern.bootsessionuuid", boot, &boot_size, nullptr, 0) < 0)
+    return ThrowSystemError(env, "EPROCESSIDENTITY", "Cannot read process birth");
+  const auto start = process.kp_proc.p_starttime;
+  const std::string identity = std::string(boot) + "/" + std::to_string(start.tv_sec) + "/" + std::to_string(start.tv_usec);
+  napi_create_string_utf8(env, identity.c_str(), identity.size(), &result);
+  return result;
+#else
+  return ThrowTypeError(env, "Read the Linux process birth from procfs");
+#endif
+}
+
+// A capture-only listener locks one byte for its private lease. The daemon obtains
+// the owner's PID from the kernel and pins that process before handing out capture.
+napi_value CaptureProcessLock(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3], result;
+  int32_t fd, pid;
+  int64_t offset;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 3 ||
+      napi_get_value_int32(env, argv[0], &fd) != napi_ok || fd < 0 ||
+      napi_get_value_int64(env, argv[1], &offset) != napi_ok || offset < 0 ||
+      napi_get_value_int32(env, argv[2], &pid) != napi_ok || pid < 0)
+    return ThrowTypeError(env, "Expected descriptor, lock offset and listener PID");
+  struct flock lock = {};
+  lock.l_type = F_WRLCK;
+  lock.l_whence = SEEK_SET;
+  lock.l_start = offset;
+  lock.l_len = 1;
+  if (!pid) {
+    if (fcntl(fd, F_SETLK, &lock) < 0) return ThrowSystemError(env, "ECAPTURELOCK", "Cannot claim capture lifetime lock");
+    return Undefined(env);
+  }
+  auto owns_lock = [&]() {
+    lock.l_type = F_WRLCK;
+    return fcntl(fd, F_GETLK, &lock) == 0 && lock.l_type == F_WRLCK &&
+      lock.l_pid == pid && lock.l_start == offset && lock.l_len == 1;
+  };
+  if (!owns_lock()) return ThrowSystemError(env, "ECAPTURELOCK", "Capture lifetime lock owner mismatch");
+  int watch = -1;
+#if defined(__APPLE__)
+  watch = kqueue();
+  if (watch >= 0) {
+    struct kevent change;
+    EV_SET(&change, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
+    if (fcntl(watch, F_SETFD, FD_CLOEXEC) < 0 || kevent(watch, &change, 1, nullptr, 0, nullptr) < 0) {
+      close(watch);
+      watch = -1;
+    }
+  }
+#elif defined(__linux__) && defined(SYS_pidfd_open)
+  watch = syscall(SYS_pidfd_open, pid, 0);
+#endif
+  if (watch < 0 || !owns_lock()) {
+    if (watch >= 0) close(watch);
+    return ThrowSystemError(env, "ECAPTUREWATCH", "Cannot verify capture process lifetime");
+  }
+  napi_create_int32(env, watch, &result);
+  return result;
+}
+
+napi_value CaptureProcessExited(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value arg, result;
+  int32_t fd;
+  if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) != napi_ok || argc != 1 ||
+      napi_get_value_int32(env, arg, &fd) != napi_ok || fd < 0)
+    return ThrowTypeError(env, "Expected process watch descriptor");
+  struct pollfd pfd = {fd, POLLIN, 0};
+  napi_get_boolean(env, poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLIN), &result);
+  return result;
 }
 
 bool ReadString(napi_env env, napi_value value, std::string* output) {
@@ -290,6 +386,37 @@ napi_value OpenPlanEntry(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// Node exposes readlink(path), but not readlinkat. Hold the checked parent open while
+// reading the literal target so a concurrent parent-to-symlink swap cannot redirect it.
+napi_value ReadRepositoryLink(napi_env env, napi_callback_info info) {
+  size_t argc = 2, length = 0;
+  napi_value argv[2], result;
+  int32_t parent;
+  void* bytes = nullptr;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 ||
+      napi_get_buffer_info(env, argv[1], &bytes, &length) != napi_ok || !length || length > 255) {
+    return ThrowTypeError(env, "readRepositoryLink requires a directory descriptor and one name");
+  }
+  const std::string name(static_cast<char*>(bytes), length);
+  if (name == "." || name == ".." || name.find('/') != std::string::npos ||
+      name.find('\0') != std::string::npos) return ThrowTypeError(env, "invalid link name");
+  std::vector<char> target(256);
+  for (;;) {
+    ssize_t n = readlinkat(parent, name.c_str(), target.data(), target.size());
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) {
+      const int error = errno;
+      return ThrowSystemError(env, uv_err_name(uv_translate_sys_error(error)), "could not read repository symlink");
+    }
+    if (static_cast<size_t>(n) < target.size()) {
+      if (napi_create_buffer_copy(env, n, target.data(), nullptr, &result) != napi_ok) return nullptr;
+      return result;
+    }
+    target.resize(target.size() * 2);
+  }
+}
+
 napi_value MakePlanDirectory(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
@@ -326,6 +453,24 @@ napi_value RenamePlanEntry(napi_env env, napi_callback_info info) {
   while (result != 0 && errno == EINTR);
   if (result != 0) return PlanIoError(env);
   return Undefined(env);
+}
+
+// Atomic replacement within one held directory. POSIX rename refuses to replace
+// a directory with a file and does not follow the destination leaf.
+napi_value ReplaceFileEntry(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  int32_t parent;
+  std::string source, destination;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 3 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 ||
+      !ReadEntry(env, argv[1], &source) || !ReadEntry(env, argv[2], &destination)) {
+    return ThrowTypeError(env, "replaceFileEntry requires a directory descriptor and two entry names");
+  }
+  int result;
+  do { result = renameat(parent, source.c_str(), parent, destination.c_str()); }
+  while (result != 0 && errno == EINTR);
+  return result == 0 ? Undefined(env) : PlanIoError(env);
 }
 
 napi_value UnlinkPlanEntry(napi_env env, napi_callback_info info) {
@@ -651,18 +796,40 @@ napi_value ProcessArguments(napi_env env, napi_callback_info info) {
 #endif
 }
 
+napi_value HostTimeUs(napi_env env, napi_callback_info) {
+#if defined(__APPLE__)
+  // The Core Audio host clock (mach_absolute_time) excludes system sleep.
+  const auto micros = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
+#else
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+    return ThrowSystemError(env, "ECLOCK", std::strerror(errno));
+  }
+  const auto micros = now.tv_sec * INT64_C(1000000) + now.tv_nsec / 1000;
+#endif
+  napi_value value;
+  if (napi_create_int64(env, micros, &value) != napi_ok) return nullptr;
+  return value;
+}
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
+      {"voiceProcessBirth", nullptr, VoiceProcessBirth, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"captureProcessLock", nullptr, CaptureProcessLock, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"captureProcessExited", nullptr, CaptureProcessExited, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"hostTimeUs", nullptr, HostTimeUs, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"acquire", nullptr, AcquireStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"release", nullptr, ReleaseStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"linkSymlinkNoReplace", nullptr, LinkSymlinkNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"exchangePaths", nullptr, ExchangePaths, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renameNoReplace", nullptr, RenameNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"readRepositoryLink", nullptr, ReadRepositoryLink, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"openPlanEntry", nullptr, OpenPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"makePlanDirectory", nullptr, MakePlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renamePlanEntry", nullptr, RenamePlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"replaceFileEntry", nullptr, ReplaceFileEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"unlinkPlanEntry", nullptr, UnlinkPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readPlanDirectory", nullptr, ReadPlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readPlanDirectoryEntries", nullptr, ReadPlanDirectoryEntries, nullptr, nullptr, nullptr, napi_default, nullptr},

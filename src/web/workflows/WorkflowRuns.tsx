@@ -1,8 +1,14 @@
+import { LocalInspectorReviewSchema } from "@shared/inspector-review.ts";
+import { workflowCommandName } from "@shared/workflow.ts";
+import { LOCAL_INSPECTOR_FLAG_ID, PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { repositoryCitationLabel } from "@shared/repository-access.ts";
+import { RepositoryQueryHistory, type RepositoryCitation } from "./RepositoryQueryHistory.tsx";
 import { workflowHasUnpublishedChanges, workflowPublicationRetained } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { featureAction } from "../lib/experience.ts";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type {
   EvidenceRef,
@@ -72,6 +78,7 @@ import type {
 } from "./run-model.ts";
 import {
   actionBlockSentence,
+  sessionActionRecheckOffered,
   actionWaitSentence,
   attemptStateLabel,
   cancelGateHint,
@@ -101,6 +108,7 @@ import {
   inheritedAttempts,
   inheritedPasses,
   inspectorGateSentence,
+  localReviewGate,
   inspectorFooterStatus,
   latestAttemptsFor,
   elapsedSpansFor,
@@ -291,16 +299,27 @@ function ErrorLine({
   );
 }
 
+const RepositoryCitations = createContext<{
+  citations: Record<string, RepositoryCitation>;
+  open: (citation: RepositoryCitation) => void;
+} | null>(null);
+
 function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Element | null {
+  const review = useContext(RepositoryCitations);
   if (evidence.length === 0) return null;
   return (
     <ul className="wf-run-evidence">
-      {evidence.map((item, index) => (
-        <li key={`${item.kind}:${item.path ?? ""}:${item.line ?? ""}:${index}`}>
-          <code>{item.kind}{item.path ? ` · ${item.path}` : ""}{item.line ? `:${item.line}` : ""}</code>
-          <span>{item.quote}</span>
-        </li>
-      ))}
+      {evidence.map((item, index) => {
+        const citation = item.kind === "repository" && review?.citations[item.evidenceHandleId];
+        return (
+          <li key={`${item.kind}:${item.path ?? ""}:${item.line ?? ""}:${index}`}>
+            <code>{item.kind}{item.path ? ` · ${item.path}` : ""}{item.line ? `:${item.line}` : ""}</code>
+            {item.kind === "repository" && citation && review && citation.operationId === item.operationId ? <Tooltip label="Open the recorded query and cited range">
+              <button className="btn" onClick={() => review.open(citation)}>{repositoryCitationLabel(citation)}</button>
+            </Tooltip> : <span>{item.kind === "repository" ? "Repository range unavailable" : item.quote}</span>}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -463,6 +482,17 @@ function CodeRabbitReview({ summary }: { summary: import("@shared/workflow.ts").
   </div>;
 }
 
+function LocalInspectorReviewDetails({ value }: { value: unknown }): React.JSX.Element | null {
+  const preview = useFeatureFlag(LOCAL_INSPECTOR_FLAG_ID);
+  const parsed = LocalInspectorReviewSchema.safeParse(value);
+  if (!preview || !parsed.success) return null;
+  const review = parsed.data;
+  return <div className="wf-run-review-summary">
+    {(review.status === "passed" || review.status === "failed") && <p>Reviewed the submitted worktree with read-only repository access.</p>}
+    <p>Blocking severity: {review.blockingSeverity} and above · {review.findingCount} unresolved {review.findingCount === 1 ? "finding" : "findings"}</p>
+  </div>;
+}
+
 function CheckCard({
   runId,
   attempt,
@@ -475,7 +505,7 @@ function CheckCard({
   const view = checkStatusView(outcome.status);
   const chip = checkChip(outcome);
   const parts = [
-    outcome.command ? formatCheckCommand(outcome.command) : outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
+    outcome.slot === "inspector" ? null : outcome.command ? formatCheckCommand(outcome.command) : outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
     outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
     outcome.timeoutMs === null ? null : `timeout ${outcome.timeoutMs / 60_000} min`,
     `attempt ${attempt.attempt}`,
@@ -485,16 +515,17 @@ function CheckCard({
     <article className={`wf-run-card wf-run-check is-${outcome.status}`}>
       <header className="wf-run-card-head">
         <span className={`workflow-chip workflow-${chip.tone}`}>{chip.label}</span>
-        <strong>Command · {outcome.slot}</strong>
+        <strong>Command · {workflowCommandName(outcome.slot)}</strong>
       </header>
       <p className="wf-run-summary" role={outcome.warning ? "status" : undefined}>{outcome.note}</p>
       {outcome.diagnosticError && <p role="alert" className="wf-error">Error: {outcome.diagnosticError}</p>}
       {outcome.review && <CodeRabbitReview summary={outcome.review} />}
+      {outcome.localInspector && <LocalInspectorReviewDetails value={outcome.localInspector} />}
 
-      <p className="wf-run-check-sentence">{outcome.slot === "coderabbit" && ["skipped", "budget_spent"].includes(outcome.status) ? "CodeRabbit did not complete a review. See the recorded warning and configuration." : view.sentence}</p>
+      {outcome.slot !== "inspector" && <p className="wf-run-check-sentence">{outcome.slot === "coderabbit" && ["skipped", "budget_spent"].includes(outcome.status) ? "CodeRabbit did not complete a review. See the recorded warning and configuration." : view.sentence}</p>}
       {outcome.output && (
         <div className="wf-run-card-body">
-          <h5>Command output</h5>
+          <h5>{outcome.slot === "inspector" ? "Local Inspector findings" : "Command output"}</h5>
           {/* The TAIL, which is what the runner kept: a build prints its failure last. The
               omitted count is stated rather than implied by an ellipsis, so nobody reads a
               bounded log as the whole one. */}
@@ -543,11 +574,14 @@ function SessionActionCard({
   status,
   state,
   verifiedShipping,
+  recheckOffered,
 }: {
   attempt: WorkflowNodeAttempt;
   status: PipelineStatus;
   state: SessionActionProgress | null;
   verifiedShipping: boolean;
+  /** `sessionActionRecheckOffered` for this attempt: the daemon offers the round-free re-check. */
+  recheckOffered: boolean;
 }): React.JSX.Element {
   const snapshot = attempt.sessionAction;
   const blocked = state?.blocked ?? null;
@@ -570,11 +604,13 @@ function SessionActionCard({
           that had just said the same thing. */}
       <p className="wf-run-summary">
         {blocked
-          ? actionBlockSentence(blocked.code)
+          ? actionBlockSentence(blocked.code, recheckOffered)
           : state?.wait
             ? actionWaitSentence(state.wait)
             : state?.complete
-              ? warnings.length > 0
+              ? state.expectation?.kind === "no_change"
+                ? `No changes to publish. The checkout is clean and its HEAD is already contained in ${state.expectation.baseRef}. No pull request was needed.`
+                : warnings.length > 0
                 ? "The pull request was opened and the workflow continued with a warning."
                 : verifiedShipping
                 ? "The pull request was verified open at the captured commit, its content matched the prior review, and the workflow reached End."
@@ -645,6 +681,13 @@ function SessionActionCard({
   );
 }
 
+function useFrozenAccessLabel(attempt: WorkflowNodeAttempt) {
+  const preview = useFeatureFlag(PERSONA_REPOSITORY_ACCESS_FLAG_ID);
+  if (!attempt.persona) return null;
+  if (attempt.persona.repositoryAccess === "read") return "Read-only repository access";
+  return preview ? "No repository access" : null;
+}
+
 function VerdictCard({
   attempt,
   verdict,
@@ -655,6 +698,7 @@ function VerdictCard({
   meta: ReturnType<typeof verdictMeta>;
 }): React.JSX.Element {
   const parts = [
+    useFrozenAccessLabel(attempt),
     recordedRoutingLabel(meta),
     meta.durationMs === null ? null : `${Math.round(meta.durationMs / 1000)}s`,
     meta.costUsd === null ? "cost unavailable" : `$${meta.costUsd.toFixed(4)}`,
@@ -722,6 +766,7 @@ function AttemptCard({
   attempt: WorkflowNodeAttempt;
   name: string;
 }): React.JSX.Element {
+  const access = useFrozenAccessLabel(attempt);
   return (
     <article className="wf-run-card wf-run-attempt">
       <header className="wf-run-card-head">
@@ -730,6 +775,7 @@ function AttemptCard({
       </header>
       <p className="wf-run-meta">
         {[
+          access,
           recordedRoutingLabel(attempt),
           attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
         ].filter(Boolean).join(" · ")}
@@ -746,6 +792,7 @@ function AttemptCard({
       <ErrorLine raw={attempt.error} />
       {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.setup === true && <Tooltip label="Inspect CodeRabbit installation, version and stored authentication"><a href="#/settings/setup">Settings &gt; Setup</a></Tooltip>}
       {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.review && <CodeRabbitBlockedReview value={attempt.output.review} />}
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.localInspector && <LocalInspectorReviewDetails value={attempt.output.localInspector} />}
       <RetainedCommandOutput
         runId={runId}
         attemptId={attempt.id}
@@ -1002,7 +1049,8 @@ function WorklistRailRow({
           lines: [
             item.outcome.command
               ? formatCheckCommand(item.outcome.command)
-              : item.outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
+              : item.outcome.slot === "inspector" ? "Worktree review"
+                : item.outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
             ...(item.outcome.exitCode === null ? [] : [`exit ${item.outcome.exitCode}`]),
           ],
         };
@@ -2125,7 +2173,6 @@ function DeliveriesPane({
   );
 }
 
-
 /**
  * Every frozen image body for one submission, fetched once and shared by everything that draws it.
  *
@@ -3195,13 +3242,14 @@ function CompletionPane({
 }): React.JSX.Element {
   const gate = detail.inspectorGate;
   const spentGateCondition = spentInspectorGateCondition(detail);
+  const local = localReviewGate(detail);
   return (
     <>
       {gate && summary.gate && (
         <div className="wf-run-strip">
           <RunStat
             label="Gate"
-            value={summary.gate.label}
+            value={local ? "Reviewed locally" : summary.gate.label}
             tone={summary.gate.tone === "passed" ? "ok" : summary.gate.tone === "failed" ? "alert" : null}
           />
           <RunStat
@@ -3230,7 +3278,16 @@ function CompletionPane({
       {gate && (
         <>
           <p className="wf-run-sentence">{inspectorGateSentence(detail)}</p>
-          <h5 className="wf-run-subhead">Findings</h5>
+          {local && (
+            <section aria-label="Local Inspector review">
+              <h5 className="wf-run-subhead">Local Inspector findings</h5>
+              {local.outcome?.output
+                ? <pre className="wf-run-check-output">{local.outcome.output}</pre>
+                : <p className="wf-run-empty">The Local Inspector recorded no findings on the reviewed tree.</p>}
+              {local.outcome?.note && <p className="wf-run-meta">{local.outcome.note}</p>}
+            </section>
+          )}
+          <h5 className="wf-run-subhead">{local ? "GitHub Inspector findings" : "Findings"}</h5>
           {gate.findings.length === 0 ? (
             /* Two sentences, because "no findings" means two different things. A gate that
                has adopted a pull request and found nothing wrong is a result; a gate that has
@@ -3603,9 +3660,7 @@ export function WorkflowRunView({
   const context = contextRound && detail.contextState === "captured"
     ? readCapturedContext(contextRound.context)
     : null;
-  const contextUnreadable = contextRound !== null
-    && detail.contextState === "captured"
-    && context === null;
+
   const submissionImages = viewed
     ? detail.evidenceImages?.find((group) => group.submissionId === viewed.id)?.images ?? []
     : [];
@@ -3615,6 +3670,10 @@ export function WorkflowRunView({
   const inspectorGate = detail.inspectorGate;
   const spentGateStatus = spentInspectorGateStatus(detail);
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
+  const codeRabbitAllowanceSkipped = roundAttempts.some((attempt) => {
+    const outcome = checkOutcomeOf(attempt);
+    return outcome?.slot === "coderabbit" && outcome.status === "budget_spent";
+  });
   // Split by what the attempt IS, read off the durable snapshot column the runtime writes for
   // exactly this kind - never guessed from the absence of a verdict, which is also what an
   // errored reviewer looks like.
@@ -3746,6 +3805,8 @@ export function WorkflowRunView({
    */
   const grantNotice = runGrantNotice(detail);
   const announcedGrant = useRef<string | null>(null);
+  const [queryTarget, setQueryTarget] = useState<{ runId: string; citation: RepositoryCitation; selection: number } | null>(null);
+  const target = queryTarget?.runId === detail.run.id ? queryTarget : null;
   const [grantAnnouncement, setGrantAnnouncement] = useState("");
   useEffect(() => {
     if (announcedGrant.current === grantNotice) return;
@@ -3755,6 +3816,10 @@ export function WorkflowRunView({
     setGrantAnnouncement(`${grantNotice} ${parkedSentence ?? "The review can continue."}`);
   }, [grantNotice, parkedSentence]);
   return (
+    <RepositoryCitations.Provider value={{
+      citations: detail.repositoryReview?.citations ?? {},
+      open: citation => setQueryTarget(previous => ({ runId: detail.run.id, citation, selection: (previous?.selection ?? 0) + 1 })),
+    }}>
     <section className="wf-run-detail">
       <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
       <p className="sr-only" aria-live="polite">{grantAnnouncement}</p>
@@ -4120,6 +4185,11 @@ export function WorkflowRunView({
               </details>
             </div>
           )}
+          {codeRabbitAllowanceSkipped && (
+            <p className="wf-run-notice" role="status">
+              CodeRabbit review skipped because the run allowance is exhausted.
+            </p>
+          )}
         </section>
       )}
 
@@ -4226,6 +4296,7 @@ export function WorkflowRunView({
                   attempt={attempt}
                   state={state}
                   status={sessionActionStatus(attempt.state, state?.wait ?? null)}
+                  recheckOffered={sessionActionRecheckOffered(detail, attempt.id)}
                   verifiedShipping={Boolean(
                     viewedRound?.verifiedShipping
                     && continuationSourceAttempt(detail, viewedRound.submissionId)?.id === attempt.id
@@ -4435,6 +4506,9 @@ export function WorkflowRunView({
         ]}
       />
 
+      {detail.repositoryReview && <RepositoryQueryHistory key={detail.run.id + ":" + (target?.selection ?? 0)}
+        runId={detail.run.id} review={detail.repositoryReview} target={target?.citation} />}
+
       <section className="wf-run-section">
         <header className="wf-run-section-head">
           <h4>Workflow-owned model calls</h4>
@@ -4633,6 +4707,7 @@ export function WorkflowRunView({
         </dl>
       </details>
     </section>
+    </RepositoryCitations.Provider>
   );
 }
 

@@ -1,12 +1,14 @@
+import type { SessionGrantScope } from "@shared/residents.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { hasBlocker } from "@shared/session.ts";
-import type { SessionBlocker } from "@shared/types.ts";
+import type { Session, SessionAwaiting, SessionBlocker } from "@shared/types.ts";
 import type { Context, Hono } from "hono";
 import {
   RequestSessionControlSchema, SessionControlGrantSchema, SessionControlReadSchema, SessionControlRequestSchema,
-  type SessionControlAction,
+  type SessionControlAction, type SessionHistoryPageRequest,
 } from "@shared/protocol.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
+import { sessionMessages } from "./harness/index.ts";
 import { checkToken } from "./auth.ts";
 import type { Registry } from "./registry.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
@@ -40,9 +42,51 @@ export function sessionControlCaller(registry: Registry, credential: string | un
 }
 
 /** Delegation adds the existing operator grant to the same caller identity check. */
-export function sessionController(registry: Registry, credential: string | undefined): string | null {
+export function sessionController(registry: Registry, credential: string | undefined, required: SessionGrantScope = "control"): string | null {
   const caller = sessionControlCaller(registry, credential);
-  return caller && registry.sessionControlEnabled(caller) ? caller : null;
+  return caller && registry.sessionControlEnabled(caller, required) ? caller : null;
+}
+
+/** Walk retained history using the same bounded backward pages as the conversation panel. */
+function sessionHistory(session: Session, cursor: SessionHistoryPageRequest) {
+  const transcript = sessionMessages(session);
+  const snapshot = transcript?.read.snapshot?.(transcript.path);
+  const conversationId = session.agentSessionId;
+  if (!transcript || !snapshot?.fileId || !conversationId) {
+    return { status: "unavailable", reason: "transcript_unavailable" };
+  }
+  if (cursor !== "latest" && (cursor.conversationId !== conversationId || cursor.fileId !== snapshot.fileId || cursor.before > snapshot.size)) {
+    return { status: "unavailable", reason: "transcript_replaced" };
+  }
+  const before = cursor === "latest" ? snapshot.size : cursor.before;
+  const page = transcript.read.before(transcript.path, before, 20);
+  if (page.end !== before || (!page.atStart && page.start >= before) || transcript.read.snapshot?.(transcript.path)?.fileId !== snapshot.fileId) {
+    return { status: "unavailable", reason: "transcript_changed_or_unreadable" };
+  }
+  // The native reader scans whole records. A dense byte range can contain hundreds of
+  // turns. Keep the MCP response small and continue within that same range on the next call.
+  const remaining = cursor === "latest" ? page.messages.length : cursor.remaining ?? page.messages.length;
+  if (remaining > page.messages.length) return { status: "unavailable", reason: "transcript_replaced" };
+  const messages = [];
+  let bytesLeft = 24 * 1024;
+  let index = remaining;
+  while (index > 0 && messages.length < 20) {
+    const turn = page.messages[index - 1]!;
+    const bytes = Buffer.byteLength(JSON.stringify(turn));
+    if (bytes > bytesLeft) {
+      if (messages.length) break;
+      messages.push({ role: turn.role, ts: turn.ts, text: turn.text.slice(0, 1000), truncated: true });
+      index--;
+      break;
+    }
+    messages.push(turn);
+    bytesLeft -= bytes;
+    index--;
+  }
+  const identity = { conversationId, fileId: snapshot.fileId };
+  const next = index > 0 ? { ...identity, before, remaining: index } :
+    page.atStart ? null : { ...identity, before: page.start };
+  return { status: "page", next, messages: messages.reverse() };
 }
 
 /** The list form's compact blocker: enough to correlate, without the Markdown details. */
@@ -52,8 +96,18 @@ export function blockerSummary(blocker: SessionBlocker | null | undefined) {
   return { id, kind, reason, waitingOn, referenceUrl, startedAt, reply };
 }
 
+/** The list form's compact wait: what, how it wakes and when it is due, without the details. */
+export function awaitingSummary(awaiting: SessionAwaiting | null | undefined, now = Date.now()) {
+  if (!awaiting) return null;
+  const { id, what, wakeSource, expectedBy, referenceUrl, startedAt } = awaiting;
+  return { id, what, wakeSource, expectedBy, referenceUrl, startedAt, overdue: now >= expectedBy };
+}
+
+/** The actions that are exactly one dashboard request. `complete` is two; see `completeTarget`. */
+export type SingleRequestControlAction = Exclude<SessionControlAction, { action: "complete" }>;
+
 /** Translate only supported actions to the existing dashboard handlers and their guards. */
-export function controlRequest(target: string, command: SessionControlAction): {
+export function controlRequest(target: string, command: SingleRequestControlAction): {
   path: string; method: string; body?: unknown;
 } {
   const base = `/api/sessions/${encodeURIComponent(target)}`;
@@ -79,6 +133,7 @@ export function controlRequest(target: string, command: SessionControlAction): {
     case "set_permission_mode": return post("mode", { mode: command.mode });
     case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl, blockerId: command.blockerId });
     case "clear_blocker": return post("blocker/clear", { resolution: command.resolution, blockerId: command.blockerId });
+    case "clear_awaiting": return post("awaiting/clear", { resolution: command.resolution, awaitingId: command.awaitingId });
   }
 }
 
@@ -198,24 +253,36 @@ export function registerSessionControlRoutes(
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, SessionControlReadSchema);
     if (!parsed.ok) return parsed.res;
-    const caller = sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
-    if (!caller) return c.json({ error: "Ask the operator to enable Control other sessions on your session" }, 403);
+    const caller = sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER), "read");
+    if (!caller) return c.json({ error: "Reading other sessions requires read-only inspection or Control other sessions. Launch an inspection profile from the desktop to grant read-only access." }, 403);
     if (!parsed.data.sessionId) {
       const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping"
-        && (!parsed.data.blocked || hasBlocker(s)));
-      return c.json({ sessions: sessions.map((s) => ({
+        && (!parsed.data.blocked || hasBlocker(s))
+        // Every declared wait, overdue ones included: an overdue wait is the one a resident
+        // most needs to find, since the session said it would be back by now.
+        && (!parsed.data.awaiting || s.awaiting != null));
+      const now = Date.now();
+      const history = parsed.data.history === undefined ? {} : {
+        history: { status: "unavailable", reason: "historical_session_list_unavailable" },
+      };
+      return c.json({ ...history, sessions: sessions.map((s) => ({
         id: s.id, name: s.name, agent: s.agent, runtime: s.runtime, state: s.state, cwd: s.cwd, activity: s.activity,
         blocker: blockerSummary(s.blocker),
+        awaiting: awaitingSummary(s.awaiting, now),
       })) });
     }
     const session = registry.getSession(parsed.data.sessionId);
-    if (!session || session.id === caller || session.state === "exited" || session.state === "stopping") return c.json({ error: "No such other live session" }, 404);
+    if (!session || session.id === caller || session.state === "exited" || session.state === "stopping") {
+      if (parsed.data.history !== undefined) return c.json({ history: { status: "unavailable", reason: "no_live_session" } }, 404);
+      return c.json({ error: "No such other live session" }, 404);
+    }
+    if (parsed.data.history !== undefined) return c.json({ history: sessionHistory(session, parsed.data.history) });
     const reviews = registry.pendingReviews(session.id);
     let transcript: unknown;
     if (parsed.data.transcript) {
       const result = await app.request(`http://localhost/api/sessions/${encodeURIComponent(session.id)}/transcript?turns=20`, { headers: { host: "localhost" } });
       transcript = await result.json();
-      if (!sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER))) return c.json({ error: "Session control was revoked" }, 403);
+      if (!sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER), "read")) return c.json({ error: "Session control was revoked" }, 403);
     }
     return c.json({ session, reviews, queue: registry.getQueue(session.id), ...(transcript === undefined ? {} : { transcript }) });
   });
@@ -235,19 +302,69 @@ export function registerSessionControlRoutes(
       if (!review || review.sessionId !== sessionId) return c.json({ error: "Review does not belong to the target session" }, 404);
       if (review.status !== "pending") return c.json({ error: "Review is already resolved" }, 409);
     }
-    const request = controlRequest(sessionId, command);
-    const delegatedRequest = new Request(`http://localhost${request.path}`, {
-      method: request.method,
-      headers: { host: "localhost", "content-type": "application/json", "x-mission-operation-surface": "mcp", "x-mission-operation-actor": "agent" },
-      ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
-    });
-    delegatedActors.set(delegatedRequest, `session:${caller}`);
-    try {
-      const response = await app.request(delegatedRequest);
-      logEvent(sessionId, Date.now(), "session_control_action", { controller: caller, target: sessionId, action: command.action, status: response.status });
-      return response;
-    } finally {
-      delegatedActors.delete(delegatedRequest);
-    }
+    const delegate = async (request: { path: string; method: string; body?: unknown }): Promise<Response> => {
+      const delegatedRequest = new Request(`http://localhost${request.path}`, {
+        method: request.method,
+        headers: { host: "localhost", "content-type": "application/json", "x-mission-operation-surface": "mcp", "x-mission-operation-actor": "agent" },
+        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+      });
+      delegatedActors.set(delegatedRequest, `session:${caller}`);
+      try {
+        return await app.request(delegatedRequest);
+      } finally {
+        delegatedActors.delete(delegatedRequest);
+      }
+    };
+    const response = command.action === "complete"
+      ? await completeTarget(registry, sessionId, command, delegate)
+      : await delegate(controlRequest(sessionId, command));
+    logEvent(sessionId, Date.now(), "session_control_action", { controller: caller, target: sessionId, action: command.action, status: response.status });
+    return response;
   });
+}
+
+type CompleteAction = Extract<SessionControlAction, { action: "complete" }>;
+
+/**
+ * The dashboard's Complete dialog, step for step, through the same two routes it calls.
+ *
+ * The task is recorded before the stop is requested, and the order matters for the reason the
+ * dialog gives: a stop that fails must not leave the outcome unwritten, because the task would
+ * then settle as `failed` through the session-went-away path. When completion already asked for
+ * the session's closure (a task with its own worktree), no second stop is sent. The task is the
+ * one the target is running now, resolved from the live session, never an id the caller names.
+ */
+async function completeTarget(
+  registry: Registry,
+  sessionId: string,
+  command: CompleteAction,
+  delegate: (request: { path: string; method: string; body?: unknown }) => Promise<Response>,
+): Promise<Response> {
+  const json = (body: unknown, status: number) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const target = registry.getSession(sessionId);
+  const task = target ? registry.taskForSession(target.id, target.cwd) : undefined;
+  if (!task) return json({ error: "Target session has no task to complete" }, 409);
+  const completed = await delegate({
+    path: `/api/tasks/${encodeURIComponent(task.id)}/complete`,
+    method: "POST",
+    body: {
+      // The dialog's own fallback: an outcome is context, not permission to finish.
+      outcome: command.outcome || "completed",
+      ...(command.satisfyDependents ? { satisfyDependents: true } : {}),
+      ...(command.confirmIncompleteScout ? { confirmIncompleteScout: true } : {}),
+    },
+  });
+  if (!completed.ok) return completed;
+  const done = await completed.json() as { status: string; sessionClosureRequested?: boolean };
+  const result = { ok: true, taskId: task.id, taskStatus: done.status };
+  if (done.sessionClosureRequested) return json({ ...result, session: "closing" }, 200);
+  // Completion may have ended the session itself; there is nothing left to stop.
+  if (!registry.getSession(sessionId)) return json({ ...result, session: "closed" }, 200);
+  const killed = await delegate({ path: `/api/sessions/${encodeURIComponent(sessionId)}/kill`, method: "POST" });
+  if (!killed.ok) {
+    const reason = ((await killed.json().catch(() => null)) as { error?: string } | null)?.error ?? "failed";
+    return json({ ...result, ok: false, error: `task marked done, but the session could not be closed: ${reason}` }, killed.status);
+  }
+  return json({ ...result, session: "closing" }, 200);
 }

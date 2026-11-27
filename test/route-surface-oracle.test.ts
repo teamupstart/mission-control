@@ -118,6 +118,7 @@ function fieldNames(text: string): string {
 
 /** Values that differ per run or per host, replaced by a token so the rest can be asserted. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const APP_CONFIG_REVISION = /^[0-9a-f-]{36}:\d+$/i;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})/;
 const ABSOLUTE_PATH = /^(~|\/)[^\s]*\//;
 /**
@@ -164,6 +165,7 @@ const VOLATILE_KEYS = new Set([
 function normalize(value: unknown): unknown {
   if (typeof value === "string") {
     if (UUID.test(value)) return "<uuid>";
+    if (APP_CONFIG_REVISION.test(value)) return "<config revision>";
     if (TIMESTAMP.test(value)) return "<timestamp>";
     if (ABSOLUTE_PATH.test(value)) return "<path>";
     if (DIGEST.test(value)) return "<digest>";

@@ -40,6 +40,18 @@ when that plan deletes nothing. The categories are `STORAGE_CATEGORIES` in
 | Archives | `archives/`, `scouts/` | Not cleaned here |
 | Everything else | whatever no category names | Not cleaned here |
 
+The speech model voice addressing downloads lives in `voice/models/`, about 542 MiB for the
+current model, and is counted under **Everything else**. It is removed only by the model manager,
+which deletes an old revision once a new one verifies; see
+[Voice addressing](voice.md#where-it-is-kept). Like everything outside SQLite, it is not in a
+database or settings backup.
+
+Supertonic 3 speech synthesis weights live under
+`<state home>/voice/models/speech/<revision>/`. All ten voices share the seven
+files (145.3 MB). The daemon verifies their SHA-256 digests and retires older
+speech revisions after their replacement verifies. Settings backups exclude
+these files. Synthesized speech stays in memory.
+
 Measuring walks every file, which on a machine with large pools is millions of files and can
 take minutes. A state directory reached through a symlink is resolved first, so the walk measures
 what the link points at; symlinks inside it are never followed. When a walk finishes, the backup
@@ -164,3 +176,131 @@ again.
 
 The limits and the idle-cache budget are the `storage.limits` setting, saved with
 `PUT /api/storage/limits` and carried by settings snapshots in the `storage-limits` domain.
+
+Before serving a capture-enabled directive, the daemon records the microphone owner in
+an owner-only receipt under `voice/capture-grants/`. The receipt carries the launch
+instance or verified process birth when available. A restart restores the pause
+obligation before offering playback. Acknowledging a pause or verifying exit
+removes the receipt.
+
+The daemon atomically replaces `voice/speech-holds.json` in the state home with
+an owner-only (0600) ledger before offering speech to a listener. Its entries
+hold the job ID, purpose and private listener instance. Confirmation removes
+the entry. Restart recovery may also record a supervisor name and job ID while
+its process record under `voice/supervised/` is unreadable. This runtime file
+contains no text or audio and stays outside settings exports.
+
+Before handing off a job, the daemon also writes an owner-only `voice-speech-used`
+marker containing only `true` at the root of the state home. It survives loss of
+the entire `voice/` directory and remains after playback ends. If the ledger,
+launch inventory and supervisor records all disappear, this marker distinguishes
+the used state home from a first boot. Capture stays off while the daemon cannot
+identify which listeners need to confirm silence.
+
+#### Voice supervisor credentials
+
+The packaged macOS shell can provision its own durable signing key for the daemon
+it launches. When Voice is enabled or an earlier listener needs recovery, the shell
+opens the key asynchronously using Electron safeStorage and the macOS Keychain.
+The desktop window and daemon can start while a Keychain prompt is pending. If
+the model and microphone are ready and there is no earlier listener to recover,
+a capture-only helper can listen during the prompt. Once the key is available,
+the shell waits for that helper to exit before transferring its capture lease
+to a supervised helper. An owned daemon reads the public verifier over its
+private Electron port when a supervisor report arrives. An adopted daemon keeps
+its own trust settings. The encrypted value lives in the owner-only
+`voice/shell-credential.json`. An external
+launch service supplies `MISSION_VOICE_SHELL_CREDENTIAL_FD` or
+`MISSION_VOICE_DEV_CREDENTIAL_FD` to the corresponding launcher and the matching
+public verifier to the daemon. Pass the descriptor directly to the launcher process
+(for development, `node --import tsx scripts/run-voice-listener.ts`). An unprovisioned
+development listener supports capture only.
+
+Each macOS supervisor atomically maintains `voice/supervised/shell.json` or
+`voice/supervised/dev.json` (0600 in a 0700 directory). The record initially contains
+the launch instance. Before the child can pass its startup gate it also contains
+`pid` and `startedAt`, the OS process birth identity. The slot survives a daemon
+outage until the daemon accepts that exact exit. It is machine-local runtime state.
+Each supervisor holds its own advisory lock and can relay the other supervisor's
+signed exit after checking the process has gone. A missing signature still requires
+the originating launch service.
+
+Provision a distinct Ed25519 private key once for each shell or dev supervisor.
+Keep it in the launch service's protected credential store throughout launcher
+and daemon restarts. Provisioning a new key for each launcher process strands
+the old process's exit authority.
+
+On each boot, the service passes the 48-byte DER PKCS#8 key to the launcher on
+a dedicated inherited descriptor (3 or higher). It can send the key through a
+private pipe and close the write end, or preopen a private file owned by a
+different OS account before dropping privileges. Keep that file in a directory
+inaccessible to the listener, with no group, other or ACL grants. The launcher
+calls `createVoiceSupervisor(name, fd)` before spawning the listener. The import
+closes the descriptor and clears its temporary buffer, including on failure.
+A service with a protected key provider can supply a private Ed25519 KeyObject
+directly. A missing credential must prevent a new speech announcement.
+
+Only the public verifier is passed to the daemon. Every listener instance binds
+that verifier to its launch nonce. Ordinary files owned by the listener's OS
+account, including legacy keys in the Mission Control state home, cannot be
+used as credential descriptors.
+
+Use the supervisor's `launch(stateHome, executable, args, env, report)` for
+speech-capable children. The report callback receives the instance, event and
+signature, and resolves when the daemon acknowledges that report. It returns
+`false` for a definitive refusal and throws when the outcome is unknown.
+Before sending the start, the launcher resolves the state home and durably records its
+own PID, boot identity and process start time. A signature binds these to the launch instance under `voice-retirements/`. It waits up to
+five seconds for acknowledgement. On success it starts a confined shell that
+waits on the launcher's pipe. The launcher records the sandbox child's PID and
+signature before releasing the shell to exec the listener. Losing the launcher
+before release closes the pipe and the listener never starts. Before releasing
+the gate the launcher also subscribes to the child's OS exit event. That event
+queues its signed retirement immediately. During a disconnect the exit stays
+on disk for the next connection.
+
+A replacement supervisor checks the recorded process with the OS. A missing process
+or a different verified birth at the same PID establishes exit. It rereads the watch
+and verifies the signature before reporting exit. A live process or an inconclusive
+read keeps the launch pending. Older PID-only watches wait for that PID to disappear. The child can read the voice models and write to its own owner-only
+`voice-retirements/scratch-announced-<digest>/` directory. The digest comes
+from the recorded launch instance. On normal close the launcher removes its
+scratch. After a launcher crash, retirement removes the same directory after
+confirmed exit and retains the record until cleanup succeeds. Scratch cleanup
+retries independently while the supervisor delivers other players' exits.
+The child cannot read the other voice records or
+write the daemon's ledger, launch inventory, receipts or exit evidence.
+The macOS launcher uses `/usr/bin/sandbox-exec` and forbids spawning descendants.
+Both macOS playback engines run inside the listener, so a child player cannot
+outlive the process whose exit the supervisor reports. The Linux launcher requires
+`/usr/bin/bwrap` and user namespaces. If confinement fails the player cannot
+run. The launcher rejects a symlinked voice or model directory before announcing
+the child and rechecks the directories before spawn. The supervisor uses the
+instance it announced to report the child's exit. If the OS refuses to spawn
+the child, pre-spawn validation fails after announcement, or the start
+acknowledgement is lost, the launch helper returns the original error while
+the supervisor delivers the signed exit independently. It replaces the PID record
+with the instance and its exit signature in the same owner-only file hidden
+from the listener. If storage is unavailable it
+retains the exit in memory and retries the write. Each outstanding exit is
+retried with backoff until the daemon acknowledges or definitively refuses it.
+Each delivery attempt has five seconds to respond. A stalled transport leaves
+the exit queued and allows delivery of the other launches' exits to proceed.
+On service startup and daemon reconnect, call `retryPendingExits(stateHome, report)`
+even when there is no child to launch. On disconnect or shutdown,
+`pauseExitRetries()` cancels pending requests and timers. Forward the report
+callback's optional fourth argument, an AbortSignal, to the HTTP request.
+A capture-only listener can keep its existing launch path.
+
+#### Voice launch receipts
+
+Under `voice/supervised/`, the daemon writes one owner-only `announced-<digest>.json` per accepted start, by atomic rename. Its content is the private instance ID and its filename uses the SHA-256 digest of that ID. An authenticated exit removes only that instance’s file. These launch records survive the daemon and let it find possible players even before a launcher reconnects. The supervisor owns its separate process record in the same directory.
+
+The daemon maintains an owner-only `voice/supervised-instances.json` by atomic replacement. It lists outstanding private instance IDs and can retain an unresolved record name during recovery. Keeping the inventory outside `voice/supervised/` lets the daemon ask every possible holder to stop if the directory disappears while the speech ledger is unreadable. A signed exit can clear its exact ledger hold even when the inventory is missing or unreadable. The exit marker also applies if the inventory is restored. Any separate hold for unknown launches still requires a complete inventory.
+
+Before acknowledging a handoff or lifecycle write, the daemon syncs the staged
+file, renames it and syncs the directory entries up to the state home. Receipt
+removal also syncs its parent directories. A failed sync leaves the operation
+unacknowledged.
+
+Each accepted exit stores the instance and its supervisor's Ed25519 exit signature under `voice/supervised-exits/`, keyed by the launch receipt's digest. Recovery checks both the digest and the original issuer's signature before applying an exit. An older unsigned boolean marker requires a fresh signed exit. Records stay for the lifetime of the state home because signed start retries have no expiry and each launch instance is single-use.

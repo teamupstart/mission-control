@@ -11,7 +11,7 @@ const source = readFileSync(
 test("log-open failures remain inside the supervised restart loop", () => {
   assert.match(
     source,
-    /try \{\s+log = openPrivateUtilityLog\(opts\.logPath\);\s+\} catch \{\s+scheduleRestart\(\);\s+return;/,
+    /try \{\s+log = openUtilityLog\(opts\.logPath, opts\.captureChildOutput\);\s+\} catch \{\s+scheduleRestart\(\);\s+return;/,
   );
 });
 

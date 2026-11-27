@@ -51,7 +51,7 @@ export function ResidentBand({
       {mark.loop && <ResidentLoopStatusLine loop={mark.loop} session={session} />}
       <span className="resident-band-spacer" />
       <ResidentLoopControls mark={mark} />
-      {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
+      {session && (mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) && (
         <ResidentControlStatus session={session} name={mark.name} />
       )}
       {onOpenProfile && (

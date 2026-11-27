@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { openQuestionCount } from "@shared/async-input.ts";
+import { questionAgentStatus } from "../lib/async-questions.ts";
 import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
 import { Keycap } from "../components/Keycap.tsx";
 import { RepoGroupCaret } from "../components/session-bits.tsx";
@@ -8,6 +10,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { stateDisplay } from "../lib/format.ts";
 import { formatChord, isTypingTarget, useKeybindings } from "../lib/keybindings.ts";
 import { reviewAskSummary } from "../lib/reviews.ts";
+import { matchesEveryWord } from "../lib/search-text.ts";
 import {
   toggleResidentCardCollapsed,
   toggleResidentProfilesCollapsed,
@@ -15,10 +18,11 @@ import {
   useResidentProfilesCollapsed,
 } from "./card-fold.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
-import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
-import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
+import { ResidentControlStatus, residentControlBadge } from "./ResidentControlStatus.tsx";
+import { ResidentLoopControls, ResidentLoopStatusLine, type ResidentLoopFeedback, type ResidentLoopFeedbackBinding } from "./ResidentLoopControls.tsx";
+import { residentLoopActions, residentLoopSearchFields } from "./loop-presentation.ts";
 import { ResidentProfileLaunchList } from "./ResidentProfileLaunchList.tsx";
-import { residentAccentStyle, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
+import { residentAccentStyle, residentActionName, residentMarksBySession, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import type { ResidentLaunches } from "./useResidentLaunches.ts";
@@ -42,21 +46,47 @@ export function residentDrawerEntries(
   runs: readonly ResidentRunSummary[],
   profiles: readonly ResidentProfile[],
   sessions: readonly Session[],
+  listening = false,
+  marksBySession = residentMarksBySession(sessions, runs, profiles, listening),
 ): ResidentDrawerEntry[] {
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
   const sessionByTask = new Map<string, Session>();
   for (const session of sessions) if (session.task) sessionByTask.set(session.task.id, session);
-  return runs.map((run, index) => ({
-    run,
-    mark: residentSessionMark(run, profileById.get(run.profileId) ?? null),
-    session: sessionByTask.get(run.taskId) ?? null,
-    shortcut: index < 9 ? index + 1 : null,
-  }));
+  return runs.map((run, index) => {
+    const session = sessionByTask.get(run.taskId) ?? null;
+    const mark = session && marksBySession.get(session.id);
+    return {
+      run,
+      mark: mark ?? residentSessionMark(run, profileById.get(run.profileId) ?? null, listening),
+      session,
+      shortcut: index < 9 ? index + 1 : null,
+    };
+  });
 }
 
-/** A listed resident whose session has started and needs you: the Board's Needs you tone. */
+/**
+ * A listed resident whose session has started and needs you: the Board's Needs you tone, or a
+ * message-mode question still open (`async-input`). A resident is never amber for its questions
+ * alone, because it keeps iterating on its cadence, so its card keeps the working or idle tone
+ * while the group lists it with its asks.
+ */
 function entryNeedsYou(entry: ResidentDrawerEntry): boolean {
-  return entry.session !== null && stateDisplay(entry.session).tone === "attention";
+  return entry.session !== null
+    && (stateDisplay(entry.session).tone === "attention" || openQuestionCount(entry.session) > 0);
+}
+
+/**
+ * Whether a listed resident is drawn in the Needs you colour: the Board's attention tone, or open
+ * questions it has stopped on. A working resident's questions never turn it amber, since it keeps
+ * iterating, but one the operator paused will not wake to act on them (`questionAgentStatus`), so
+ * it is amber like any other session stopped on a question. Read by its card and the edge tab.
+ */
+export function residentEntryAmber(entry: Pick<ResidentDrawerEntry, "run" | "session">): boolean {
+  const session = entry.session;
+  if (!session) return false;
+  if (stateDisplay(session).tone === "attention") return true;
+  return openQuestionCount(session) > 0
+    && questionAgentStatus({ ...session, residentPaused: entry.run.loopState === "paused" }) === "stopped";
 }
 
 /**
@@ -89,8 +119,42 @@ export function residentShortcutLabel(n: number): string {
   return `⌥${n}`;
 }
 
+/** Search the card's content even while it is compressed. */
+export function matchesResidentDrawerFilter(
+  entry: ResidentDrawerEntry, query: string, reviews: readonly ReviewItem[], now: number, activeHours: boolean,
+  actionError: string | null | undefined,
+): boolean {
+  const { mark, run, session, shortcut } = entry;
+  const fields = [
+    mark.listeningTitle,
+    mark.name,
+    mark.label,
+    mark.pin ? "⤒" : null,
+    session ? stateDisplay(session).label : "starting",
+    shortcut !== null ? residentShortcutLabel(shortcut) : null,
+    ...residentLoopSearchFields(run, session, now, activeHours),
+  ];
+  if (session) {
+    fields.push(
+      residentLatest(session),
+      ...residentCardAsks(session, residentPendingReviews(session, reviews)).flatMap(({ kind, title, detail }) => [kind, title, detail]),
+      "Open",
+      ...residentLoopActions(mark).map(({ label }) => label),
+      actionError ?? null,
+    );
+    if (mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) {
+      fields.push(session.sessionInspectionOnly ? "Read-only inspection" : residentControlBadge(session.sessionControlEnabled === true));
+    }
+  }
+  return matchesEveryWord(fields, query);
+}
+
 export interface ResidentsDrawerProps {
+  /** Cards that match the fleet filter, in the same order as the full list. */
   entries: readonly ResidentDrawerEntry[];
+  live: number;
+  loopFeedback: ReadonlyMap<string, ResidentLoopFeedback>;
+  onLoopFeedbackChange: (runId: string, feedback: ResidentLoopFeedback) => void;
   profiles: readonly ResidentProfile[];
   /**
    * Pinned: stored, so the drawer is still open after a reload or a restart. Unpinned, it is
@@ -141,7 +205,7 @@ export interface ResidentsDrawerProps {
  * the pin only decides whether it is still open after a reload.
  */
 export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element {
-  const { entries, pinned, selectedId } = props;
+  const { entries, live, pinned, selectedId } = props;
   const { bindings } = useKeybindings();
   const collapsed = useResidentCardsCollapsed();
   // The Profiles fold is a preview: off, the heading is plain text and the list always shows, so
@@ -239,7 +303,6 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
     }
   }
 
-  const live = entries.length;
   const closeChord = formatChord(bindings.residentsDock);
   const renderCard = (entry: ResidentDrawerEntry): React.JSX.Element => (
     <ResidentDrawerCard
@@ -251,6 +314,10 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
       onOpen={props.onOpen}
       onOpenReview={props.onOpenReview}
       reviews={props.reviews}
+      loopFeedback={{
+        value: props.loopFeedback.get(entry.run.id),
+        onChange: (feedback) => props.onLoopFeedbackChange(entry.run.id, feedback),
+      }}
     />
   );
   return (
@@ -295,13 +362,13 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
         </Tooltip>
       </div>
       <div className="residents-drawer-body">
-        {entries.length === 0 ? (
+        {live === 0 ? (
           <p className="residents-drawer-empty">No residents are running. Launch one from a profile below.</p>
+        ) : entries.length === 0 ? (
+          <p className="residents-drawer-empty" role="status">No residents match the filter.</p>
         ) : (
           <>
-            {/* Residents that need you lead the drawer, in the Board's Needs you color, with the
-                review chord's keycap on the heading: after any fleet session asking, `e` addresses
-                the first of them - its review queue, or its conversation (`reviewChordTarget`). */}
+            {/* Residents that need you lead the drawer, with the attention shortcut on the heading. */}
             {groups.needsYou.length > 0 && (
               <section className="residents-drawer-group is-needs-you" aria-labelledby="residents-drawer-needs-you">
                 <h3 className="residents-drawer-group-head" id="residents-drawer-needs-you">
@@ -365,7 +432,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
  * `ResidentDrawerCardBody` in full. Compressed, it keeps the live status line and the controls
  * and drops the rest - what it is asking and the loop tags - so more residents fit.
  */
-function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOpenReview, reviews }: {
+function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOpenReview, reviews, loopFeedback }: {
   entry: ResidentDrawerEntry;
   selected: boolean;
   /** Compressed by a click on its title. Never true for a card whose session has not started. */
@@ -374,10 +441,12 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
   onOpen: (sessionId: string) => void;
   onOpenReview: (sessionId: string) => void;
   reviews: readonly ReviewItem[];
+  loopFeedback: ResidentLoopFeedbackBinding;
 }): React.JSX.Element {
   const { mark, session, run, shortcut } = entry;
+  const name = residentActionName(mark, mark.name);
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
-  const needsYou = state.tone === "attention";
+  const needsYou = residentEntryAmber(entry);
   // The tone the Board files this session under, so a working resident's card is edged in the
   // Working column's color and one that needs you in the Needs you column's, in every theme.
   const working = state.tone === "working";
@@ -389,15 +458,15 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
       data-resident-card={session?.id}
     >
       <Tooltip label={session
-        ? `${collapsed ? "Expand" : "Compress"} ${mark.name}; Enter or a double-click opens its conversation`
-        : `${mark.name} is still starting`}
+        ? `${collapsed ? "Expand" : "Compress"} ${name}; Enter or a double-click opens its conversation`
+        : `${name} is still starting`}
       >
         <button
           type="button"
           className="residents-drawer-card-head"
           aria-expanded={session ? !collapsed : undefined}
           aria-current={selected ? "true" : undefined}
-          aria-label={`${mark.name}, ${state.label}`}
+          aria-label={`${name}, ${state.label}`}
           disabled={!session}
           onClick={() => {
             if (!session) return;
@@ -407,7 +476,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
           onDoubleClick={() => session && onOpen(session.id)}
         >
           <ResidentChip mark={mark} tooltip={false} />
-          <span className="residents-drawer-name">{mark.name}</span>
+          <span className="residents-drawer-name">{name}</span>
           <span
             className="residents-drawer-dot"
             style={{ "--tone": `var(--${state.tone})` } as CSSProperties}
@@ -420,7 +489,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
       {session ? (
         <ResidentDrawerCardBody
           session={session}
-          name={mark.name}
+          name={name}
           compressed={collapsed}
           status={status}
           onOpen={() => onOpen(session.id)}
@@ -428,23 +497,23 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
             onSelect(session.id);
             onOpenReview(session.id);
           }}
-          reviews={reviews.filter((review) => review.sessionId === session.id && review.status === "pending")}
+          reviews={residentPendingReviews(session, reviews)}
         >
           <div className="residents-drawer-actions">
-            <Tooltip label={`Open ${mark.name}'s conversation${shortcut !== null ? ` (${residentShortcutLabel(shortcut)})` : ""}`}>
+            <Tooltip label={`Open ${name}'s conversation${shortcut !== null ? ` (${residentShortcutLabel(shortcut)})` : ""}`}>
               <button
                 type="button"
                 className="btn residents-pop-action"
-                aria-label={`Open ${mark.name}`}
+                aria-label={`Open ${name}`}
                 onClick={() => onOpen(session.id)}
               >
                 Open
               </button>
             </Tooltip>
-            <ResidentLoopControls mark={mark} />
+            <ResidentLoopControls mark={mark} feedback={loopFeedback} />
             <span className="residents-pop-spacer" aria-hidden />
-            {(mark.controlOtherSessions || session.sessionControlEnabled === true) && (
-              <ResidentControlStatus session={session} name={mark.name} badge />
+            {(mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) && (
+              <ResidentControlStatus session={session} name={name} badge />
             )}
           </div>
         </ResidentDrawerCardBody>
@@ -500,39 +569,24 @@ export function ResidentDrawerCardBody({ session, name, compressed = false, stat
   reviews: readonly ReviewItem[];
   children: React.ReactNode;
 }): React.JSX.Element {
-  const dialog = activePaneDialog(session);
-  // The line the Console rail prints under a session's name: the last thing it reported.
-  const latest = session.activity ?? session.goal?.text ?? null;
+  const latest = residentLatest(session);
   // Every requested decision gets a row, in the order the review modal draws them: the menu the
   // session is parked on first, then each pending review. Never one instead of the other, so the
   // card never counts fewer than the modal it opens.
-  const asks = compressed || (reviews.length === 0 && !dialog) ? null : (
+  const rows = compressed ? [] : residentCardAsks(session, reviews);
+  const asks = rows.length === 0 ? null : (
     <ul className="residents-drawer-asks" aria-label={`${name} is asking`}>
-      {dialog && (
-        <li key="menu">
+      {rows.map(({ id, kind, title, detail }) => (
+        <li key={id}>
           <ResidentAskRow
-            kind="menu"
-            title={dialog.prompt ?? "Waiting at a menu"}
-            detail={paneDialogDetail(dialog)}
+            kind={kind}
+            title={title}
+            detail={detail}
             tooltip={`Open the review to answer ${name}`}
             onClick={onOpenReview}
           />
         </li>
-      )}
-      {reviews.map((review) => {
-        const summary = reviewAskSummary(review);
-        return (
-          <li key={review.id}>
-            <ResidentAskRow
-              kind={summary.kind}
-              title={review.title}
-              detail={summary.detail}
-              tooltip={`Open the review to answer ${name}`}
-              onClick={onOpenReview}
-            />
-          </li>
-        );
-      })}
+      ))}
     </ul>
   );
   // Compressed, the line falls back to the state, so the card always says something.
@@ -561,6 +615,21 @@ export function ResidentDrawerCardBody({ session, name, compressed = false, stat
       {children}
     </div>
   );
+}
+
+function residentLatest(session: Session): string | null {
+  return session.activity ?? session.goal?.text ?? null;
+}
+
+function residentPendingReviews(session: Session, reviews: readonly ReviewItem[]): ReviewItem[] {
+  return reviews.filter((review) => review.sessionId === session.id && review.status === "pending");
+}
+
+function residentCardAsks(session: Session, reviews: readonly ReviewItem[]): { id: string; kind: string; title: string; detail: string | null }[] {
+  const rows = reviews.map((review) => ({ id: review.id, title: review.title, ...reviewAskSummary(review) }));
+  const dialog = activePaneDialog(session);
+  if (dialog) rows.unshift({ id: "menu", kind: "menu", title: dialog.prompt ?? "Waiting at a menu", detail: paneDialogDetail(dialog) });
+  return rows;
 }
 
 /**

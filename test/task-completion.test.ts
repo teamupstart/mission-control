@@ -295,7 +295,10 @@ test("bugfix receives the same implementation and deferred-shipping instructions
 test("a workflow-bound plan defers its PR but still publishes artifacts before scheduling", () => {
   const contract = taskCompletionContract("plan", true);
   assert.ok(contract);
-  assert.deepEqual(contract.deferred.map((action) => action.id), ["pull-request", "review", "ci", "merge"]);
+  assert.deepEqual(
+    contract.deferred.map((action) => action.id),
+    ["pull-request", "review", "ci", "merge", "workflow-verdict"],
+  );
   assert.ok(contract.complete.some((requirement) => /human.*approved/.test(requirement)));
   assert.ok(contract.complete.some((requirement) => /committed and pushed.*before.*scheduling/.test(requirement)));
   assert.ok(contract.complete.some((requirement) => /when requested/.test(requirement)));
@@ -312,6 +315,30 @@ test("a workflow-bound plan defers its PR but still publishes artifacts before s
   assert.match(prompt, /absence is NOT a/);
   assert.doesNotMatch(prompt, /Judge only whether the implementation work/);
   assert.match(delivered, /end this turn/);
+});
+
+test("a workflow-bound plan cannot be held for the result of the workflow its claim starts", () => {
+  // Foreman's completion claim is what creates the bound workflow's run. A verdict that holds
+  // the plan because "Plan Validation has no completed result" spends the generation on a gap
+  // only that run could close, and a held plan task has no recovery to start it.
+  const contract = taskCompletionContract("plan", true)!;
+  const verdict = contract.deferred.find((action) => action.id === "workflow-verdict");
+  assert.ok(verdict, "the bound workflow's result is deferred work");
+  const prompt = buildVerifyPrompt(mkVerifyInput({ completionContract: contract }));
+  assert.ok(prompt.includes(`- ${verdict.noun}`), "the verifier is told the workflow result is deferred");
+  assert.match(verdict.noun, /starts only after this handoff/);
+
+  const task = mkTask({ kind: "plan", workflowId: "plan-review" });
+  const delivered = withTaskKindContract(task, task.intent, {
+    planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" },
+  });
+  assert.ok(delivered.includes(verdict.imperative), "the planning agent is told not to wait for it");
+
+  // Ship-shaped contracts keep their own boundary: their workflow is reached by the same claim,
+  // but nothing in their deferred list changes here.
+  for (const kind of ["ship", "bugfix", "document"] as const) {
+    assert.ok(!taskCompletionContract(kind)!.deferred.some((action) => action.id === "workflow-verdict"));
+  }
 });
 
 test("unbound plans keep skill-owned PR creation and other kinds keep their contract", () => {

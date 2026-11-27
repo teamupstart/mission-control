@@ -4,10 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { availableSetupDependencyIds } from "../src/shared/conductor-integration.ts";
+import { SETUP_DEPENDENCY_INFO, setupFamilyFlagOn } from "../src/shared/setup-catalog.ts";
 
 // Setup reports every dependency the build offers; ai-conductor is withheld while its
-// integration is hidden (`shared/conductor-integration.ts`).
-const SETUP_DEPENDENCY_IDS = availableSetupDependencyIds();
+// integration is hidden (`shared/conductor-integration.ts`), and a family behind a preview flag
+// (Voice) while that flag is off, which it is in this fixture's fresh database.
+const SETUP_DEPENDENCY_IDS = availableSetupDependencyIds()
+  .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, () => false));
 
 const home = mkdtempSync(join(tmpdir(), "mission-setup-route-"));
 process.env.MISSION_HOME = home;
@@ -54,7 +57,10 @@ function deps(
     installedPlugins: async () => ({ ok: true, plugins: [], recordPath: "/fake/record" }),
     skills: () => ({ enabled: false, readable: true, configured: 0, directories: ["/fake/skills"], problems: [] }),
     conductorProbe: async () => { throw new Error("isolated failure"); },
-    terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
+    terminalTargets: () => [
+      { id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null },
+      { id: "macos-terminal", label: "macOS Terminal", glyph: "", blurb: "New window.", detail: null, unavailable: null },
+    ],
     repositoryIndex: async () => ({ repoCount: 1, directories: [{ path: "~/workspace", status: "ok", repoCount: 1 }] }),
     environmentChecks: async () => [{
       id: "upstartclaw-core-setup",

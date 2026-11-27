@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { taskHasWorktrees } from "@shared/task-repos.ts";
 import type { Session, Task } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { retroBackstopOffer, retroOutcome, type ResidentRetroContext } from "../lib/retro-offer.ts";
@@ -50,6 +51,7 @@ export function CompleteModal({
   onClose: () => void;
 }): React.JSX.Element {
   const task = session.task;
+  const taskDetails = tasks.find((candidate) => candidate.id === task?.id);
   const tourPreview = tourOutcome !== undefined;
   const [outcome, setOutcome] = useState(tourOutcome ?? "");
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:complete-modal", task?.id);
@@ -231,9 +233,14 @@ export function CompleteModal({
           {task ? (
             <>
               <p className="complete-task">
-                Marks <strong>{task.title}</strong> done, then closes this session. Task-owned
-                worktrees are reset and returned after required archives are saved. Remaining
-                local changes are discarded.
+                Marks <strong>{task.title}</strong> done, then closes this session.
+                {taskDetails && taskHasWorktrees(taskDetails) && (
+                  <>
+                    {" "}Task-owned worktrees and their local changes stay in place. The retention
+                    window starts when the last tracked session using the worktrees leaves.
+                    Automatic cleanup requires clean worktrees with commits published to origin.
+                  </>
+                )}
               </p>
 
               <label className="complete-field">

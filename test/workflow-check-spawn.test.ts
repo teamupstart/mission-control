@@ -199,6 +199,19 @@ test("a relative ./script in the working directory is found - the onPath trap", 
   });
 });
 
+test("owner cancellation after the launch gate closes the running process group", async () => {
+  const controller = new AbortController();
+  const outcome = await spawnCheckProcess({
+    attemptId: "cancel-live-provider", command: [NODE, "-e", 'console.log("started"); setInterval(() => {}, 1000)'],
+    env: {}, cwd: workspace(), timeoutMs: 10_000, signal: controller.signal, interruptionReason: "Review cancelled",
+    capture: { push: () => controller.abort() },
+  });
+  assert.ok(outcome.supervisor);
+  supervisors.push(outcome.supervisor.pid);
+  assert.deepEqual(outcome.result, { kind: "infrastructure", reason: "Review cancelled" });
+  assert.equal(outcome.emptiness, "empty");
+});
+
 test("a timeout is infrastructure, never a non-zero exit", async () => {
   const { result, emptiness } = await run(["sh", "-c", "sleep 30"], { timeoutMs: 400 });
   assert.equal(result.kind, "infrastructure");
@@ -373,7 +386,7 @@ test('a killed owner cannot orphan the shim or its running command', async (t) =
   owner.kill('SIGKILL');
   const {execFileSync} = await import('node:child_process');
   const alive = (p: number) => {
-    try { return !/^Z/.test(execFileSync('/bin/ps', ['-o','stat=','-p',String(p)], {encoding:'utf8'}).trim()); }
+    try { return !execFileSync('/bin/ps', ['-o','stat=','-p',String(p)], {encoding:'utf8'}).trim().startsWith('Z'); }
     catch { return false; }
   };
   await wait(() => !alive(pid) && !alive(commandPid));

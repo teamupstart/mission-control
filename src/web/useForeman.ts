@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ForemanConfig, ForemanConfigPatch } from "@shared/protocol.ts";
 import type { BacklogPlan, ForemanEpisodeSummary, ForemanStatus } from "@shared/types.ts";
@@ -108,6 +109,7 @@ export function useForeman(): ForemanState {
     setConfigState(c);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("foreman");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -146,7 +148,7 @@ export function useForeman(): ForemanState {
       alive = false;
       clearInterval(id);
     };
-  }, [setConfig]);
+  }, [setConfig, settingsRevision]);
 
   const reread = useCallback(async (): Promise<void> => {
     // Same sequencer discipline as the poll: a read issued earlier must not land on top.
@@ -180,9 +182,10 @@ export function useForeman(): ForemanState {
         setConfig({
           ...before,
           ...patch,
+          ...(patch.efforts && { efforts: { ...before.efforts, ...patch.efforts } }),
           backlogDefaultModel: {
             ...before.backlogDefaultModel,
-            ...(patch.backlogDefaultModel ?? {}),
+            ...patch.backlogDefaultModel,
           },
         });
         const res = await api.setForemanConfig(patch);

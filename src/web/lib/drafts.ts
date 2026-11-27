@@ -101,7 +101,7 @@ export function dropMessageDrafts(sessionId: string): void {
  * destroying typing the user still wanted.
  */
 export function dropSessionDrafts(sessionId: string): void {
-  for (const k of [...drafts.keys()]) {
+  for (const k of Array.from(drafts.keys())) {
     if (k.slice(0, k.lastIndexOf(":")) === sessionId) drafts.delete(k);
   }
 }

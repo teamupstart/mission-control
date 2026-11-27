@@ -1,3 +1,4 @@
+import { taskResourceGeneration } from "../../src/server/task-resource-generation.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Registry } from "../../src/server/registry.ts";
@@ -11,16 +12,18 @@ let settled = false;
 
 test("a test may finish with an in-flight return owned by its fixture", async () => {
   registry = new Registry();
-  manager = new TaskManager(registry, undefined, undefined, undefined, undefined, {
-    occupancy: async (paths) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      settled = true;
-      return new Map(paths.map((path) => [path, { status: "unknown", reason: "fixture" }]));
-    },
-  });
+  manager = new TaskManager(registry);
   registry.applyDiscovery([]);
   registry.upsertTask(mkTask({ id: "pending", sessionId: null, status: "running", worktreePath: "/fixture/one" }));
-  await manager.complete("pending", "finished");
+  const task = (await manager.complete("pending", "finished"))!;
+  void manager.enqueueRetentionCleanup({
+    taskId: task.id, generation: taskResourceGeneration(task), fingerprint: "fixture",
+    probe: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      settled = true;
+      return { kind: "unknown", reason: "fixture" };
+    },
+  });
   assert.equal(manager.pendingCleanupJobs, 1);
   // Intentionally no manual teardown: the shared fixture must own it on every test exit.
 });

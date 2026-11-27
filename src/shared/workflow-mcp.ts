@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   CancelWorkflowRunSchema,
   GrantWorkflowRepairRoundsSchema,
+  RecheckWorkflowInspectorSchema,
   OverrideWorkflowEvidenceReadinessSchema,
   ReattachWorkflowBindingSchema,
   RemoveWorkflowPersonaDirectiveSchema,
@@ -41,7 +42,7 @@ export const WorkflowActionRequestSchema = z.discriminatedUnion("action", [
   runAction("resubmit", ResubmitWorkflowSchema.strict()),
   runAction("restart-full", RestartFullWorkflowSchema.strict()),
   runAction("prepare-pr", WorkflowRunActionSchema.strict()),
-  runAction("recheck-inspector", WorkflowRunActionSchema.strict()),
+  runAction("recheck-inspector", RecheckWorkflowInspectorSchema.strict()),
   runAction("set-nodes-disabled", SetWorkflowNodesDisabledSchema.strict()),
   runAction("set-persona-directive", SetWorkflowPersonaDirectiveSchema.strict()),
   runAction("remove-persona-directive", RemoveWorkflowPersonaDirectiveSchema.strict()),

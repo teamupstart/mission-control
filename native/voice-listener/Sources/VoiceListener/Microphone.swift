@@ -1,0 +1,716 @@
+import AVFoundation
+import CoreAudio
+import Clibfvad
+
+func permission() -> String {
+    switch AVCaptureDevice.authorizationStatus(for: .audio) {
+    case .authorized: return "granted"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    case .notDetermined: return "not-determined"
+    @unknown default: return "unknown"
+    }
+}
+
+struct Device: Encodable {
+    let object: AudioDeviceID
+    let id: String
+    let name: String
+    let builtIn: Bool
+    let bluetooth: Bool
+    enum CodingKeys: String, CodingKey { case id, name, builtIn, bluetooth }
+
+    static func inputs() -> [Device] {
+        numbers(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices).compactMap { object in
+            guard !numbers(object, kAudioDevicePropertyStreams, kAudioDevicePropertyScopeInput).isEmpty,
+                  let id = label(object, kAudioDevicePropertyDeviceUID) else { return nil }
+            let transport = numbers(object, kAudioDevicePropertyTransportType).first
+            return input(object: object, id: id, name: label(object, kAudioObjectPropertyName), transport: transport)
+        }
+    }
+
+    static func input(object: AudioDeviceID, id: String, name: String?, transport: UInt32?) -> Device? {
+        // The daemon's device string limits count UTF-16 code units. UIDs must round-trip exactly.
+        guard !id.isEmpty, id.utf16.count <= 256 else { return nil }
+        var length = 0
+        let displayName = (name ?? "").unicodeScalars.prefix { scalar in
+            length += scalar.utf16.count
+            return length <= 256
+        }
+        return Device(object: object, id: id, name: displayName.isEmpty ? id : String(displayName),
+                      builtIn: transport == kAudioDeviceTransportTypeBuiltIn,
+                      bluetooth: transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE)
+    }
+
+    private static func numbers(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+                                _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> [UInt32] {
+        var key = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(object, &key, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var values = Array(repeating: UInt32(0), count: Int(size) / 4)
+        let status = values.withUnsafeMutableBytes { AudioObjectGetPropertyData(object, &key, 0, nil, &size, $0.baseAddress!) }
+        return status == noErr ? Array(values.prefix(Int(size) / 4)) : []
+    }
+
+    private static func label(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+        var key = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout.size(ofValue: value))
+        guard AudioObjectGetPropertyData(object, &key, 0, nil, &size, &value) == noErr else { return nil }
+        return value?.takeRetainedValue() as String?
+    }
+}
+
+struct Segment {
+    static let sampleNs: Int64 = 62_500 // one mono PCM sample at 16 kHz
+    let samples: [Float]
+    let startNs: Int64
+    let capturedAt: Int64 // Unix milliseconds fixed when speech starts
+    let firstVoicedSample: Int
+    /// Samples of this phrase in frames the classifier marked voiced, counted from the phrase's own
+    /// onset. Only the live preview reads it, to hold a phrase's first words (`Directive.firstPreviewVoicedMs`).
+    var voicedSamples = 0
+    // Capture and release boundaries use milliseconds since the monotonic host-clock origin.
+    var startedAtHostMs: Int64 { startNs / 1_000_000 }
+    var startedAtHostUs: Int64 { startNs / 1000 }
+    var speechStartHostUs: Int64 { (startNs + Int64(firstVoicedSample) * Self.sampleNs) / 1000 }
+    var endedAt: Int64 { (startNs + Int64(samples.count) * Self.sampleNs + 999_999) / 1_000_000 }
+
+    static func completeSamples(_ count: Int, startingAt startNs: Int64, through releaseMs: Int64) -> Int {
+        guard releaseMs > startNs / 1_000_000 else { return 0 }
+        if releaseMs >= (startNs + Int64(count) * sampleNs + 999_999) / 1_000_000 { return count }
+        return Int((releaseMs * 1_000_000 - startNs) / sampleNs)
+    }
+
+    func through(_ release: Int64) -> Segment? {
+        let count = Self.completeSamples(samples.count, startingAt: startNs, through: release)
+        guard count > firstVoicedSample else { return nil }
+        if count == samples.count { return self }
+        return prefix(count)
+    }
+
+    func prefix(_ count: Int) -> Segment {
+        Segment(samples: Array(samples.prefix(count)), startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample,
+                voicedSamples: min(voicedSamples, count))
+    }
+}
+
+private struct CaptureClock {
+    let origin = Date().timeIntervalSince1970 - AVAudioTime.seconds(forHostTime: mach_absolute_time())
+
+    func unixMs(_ hostNs: Int64) -> Int64 {
+        Int64(((origin + Double(hostNs) / 1e9) * 1000).rounded(.down))
+    }
+}
+
+// Keep an onset lead-in and bound the audio retained between speech boundaries.
+struct SpeechGate {
+    static let activityFloor: Float = 0.004
+    private(set) var endOfSpeechMs: Int
+    private var silenceSamples: Int { endOfSpeechMs * 16 }
+    // Budget from the first voiced sample to the last active frame. Retain
+    // the bounded lead-in and the configured closing silence independently.
+    private let limit: CaptureLimit
+    private static let maxLeadSamples = 2400
+    private var lead: [Float] = []
+    private var samples: [Float] = []
+    private var quiet = 0
+    private var startNs: Int64 = 0
+    private var capturedAt: Int64 = 0
+    private var firstVoicedSample = 0
+    // Voiced samples in the open phrase. Every phrase boundary starts it again from zero.
+    private var voicedSamples = 0
+    private var discarding = false
+    private let held: Bool
+    private var overflowPrefix: Segment?
+    private let onSegmentDropped: SegmentDropped
+
+    init(held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs, limit: CaptureLimit = .oneMinute,
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in }) {
+        self.held = held
+        self.limit = limit
+        self.onSegmentDropped = onSegmentDropped
+        self.endOfSpeechMs = endOfSpeechMs
+    }
+
+    mutating func updateEndOfSpeechMs(_ duration: Int) -> Segment? {
+        endOfSpeechMs = duration
+        guard quiet >= silenceSamples else { return nil }
+        // A shorter interval may already have elapsed. Close at the new sample
+        // boundary before any later tap can append the start of the next phrase.
+        let excess = quiet - silenceSamples
+        let nextLead = Array(lead.suffix(excess))
+        defer {
+            self = SpeechGate(held: held, endOfSpeechMs: duration, limit: limit, onSegmentDropped: onSegmentDropped)
+            lead = nextLead
+        }
+        guard !discarding else { return nil }
+        samples.removeLast(excess)
+        return segment(samples)
+    }
+
+    // A copy-on-write snapshot of this unfinished phrase. Preview decoding never drains the gate.
+    var preview: Segment? { samples.isEmpty || discarding ? nil : segment(samples) }
+
+    func canRecover(with pending: [Float]) -> Bool {
+        overflowPrefix != nil || !samples.isEmpty || (!discarding && pending.contains { abs($0) > Self.activityFloor })
+    }
+
+    mutating func interrupt(unfinished: Bool = false) {
+        let interruptedSpeech = unfinished || discarding || !samples.isEmpty
+        if !samples.isEmpty { onSegmentDropped(segment(samples).speechStartHostUs, .interrupted) }
+        if let prefix = overflowPrefix {
+            onSegmentDropped(prefix.speechStartHostUs, .captureLimit)
+        }
+        self = SpeechGate(held: held, endOfSpeechMs: endOfSpeechMs, limit: limit, onSegmentDropped: onSegmentDropped)
+        discarding = interruptedSpeech
+    }
+
+    private func segment(_ pcm: [Float]) -> Segment {
+        Segment(samples: pcm, startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample,
+                voicedSamples: voicedSamples)
+    }
+
+    // Key-up is an explicit end of speech. Silence alone or a discarded prefix
+    // cannot become a command, even when the operator releases the key.
+    mutating func finish(at release: Int64) -> Segment? {
+        defer { self = SpeechGate(held: held, endOfSpeechMs: endOfSpeechMs, limit: limit, onSegmentDropped: onSegmentDropped) }
+        // The callback that filled the buffer may already contain audio recorded
+        // after key-up. Only an explicit release inside this prefix can recover it.
+        if let prefix = overflowPrefix {
+            let firstExcessEnd = prefix.startNs + Int64(prefix.samples.count + 1) * Segment.sampleNs
+            if release < (firstExcessEnd + 999_999) / 1_000_000 {
+                return prefix.through(release)
+            }
+            onSegmentDropped(prefix.speechStartHostUs, .captureLimit)
+        }
+        guard !discarding, !samples.isEmpty else { return nil }
+        return segment(samples).through(release)
+    }
+
+    mutating func feed(_ frame: [Float], active: Bool, endNs: Int64,
+                       toUnixMs: (Int64) -> Int64 = { CaptureClock().unixMs($0) },
+                       onSpeechStart: (Int64) -> Void = { _ in }) -> Segment? {
+        guard !frame.isEmpty else { return nil }
+        if let prefix = overflowPrefix, endNs > prefix.startNs + Int64(prefix.samples.count) * Segment.sampleNs + 2_000_000_000 {
+            onSegmentDropped(prefix.speechStartHostUs, .captureLimit)
+            overflowPrefix = nil
+        }
+        // Keep the latest quiet samples, including a soft onset after a boundary moved by a live edit.
+        if !active {
+            lead = Array((lead + frame).suffix(Self.maxLeadSamples))
+            if samples.isEmpty && !discarding { return nil }
+        } else if samples.isEmpty && !discarding {
+            startNs = endNs - Int64(lead.count + frame.count) * Segment.sampleNs
+            capturedAt = toUnixMs(startNs)
+            firstVoicedSample = lead.count + (frame.firstIndex { abs($0) > Self.activityFloor } ?? frame.count)
+            onSpeechStart((startNs + Int64(firstVoicedSample) * Segment.sampleNs) / 1000)
+            samples = lead
+            voicedSamples = 0
+        }
+        if active { lead.removeAll(keepingCapacity: true) }
+        // Keep only enough trailing quiet to reach the configured silence boundary.
+        let count = active ? frame.count : min(frame.count, silenceSamples - quiet)
+        quiet = active ? 0 : quiet + count
+        let ended = quiet == silenceSamples
+        if ended {
+            quiet = 0
+            lead = Array(lead.suffix(frame.count - count))
+        }
+
+        // Legacy daemons reserve a pending action for only 35 seconds. Count the
+        // whole buffer and settle at 30 seconds, including lead-in and closing silence.
+        let capacity = limit.samples + (limit == .oneMinute ? firstVoicedSample : 0)
+        if !discarding && ((limit == .oneMinute && !active) || count <= capacity - samples.count) {
+            samples.append(contentsOf: frame.prefix(count))
+            if active { voicedSamples += count }
+            if ended {
+                defer { samples.removeAll(); voicedSamples = 0 }
+                return segment(samples)
+            }
+            if limit == .oneMinute || samples.count < capacity { return nil }
+        }
+        // Drop the entire unfinished instruction. Its tail must never start another segment.
+        if !discarding {
+            if held {
+                samples.append(contentsOf: frame.prefix(max(0, capacity - samples.count)))
+                overflowPrefix = segment(samples)
+            } else {
+                onSegmentDropped(segment(samples).speechStartHostUs, .captureLimit)
+            }
+        }
+        samples.removeAll()
+        voicedSamples = 0
+        discarding = !ended
+        return nil
+    }
+}
+
+// WebRTC classifies 20 ms of mono PCM at a time. Keep the original samples for
+// Parakeet, including any partial frame left at the end of a converter callback.
+final class SpeechSegmenter {
+    private static let frameLength = 320
+    private let detector: OpaquePointer
+    private var pending: [Float] = []
+    private var pendingStart: (ns: Int64, clock: CaptureClock)?
+    private var gate: SpeechGate
+
+    init(held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs, limit: CaptureLimit = .oneMinute,
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in }) throws {
+        gate = SpeechGate(held: held, endOfSpeechMs: endOfSpeechMs, limit: limit, onSegmentDropped: onSegmentDropped)
+        guard let detector = fvad_new() else { throw CaptureError.format }
+        guard fvad_set_sample_rate(detector, 16_000) == 0, fvad_set_mode(detector, 2) == 0 else {
+            fvad_free(detector)
+            throw CaptureError.format
+        }
+        self.detector = detector
+    }
+
+    deinit { fvad_free(detector) }
+
+    var preview: Segment? { gate.preview }
+    var endOfSpeechMs: Int { gate.endOfSpeechMs }
+    func updateEndOfSpeechMs(_ duration: Int) -> Segment? { gate.updateEndOfSpeechMs(duration) }
+
+    var canRecover: Bool { gate.canRecover(with: pending) }
+
+    func interrupt(unfinished: Bool = false) {
+        pending.removeAll()
+        pendingStart = nil
+        gate.interrupt(unfinished: unfinished)
+    }
+
+    func finish(at release: Int64) -> Segment? {
+        defer { pending.removeAll(); pendingStart = nil }
+        var completed: Segment?
+        if let start = pendingStart {
+            let count = Segment.completeSamples(pending.count, startingAt: start.ns, through: release)
+            if count > 0 {
+                let tail = Array(pending.prefix(count))
+                completed = gate.feed(tail, active: isSpeech(tail), endNs: start.ns + Int64(count) * Segment.sampleNs,
+                                      toUnixMs: start.clock.unixMs)
+            }
+        }
+        let final = gate.finish(at: release)
+        return completed ?? final
+    }
+
+    private func isSpeech(_ samples: [Float]) -> Bool {
+        var pcm = samples.map { sample in
+            sample.isFinite ? Int16(max(-1, min(1, sample)) * Float(Int16.max)) : 0
+        }
+        // WebRTC requires a full frame. Padding belongs only to the classifier.
+        if pcm.count < Self.frameLength { pcm.append(contentsOf: repeatElement(0, count: Self.frameLength - pcm.count)) }
+        let voiced = fvad_process(detector, pcm, pcm.count) == 1
+        return voiced && samples.reduce(0) { $0 + $1 * $1 } > Float(samples.count) * SpeechGate.activityFloor * SpeechGate.activityFloor
+    }
+
+    func consume(_ samples: [Float], endNs: Int64, onSpeechStart: (Int64) -> Void = { _ in }) -> [Segment] {
+        var result: [Segment] = []
+        var offset = 0
+        while offset < samples.count {
+            let count = min(Self.frameLength - pending.count, samples.count - offset)
+            pending.append(contentsOf: samples[offset..<(offset + count)])
+            offset += count
+            guard pending.count == Self.frameLength else {
+                if pendingStart == nil { pendingStart = (endNs - Int64(pending.count) * Segment.sampleNs, CaptureClock()) }
+                break
+            }
+            // Feed every frame to the classifier so it learns the room noise. Its
+            // internal hangover can mark digital silence as speech; start counting
+            // the configured silence interval immediately when the signal is already quiet.
+            let frameEnd = endNs - Int64(samples.count - offset) * Segment.sampleNs
+            if let segment = gate.feed(pending, active: isSpeech(pending), endNs: frameEnd,
+                                       toUnixMs: { self.pendingStart?.clock.unixMs($0) ?? CaptureClock().unixMs($0) },
+                                       onSpeechStart: onSpeechStart) { result.append(segment) }
+            pending.removeAll(keepingCapacity: true)
+            pendingStart = nil
+        }
+        return result
+    }
+}
+
+// Owned by one tap. Destroying the capture drops the converter's filter history
+// as well as any speech that has not reached the end-of-segment threshold.
+final class InputSegmenter {
+    private let mono: AVAudioFormat
+    private let converter: AVAudioConverter
+    var preview: Segment? { segmenter.preview }
+    private var segmenter: SpeechSegmenter
+    private let held: Bool
+    private let limit: CaptureLimit
+    private let onSegmentDropped: SegmentDropped
+    func updateEndOfSpeechMs(_ duration: Int) -> Segment? { segmenter.updateEndOfSpeechMs(duration) }
+
+    // Each held interruption starts a discard through 800 ms of silence. At most three
+    // interrupted phrases can therefore overlap a two-second release grace period.
+    private var interrupted: [(speech: SpeechSegmenter, through: Int64, expires: ContinuousClock.Instant)] = []
+    private var anchor: AVAudioTime?
+    private var nextSample: AVAudioFramePosition?
+    private var nextHostSeconds: TimeInterval?
+    private var converterDelay: TimeInterval = 0
+    private(set) var deliveredThrough: Int64?
+
+    private func expireInterrupted(through end: Int64? = nil) {
+        guard !interrupted.isEmpty else { return }
+        let now = ContinuousClock.now
+        interrupted.removeAll { prior in
+            let audioAgeMs = (end ?? prior.through) - prior.through
+            guard audioAgeMs > 2000 || prior.expires <= now else { return false }
+            prior.speech.interrupt()
+            return true
+        }
+    }
+
+    func covers(_ release: Int64) -> Bool {
+        expireInterrupted()
+        return deliveredThrough.map { $0 >= release } == true || interrupted.contains { $0.through >= release }
+    }
+
+    func finish(at release: Int64) -> Segment? {
+        expireInterrupted()
+        // Key-up after a gap cannot recover the speech it interrupted. Report it as dropped.
+        defer {
+            for prior in interrupted where release > prior.through { prior.speech.interrupt() }
+            interrupted.removeAll()
+        }
+        if let prior = interrupted.first(where: { release <= $0.through }) {
+            return prior.speech.finish(at: release)
+        }
+        return segmenter.finish(at: release)
+    }
+
+    private func interrupt() {
+        converter.reset()
+        converterDelay = 0
+        if held, let end = deliveredThrough, segmenter.canRecover, let next = try? SpeechSegmenter(held: true, endOfSpeechMs: segmenter.endOfSpeechMs, limit: limit, onSegmentDropped: onSegmentDropped) {
+            // Keep the original detector and its partial frame so late key-up
+            // classifies only the samples actually inside the hold.
+            if interrupted.count == 3 { interrupted.removeFirst().speech.interrupt() }
+            interrupted.append((segmenter, end, .now + .seconds(2)))
+            next.interrupt(unfinished: true)
+            segmenter = next
+        } else {
+            segmenter.interrupt()
+        }
+        anchor = nil
+        nextSample = nil
+        nextHostSeconds = nil
+        deliveredThrough = nil
+    }
+
+    init(source: AVAudioFormat, held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs, limit: CaptureLimit = .oneMinute,
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in }) throws {
+        self.held = held
+        self.limit = limit
+        self.onSegmentDropped = onSegmentDropped
+        guard source.sampleRate > 0, source.channelCount > 0,
+              let mono = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1),
+              let converter = AVAudioConverter(from: source, to: mono) else { throw CaptureError.format }
+        self.mono = mono
+        self.converter = converter
+        // In a hold, key-up can arrive after this tap. Real-time (unprimed) SRC
+        // emits its filter latency at the start instead of reading future input
+        // into earlier output. A late release can then safely trim the mono PCM.
+        if held { converter.primeMethod = .none }
+        segmenter = try SpeechSegmenter(held: held, endOfSpeechMs: endOfSpeechMs, limit: limit, onSegmentDropped: onSegmentDropped)
+    }
+
+    private func prefix(_ buffer: AVAudioPCMBuffer, frames: AVAudioFrameCount) -> AVAudioPCMBuffer? {
+        guard let prefix = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: frames) else { return nil }
+        prefix.frameLength = frames
+        let source = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        for (i, plane) in UnsafeMutableAudioBufferListPointer(prefix.mutableAudioBufferList).enumerated() {
+            guard let dest = plane.mData, let src = source[i].mData else { return nil }
+            dest.copyMemory(from: src, byteCount: Int(plane.mDataByteSize))
+        }
+        return prefix
+    }
+
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, cutoff: Int64? = nil,
+                 onSpeechStart: (Int64) -> Void = { _ in }) -> [Segment] {
+        if let cutoff, covers(cutoff) { return [] }
+        let rate = buffer.format.sampleRate
+        let hostSeconds = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : nil
+        // Detect discontinuity before extrapolating. A reset position cannot use
+        // the old anchor, even if the first callback after reset has no host time.
+        if when.isSampleTimeValid, let nextSample {
+            if when.sampleTime != nextSample { interrupt() }
+        } else if let nextHostSeconds {
+            guard let hostSeconds else { interrupt(); return [] }
+            if abs(nextHostSeconds - hostSeconds) > 0.5 / rate { interrupt() }
+        }
+        // Anchor each contiguous run once. The device's frame positions date
+        // its audio even if an individual callback reports a jittered host time.
+        if when.isSampleTimeValid, when.isHostTimeValid, anchor == nil || nextSample != when.sampleTime { anchor = when }
+        let time: AVAudioTime?
+        if when.isSampleTimeValid, let anchor {
+            time = AVAudioTime(sampleTime: when.sampleTime, atRate: rate).extrapolateTime(fromAnchor: anchor)
+        } else {
+            time = when.isHostTimeValid ? when : nil
+        }
+        guard let time, time.isHostTimeValid else { interrupt(); return [] }
+        nextSample = when.isSampleTimeValid ? when.sampleTime + Int64(buffer.frameLength) : nil
+        nextHostSeconds = (hostSeconds ?? AVAudioTime.seconds(forHostTime: time.hostTime)) + Double(buffer.frameLength) / rate
+
+        let inputStart = Int64((AVAudioTime.seconds(forHostTime: time.hostTime) * 1e9).rounded())
+        let inputDuration = Double(buffer.frameLength) / rate
+        let inputEnd = inputStart + Int64((inputDuration * 1e9).rounded())
+        expireInterrupted(through: inputEnd / 1_000_000)
+        let atRelease = cutoff.map { $0 <= inputEnd / 1_000_000 } ?? false
+        var input: AVAudioPCMBuffer? = buffer
+        if atRelease, let cutoff {
+            // Compare in the device's sample domain before the resampling filter
+            // sees the boundary. Only complete input frames belong to the hold.
+            let durationNs = cutoff <= inputStart / 1_000_000 ? 0 : cutoff * 1_000_000 - inputStart
+            let frames = min(buffer.frameLength, AVAudioFrameCount(Double(durationNs) * rate / 1e9))
+            if frames == 0 {
+                input = nil
+            } else if frames < buffer.frameLength {
+                guard let clipped = prefix(buffer, frames: frames) else { interrupt(); return [] }
+                input = clipped
+            }
+        }
+        let pendingDuration = atRelease ? max(0, converterDelay) : 0
+        let capacity = AVAudioFrameCount(ceil((inputDuration + pendingDuration) * mono.sampleRate)) + 1
+        guard let converted = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: capacity) else { interrupt(); return [] }
+        var supplied = false
+        let status = converter.convert(to: converted, error: nil) { _, state in
+            guard !supplied, let input else {
+                state.pointee = atRelease ? .endOfStream : .noDataNow
+                return nil
+            }
+            supplied = true
+            state.pointee = .haveData
+            return input
+        }
+        guard status != .error, let channel = converted.floatChannelData?[0] else { interrupt(); return [] }
+        // The tap timestamp names the first input frame. Some input can remain
+        // buffered in the resampler across callbacks; date the emitted PCM itself.
+        let outputDuration = Double(converted.frameLength) / mono.sampleRate
+        let startNs = inputStart - Int64((converterDelay * 1e9).rounded())
+        let endNs = startNs + Int64(converted.frameLength) * Segment.sampleNs
+        converterDelay += Double(input?.frameLength ?? 0) / rate - outputDuration
+        deliveredThrough = atRelease ? cutoff : endNs / 1_000_000
+        var count = Int(converted.frameLength)
+        if let cutoff {
+            count = Segment.completeSamples(count, startingAt: startNs, through: cutoff)
+        }
+        let samples = Array(UnsafeBufferPointer(start: channel, count: count))
+        return segmenter.consume(samples, endNs: startNs + Int64(count) * Segment.sampleNs, onSpeechStart: onSpeechStart)
+    }
+}
+
+// The tap owns this FIFO while the key is down. Inference and a slow daemon never
+// block its producer. Record when the first excess sample ends so the release
+// timestamp can settle overflow without ever storing more than the limit.
+//
+// One hold is one message. Silence still ends a phrase so each decode stays within the
+// recognizer's limit, but only the hold's first onset is reported, and the phrases are
+// joined into one transcript at release. Speech lost inside the hold discards all of it.
+struct HeldSpeech {
+    private let limit: Int
+    private var sampleCount = 0
+    private var segments: [Segment] = []
+    private var firstExcessEndNs: Int64?
+    /// The first voiced sample of the hold, which names its one message to the daemon.
+    private(set) var onset: Int64?
+    /// An input gap or the phrase limit discarded speech recorded during this hold.
+    private(set) var lost = false
+
+    init(limit: Int = 120 * 16_000) { self.limit = limit }
+
+    var phrases: [Segment] { segments }
+
+    /// True only for the first onset. Later phrases of the same hold belong to its message.
+    mutating func begin(_ onset: Int64) -> Bool {
+        guard self.onset == nil else { return false }
+        self.onset = onset
+        return true
+    }
+
+    /// Marks the hold incomplete. Returns its onset the first time, to settle its one reservation.
+    mutating func drop() -> Int64? {
+        defer { lost = true }
+        return lost ? nil : onset
+    }
+
+    mutating func append(_ segment: Segment) {
+        guard firstExcessEndNs == nil else { return }
+        let room = limit - sampleCount
+        if segment.samples.count > room {
+            firstExcessEndNs = segment.startNs + Int64(room + 1) * Segment.sampleNs
+            if room > 0 { segments.append(segment.prefix(room)) }
+        } else {
+            sampleCount += segment.samples.count
+            segments.append(segment)
+        }
+    }
+
+    func finish(at release: Int64) -> [Segment]? {
+        if lost { return nil }
+        if let end = firstExcessEndNs, release >= (end + 999_999) / 1_000_000 { return nil }
+        return segments.compactMap { $0.through(release) }
+    }
+}
+
+final class Microphone {
+    private let engine: AVAudioEngine
+    var preview: Segment? { tapLock.withLock { segmenter?.preview } }
+    /// The whole hold so far, for a live preview that keeps the words before each pause.
+    var heldPreview: HeldPreview? {
+        tapLock.withLock {
+            guard let held = heldSpeech, !held.lost, let onset = held.onset else { return nil }
+            return HeldPreview(onset: onset, completed: held.phrases, open: segmenter?.preview)
+        }
+    }
+    var isRunning: Bool { engine.isRunning }
+    private var configurationObserver: NSObjectProtocol?
+    private let tapLock = NSLock()
+    private var segmenter: InputSegmenter?
+    private var heldSpeech: HeldSpeech?
+    private let onSpeechStart: (Int64) -> Void
+    private let onSegmentDropped: SegmentDropped
+    private let onQueueFull: () -> Void
+    private var queueFullReported = false
+    private var cutoff: Int64?
+    private var onBoundary: (@MainActor () -> Void)?
+    private var releaseTimeout: Task<Void, Never>?
+    private let continuation: AsyncStream<Segment>.Continuation
+    let segments: AsyncStream<Segment>
+
+    // The system default is selected by leaving the audio unit's current device alone.
+    static func selectInput(_ selection: String, from devices: [Device], setCurrentDevice: (AudioDeviceID) throws -> Void) throws {
+        let device = selection == "built-in" ? devices.first(where: { $0.builtIn }) : devices.first(where: { $0.id == selection })
+        if let device {
+            try setCurrentDevice(device.object)
+        } else if selection != "built-in" && selection != "system-default" {
+            throw CaptureError.device
+        }
+    }
+
+    init(selection: String, held: Bool = false, endOfSpeechMs: Int = Directive.defaultEndOfSpeechMs, limit: CaptureLimit = .oneMinute,
+         devices: [Device] = Device.inputs(), engine: AVAudioEngine = AVAudioEngine(),
+         onSpeechStart: @escaping (Int64) -> Void = { _ in },
+         onSegmentDropped: @escaping SegmentDropped = { _, _ in },
+         onQueueFull: @escaping () -> Void = {
+             DispatchQueue.global(qos: .utility).async {
+                 fputs("Voice listener queue full. New speech dropped while earlier phrases await delivery.\n", stderr)
+             }
+         },
+         onStopped: @escaping @MainActor (Microphone) -> Void = { _ in }) throws {
+        self.engine = engine
+        self.onSpeechStart = onSpeechStart
+        self.onSegmentDropped = onSegmentDropped
+        self.onQueueFull = onQueueFull
+        heldSpeech = held ? HeldSpeech() : nil
+        (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingOldest(2))
+        try Self.selectInput(selection, from: devices) { device in
+            var object = device
+            guard let unit = engine.inputNode.audioUnit,
+                  AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
+                                       0, &object, UInt32(MemoryLayout.size(ofValue: object))) == noErr else { throw CaptureError.device }
+        }
+        let input = engine.inputNode
+        let source = input.outputFormat(forBus: 0)
+        guard !input.isVoiceProcessingEnabled else { throw CaptureError.format }
+        // Every drop is reported while the tap lock is held, so the hold's state needs no other lock.
+        let dropped: SegmentDropped = held ? { [weak self] _, reason in
+            guard let self, let onset = self.heldSpeech?.drop() else { return }
+            onSegmentDropped(onset, reason)
+        } : onSegmentDropped
+        segmenter = try InputSegmenter(source: source, held: held, endOfSpeechMs: endOfSpeechMs, limit: limit, onSegmentDropped: dropped)
+        input.installTap(onBus: 0, bufferSize: 1024, format: source) { [weak self] buffer, when in
+            guard let self else { return }
+            self.consume(buffer, at: when)
+        }
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+                                                                      object: engine, queue: nil) { [weak self] _ in
+            Task { @MainActor in
+                if let self, !self.isRunning { onStopped(self) }
+            }
+        }
+        do { try engine.start() }
+        catch { stop(); throw error }
+    }
+
+    // Both the tap and a timing edit can complete a segment. Serialize their
+    // yields with the gate update so capture order is preserved.
+    func updateEndOfSpeechMs(_ duration: Int) {
+        tapLock.withLock {
+            if let segment = segmenter?.updateEndOfSpeechMs(duration) { enqueue(segment) }
+        }
+    }
+
+    private func enqueue(_ segment: Segment) {
+        if heldSpeech != nil {
+            heldSpeech?.append(segment)
+        } else if case .dropped(let dropped) = continuation.yield(segment) {
+            onSegmentDropped(dropped.speechStartHostUs, .queueFull)
+            if !queueFullReported { onQueueFull() }
+            queueFullReported = true
+        } else {
+            queueFullReported = false
+        }
+    }
+
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
+        let finish = tapLock.withLock { () -> (@MainActor () -> Void)? in
+            guard let segmenter else { return nil }
+            let started: (Int64) -> Void = heldSpeech == nil ? onSpeechStart : { onset in
+                if self.heldSpeech?.begin(onset) == true { self.onSpeechStart(onset) }
+            }
+            for segment in segmenter.consume(buffer, at: when, cutoff: cutoff, onSpeechStart: started) {
+                enqueue(segment)
+            }
+            guard let cutoff, segmenter.covers(cutoff) else { return nil }
+            defer { onBoundary = nil }
+            return onBoundary
+        }
+        if let finish { Task { @MainActor in finish() } }
+    }
+
+    @MainActor func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) {
+        let ready = tapLock.withLock {
+            cutoff = release
+            if segmenter?.covers(release) == true { return true }
+            onBoundary = finish
+            return false
+        }
+        if ready { finish(); return }
+        // A disconnected or stalled input must still close. Normal capture ends
+        // on the callback containing key-up; only samples through key-up are used.
+        releaseTimeout = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            if !Task.isCancelled { finish() }
+        }
+    }
+
+    @discardableResult func stop(releasedAt: Int64? = nil) -> [Segment] {
+        releaseTimeout?.cancel()
+        releaseTimeout = nil
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        return tapLock.withLock {
+            onBoundary = nil
+            defer { heldSpeech = nil; segmenter = nil; continuation.finish() }
+            guard let releasedAt else { return [] }
+            // The timeout closes a stalled input before its final callback.
+            // Only a tap that covered key-up can certify unfinished speech.
+            var final: Segment?
+            if let segmenter, segmenter.covers(releasedAt) {
+                final = segmenter.finish(at: releasedAt)
+            }
+            if heldSpeech == nil { return final.map { [$0] } ?? [] }
+            if let final { heldSpeech?.append(final) }
+            if let captured = heldSpeech?.finish(at: releasedAt) { return captured }
+            fputs(heldSpeech?.lost == true ? "Voice listener discarded a push-to-talk hold that lost speech.\n"
+                  : "Voice listener discarded a push-to-talk hold exceeding the audio buffer limit.\n", stderr)
+            return []
+        }
+    }
+}

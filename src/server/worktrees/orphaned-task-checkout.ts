@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, opendir, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, opendir, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { ORPHANED_WORKTREE_RECLAIM_FLAG_ID } from "@shared/feature-flag-registry.ts";
@@ -9,6 +9,7 @@ import { envVar } from "../config.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { isolatedGitEnvironment } from "../git/worktree-tree.ts";
 import { run, type RunResult } from "../util/exec.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import { observeWorktreeLink } from "./orphan.ts";
 
 // Positive, read-only evidence about a disposable task checkout that Git no longer knows.
@@ -230,7 +231,7 @@ async function withScratch<T>(commonDir: string, fn: (scratch: Scratch) => Promi
     await writeFile(join(gitDir, "objects", "info", "alternates"), `${join(commonDir, "objects")}\n`);
     return await fn({ dir, gitDir, indexFile: join(dir, "index") });
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await removeTree(dir);
   }
 }
 
@@ -656,8 +657,12 @@ export async function removeOrphanedTaskCheckout(
   expectedDigest: string | undefined,
   occupied: (path: string) => Promise<string | null>,
   guard: OrphanRemovalGuard,
-  /** The recursive delete. A seam so a test can make it fail after the rename. */
-  remove: (path: string) => Promise<void> = (path) => rm(path, { recursive: true, maxRetries: 2 }),
+  /**
+   * The recursive delete. A seam so a test can make it fail after the rename. The default is
+   * `removeTree`, never `fs.rm`, which under Electron cannot delete the `default_app.asar` a
+   * checkout with dependencies installed holds.
+   */
+  remove: (path: string) => Promise<void> = (path) => removeTree(path, { allowMissing: false }),
 ): Promise<"removed" | "absent"> {
   const changed = "orphaned checkout changed before its removal";
   const before = await classifyTaskCheckout(ref, slotPath);

@@ -1,7 +1,7 @@
 import { verifyArchiveBundle } from "./bundle.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, rmdir, stat, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpenTargetId } from "@shared/open-targets.ts";
@@ -51,6 +51,7 @@ import { managedPlanCaptureScopes } from "../plans/store.ts";
 import { allScoutPromptContexts, clearScoutPromptContext } from "../scouts/prompt-context.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "../scouts/submission-tool.ts";
 import type { ScoutSubmissionAuthority } from "../scouts/submission-auth.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import type { ArchiveSubject, ArchiveTaskGateway } from "./task-gateway.ts";
 
 /**
@@ -1363,7 +1364,7 @@ export class ArchiveManager {
 
     for (const grave of graves) {
       try {
-        await rm(grave, { recursive: true, force: true, maxRetries: 2 });
+        await removeTree(grave);
       } catch (error) {
         // The bundle is already outside discovery and the index/name cleanup is complete.
         // Its exact-key grave therefore authorizes another cleanup-only retry.

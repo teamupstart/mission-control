@@ -267,6 +267,30 @@ No Git proof can pass for an orphaned slot, so none is waited for:
 Copy anything worth keeping out of an orphaned slot before destroying it: Git can no longer show
 what in it was never committed or pushed.
 
+#### How the daemon deletes a tree
+
+Every recursive delete of an operator tree the daemon makes - an orphaned slot's Destroy, an
+orphaned task checkout's reclaim, dependency seed staging and seed paths, and archive staging and
+deletion graves - goes through one helper, `removeTree` in `src/server/util/remove-tree.ts`. It
+runs the platform's `/bin/rm -rf` as a child process rather than Node's `fs.rm`. The daemon runs
+inside Electron, whose `fs` reads `.asar` files as virtual archives, and a checkout with
+dependencies installed holds Electron's own
+`node_modules/electron/dist/Electron.app/Contents/Resources/default_app.asar`. `fs.rm` there
+neither deletes that file nor fails: it hangs, or reports `ENOTEMPTY` for every directory above
+it. Turning Electron's `process.noAsar` off for the delete is not an option, because the flag is
+process-global and every other file read in the daemon would see it while the delete ran.
+
+Each delete has a deadline of five minutes, after which its process group is killed. A delete
+that cannot finish, by its deadline or for any other reason, is a bounded, reported failure and
+never a hang. The path is then checked again: an orphaned slot whose delete failed stays in a
+**transition** quarantine, with the delete's own reason (for example `rm -rf exited with code 1`
+and what `rm` printed), and Destroy can be retried. A failed reclaim renames the checkout back
+to its slot, as described in [Orphaned task checkouts](#orphaned-task-checkouts). A dependency
+seed's Stop or claim deadline kills a seed-path delete part-way and ends the seed. Registered
+slots and check trees are removed by `git worktree remove`, which runs as its own process and
+was never affected. Lint enforces the helper in `src/server/worktrees/` and `src/server/archives/`
+(`repository/tree-removal`).
+
 ### Dependency claims
 
 A warm slot keeps whatever its last occupant installed, which is not necessarily what the next

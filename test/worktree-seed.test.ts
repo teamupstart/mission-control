@@ -816,6 +816,44 @@ test("the interrupted wipe honours its budget: an expired deadline or a Stop rem
   assert.equal(existsSync(join(clone, "deps", "pkg", "file")), true, "nothing was removed");
 });
 
+test("a Stop or the deadline that lands while a seed path is being deleted ends the wipe as stopped or out of time", async () => {
+  // The delete is one killable child now, not one `fs.rm` per entry, so the budget has to reach
+  // into it. A stand-in `rm` that announces itself and never finishes is interrupted mid-delete.
+  const { clone } = repository("mission-seed-wipe-interrupted-");
+  const bin = realpathSync(mkdtempSync(join(tmpdir(), "mission-seed-rm-")));
+  const started = join(bin, "started");
+  const rm = join(bin, "rm");
+  writeFileSync(rm, `#!/bin/sh\n: > ${JSON.stringify(started)}\nexec /bin/sleep 60\n`, { mode: 0o755 });
+  try {
+    mkdirSync(join(clone, "deps", "pkg"), { recursive: true });
+    writeFileSync(join(clone, "deps", "pkg", "file"), "installed");
+    const whenStarted = async () => {
+      const until = Date.now() + 30_000;
+      while (!existsSync(started) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.ok(existsSync(started), "the delete started before it was interrupted");
+    };
+
+    const stop = new AbortController();
+    const stopping = wipeSeedPaths(clone, { paths: ["deps"], exclude: [] },
+      { signal: stop.signal, deadline: Date.now() + 60_000, now: Date.now }, { rm });
+    await whenStarted();
+    stop.abort("stopped");
+    assert.deepEqual(await stopping, { ok: false, ended: "stopped" });
+
+    rmSync(started, { force: true });
+    const budgetMs = 3_000;
+    const begun = Date.now();
+    const expiring = await wipeSeedPaths(clone, { paths: ["deps"], exclude: [] },
+      { signal: new AbortController().signal, deadline: begun + budgetMs, now: Date.now }, { rm });
+    assert.ok(existsSync(started), "the delete was running when the deadline landed");
+    assert.deepEqual(expiring, { ok: false, ended: "timedOut" });
+    assert.ok(Date.now() - begun < budgetMs + 10_000, "the deadline bounds the wipe");
+    assert.equal(existsSync(join(clone, "deps", "pkg", "file")), true, "the stand-in deleted nothing");
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
 test("a Stop that lands before an interrupted slot's wipe stops the wipe and keeps the cleanup owed", async () => {
   const fixture = repository("mission-seed-wipe-stopped-");
   const claim = claimWith(SEED);

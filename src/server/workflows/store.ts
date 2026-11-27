@@ -2926,7 +2926,7 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
-  continuationStillMatches?: () => boolean;
+  continuationStillMatches?: (deadline: number) => boolean;
   /** Includes targets without a publication of their own when a sibling's probe yielded. */
   expectedLatestRunId?: string | null;
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
@@ -7415,7 +7415,7 @@ export class WorkflowStore {
         }
       }
       for (const input of inputs) {
-        const stored = this.claimForemanCompletion(input, eligible.has(input));
+        const stored = this.claimForemanCompletion(input, eligible.has(input), deadline);
         if (!stored.result.claimed) {
           if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
           return [stored];
@@ -7431,7 +7431,11 @@ export class WorkflowStore {
    * The manager selects the already-bound workflow; this transaction never creates a binding.
    * A worker's expected plan ownership can only reject that selection, never replace it.
    */
-  claimForemanCompletion(input: ForemanCompletionStoreInput, reusePublication?: boolean): ForemanCompletionStoreResult {
+  claimForemanCompletion(
+    input: ForemanCompletionStoreInput,
+    reusePublication?: boolean,
+    deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS,
+  ): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
       const binding = input.binding;
       const noteKey = binding.noteKey;
@@ -7488,7 +7492,7 @@ export class WorkflowStore {
         };
       }
 
-      if (input.continuationStillMatches && !input.continuationStillMatches()) {
+      if (input.continuationStillMatches && !input.continuationStillMatches(deadline)) {
         throw new Error("Continuation evidence changed before handoff");
       }
       if (input.completionKind === "prompted" && !expectedIntent) {

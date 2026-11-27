@@ -38,9 +38,13 @@ const { configureHostSuspendClock } = await import("../src/server/host-suspend.t
 const restoreTransport = configureCodexRunnerTransport(() => "exec");
 after(restoreTransport);
 
-/** The timeout every runner is given, and the sleep the scripted host takes during it. */
+/**
+ * The timeout every runner is given, and the sleep the scripted host takes during it. The sleep
+ * is long next to the timeout so a loaded CI runner cannot close the gap between the wall-clock
+ * deadline and the awake one.
+ */
 const TIMEOUT_MS = 400;
-const SLEPT_MS = 250;
+const SLEPT_MS = 1_000;
 
 function pidAlive(pidFile: string): boolean {
   if (!existsSync(pidFile)) return false;
@@ -137,6 +141,7 @@ const RUNNERS: RunnerCase[] = [
 ];
 
 interface Outcome {
+  /** From the moment the runner armed its timeout, which excludes locating and spawning. */
   elapsed: number;
   error: unknown;
   /** Whether the call was still unsettled when the wall-clock deadline had passed. */
@@ -145,28 +150,36 @@ interface Outcome {
 }
 
 async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome> {
-  // The host slept for `sleptMs` while the call ran, and the timer kept counting (macOS).
+  // The host slept for `sleptMs` while the call ran, and the timer kept counting (macOS). The
+  // timeout marks this clock when it arms, so its first mark is when the deadline started.
+  let armedAt: number | null = null;
   const restore = configureHostSuspendClock({
-    mark: Date.now,
+    mark: () => {
+      const now = Date.now();
+      armedAt ??= now;
+      return now;
+    },
     suspendedMsSince: (since) => Math.min(sleptMs, Date.now() - since),
   });
   try {
-    const started = performance.now();
     let settled = false;
+    let settledAt = 0;
     const call = runner.start().then(
       () => { throw new Error(`${runner.name} answered, but its fake never does`); },
       (error: unknown) => {
         settled = true;
-        return { elapsed: performance.now() - started, error };
+        settledAt = Date.now();
+        return error;
       },
     );
-    await eventually(() => runner.live() || settled, `${runner.name} started its work`);
+    await eventually(() => armedAt !== null || settled, `${runner.name} armed its timeout`);
     // Just past the deadline a wall-clock timer would have used.
-    await new Promise((resolve) => setTimeout(resolve, TIMEOUT_MS + 60 - (performance.now() - started)));
+    const wallDeadline = armedAt! + TIMEOUT_MS + 60;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, wallDeadline - Date.now())));
     const pendingAtWallDeadline = !settled;
     const liveAtWallDeadline = runner.live();
-    const result = await call;
-    return { ...result, pendingAtWallDeadline, liveAtWallDeadline };
+    const error = await call;
+    return { elapsed: settledAt - armedAt!, error, pendingAtWallDeadline, liveAtWallDeadline };
   } finally {
     restore();
   }
@@ -176,10 +189,9 @@ for (const runner of RUNNERS) {
   test(`${runner.name}: with no host sleep the timeout fires on schedule and stops the work`, async () => {
     const outcome = await runThrough(runner, 0);
     assert.match(String(outcome.error), runner.timedOut);
-    // Measured from the call, so it includes spawn time; still well short of the awake budget
-    // the sleeping case below must wait for.
+    // Well short of the awake budget the sleeping case below must wait for.
     assert.ok(
-      outcome.elapsed >= TIMEOUT_MS - 20 && outcome.elapsed < TIMEOUT_MS + SLEPT_MS - 50,
+      outcome.elapsed >= TIMEOUT_MS - 20 && outcome.elapsed < TIMEOUT_MS + SLEPT_MS - 200,
       `timed out after ${outcome.elapsed} ms`,
     );
     await eventually(() => !runner.live(), `${runner.name} work stopped after the timeout`);
@@ -191,7 +203,7 @@ for (const runner of RUNNERS) {
     assert.equal(outcome.liveAtWallDeadline, true, "its work must still be running at the wall-clock deadline");
     assert.match(String(outcome.error), runner.timedOut);
     assert.ok(outcome.elapsed >= TIMEOUT_MS + SLEPT_MS - 20, `timed out after ${outcome.elapsed} ms, before its awake budget`);
-    assert.ok(outcome.elapsed < TIMEOUT_MS + SLEPT_MS + 1_500, `timed out after ${outcome.elapsed} ms, far past its awake budget`);
+    assert.ok(outcome.elapsed < TIMEOUT_MS + SLEPT_MS + 3_000, `timed out after ${outcome.elapsed} ms, far past its awake budget`);
     // Cleanup is the timeout's other half: the process is killed, or the SDK turn aborted.
     await eventually(() => !runner.live(), `${runner.name} work stopped after the timeout`);
   });

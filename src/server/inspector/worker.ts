@@ -907,7 +907,8 @@ async function processPr(
   if (
     baseReview === "current" &&
     gated.reviewComplete !== false &&
-    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate, localMatch)
+    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate, localMatch,
+      () => localReview(pr.key, { headSha: s.headSha, baseRefName: s.baseRefName || null }))
   ) return true;
 
   if (localMatch) return recordLocalReview(pr, s, posture, now) || acted;

@@ -130,14 +130,18 @@ const asked: Array<{ prKey: string; headSha: string; baseRefName: string | null 
 let matching = new Set<string>();
 /** Makes the matcher reject, as a manager whose store or git read failed would. */
 let rejecting = false;
+/** Answers the matcher gives, one per question, before it falls back to `matching`. */
+let answers: boolean[] = [];
 const localReview = async (prKey: string, head: { headSha: string; baseRefName: string | null }):
   Promise<WorkflowLocalReviewMatch | null> => {
   asked.push({ prKey, ...head });
   if (rejecting) throw new Error("fixture: the local review match could not be read");
-  return matching.has(head.headSha)
-    ? { submissionId: "submission", attemptId: "attempt", headSha: head.headSha, treeOid: "t".repeat(40),
-      baseRef: "refs/remotes/origin/main" }
-    : null;
+  // Scripted answers, consumed in order before `matching` is consulted.
+  const scripted = answers.shift();
+  if (scripted !== undefined ? scripted : matching.has(head.headSha))
+    return { submissionId: "submission", attemptId: "attempt", headSha: head.headSha, treeOid: "t".repeat(40),
+      baseRef: "refs/remotes/origin/main" };
+  return null;
 };
 
 async function runOneSweep(): Promise<void> {
@@ -165,6 +169,7 @@ beforeEach(() => {
   asked.length = 0;
   matching = new Set();
   rejecting = false;
+  answers = [];
   setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
   applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: false });
 });
@@ -456,4 +461,23 @@ test("consent switched to Dry run after the sweep read its config stops the merg
   assert.equal(merged, false);
   assert.deepEqual(github().merges, [], "no merge was requested under Dry run");
   assert.equal(getInspectorPr(key)?.mergeBlock, "inspector-dry-run");
+});
+
+test("an owner deciding between the sweep's match and the merge takes the local match back", async () => {
+  live();
+  yolo();
+  const key = adopt(915);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.reviewPosture, "local");
+
+  // The merge sweep's first question finds the match; by the recheck right before the merge
+  // request the owning run has decided (cancelled, say), and the manager answers no.
+  const before = asked.length;
+  answers = [true, false];
+  await runOneSweep();
+  assert.ok(asked.length >= before + 2, "the manager was asked again before the merge request");
+  assert.deepEqual(github().merges, [], "no merge on a match the manager took back");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "local-review-missing");
 });

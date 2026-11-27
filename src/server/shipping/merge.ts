@@ -82,6 +82,13 @@ export async function maybeMerge(
    * review". Read only for a head recorded with the `local` posture; null is no match.
    */
   localMatch: { headSha: string } | null = null,
+  /**
+   * Asks the workflow manager the same question again, for the observed head. Used right before
+   * the merge request when the merge rests on a `local` record, because the sweep has awaited
+   * GitHub since `localMatch` was read and an owning run may have decided meanwhile. Absent, or
+   * failing, is no match.
+   */
+  rematchLocal: () => Promise<{ headSha: string } | null> = async () => null,
 ): Promise<boolean> {
   const cfg = getShippingConfig();
   const input: MergeInput = {
@@ -125,14 +132,26 @@ export async function maybeMerge(
     return false;
   }
 
+  // A merge resting on a local record asks the manager again: an owning run cancelled, failed or
+  // sent to repair GitHub findings since `localMatch` was read takes the match back. Its rules are
+  // the manager's own (`localReviewMatch`), so nothing here re-derives them.
+  let matchedHeadSha = input.localReview.matchedHeadSha;
+  if (pr.reviewPosture === "local") {
+    matchedHeadSha = (await rematchLocal().catch((error: unknown) => {
+      console.error("[shipping] local review recheck failed:", pr.key, error);
+      return null;
+    }))?.headSha ?? null;
+  }
+
   // `inspector` is the config this sweep started with, and the sweep has awaited GitHub and the
   // workflow manager since. Consent switched off, to Dry run, or Local review off in that time
-  // must stop this merge, so the same gate is asked again with the setting as it is right now.
+  // must stop this merge, so the same gate is asked again with the setting as it is right now -
+  // last, after every await, so nothing changes between this read and the merge request.
   const current = getInspectorConfig();
   const consent = mergeVerdict({
     ...input,
     inspector: inspectorPosture(current, pr.cwd, pr.repoRoot),
-    localReview: { ...input.localReview, enabled: current.localReview },
+    localReview: { enabled: current.localReview, matchedHeadSha },
   });
   if (!consent.merge) {
     recordBlock(pr, consent.block, now);

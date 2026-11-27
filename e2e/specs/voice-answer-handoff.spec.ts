@@ -296,19 +296,45 @@ test("a reply cannot reach the old question while a new focus is calibrating", a
   }
 });
 
-for (const [name, phrase] of [["reply", "reply, tomorrow"], ["named answer", "Steve, answer: tomorrow"]] as const) {
-  test(`a ${name} transcript delivered before the new focus report waits for a live confirmation`, async ({ dashboard: page, daemon }) => {
+// A reply spoken soon after a focus change needs the dashboard's clock narrower than this,
+// or the daemon cannot order the two and asks for the reply again.
+const SPOKEN_AFTER_FOCUS_MS = 30;
+// Wider than that, yet narrow enough that the dashboard keeps the calibration it gives.
+const SLOW_SAMPLE_MS = 60;
+const boundsWidth = (headers: Record<string, string>) =>
+  Number(headers["x-voice-cards-observed-at-ms"]) - Number(headers["x-voice-cards-earliest-at-ms"]);
+
+for (const [name, phrase, slowClock] of [["reply", "reply, tomorrow", false], ["named answer", "Steve, answer: tomorrow", false],
+  ["reply", "reply, tomorrow", true]] as const) {
+  test(`a ${name} transcript delivered before the new focus report waits for a live confirmation${slowClock ? " after a slow first clock sample" : ""}`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
     const steve = await runningAgent(page, daemon, "Steve");
     const first = await file(page, daemon, steve.cwd, "First benchmark?");
     const second = await file(page, daemon, steve.cwd, "Second benchmark?");
+    const wideReport = slowClock && page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+      boundsWidth(r.request().headers()) >= SLOW_SAMPLE_MS);
+    // A cold daemon reaches the dashboard's first clock samples late, during its startup burst.
+    // Delay both that calibration may take, so their intersection stays this wide under any
+    // load. Delay them in the page: interception would add its own latency to the round trip.
+    if (slowClock) await page.evaluate(delay => {
+      const send = window.fetch;
+      let slowed = 0;
+      window.fetch = (input, init) => {
+        if (slowed === 2 || init?.method !== "HEAD" || !String(input).endsWith("/api/voice/config")) return send(input, init);
+        slowed++;
+        return new Promise(resolve => setTimeout(resolve, delay)).then(() => send(input, init));
+      };
+    }, SLOW_SAMPLE_MS);
     await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
     const inbox = page.getByRole("dialog", { name: "Attention inbox" });
     await expectContentClearsBorder(inbox);
     const questionCard = (id: string) => inbox.locator('[data-voice-question="' + id + '"]');
     const field = (id: string) => questionCard(id).getByRole("textbox");
+    if (wideReport) await wideReport;
+    // With a slow first sample, wait for the refined clock to re-report the same focus.
     const firstReport = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
-      !r.request().headers()["x-voice-calibrating"] && r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.focused && c.id === first));
+      !r.request().headers()["x-voice-calibrating"] && (!slowClock || boundsWidth(r.request().headers()) < SPOKEN_AFTER_FOCUS_MS) &&
+      r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.focused && c.id === first));
     await questionCard(first).focus();
     await firstReport;
     const held = Promise.withResolvers<void>();
@@ -331,6 +357,7 @@ for (const [name, phrase] of [["reply", "reply, tomorrow"], ["named answer", "St
       release.resolve();
       await reply;
       await expect(field(second)).toHaveValue("tomorrow");
+      await captureCard(inbox, "voice-reply-fills-focused-question-" + (slowClock ? "slow-clock" : name.replace(" ", "-")));
       await inbox.getByRole("button", { name: "Submit now" }).click();
       await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).response).toBe("tomorrow");
       expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + first)).json()).status).toBe("pending");

@@ -4923,3 +4923,25 @@ for (const later of ["skipped", "failed"] as const) {
     assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
   });
 }
+
+test("a pushed head whose Git tree cannot be resolved keeps the GitHub review path", async (t) => {
+  const asked: string[] = [];
+  const seeded = await seedLocal({
+    resolveCommitTree: async (_root, commit) => {
+      asked.push(commit);
+      throw new Error(`fatal: bad object ${commit}`);
+    },
+  });
+  t.after(localTeardown(seeded));
+  // The rejection is no match, never an exception: the worker's question answers null...
+  assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+  // ...and the gate goes on to wait for the GitHub review instead of failing the evaluation.
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "an unresolvable tree did not fall back to the GitHub review");
+  assert.ok(asked.includes(seeded.head), "the gate did try to resolve the pushed head's tree");
+  assert.equal(gateOf(seeded).localReview, undefined);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+  assert.equal(seeded.store.listEvents(seeded.ids.run).some((event) => event.kind === "inspector_adapter_error"), false,
+    "the resolution failure did not surface as a gate error");
+});

@@ -1479,17 +1479,31 @@ quiet "Max, run the tests." and "Carol, run the tests."), and a spoken "Cancel."
 | Non-speech windows that showed words | 15 of 24 | 3 of 24 (-80%) |
 | Utterances that showed other words first ("Yeah." before "Yes.", "Mm-hmm." before "Okay.") | 18 of 44 | 4 of 44 (-78%) |
 | Utterances that reached a useful preview | 44 of 44 | 44 of 44 |
-| Median ms from speech onset to the first useful preview, all utterances | 906 | 938 |
-| Same, call signs | 987 | 917 |
-| Same, spoken Cancel | 780 | 1002 |
 | Finals, routes and outcomes identical | | every pair |
 
-The preview loop samples every 800 ms from wherever the capture started, so a single window's
-latency moves by up to 800 ms between runs. The overall median did not measurably change. Spoken
-Cancel's first useful preview came later in 3 of the 4 pairs, by 67 to 337 ms; its final and its
-effect did not change. A short synthesized "Yes." sometimes reaches the overlay only as its final,
-about 2.1 to 2.6 s after onset, with the flag either off or on; with the flag off its earlier preview
-was "Yeah.".
+Latency is the time from speech onset to the first useful live preview, kept apart from the final,
+because the overlay draws both. A useful text counts as a live preview when another overlay change
+follows it in its window, when it differs from the final transcript, or when it appeared before the
+phrase could have closed: the end-of-speech delay after onset, 2000 ms, or 500 ms for the Cancel that
+the cancel window shortens. The spec scores each run this way (`medianMsToFirstUsefulLivePreview`).
+Over eleven off and on pairs of the same playlist, 109 of 121 utterances with the flag off and 112
+with it on had an established live preview; the rest showed the spoken word only as their final, or as a
+preview identical to it and too late to tell apart, mostly the short synthesized "Yes." and "Cancel.".
+
+| Eleven pairs, live previews only | Flag off | Flag on | Paired, on minus off |
+| --- | --- | --- | --- |
+| Median ms to the first useful live preview, all utterances | 876 (109) | 947 (112) | +107 ms, later in 66 of 105 |
+| One-word replies | 880 (50) | 808 (51) | +83 ms, later in 28 of 48 |
+| Call signs | 876 (55) | 1003 (55) | +117 ms, later in 36 of 55 |
+| Spoken Cancel | 792 (4) | 975 (6) | +222 ms, later in 2 of 2 |
+
+The paired column compares the same utterance in the same pair where both runs had a live preview.
+The hold therefore adds about 110 ms to the first useful live preview at the median. The preview
+loop samples every 800 ms from wherever the capture started, so any single utterance moves by up to
+800 ms between runs, and only the paired medians over many runs show the shift. An earlier reading
+of the same runs that counted finals as previews showed no median change; it was wrong because about
+half of its first useful texts were finals. Finals, and with them routing and the effect of a spoken
+Cancel, did not change.
 
 The operator also recorded about 90 seconds of their own speech, with consent, on the room's webcam
 microphone: room silence, typing, one-word replies, call signs, two Cancels and a quiet call sign. The
@@ -2008,5 +2022,5 @@ ignores it and previews as before.
 The 300 ms threshold comes from a scout that replayed synthesized speech and noise through a copy
 of the listener's speech gate with a simulated preview loop. It reduced the non-speech phrases
 that showed words by 72%, with no change in the median time to the first correct preview on its
-room-microphone set. See [Tests](#first-preview-hold-measurements) for the measurements taken
-against this build.
+room-microphone set. Measured against this build through the real overlay, the hold adds about
+110 ms at the median to the first useful live preview; see [Tests](#first-preview-hold-measurements).

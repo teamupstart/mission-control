@@ -3497,6 +3497,13 @@ export class WorkflowManager {
     const tree = await (this.options.resolveCommitTree ?? resolveCommitTree)(repositoryRoot, head.headSha)
       .catch(() => null);
     if (!tree || tree !== review.match.treeOid) return null;
+    // The lookup awaited git, so eligibility is checked again here, at the one boundary both the
+    // gate and the worker pass through: Local review switched off, the merge grant given, or the
+    // run's review superseded meanwhile all mean no match, and the GitHub review stays.
+    if (!getInspectorConfig().localReview || repositoryHoldsMergeGrant(pr.cwd, pr.repoRoot)) return null;
+    const after = this.localReviewState(run.id, version);
+    if (after.kind !== "passed" || after.match.attemptId !== review.match.attemptId
+      || after.match.treeOid !== review.match.treeOid) return null;
     return { ...review.match, headSha: head.headSha };
   }
 

@@ -5143,3 +5143,33 @@ test("a pull request retargeted during the tree lookup is evaluated on its new b
   assert.equal(gateOf(seeded).localReview, undefined);
   assert.equal(getInspectorPr(seeded.key)?.observedHeadSha ?? seeded.head, seeded.head, "the head itself never moved");
 });
+
+for (const change of ["merge grant given", "Local review switched off"] as const) {
+  test(`eligibility that changes during the tree lookup (${change}) keeps the GitHub review`, async (t) => {
+    let changeOnce: (() => void) | null = null;
+    const seeded = await seedLocal({
+      resolveCommitTree: async () => {
+        if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
+        return REVIEWED_TREE;
+      },
+    });
+    t.after(localTeardown(seeded));
+    const apply = () => change === "merge grant given"
+      ? setShippingConfig({ repoAllowlist: ["/repo"] })
+      : setInspectorConfig({ localReview: false });
+    // The shared answer: what the worker asks.
+    changeOnce = apply;
+    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+    assert.equal(changeOnce, null, "the change did land during the lookup");
+    // Restore, then the same race on the gate's path.
+    setShippingConfig({ repoAllowlist: [] });
+    setInspectorConfig({ localReview: true });
+    changeOnce = apply;
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "the gate did not wait for the GitHub review");
+    assert.equal(changeOnce, null);
+    assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+    assert.equal(gateOf(seeded).localReview, undefined);
+  });
+}

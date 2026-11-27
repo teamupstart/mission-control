@@ -31,6 +31,10 @@ import { trackOwnWorktreeProcess } from "../worktrees/own-processes.ts";
 
 /** How long one tree removal may run before its process group is killed. */
 export const TREE_REMOVAL_TIMEOUT_MS = 5 * 60_000;
+/** Further `rm` runs after one that failed, as the `fs.rm` `maxRetries: 2` this replaced. */
+export const TREE_REMOVAL_MAX_RETRIES = 2;
+/** Linear backoff between attempts: this, then twice this, as `fs.rm`'s `retryDelay` default. */
+export const TREE_REMOVAL_RETRY_DELAY_MS = 100;
 /** After the kill, how long to wait for the child to report before settling without it. */
 const KILL_DRAIN_MS = 5_000;
 const MAX_REASON_BYTES = 1_024;
@@ -56,6 +60,10 @@ export interface RemoveTreeOptions {
    * there and must hear that it vanished.
    */
   allowMissing?: boolean;
+  /** Further attempts after an `rm` that fails. Defaults to `TREE_REMOVAL_MAX_RETRIES` (2). */
+  maxRetries?: number;
+  /** Backoff unit between attempts. Defaults to `TREE_REMOVAL_RETRY_DELAY_MS` (100 ms). */
+  retryDelayMs?: number;
   /** Overrides the pinned `rm`, so a test can model one that hangs or fails. */
   executable?: string;
 }
@@ -86,25 +94,14 @@ function target(path: string): string {
   return trimmed;
 }
 
-/**
- * Remove `path` and everything under it, without following a symbolic link at `path` or inside
- * it. Resolves only once `lstat` proves nothing is left at `path`; rejects with a
- * `TreeRemovalError` (or, with `allowMissing: false`, the ENOENT) otherwise, never hangs.
- */
-export async function removeTree(path: string, options: RemoveTreeOptions = {}): Promise<void> {
-  const exact = target(path);
-  const timeoutMs = options.timeoutMs ?? TREE_REMOVAL_TIMEOUT_MS;
-  const signal = options.signal;
-  if (signal?.aborted) throw new TreeRemovalError(`removal of ${exact} was stopped`, "stopped");
-  if (timeoutMs <= 0) throw new TreeRemovalError(`removal of ${exact} had no time left`, "timedOut");
-  if (options.allowMissing === false) await lstat(exact);
-  const executable = options.executable ?? FIXED_OS_EXECUTABLES.rm;
+/** One `rm -rf` run, killed by `signal` or at `timeoutMs`. Never rejects. */
+type RmOutcome =
+  | { kind: "exited"; code: number | null; signal: NodeJS.Signals | null; stderr: string }
+  | { kind: "ended"; ended: "stopped" | "timedOut" }
+  | { kind: "error"; message: string };
 
-  const outcome = await trackOwnWorktreeProcess((onSpawn) => new Promise<
-    { kind: "exited"; code: number | null; signal: NodeJS.Signals | null; stderr: string }
-    | { kind: "ended"; ended: "stopped" | "timedOut" }
-    | { kind: "error"; message: string }
-  >((settle) => {
+function runRm(executable: string, exact: string, timeoutMs: number, signal: AbortSignal | undefined): Promise<RmOutcome> {
+  return trackOwnWorktreeProcess((onSpawn) => new Promise<RmOutcome>((settle) => {
     let ending: "stopped" | "timedOut" | null = null;
     let stderr = "";
     let settled = false;
@@ -117,7 +114,7 @@ export async function removeTree(path: string, options: RemoveTreeOptions = {}):
       stdio: ["ignore", "ignore", "pipe"],
     });
     if (child.pid) onSpawn(child.pid);
-    const finish = (value: Parameters<typeof settle>[0]): void => {
+    const finish = (value: RmOutcome): void => {
       if (settled) return;
       settled = true;
       for (const timer of timers) clearTimeout(timer);
@@ -148,19 +145,64 @@ export async function removeTree(path: string, options: RemoveTreeOptions = {}):
     timers.push(setTimeout(() => end("timedOut"), timeoutMs));
     signal?.addEventListener("abort", onAbort, { once: true });
   }));
+}
 
-  if (outcome.kind === "ended") {
-    throw new TreeRemovalError(
-      outcome.ended === "stopped"
-        ? `removal of ${exact} was stopped`
-        : `removal of ${exact} timed out after ${Math.round(timeoutMs / 100) / 10} s`,
-      outcome.ended,
-    );
+/** Wait `ms` between attempts. Resolves false when `signal` aborts first. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(false);
+    const onAbort = (): void => { clearTimeout(timer); resolve(false); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(true); }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Remove `path` and everything under it, without following a symbolic link at `path` or inside
+ * it. Resolves only once `lstat` proves nothing is left at `path`; rejects with a
+ * `TreeRemovalError` (or, with `allowMissing: false`, the ENOENT) otherwise, never hangs.
+ *
+ * An `rm` that exits non-zero, or exits 0 with the path still there, is retried `maxRetries`
+ * times (default 2, as the `fs.rm(..., { maxRetries: 2 })` it replaces) with a linear backoff of
+ * `retryDelayMs` per attempt - a file another process held for a moment is gone by then. Every
+ * attempt and pause shares the one `timeoutMs` deadline. A Stop, the deadline, or an `rm` that
+ * cannot start ends the removal at once: none of those improves by trying again.
+ */
+export async function removeTree(path: string, options: RemoveTreeOptions = {}): Promise<void> {
+  const exact = target(path);
+  const timeoutMs = options.timeoutMs ?? TREE_REMOVAL_TIMEOUT_MS;
+  const maxRetries = Math.max(0, Math.floor(options.maxRetries ?? TREE_REMOVAL_MAX_RETRIES));
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? TREE_REMOVAL_RETRY_DELAY_MS);
+  const signal = options.signal;
+  const stopped = (): TreeRemovalError => new TreeRemovalError(`removal of ${exact} was stopped`, "stopped");
+  const timedOut = (): TreeRemovalError =>
+    new TreeRemovalError(`removal of ${exact} timed out after ${Math.round(timeoutMs / 100) / 10} s`, "timedOut");
+  if (signal?.aborted) throw stopped();
+  if (timeoutMs <= 0) throw new TreeRemovalError(`removal of ${exact} had no time left`, "timedOut");
+  if (options.allowMissing === false) await lstat(exact);
+  const executable = options.executable ?? FIXED_OS_EXECUTABLES.rm;
+  const deadline = Date.now() + timeoutMs;
+
+  for (let attempt = 1; ; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw timedOut();
+    const outcome = await runRm(executable, exact, remaining, signal);
+    if (outcome.kind === "ended") throw outcome.ended === "stopped" ? stopped() : timedOut();
+    if (outcome.kind === "error") throw new TreeRemovalError(bounded(`rm could not start: ${outcome.message}`), "failed");
+    let failure: string;
+    if (outcome.code !== 0) {
+      const how = outcome.signal ? `was killed by ${outcome.signal}` : `exited with code ${outcome.code}`;
+      failure = bounded(`rm -rf ${how}: ${outcome.stderr.trim()}`.trim());
+    } else if (await absent(exact)) {
+      return;
+    } else {
+      failure = bounded(`rm -rf reported success but ${exact} remains`);
+    }
+    if (attempt > maxRetries) {
+      throw new TreeRemovalError(attempt > 1 ? `${failure} (after ${attempt} attempts)` : failure, "failed");
+    }
+    const wait = retryDelayMs * attempt;
+    if (Date.now() + wait >= deadline) throw timedOut();
+    if (!(await pause(wait, signal))) throw stopped();
   }
-  if (outcome.kind === "error") throw new TreeRemovalError(bounded(`rm could not start: ${outcome.message}`), "failed");
-  if (outcome.code !== 0) {
-    const how = outcome.signal ? `was killed by ${outcome.signal}` : `exited with code ${outcome.code}`;
-    throw new TreeRemovalError(bounded(`rm -rf ${how}: ${outcome.stderr.trim()}`.trim()), "failed");
-  }
-  if (!(await absent(exact))) throw new TreeRemovalError(`rm -rf reported success but ${exact} remains`, "failed");
 }

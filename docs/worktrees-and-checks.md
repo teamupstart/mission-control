@@ -280,8 +280,11 @@ neither deletes that file nor fails: it hangs, or reports `ENOTEMPTY` for every 
 it. Turning Electron's `process.noAsar` off for the delete is not an option, because the flag is
 process-global and every other file read in the daemon would see it while the delete ran.
 
-Each delete has a deadline of five minutes, after which its process group is killed. A delete
-that cannot finish, by its deadline or for any other reason, is a bounded, reported failure and
+Each delete has a deadline of five minutes, after which its process group is killed. An `rm`
+that exits with an error, or exits cleanly while the path is still there, is retried twice, as
+the `fs.rm` it replaced was, with a pause of 100 ms and then 200 ms; every attempt and pause
+counts against the same deadline, and a Stop or the deadline ends the delete without a retry.
+A delete that cannot finish, by its deadline or for any other reason, is a bounded, reported failure and
 never a hang. The path is then checked again: an orphaned slot whose delete failed stays in a
 **transition** quarantine, with the delete's own reason (for example `rm -rf exited with code 1`
 and what `rm` printed), and Destroy can be retried. A failed reclaim renames the checkout back

@@ -1,7 +1,7 @@
 // `removeTree`'s contract in plain Node. Why it exists at all (Electron's asar layer) can only be
 // shown under Electron: see `test/remove-tree-electron.test.ts`.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -118,7 +118,7 @@ test("a child that reports success but leaves the tree is a reported failure, ne
   const error = await removeTree(path, { executable: liar }).then(() => null, (caught: unknown) => caught);
   assert.ok(error instanceof TreeRemovalError, String(error));
   assert.equal(error.ended, "failed");
-  assert.equal(error.message, `rm -rf reported success but ${path} remains`);
+  assert.equal(error.message, `rm -rf reported success but ${path} remains (after 3 attempts)`);
   assert.ok(existsSync(join(path, "node_modules", "pkg", "index.js")), "the tree is still there");
 });
 
@@ -136,6 +136,84 @@ test("a removal with no time left is out of time before anything starts", async 
   }
   assert.equal(existsSync(started), false, "no delete was launched");
   assert.ok(existsSync(join(path, "node_modules", "pkg", "index.js")), "the tree is untouched");
+});
+
+/**
+ * A stand-in `rm` that counts its runs in `count` and fails the first `failures` of them with
+ * `rm`'s own kind of message, then hands over to the real `rm`.
+ */
+function failingRm(root: string, failures: number): { rm: string; runs: () => number } {
+  const rm = join(root, "failing-rm");
+  const count = join(root, "runs");
+  writeFileSync(rm, [
+    "#!/bin/sh",
+    `echo run >> ${JSON.stringify(count)}`,
+    `n=$(wc -l < ${JSON.stringify(count)})`,
+    `if [ "$n" -le ${failures} ]; then echo "rm: $3: Directory not empty" >&2; exit 1; fi`,
+    'exec /bin/rm "$@"',
+    "",
+  ].join("\n"), { mode: 0o755 });
+  return { rm, runs: () => (existsSync(count) ? readFileSync(count, "utf8").trim().split("\n").length : 0) };
+}
+
+test("an rm that fails once is retried, as fs.rm's maxRetries: 2 was, and the tree is removed", async (t) => {
+  const root = scratch(t);
+  const path = tree(root);
+  const fake = failingRm(root, 1);
+  await removeTree(path, { executable: fake.rm });
+  assert.equal(fake.runs(), 2, "one failure, then the retry that removed it");
+  assert.equal(existsSync(path), false);
+});
+
+test("an rm that keeps failing is tried three times in all, then reported with its own reason", async (t) => {
+  const root = scratch(t);
+  const path = tree(root);
+  const fake = failingRm(root, 99);
+  const started = Date.now();
+  const error = await removeTree(path, { executable: fake.rm }).then(() => null, (caught: unknown) => caught);
+  assert.ok(error instanceof TreeRemovalError, String(error));
+  assert.equal(error.ended, "failed");
+  assert.match(error.message, /^rm -rf exited with code 1: rm: .*Directory not empty \(after 3 attempts\)$/);
+  assert.equal(fake.runs(), 3, "the first run and two retries");
+  assert.ok(Date.now() - started >= 300, "a linear backoff of 100 ms, then 200 ms, between them");
+  assert.ok(existsSync(join(path, "node_modules", "pkg", "index.js")));
+});
+
+test("maxRetries: 0 makes a single attempt", async (t) => {
+  const root = scratch(t);
+  const path = tree(root);
+  const fake = failingRm(root, 99);
+  const error = await removeTree(path, { executable: fake.rm, maxRetries: 0 }).then(() => null, (caught: unknown) => caught);
+  assert.ok(error instanceof TreeRemovalError);
+  assert.match(error.message, /^rm -rf exited with code 1: [^()]*$/, "one attempt carries no attempt count");
+  assert.equal(fake.runs(), 1);
+});
+
+test("a Stop during the pause between attempts ends the removal without another attempt", async (t) => {
+  const root = scratch(t);
+  const path = tree(root);
+  const fake = failingRm(root, 99);
+  const controller = new AbortController();
+  const pending = removeTree(path, { executable: fake.rm, retryDelayMs: 5_000, signal: controller.signal });
+  const until = Date.now() + 10_000;
+  while (fake.runs() === 0 && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 10));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  controller.abort();
+  await assert.rejects(pending, (error: unknown) => error instanceof TreeRemovalError && error.ended === "stopped");
+  assert.equal(fake.runs(), 1, "the Stop landed in the backoff, so no retry ran");
+});
+
+test("retries never outlast the deadline: a backoff that would cross it ends as timed out", async (t) => {
+  const root = scratch(t);
+  const path = tree(root);
+  const fake = failingRm(root, 99);
+  const started = Date.now();
+  const error = await removeTree(path, { executable: fake.rm, timeoutMs: 2_000, retryDelayMs: 5_000 })
+    .then(() => null, (caught: unknown) => caught);
+  assert.ok(error instanceof TreeRemovalError);
+  assert.equal(error.ended, "timedOut");
+  assert.equal(fake.runs(), 1);
+  assert.ok(Date.now() - started < 2_000, "it gave up at once instead of sleeping past the deadline");
 });
 
 test("a delete that hangs is killed at its deadline and reported, never awaited forever", async (t) => {

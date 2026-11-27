@@ -71,6 +71,16 @@ if (args[0] === "api" && args[1] === "user") {
     reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: false, endCursor: null } },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
   } } } }));
+} else if (args.includes("--method") && args.includes("PUT") && args.some((arg) => arg.endsWith("/merge"))) {
+  // YOLO mode's merge. The body (the head it was asked to land) arrives on stdin.
+  let body = "";
+  process.stdin.on("data", (chunk) => { body += chunk; });
+  process.stdin.on("end", () => {
+    const state = load();
+    state.merges.push(JSON.parse(body).sha);
+    save(state);
+    process.stdout.write("{}");
+  });
 } else if (args.includes("--method") && args.includes("POST")) {
   const state = load();
   state.posts.push(args.join(" "));
@@ -88,17 +98,18 @@ if (args[0] === "api" && args[1] === "user") {
 chmodSync(ghPath, 0o755);
 
 const { openDb, getInspectorPr, upsertInspectorComment } = await import("../src/server/db.ts");
-const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
 const { formatMarker } = await import("../src/server/inspector/marker.ts");
 
-interface FakeGithubState { headSha: string; threads: unknown[]; posts: string[]; sweeps: number }
+interface FakeGithubState { headSha: string; threads: unknown[]; posts: string[]; merges: string[]; sweeps: number }
 
 function writeGithubState(state: Partial<FakeGithubState> = {}): void {
   const tmp = `${statePath}.seed.tmp`;
-  writeFileSync(tmp, JSON.stringify({ headSha: "head-1", threads: [], posts: [], sweeps: 0, ...state }));
+  writeFileSync(tmp, JSON.stringify({ headSha: "head-1", threads: [], posts: [], merges: [], sweeps: 0, ...state }));
   renameSync(tmp, statePath);
 }
 const github = (): FakeGithubState => JSON.parse(readFileSync(statePath, "utf8")) as FakeGithubState;
@@ -119,14 +130,18 @@ const asked: Array<{ prKey: string; headSha: string; baseRefName: string | null 
 let matching = new Set<string>();
 /** Makes the matcher reject, as a manager whose store or git read failed would. */
 let rejecting = false;
+/** Answers the matcher gives, one per question, before it falls back to `matching`. */
+let answers: boolean[] = [];
 const localReview = async (prKey: string, head: { headSha: string; baseRefName: string | null }):
   Promise<WorkflowLocalReviewMatch | null> => {
   asked.push({ prKey, ...head });
   if (rejecting) throw new Error("fixture: the local review match could not be read");
-  return matching.has(head.headSha)
-    ? { submissionId: "submission", attemptId: "attempt", headSha: head.headSha, treeOid: "t".repeat(40),
-      baseRef: "refs/remotes/origin/main" }
-    : null;
+  // Scripted answers, consumed in order before `matching` is consulted.
+  const scripted = answers.shift();
+  if (scripted !== undefined ? scripted : matching.has(head.headSha))
+    return { submissionId: "submission", attemptId: "attempt", headSha: head.headSha, treeOid: "t".repeat(40),
+      baseRef: "refs/remotes/origin/main" };
+  return null;
 };
 
 async function runOneSweep(): Promise<void> {
@@ -154,7 +169,9 @@ beforeEach(() => {
   asked.length = 0;
   matching = new Set();
   rejecting = false;
+  answers = [];
   setShippingConfig({ autoMerge: false, codeRabbitAutoResolve: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: false });
 });
 
 after(() => {
@@ -251,7 +268,7 @@ test("a local head that stops matching is reviewed on GitHub once the posture is
   await runOneSweep();
   assert.equal(getInspectorPr(key)?.reviewPosture, "local");
 
-  // Local review switched off, or the repository given the merge grant: the manager answers no.
+  // Local review switched off, or a newer run that did not pass: the manager answers no.
   matching = new Set();
   await runOneSweep();
   assert.equal(modelCalls(), 1);
@@ -302,7 +319,7 @@ test("in Dry run, a head recorded from a local match that stops matching gets it
   assert.equal(getInspectorPr(key)?.reviewPosture, "dry-run");
   assert.equal(getInspectorPr(key)?.localReviewHeadSha, "head-1");
 
-  // Local review switched off (or the merge grant given) while the Inspector stays in Dry run.
+  // Local review switched off (or a newer run that did not pass) while the Inspector stays in Dry run.
   // The local record is not a review, so the same head is reviewed - recorded, never posted.
   matching = new Set();
   await runOneSweep();
@@ -316,4 +333,151 @@ test("in Dry run, a head recorded from a local match that stops matching gets it
   // Reviewed now, so the next sweep reuses that review instead of reviewing again.
   await runOneSweep();
   assert.equal(modelCalls(), 1);
+});
+
+// ---- Shipping on a local review (Phase 6) ----
+//
+// YOLO armed with no soak, this repository holding the merge grant, CI green and nothing open:
+// the only question left is whether the head's review is provenance a merge may rest on.
+
+/** YOLO armed in this repository, and the Inspector's Local review setting on behind its flag. */
+function yolo(): void {
+  setShippingConfig({ autoMerge: true, soakMinutes: 0, repoAllowlist: [project], codeRabbitAutoResolve: false });
+  applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: true });
+  setInspectorConfig({ localReview: true });
+  assert.equal(getInspectorConfig().localReview, true);
+}
+
+test("with Local review off, a recorded local head is refused as missing its local review", async () => {
+  live();
+  yolo();
+  const key = adopt(909);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.reviewPosture, "local");
+  // The matcher fixture still says yes, so only the setting stands between this head and a merge.
+  setInspectorConfig({ localReview: false });
+  await runOneSweep();
+  assert.deepEqual(github().merges, []);
+  assert.equal(getInspectorPr(key)?.mergeBlock, "local-review-missing");
+});
+
+test("YOLO merges a locally reviewed head in a merge-grant repository once the worker has recorded it", async () => {
+  live();
+  yolo();
+  const key = adopt(910);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+
+  // The first sweep records the head as local; the merge check ran before that, on no review.
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.reviewPosture, "local", "the merge grant no longer keeps the GitHub review");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "not-reviewed");
+  assert.deepEqual(github().merges, []);
+
+  await runOneSweep();
+  assert.deepEqual(github().merges, ["head-1"], "the locally reviewed head merged");
+  assert.equal(modelCalls(), 0, "no GitHub review was spent on it");
+  assert.deepEqual(github().posts, [], "nothing was posted");
+  const row = getInspectorPr(key)!;
+  assert.equal(row.state, "closed");
+  assert.notEqual(row.mergedAt, null);
+});
+
+test("a later commit with the same tree merges only after the worker has recorded it", async () => {
+  live();
+  yolo();
+  const key = adopt(911);
+  writeGithubState();
+  // Both commits carry the reviewed tree, as the manager's tree match would report.
+  matching = new Set(["head-1", "head-2"]);
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.localReviewHeadSha, "head-1");
+
+  // The session re-creates the commit before the merge sweep: same tree, new sha.
+  writeGithubState({ headSha: "head-2" });
+  await runOneSweep();
+  assert.deepEqual(github().merges, [], "the recorded head is another commit, so it is refused first");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "not-reviewed");
+  assert.equal(getInspectorPr(key)?.localReviewHeadSha, "head-2", "the worker recorded the new head as local");
+
+  await runOneSweep();
+  assert.deepEqual(github().merges, ["head-2"]);
+  assert.equal(modelCalls(), 0);
+});
+
+test("a recorded local head the manager no longer matches is held, then reviewed on GitHub", async () => {
+  live();
+  yolo();
+  const key = adopt(912);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.reviewPosture, "local");
+
+  // The match is gone (a newer run did not pass, say) before the merge sweep.
+  matching = new Set();
+  await runOneSweep();
+  assert.deepEqual(github().merges, [], "a local record the manager no longer backs never merges");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "local-review-missing");
+  assert.equal(modelCalls(), 1, "the same sweep started the GitHub review");
+  assert.equal(getInspectorPr(key)?.reviewPosture, "live");
+});
+
+test("a matching local pass never merges while the Inspector is in Dry run", async () => {
+  dryRun();
+  yolo();
+  const key = adopt(913);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  await runOneSweep();
+  assert.deepEqual(github().merges, [], "Dry run stays dry for the merge");
+  assert.equal(getInspectorPr(key)?.reviewPosture, "dry-run");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "inspector-dry-run");
+  assert.equal(modelCalls(), 0);
+});
+
+test("consent switched to Dry run after the sweep read its config stops the merge", async () => {
+  live();
+  yolo();
+  const key = adopt(914);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.reviewPosture, "local");
+
+  // The sweep's config snapshot still says Live, as it would after the awaits on GitHub and the
+  // workflow manager; the operator switched to Dry run in the meantime.
+  const snapshot = getInspectorConfig();
+  dryRun();
+  const { fetchPr } = await import("../src/server/inspector/github.ts");
+  const { maybeMerge } = await import("../src/server/shipping/merge.ts");
+  const read = await fetchPr(project, "mission", "control", 914);
+  assert.ok(read.ok && read.value, "the fake GitHub answered");
+  const merged = await maybeMerge(snapshot, getInspectorPr(key)!, project, read.value!, new Map(), Date.now(), () => "none",
+    { headSha: "head-1" });
+  assert.equal(merged, false);
+  assert.deepEqual(github().merges, [], "no merge was requested under Dry run");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "inspector-dry-run");
+});
+
+test("an owner deciding between the sweep's match and the merge takes the local match back", async () => {
+  live();
+  yolo();
+  const key = adopt(915);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  assert.equal(getInspectorPr(key)?.reviewPosture, "local");
+
+  // The merge sweep's first question finds the match; by the recheck right before the merge
+  // request the owning run has decided (cancelled, say), and the manager answers no.
+  const before = asked.length;
+  answers = [true, false];
+  await runOneSweep();
+  assert.ok(asked.length >= before + 2, "the manager was asked again before the merge request");
+  assert.deepEqual(github().merges, [], "no merge on a match the manager took back");
+  assert.equal(getInspectorPr(key)?.mergeBlock, "local-review-missing");
 });

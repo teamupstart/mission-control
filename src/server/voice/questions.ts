@@ -99,7 +99,9 @@ export class VoiceOpenCards {
     const last = this.reports.get(report.windowId);
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
     if (stream.resume) {
-      if (calibrating || timing.confirmed !== stream.resume.sequence) {
+      // The dashboard answers only its newest request, so a later request to this window
+      // proves the report was read after the resume request too.
+      if (calibrating || timing.confirmed === undefined || timing.confirmed < stream.resume.sequence) {
         if (!calibrating) stream.resume.ask();
         return true;
       }
@@ -263,6 +265,14 @@ export class VoiceOpenCards {
   /** A cached background or standalone window can have a newer focus report in flight. */
   reportingWindows(): string[] {
     return [...this.streams].filter(([id, stream]) => !stream.resume && (stream.browser || this.reports.has(id))).map(([id]) => id);
+  }
+
+  /** A suspended window missed one confirmation deadline, perhaps only under load, and is
+   * still a live dashboard, possibly the one showing the focused question. A reply asks it
+   * alongside every reporting window. Only its fresh confirmation resumes it and restores
+   * its report, so a stale one still cannot claim the reply. */
+  replyWindows(): string[] {
+    return [...this.streams].filter(([id, stream]) => stream.browser || this.reports.has(id)).map(([id]) => id);
   }
 
   /** A late report from a suspended window must not reclaim a footer or a reply target. */

@@ -5123,3 +5123,23 @@ test("a newer owner that decides during the tree lookup takes the decision back 
   assert.equal(await ask(), null, "the newer owner's decision, made during the await, wins");
   assert.equal(decideDuringLookup, null, "the decision did land during the lookup");
 });
+
+test("a pull request retargeted during the tree lookup is evaluated on its new base, not completed locally", async (t) => {
+  let retargetOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      // The head is unchanged; only the base moves while the gate awaits git.
+      if (retargetOnce) { const retarget = retargetOnce; retargetOnce = null; retarget(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  retargetOnce = () => updateInspectorPr(seeded.key, { baseRefName: "release" }, Date.now());
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "the retargeted pull request was not sent to the GitHub review");
+  assert.equal(retargetOnce, null, "the base did move during the lookup");
+  assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed", "no local completion against the old base");
+  assert.equal(gateOf(seeded).localReview, undefined);
+  assert.equal(getInspectorPr(seeded.key)?.observedHeadSha ?? seeded.head, seeded.head, "the head itself never moved");
+});

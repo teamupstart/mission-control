@@ -5583,6 +5583,12 @@ export class WorkflowManager {
         // evaluated afresh rather than completed under the head the lookup started with.
         const current = loadInspectorInspection(state.prKey!);
         if (!current || current.state === "closed") return;
+        // The match was made against this base. A pull request retargeted during the lookup is
+        // a different diff even with the same head, so it is evaluated again on its new base.
+        if ((current.baseRefName ?? null) !== (ledger.baseRefName ?? null)) {
+          this.scheduleGateEvaluation(run.id, null);
+          return;
+        }
         if (current.observedAt !== null && current.observedAt >= (state.lastObservedAt ?? state.enteredAt)) {
           if (current.observedState === null) return;
           if (current.observedHeadSha !== state.observedHeadSha || inspectorStateSaysClosed(current.observedState)) {

@@ -28,7 +28,15 @@ import {
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const HOUR = 60 * 60_000;
-const SLEEP = existsSync("/bin/sleep") ? "/bin/sleep" : "/usr/bin/sleep";
+/**
+ * Start a long-lived process whose command line begins with `path`, as a copied app bundle's
+ * executable does. Node with `argv0` rather than a copied or linked system binary: macOS kills a
+ * copied system binary on its signature, and a multicall coreutils `sleep` refuses to run under
+ * any other name, so a linked one exits at once on such Linux hosts.
+ */
+function runFrom(path: string) {
+  return spawn(process.execPath, ["-e", "setTimeout(() => {}, 600_000)"], { argv0: path, detached: true, stdio: "ignore" });
+}
 
 /** A pid that is certainly dead: a child that has already exited. */
 function deadPid(): number {
@@ -160,14 +168,9 @@ test("a dead owner's root younger than the threshold is kept until it ages", () 
 test("a sweep kills fixture processes still running from a dead root before removing it", async () => {
   const tmp = tempDir("sweep-orphan-");
   const root = fakeRoot(tmp, { pid: deadPid(), startedAt: 1 });
-  // An executable copied into the root, as the Electron suite copies an app bundle, started
+  // A process started from inside the root, as the Electron suite starts a copied app bundle,
   // detached so nothing but its path ties it to the tree.
-  // A link rather than a copy: macOS kills a copied system binary on its signature, and the
-  // command line a process shows is the path it was started by either way.
-  mkdirSync(join(root, "bin"));
-  const copied = join(root, "bin", "sleeper");
-  symlinkSync(SLEEP, copied);
-  const orphan = spawn(copied, ["600"], { detached: true, stdio: "ignore" });
+  const orphan = runFrom(join(root, "bin", "sleeper"));
   orphan.unref();
   await waitFor(() => processesUnder([root]).some((entry) => entry.pid === orphan.pid));
   assert.deepEqual(sweep(tmp, 0).removed, [root]);
@@ -178,9 +181,7 @@ test("a sweep kills fixture processes still running from a dead root before remo
 
 test("reaping a fixture tree leaves no process running from it", async () => {
   const tree = tempDir("reap-fixture-");
-  const copied = join(tree, "fixture-app");
-  symlinkSync(SLEEP, copied);
-  const children = [spawn(copied, ["600"], { detached: true, stdio: "ignore" }), spawn(process.execPath, ["-e", "setTimeout(() => {}, 600_000)", join(tree, "named-only")], { detached: true, stdio: "ignore" })];
+  const children = [runFrom(join(tree, "fixture-app")), spawn(process.execPath, ["-e", "setTimeout(() => {}, 600_000)", join(tree, "named-only")], { detached: true, stdio: "ignore" })];
   for (const child of children) child.unref();
   await waitFor(() => processesUnder([tree], { anywhere: true }).length === 2);
   assert.equal(processesUnder([tree]).length, 1, "only the copied executable runs from the tree");

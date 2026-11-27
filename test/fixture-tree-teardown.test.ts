@@ -12,13 +12,12 @@ import { processesUnder, tempDir } from "./temp-root.mjs";
 // `node --test` worker runs that scenario; this file checks what it left behind.
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SLEEP = existsSync("/bin/sleep") ? "/bin/sleep" : "/usr/bin/sleep";
 const url = (path: string) => JSON.stringify(pathToFileURL(join(REPO_ROOT, path)).href);
 
 const FAILING_SPEC = `
 import test from "node:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { teardownFixtureTree } from ${url("test/helpers/fixture-tree.ts")};
 import { processesUnder, tempDir } from ${url("test/temp-root.mjs")};
@@ -29,10 +28,13 @@ test("a copied app is launched and the handoff never arrives", async (t) => {
   const macos = join(root, "apps", "Mission Control.app", "Contents", "MacOS");
   mkdirSync(macos, { recursive: true });
   const app = join(macos, "Mission Control");
-  symlinkSync(${JSON.stringify(SLEEP)}, app);
-  // Through a shell that exits at once, as /usr/bin/open does: the app is orphaned and this
-  // test never learns its pid.
-  spawn("/bin/sh", ["-c", JSON.stringify(app) + " 600 >/dev/null 2>&1 &"], { stdio: "ignore" });
+  writeFileSync(app, "");
+  // Through a launcher that exits at once, as /usr/bin/open does: the app is orphaned and this
+  // test never learns its pid. Node with argv0 stands in for the app's executable, so its
+  // command line starts inside the tree on every platform.
+  // The path travels in the environment, so only the orphan's own command line names the tree.
+  const launcher = "require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { argv0: process.env.APP, detached: true, stdio: 'ignore' }).unref();";
+  spawn(process.execPath, ["-e", launcher], { stdio: "ignore", env: { ...process.env, APP: app } });
   let seen;
   for (let i = 0; i < 100 && !seen; i++) {
     seen = processesUnder([root], { anywhere: true })[0];

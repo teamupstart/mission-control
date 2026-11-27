@@ -8288,6 +8288,9 @@ a.btn {
    the pane scroll on their own while the head and the tabs stay put. Every band here draws its
    own divider or background to the border, so each is a `.modal-bleed` with its own padding.
    Below 800 px the two panes stack and the pane gains a back button. */
+.inbox-split-root {
+  display: contents;
+}
 .attention-inbox.is-split {
   width: min(1080px, 100%);
   height: calc(100dvh - 96px);

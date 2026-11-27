@@ -256,8 +256,7 @@ export function initialSplitKey(
     if (question) return question.key;
   }
   if (openReportId) {
-    const report = entries.find((entry) =>
-      entry.type === "item" && entry.item.kind === "agent_reports" && entry.item.reports[0]?.id === openReportId);
+    const report = entries.find((entry) => entryHoldsReport(entry, openReportId));
     if (report) return report.key;
   }
   return entries[0]?.key ?? null;

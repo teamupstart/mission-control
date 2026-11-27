@@ -131,8 +131,9 @@ export function InboxSplitView({
     setSelected(listed.some((entry) => entry.key === selected) ? selected : listed[0]?.key ?? null);
     setMovedOn(false);
   };
-  // J and K step through the list from anywhere in the inbox but a text field. Bound on the element
-  // rather than as a JSX handler: the split is a layout box, not a control of its own.
+  // J and K step through the list from anywhere in the split view (the tabs, the list, the pane)
+  // but a text field. Bound on the element rather than as a JSX handler: the wrapper is a layout
+  // box, not a control of its own.
   const root = useRef<HTMLDivElement>(null);
   const stepRef = useRef(step);
   stepRef.current = step;
@@ -168,7 +169,9 @@ export function InboxSplitView({
   const upNext = at < 0 ? [] : visible.slice(at + 1, at + 3);
 
   return (
-    <>
+    // `display: contents`, so the tabs and the split stay the modal's own flex rows, while J and K
+    // are heard from the tabs as well as the list and the pane.
+    <div ref={root} className="inbox-split-root">
       <div className="modal-bleed inbox-split-tabs" role="tablist" aria-label="Inbox filter">
         {INBOX_SPLIT_TABS.map((id) => (
           <Tooltip key={id} label={TAB_TIPS[id]}>
@@ -185,7 +188,7 @@ export function InboxSplitView({
           </Tooltip>
         ))}
       </div>
-      <div ref={root} className={`modal-bleed inbox-split${detail && current ? " is-detail" : ""}`}>
+      <div className={`modal-bleed inbox-split${detail && current ? " is-detail" : ""}`}>
         <div ref={list} className="inbox-split-list" role="listbox" aria-label="Inbox items" tabIndex={-1} onKeyDown={onListKeyDown}>
           {groups.length === 0 && <p className="inbox-empty">{emptyText}</p>}
           {groups.map((group) => (
@@ -256,7 +259,7 @@ export function InboxSplitView({
           )}
         </section>
       </div>
-    </>
+    </div>
   );
 }
 

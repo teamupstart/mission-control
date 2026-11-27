@@ -114,6 +114,13 @@ test("the split inbox selects, moves on after an answer and a Mark read, filters
   await expect(pane.locator(".inbox-split-upnext")).toContainText("Should CI fail on warnings?");
   await capture(inbox, "01-question-selected", page);
 
+  // J and K work from the tabs too, which sit outside the list and the pane.
+  await inbox.getByRole("tab", { name: /All/ }).click();
+  await page.keyboard.press("j");
+  await expect(list.getByRole("option", { name: /Should CI fail on warnings\?/ })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("k");
+  await expect(first).toHaveAttribute("aria-selected", "true");
+
   await pane.getByPlaceholder("Your answer…").fill("eslint");
   await pane.getByRole("button", { name: "Send answer" }).click();
   await expect(first).toHaveCount(0);

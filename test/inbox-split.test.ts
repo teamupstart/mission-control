@@ -396,3 +396,10 @@ test("an earlier version opened while its replacement's row is selected changes 
   // the open replacement, so the view does not open it again.
   assert.equal(reportSyncKey("report:r-2", replacement, null), "report:r-2|r-3|");
 });
+
+test("opened with an earlier version of a listed report, the inbox starts on the row holding its replacement", () => {
+  // r-3 replaced r-2; the notification that opened the inbox named r-2.
+  const entries = inboxSplitEntries(busyFold(), [], mkReport({ id: "r-2", rootId: "r-2", title: "Flake rate up" }));
+  assert.equal(initialSplitKey(entries, null, "r-2"), "report:r-2");
+  assert.equal(initialSplitKey(entries, null, "r-3"), "report:r-2");
+});

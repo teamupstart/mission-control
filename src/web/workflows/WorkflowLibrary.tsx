@@ -322,7 +322,8 @@ export function WorkflowLibrary({
   const workflowGraph = workflow?.draft;
   const workflowCompletionPolicy = workflow?.completionPolicy;
   const validation = useMemo(
-    () => workflowGraph && workflowCompletionPolicy !== undefined
+    // Gated on the graph alone: a workflow whose policy is not set yet is still validated.
+    () => workflowGraph
       ? validateWorkflowGraph({
           graph: workflowGraph,
           personas,

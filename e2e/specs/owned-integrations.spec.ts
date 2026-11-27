@@ -1,14 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
 import { expect, test } from "../fixtures/test.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
 import { buildOwnedIntegrationInstaller } from "../../test/helpers/owned-integration-installer.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 test("desktop repair action runs the real installer and reports preserved custom commands", async ({page,daemon}) => {
-  const home=mkdtempSync(join(tmpdir(),"e2e-owned-repair-"));
+  const home=tempDir("e2e-owned-repair-");
   try {
     mkdirSync(join(home,".claude"));
     mkdirSync(join(home,"dist/satellites"),{recursive:true});

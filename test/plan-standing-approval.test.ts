@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { execFileSync } from "node:child_process";
@@ -11,8 +10,9 @@ import type { PlanIdentity } from "../src/shared/managed-plans.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { STANDING_APPROVAL_NOTE, isConversationResolvedReview, isHumanResolvedReview } from "../src/shared/review-item.ts";
 import { reviewAnswerVerb } from "../src/web/lib/reviews.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-standing-approval-")));
+const home = realpathSync(tempDir("mission-standing-approval-"));
 process.env.MISSION_HOME = join(home, "state");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");

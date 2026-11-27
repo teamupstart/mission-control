@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
@@ -17,8 +15,9 @@ import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-multi-session-"));
+const home = tempDir("mission-task-multi-session-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");

@@ -1,16 +1,16 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: while Shipping cannot accept a local review as merge provenance, a
 // repository holding the merge grant keeps the GitHub review for every head. Reading the grant
 // must therefore fail toward "holds it": a setting that cannot be read is never an empty
 // allowlist, or a corrupt value would quietly let a head skip its GitHub review.
 
-const home = mkdtempSync(join(tmpdir(), "mission-merge-grant-"));
+const home = tempDir("mission-merge-grant-");
 // Set before importing anything that resolves the state dir.
 process.env.MISSION_HOME = join(home, "state");
 

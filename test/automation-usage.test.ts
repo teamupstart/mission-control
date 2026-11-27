@@ -1,8 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the two subsystems that spend tokens with nobody asking them to were
 // the two whose cost nothing could see.
@@ -19,7 +18,7 @@ import { join } from "node:path";
 // stays out of the fleet's session figures, survives a retried report without doubling, and
 // takes its OTel twin out of the session total with it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-automation-usage-"));
+const home = tempDir("mission-automation-usage-");
 process.env.MISSION_HOME = home;
 
 const {

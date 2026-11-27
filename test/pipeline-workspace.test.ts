@@ -4,18 +4,17 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-workspace-"));
+const home = tempDir("mission-pipeline-workspace-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

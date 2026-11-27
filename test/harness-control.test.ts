@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
 
@@ -26,7 +25,7 @@ import type { Session } from "../src/shared/types.ts";
 //      above in its general form.
 //   4. `ok: true` without evidence is reported as unverified rather than as success.
 
-const home = mkdtempSync(join(tmpdir(), "harness-control-"));
+const home = tempDir("harness-control-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 
@@ -40,6 +39,7 @@ import type { ControlSpec } from "../src/server/harness/types.ts";
 import type { InjectDeps } from "../src/server/actions.ts";
 import { bindSession } from "../src/server/terminal/registry.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

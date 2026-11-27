@@ -1,17 +1,16 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { StackedDispatchPlan } from "../src/server/stacking/readiness.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The task manager's half of a stacked start: a stack-released dispatch is pinned to the
 // prerequisite's head through the existing `baseSha` option and records what it was cut on;
 // every other dispatch records that it was NOT stacked; a refusal starts nothing; and an
 // existing agent is never handed a stacked task.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-dispatch-"));
+const home = tempDir("mission-stacking-dispatch-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");

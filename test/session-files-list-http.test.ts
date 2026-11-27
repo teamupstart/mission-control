@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-files-list-http-")));
+const home = realpathSync(tempDir("mission-files-list-http-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
 // What is at stake: one decision, two cards, answered twice (issue #1527).
 //
@@ -17,12 +15,13 @@ import { join } from "node:path";
 // wording withdraws that older card. Anything else - in particular a different later question -
 // leaves every older card exactly where it is.
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-supersede-"));
+const home = tempDir("mission-review-supersede-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb, loadPendingReviews } = await import("../src/server/db.ts");
 import type { ReviewItem } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager, PARALLEL_ASK_WINDOW_MS } = await import("../src/server/reviews.ts");
 const { ANNOUNCED_RETRY_MIN_OVERLAP, REWORDED_MIN_OVERLAP, SWAP_CONTEXT_WORDS, MAX_SWAP_WORDS } =

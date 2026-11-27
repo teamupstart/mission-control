@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const require = createRequire(import.meta.url);
 const TIMEOUT_MS = 120_000;
@@ -32,8 +32,8 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
   assertElectronGuiLaunchAllowed();
   const electron = require("electron") as string;
   const root = fileURLToPath(new URL("..", import.meta.url));
-  const dir = mkdtempSync(join(tmpdir(), "mission-desktop-preload-"));
-  const profile = mkdtempSync(join(tmpdir(), "mission-desktop-preload-profile-"));
+  const dir = tempDir("mission-desktop-preload-");
+  const profile = tempDir("mission-desktop-preload-profile-");
   const preload = join(dir, "preload.cjs");
   const page = join(dir, "page.html");
   try {
@@ -60,14 +60,13 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     const output = execFileSync(
-      electron,
-      [
+      ...electronGuiCommand(electron, [
         ...(process.platform === "linux" ? ["--no-sandbox"] : []),
         `--user-data-dir=${profile}`,
         fileURLToPath(new URL("fixtures/desktop-preload-browser.cjs", import.meta.url)),
         preload,
         page,
-      ],
+      ]),
       { encoding: "utf8", env, timeout: TIMEOUT_MS },
     );
     const result = JSON.parse(output.trim()) as DesktopPreloadResult;

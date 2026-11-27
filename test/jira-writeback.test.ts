@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JiraConfigSchema } from "../src/shared/task-source.ts";
 import type { JiraConfig, WritebackNotice } from "../src/shared/task-source.ts";
@@ -25,6 +24,7 @@ import {
 } from "../src/server/task-sources/jira.ts";
 import { TASK_SOURCES } from "../src/server/task-sources/index.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the direction that CHANGES somebody's ticket. A sweep's worst
 // failure is silence; these two verbs can post a comment twice, or move an issue a person
@@ -56,7 +56,7 @@ import type { RunResult } from "../src/server/util/exec.ts";
 // REST rung at a loopback port nothing is listening on, so "unreachable" is a real code
 // path rather than a mocked one.
 
-const home = mkdtempSync(join(tmpdir(), "mission-jira-writeback-"));
+const home = tempDir("mission-jira-writeback-");
 const withJira = join(home, "with-jira");
 const noJira = join(home, "no-jira");
 mkdirSync(withJira);

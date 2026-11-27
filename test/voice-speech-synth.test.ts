@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, fork } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -10,6 +9,7 @@ import { VOICE_SPEECH_MODELS, VOICE_SPEECH_NEURAL_VOICES } from "../src/shared/v
 import { VOICE_SPEECH_DEFAULT_NEURAL } from "../src/shared/voice-speech.ts";
 import { NeuralSynthesizer } from "../src/server/voice/synthesizer.ts";
 import { ensureCachedModelFile } from "./helpers/voice-test-model.ts";
+import { systemTempDir, tempDirAsync } from "./temp-root.mjs";
 
 test("the published helper synthesizes non-silent PCM for all ten published voices", async t => {
   const required = process.env.MISSION_VOICE_RECOGNIZER_JOB !== undefined;
@@ -18,14 +18,14 @@ test("the published helper synthesizes non-silent PCM for all ten published voic
     return t.skip("No sherpa speech helper for this platform");
   }
   const model = VOICE_SPEECH_MODELS["supertonic-3"];
-  const directory = resolve(process.env.MISSION_VOICE_SPEECH_TEST_MODEL_DIR || join(tmpdir(), "mission-voice-test-model", model.revision));
+  const directory = resolve(process.env.MISSION_VOICE_SPEECH_TEST_MODEL_DIR || join(systemTempDir(), "mission-voice-test-model", model.revision));
   for (const file of model.files) {
     if (!await ensureCachedModelFile(directory, file, required)) {
       assert.ok(!required, "The dedicated Linux voice job requires the pinned speech model");
       return t.skip("Pinned Supertonic 3 model is absent from the offline test cache");
     }
   }
-  const dist = await mkdtemp(join(tmpdir(), "voice-synth-build-"));
+  const dist = await tempDirAsync("voice-synth-build-");
   t.after(() => rm(dist, { recursive: true, force: true }));
   await promisify(execFile)(process.execPath, ["scripts/build-voice-sherpa.mjs", dist]);
   const synth = new NeuralSynthesizer(() => directory, dir => fork(join(dist, "voice-speaker", "synth.mjs"), [dir],

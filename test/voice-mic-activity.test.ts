@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { VoiceHardware } from "../src/main/voice-hardware.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("native CoreAudio process query", { skip: process.platform !== "darwin" }, async t => {
   const [major, minor] = execFileSync("sw_vers", ["-productVersion"], { encoding: "utf8" }).split(".").map(Number);
   if (major! < 14 || (major === 14 && minor! < 2)) return t.skip("Per-process input requires macOS 14.2");
-  const dir = mkdtempSync(join(tmpdir(), "voice-mic-activity-"));
+  const dir = tempDir("voice-mic-activity-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const addon = join(dir, "mic-activity.node");
   execFileSync("xcrun", ["clang++", "-std=c++17", "-bundle", "-undefined", "dynamic_lookup",

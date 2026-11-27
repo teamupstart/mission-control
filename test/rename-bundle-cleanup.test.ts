@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeRenamedBundle, renamedBundleRemovalCommand } from '../scripts/app-bundle-swap.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 const realOps = {
   identity: (path: string) => {
@@ -18,7 +18,7 @@ const realOps = {
 };
 
 function fixture(t: test.TestContext) {
-  const root = mkdtempSync(join(tmpdir(), 'rename-cleanup-'));
+  const root = tempDir('rename-cleanup-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const app = join(root, 'Agent Mission Control.app');
   mkdirSync(app);

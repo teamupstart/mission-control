@@ -1,11 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the daemon's state dir (db, token, uploads) before config is read.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-upload-http-"));
+process.env.MISSION_HOME = tempDir("mission-upload-http-");
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

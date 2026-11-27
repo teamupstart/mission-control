@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import {
@@ -43,6 +42,7 @@ import {
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The dependency claim, end to end through the real manager, real Git and real child
 // processes. Steps are small `node -e` programs, so a claim's environment, output, timeout and
@@ -368,7 +368,7 @@ test("a name added while a forced probe is in flight is read by the next probe, 
 });
 
 test("the real login-shell probe prints each variable between its own markers", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-claim-shell-"));
+  const root = tempDir("mission-claim-shell-");
   const shell = join(root, "shell");
   writeFileSync(
     shell,
@@ -764,7 +764,7 @@ test("building a step's environment spends the claim's deadline, and the step ge
 });
 
 test("resolving a step's executable spends the step's budget, and a late resolution launches nothing", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-claim-resolve-"));
+  const root = tempDir("mission-claim-resolve-");
   const marker = join(root, "launched");
   const launches = node(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x");setInterval(()=>{},1000)`);
   const real = { path: process.execPath, env: { PATH: process.env.PATH } };
@@ -812,7 +812,7 @@ test("resolving a step's executable spends the step's budget, and a late resolut
 });
 
 test("output size never fails a step, and the tail keeps the last 4,000 bytes", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-claim-output-"));
+  const root = tempDir("mission-claim-output-");
   try {
     const loud = await runClaimStep({
       argv: node(`process.stdout.write("x".repeat(2*1024*1024)+"THE-END")`),

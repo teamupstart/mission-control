@@ -2,14 +2,14 @@ import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-mcp-create-task-home-"));
-const repos = mkdtempSync(join(tmpdir(), "mission-mcp-create-task-repos-"));
+const home = tempDir("mission-mcp-create-task-home-");
+const repos = tempDir("mission-mcp-create-task-repos-");
 process.env.HARNESS_HOME = home;
 process.env.HARNESS_WORKSPACE_DIRS = repos;
 process.env.HARNESS_REPOS_CACHE_MS = "0";

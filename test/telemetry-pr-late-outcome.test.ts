@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The late-delivery fixture Phase 3 owes, and the boundary it must not cross.
 //
@@ -20,7 +20,7 @@ import { join } from "node:path";
 // task's status and the dependency edges are asserted UNCHANGED through the real invalidation
 // path, not a lookalike.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-pr-"));
+const home = tempDir("mission-telemetry-pr-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

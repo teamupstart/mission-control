@@ -1,16 +1,16 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: `session_actions` is a NEW table, so the risk is not a backfill - it is
 // that an operator upgrading into this build has a database whose workflow family already
 // exists, and `openDb` has to add the table to it without failing on the way past everything
 // it already has. A fresh-schema test alone would pass even if that were broken.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-actions-db-"));
+const home = tempDir("mission-session-actions-db-");
 process.env.MISSION_HOME = home;
 
 /**

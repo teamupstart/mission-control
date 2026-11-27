@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ReportItem } from "../src/shared/reports.ts";
 import type { Session, Task } from "../src/shared/types.ts";
@@ -10,6 +9,7 @@ import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `POST /api/reports/:id/follow-up`: Start a follow-up task, for a report whose agent is gone.
 //
@@ -21,7 +21,7 @@ import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
 // failed dispatch leaves the report unread and naming its task, so Retry dispatches that task. The
 // old session is never resumed: the follow-up is a new task.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reports-follow-up-"));
+const home = tempDir("mission-reports-follow-up-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

@@ -4,16 +4,16 @@
 // client id is the fixture's `fake-...` and no Keychain item is written. No request leaves
 // this machine.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
 import { Hono } from "hono";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { ShapingSignInView } from "../src/shared/shaping.ts";
 import type { ShaperSignInService } from "../src/server/shaping/sign-in/service.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-sign-in-http-"));
+const home = tempDir("mission-sign-in-http-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_SHAPER_SIGN_IN_STORE = "memory";
 

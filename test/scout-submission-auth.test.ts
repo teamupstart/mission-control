@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { after } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-submission-auth-"));
+const home = tempDir("mission-scout-submission-auth-");
 process.env.MISSION_HOME = home;
 const inheritedCredential = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL;
 const inheritedCredentialFile = process.env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE;

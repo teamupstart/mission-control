@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
@@ -12,6 +10,7 @@ import {
   taskMergeQuorum,
   taskRepoRefs,
 } from "../src/shared/task-repos.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The all-merged completion quorum, and the changed-set rule underneath it.
 //
@@ -29,7 +28,7 @@ import {
 // pull request` below is that case, and it is the reason the predicate is shared with the
 // phase that creates review runs rather than written twice.
 
-const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-quorum-"));
+const home = tempDir("mission-multi-pr-quorum-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");

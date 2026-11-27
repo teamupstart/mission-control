@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -20,6 +19,7 @@ import type {
   WorkflowCommandView,
   WorkflowPolicy,
 } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a Command's run budget is the difference between a workflow that spends
 // twenty minutes running the same test suite in every repair round and one that gates on it
@@ -33,7 +33,7 @@ import type {
 // rather than attempts, and a value this build cannot read degrades toward RUNNING the
 // command rather than toward skipping it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-command-run-budget-"));
+const home = tempDir("mission-command-run-budget-");
 const state = join(home, "state");
 
 /**

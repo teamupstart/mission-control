@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import test from 'node:test';
 import { canonicalImagePath, imageAttachments, native, releaseFixtureImage } from './helpers/native-dmg.ts';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 const macOnly = {skip: process.platform !== 'darwin' ? 'Requires real macOS archive tools' : false};
 
 test('fixture cleanup resolves path aliases and detaches only the exact owned image', t => {
-  const root = mkdtempSync(join(tmpdir(), 'distribution-owned-'));
+  const root = tempDir('distribution-owned-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const dmg = join(root, 'installer.dmg');
   writeFileSync(dmg, 'owned fixture');
@@ -125,7 +125,7 @@ test('DMG attach does not retry permanent errors, timeouts, or unrelated resourc
 });
 
 test('read-only DMG attach recovers from a retained writable fixture attachment', macOnly, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'distribution-locked-'));
+  const root = tempDir('distribution-locked-');
   const dmg = join(root, 'installer.dmg');
   t.after(() => { releaseFixtureImage(dmg); rmSync(root, {recursive: true, force: true}); });
   const source = join(root, 'source'); mkdirSync(source);
@@ -144,7 +144,7 @@ test('read-only DMG attach recovers from a retained writable fixture attachment'
 });
 
 test('real cp, quarantine, ditto and read-only DMG round trips preserve bundle bytes, modes and links', macOnly, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'distribution-native-'));
+  const root = tempDir('distribution-native-');
   const dmg = join(root, 'installer.dmg');
   // Also runs when create/attach fails before the mountpoint-based finally block.
   // Keep the fixture on a failed detach instead of unlinking an attached image.
@@ -190,7 +190,7 @@ test('real cp, quarantine, ditto and read-only DMG round trips preserve bundle b
 });
 
 test('real bootstrap metadata and digest helpers accept JSON array paths and spaced file names', macOnly, t => {
-  const root = mkdtempSync(join(tmpdir(), 'bootstrap-native-'));
+  const root = tempDir('bootstrap-native-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const metadata = join(root, 'build metadata.json');
   writeFileSync(metadata, JSON.stringify({missionBinary: {appBundleName: 'Agent Mission Control.app'}, assets: [{id: 123, bytes: 456}]}));

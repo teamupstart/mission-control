@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The durable session title on a run summary.
@@ -21,7 +21,7 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
  * string on each of them is bytes bought for nothing - the same trade `externalSource` makes.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-store-summary-"));
+const home = tempDir("mission-workflow-store-summary-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

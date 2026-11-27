@@ -1,10 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
-const home = mkdtempSync(join(tmpdir(), "mission-codex-model-catalog-"));
+const home = tempDir("mission-codex-model-catalog-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { CODEX_MODEL_CATALOG_BOUNDS, discoverCodexModels } = await import(
@@ -13,6 +12,7 @@ const { CODEX_MODEL_CATALOG_BOUNDS, discoverCodexModels } = await import(
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { CodexModelCatalogBounds } from "../src/server/harness/codex/model-catalog.ts";
 import type { HarnessModelCatalogProblem } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

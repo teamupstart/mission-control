@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { readRecording } from "../src/voice-listener/recording.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("the bounded WAV reader preserves PCM amplitudes and skips padded metadata", t => {
-  const dir = mkdtempSync(join(tmpdir(), "voice-pcm-"));
+  const dir = tempDir("voice-pcm-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "recording.wav");
   const header = readFileSync(new URL("./fixtures/voice/steve-check-the-build.wav", import.meta.url)).subarray(0, 36);
@@ -31,7 +31,7 @@ test("the bounded WAV reader preserves PCM amplitudes and skips padded metadata"
 });
 
 test("the WAV reader checks chunk headers, payloads and padding after the audio", t => {
-  const dir = mkdtempSync(join(tmpdir(), "voice-trailing-chunk-"));
+  const dir = tempDir("voice-trailing-chunk-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "recording.wav");
   const audio = readFileSync(new URL("./fixtures/voice/steve-check-the-build.wav", import.meta.url));
@@ -45,7 +45,7 @@ test("the WAV reader checks chunk headers, payloads and padding after the audio"
 });
 
 test("extensible PCM and float WAVs decode through their validated subformat", t => {
-  const dir = mkdtempSync(join(tmpdir(), "voice-extensible-"));
+  const dir = tempDir("voice-extensible-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "extensible.wav");
   const fixture = readFileSync(new URL("./fixtures/voice/steve-check-the-build.wav", import.meta.url));

@@ -1,10 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WORKFLOW_CHECK_SLOTS, type CodeRabbitComparison } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the store is the boundary a future caller reaches WITHOUT passing the
 // route schema, and what it holds is an argv the daemon spawns. So the rules that make
@@ -14,7 +14,7 @@ import { WORKFLOW_CHECK_SLOTS, type CodeRabbitComparison } from "../src/shared/w
 // hand-edited value taking every Check node down is a worse failure than one slot reading as
 // unconfigured, and one that took the row's revision with it would make the slot unrepairable.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-commands-store-"));
+const home = tempDir("mission-workflow-commands-store-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

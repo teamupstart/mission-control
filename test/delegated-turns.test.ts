@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { TranscriptMessage } from "../src/shared/types.ts";
 import { fakeTranscript } from "./helpers/fake-transcript.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-delegated-turns-"));
+const home = tempDir("mission-delegated-turns-");
 process.env.HARNESS_HOME = home;
 const { delegatedTurnSources, forgetDelegatedTurnCache, noteOtherSend, pruneDelegatedTurns, releaseDelegatedTurn, rememberedOtherSendKeys, reserveDelegatedTurn, withdrawOtherSend } =
   await import("../src/server/delegated-turns.ts");

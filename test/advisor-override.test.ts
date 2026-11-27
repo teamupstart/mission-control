@@ -1,11 +1,11 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The advisor a dispatched Claude session launches with: Inherit (null), Opus, Sonnet or Off,
 // chosen on Settings -> Harnesses as a default plus per-model overrides, and resolved against
@@ -19,7 +19,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // halves live beside their owners (`managed-resume-tools`, `sdk-supervisor`), and the SDK
 // options merge beside its resident counterpart (`residents-mcp-render`).
 
-const home = mkdtempSync(join(tmpdir(), "mission-advisor-override-"));
+const home = tempDir("mission-advisor-override-");
 process.env.HARNESS_HOME = home;
 // A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
 // Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`
@@ -181,7 +181,7 @@ test("the status line says whether a session will consult an advisor, and why no
 });
 
 test("the Claude settings reader reports the inherited advisor and anything that turns it off", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-advisor-settings-"));
+  const dir = tempDir("mission-advisor-settings-");
   const path = join(dir, "settings.json");
   const before = process.env.CLAUDE_SETTINGS_PATH;
   process.env.CLAUDE_SETTINGS_PATH = path;

@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -18,14 +17,18 @@ import { PendingTurnManager } from "../src/server/pending-turns.ts";
 import { Registry } from "../src/server/registry.ts";
 import { attributeTranscript } from "../src/server/transcript-attribution.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("native Codex writes the spoken delivery receipt and restores the exact disclosure after reload", { timeout: 45_000 }, async t => {
-  const root = mkdtempSync(join(tmpdir(), "spoken-codex-"));
+  const root = tempDir("spoken-codex-");
   const native = join(root, "codex");
   const cwd = join(root, "project");
   mkdirSync(native);
   mkdirSync(cwd);
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // Retried: the Codex app server can still be flushing into its home under `root` when the
+  // test ends, which fails a plain recursive delete with ENOTEMPTY. `maxRetries` backs off on
+  // exactly that; the worker's temp root removes whatever is left when the worker exits.
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 
   // Only the model response is a fixture. The lockfile's Codex binary owns the RPC and rollout.
   let modelRequests = 0;

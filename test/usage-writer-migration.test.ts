@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Backfilling `usage_ledger.writer` on a database that predates the column.
 //
@@ -16,7 +16,7 @@ import { join } from "node:path";
 // What the backfill has to get right is that every arm is DECIDABLE from columns the row
 // already carried. It is a relabelling, not a guess, and these rows pin each mapping.
 
-const home = mkdtempSync(join(tmpdir(), "mission-usage-writer-"));
+const home = tempDir("mission-usage-writer-");
 process.env.MISSION_HOME = home;
 
 const raw = new DatabaseSync(join(home, "harness.db"));

@@ -1,17 +1,16 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { innermostPane, type PaneHandles } from "../src/shared/pane.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The QueueManager's own writes - the ones the daemon owns rather than the pure
 // machine. Everything here is about a clock or a guard that only the write boundary
 // can enforce, so a machine-level test cannot reach any of it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-queue-manager-"));
+const home = tempDir("mission-queue-manager-");
 process.env.MISSION_HOME = home;
 
 const { openDb, getQueueItem } = await import("../src/server/db.ts");

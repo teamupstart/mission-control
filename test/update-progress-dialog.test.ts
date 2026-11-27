@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import type { spawn } from 'node:child_process';
 import test from 'node:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { realApplyOperations } from '../scripts/apply-update.mjs';
 import { updateProgressRequestPath } from '../scripts/mac-app-lifecycle.mjs';
 import { showUpdateProgress } from '../scripts/mac-app-lifecycle.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 test('progress has no automatic timeout that could be mistaken for Hide', () => {
   const child = Object.assign(new EventEmitter(), {kill: () => true});
@@ -33,7 +33,7 @@ for (const closeByOwner of [false, true]) test(`progress ${closeByOwner ? 'repla
 
 
 for (const earlyRequest of [false, true]) test(`Hide survives later messages until reopening reveals progress with a request ${earlyRequest ? 'before' : 'after'} polling starts`, async () => {
-  const root = mkdtempSync(join(tmpdir(), 'update-progress-hide-'));
+  const root = tempDir('update-progress-hide-');
   const shown: string[] = [];
   let hidden!: () => void;
   const ops = realApplyOperations(join(root, 'update.log'), undefined, (message, _launch, onHidden) => {

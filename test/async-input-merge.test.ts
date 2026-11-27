@@ -1,18 +1,17 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { setImmediate as tick } from "node:timers/promises";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A merged pull request is the operator's own conclusion (`async-input`): it completes the task
 // even with a request_input question open, and closes every outstanding one with the recorded
 // reason `merged` before the session can be stopped, so none is left behind it unexplained.
 
-const home = mkdtempSync(join(tmpdir(), "mission-async-input-merge-"));
+const home = tempDir("mission-async-input-merge-");
 process.env.HARNESS_HOME = home;
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");

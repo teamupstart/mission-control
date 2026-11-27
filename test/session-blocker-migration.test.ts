@@ -1,15 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Schema 25 over a database written at schema 24, before sessions could record a blocker.
 // The table arrives through `migrate()`, an upgraded database reads as having no blocked
 // session, and running the upgrade again changes nothing.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-blocker-migration-"));
+const home = tempDir("mission-session-blocker-migration-");
 process.env.MISSION_HOME = home;
 
 const raw = new DatabaseSync(join(home, "harness.db"));

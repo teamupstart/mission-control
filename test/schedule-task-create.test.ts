@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: `TaskManager.create` grew a second door, and both halves of that have
 // to hold. The internal door is what makes the schedule ledger exactly-once - a crash
@@ -16,7 +15,7 @@ import { join } from "node:path";
 // future durable producer, and because a caller that has to remember to check first is a
 // caller that will one day forget.
 
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-task-create-"));
+const home = tempDir("mission-schedule-task-create-");
 process.env.MISSION_HOME = home;
 
 const db = await import("../src/server/db.ts");

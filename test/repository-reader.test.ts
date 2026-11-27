@@ -2,7 +2,6 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
   unlink,
-  mkdtemp,
   readFile,
   writeFile,
   mkdir,
@@ -10,7 +9,6 @@ import {
   rm,
   symlink,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
@@ -20,9 +18,10 @@ import {
   type RepositoryQueryAuditMetadata,
 } from "../src/shared/repository-access.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 async function fixture(t: TestContext, content = "one\ntwo\nthree\n") {
-  const root = await mkdtemp(join(tmpdir(), "repository-reader-"));
+  const root = await tempDirAsync("repository-reader-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const git = (...args: string[]) =>
     execFileSync("git", args, {
@@ -334,7 +333,7 @@ test("raw-byte evidence is exact and missing allowed objects fail closed", async
 test("read refuses an allowed blob stored only in an external Git alternate", async (t) => {
   const content = "external fixture content";
   const f = await fixture(t, content);
-  const alternate = await mkdtemp(join(tmpdir(), "alternate-objects-"));
+  const alternate = await tempDirAsync("alternate-objects-");
   t.after(() => rm(alternate, { recursive: true, force: true }));
   const objects = join(f.root, ".git", "objects");
   const blob = f.git("rev-parse", "HEAD:src/a.txt");
@@ -381,6 +380,15 @@ test("search skips oversized and non-UTF-8 files while diff describes them witho
 });
 
 // Delay one known object until the call times out. Count actual Git reads across pages.
+/**
+ * The call budget for a reader whose one object read is paused for ten seconds. Well under the
+ * pause, so the page still ends on `limit: "time"` deterministically, and well over the time a
+ * loaded machine takes to spawn git and read the unpaused objects first. At 1.5s that spawn
+ * alone could exhaust the budget before the first item, which the reader rightly refuses
+ * rather than resuming, and the test saw a `null` limit.
+ */
+const PAUSED_CALL_MS = 5_000;
+
 async function pauseObjectRead(root: string, type: "blob" | "commit", oid: string) {
   const gitBinary = join(root, "pausing-git");
   await writeFile(gitBinary, [
@@ -405,7 +413,7 @@ test("search resumes a timed empty page at the next file, then paginates within 
   const last = f.git("rev-parse", ":last");
   f.view.worktree.push({ ...first, path: "last", blob: last });
   const gate = await pauseObjectRead(f.root, "blob", last);
-  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: 1500, callItems: 1 } });
+  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: PAUSED_CALL_MS, callItems: 1 } });
   const query = { query: "found", caseSensitive: true };
   const empty = await reader.query("search", query);
   assert.equal(empty.status, "ok");
@@ -435,7 +443,7 @@ test("path-filtered log preserves earlier commits on timeout and resumes at the 
   f.view.retainedRevisions.unshift({ id: head, tree: f.git("rev-parse", "HEAD^{tree}"), parents: [parent.id] });
   f.view.retainedCommitCount = 2;
   const gate = await pauseObjectRead(f.root, "commit", parent.id);
-  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: 1500 } });
+  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: PAUSED_CALL_MS } });
   const query = { path: "src/a.txt" };
   const page = await reader.query("git_log", query);
   assert.equal(page.limit, "time");

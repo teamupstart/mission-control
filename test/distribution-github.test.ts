@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { githubDistributionTransport } from '../scripts/distribution-github.mjs';
 import { distributionMetadata, distributionNames } from '../scripts/distribution-contract.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 const commit = 'a'.repeat(40);
 const versions = {packageVersion: '1.26.0', lockVersion: '1.26.0', lockPackageVersion: '1.26.0'};
 const metadata = (channel = 'stable') => distributionMetadata({channel, tag: 'v1.26.0', commit, versions});
 
 function fakeGh(t: TestContext, responses: Record<string, unknown>, mode = '') {
-  const root = mkdtempSync(join(tmpdir(), 'mission-gh-'));
+  const root = tempDir('mission-gh-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const command = join(root, 'gh');
   const calls = join(root, 'calls');

@@ -1,17 +1,17 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Stop, and task cancel, for a running dependency claim. Both find the claim through the
 // worktree manager's claim registry, kill the step's process group, and hand the slot over as a
 // failed claim. Real Git, a real pooled slot and real `node -e` steps; only the SDK supervisor
 // is fake, so no agent binary ever runs.
 
-const home = mkdtempSync(join(tmpdir(), "mission-claim-stop-"));
+const home = tempDir("mission-claim-stop-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 // A stand-in bundle: the ask channel only checks that the path EXISTS, and every

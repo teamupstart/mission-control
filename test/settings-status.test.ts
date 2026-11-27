@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -13,6 +12,7 @@ import {
   type TelemetryProfileSummary,
   type TelemetrySettingsSummary,
 } from "../src/shared/telemetry.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the Settings rail dots and the topbar gear are meant to be right
 // whenever the app is open, which is only true if the daemon PUSHES the small status tuple
@@ -29,7 +29,7 @@ import {
 // That branch predates this change; `session-contracts.test.ts` pins the exhaustiveness
 // that keeps the NEW client's own case from silently falling out of the switch.
 
-const home = mkdtempSync(join(tmpdir(), "mission-settings-status-"));
+const home = tempDir("mission-settings-status-");
 const bin = join(home, "bin");
 const fakeGh = join(bin, "gh");
 const previousGhBin = process.env.MISSION_GH_BIN;

@@ -5,12 +5,10 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
   pipelineRepoKey,
@@ -23,6 +21,7 @@ import {
   type PipelineRunDetail,
   type PipelinesView,
 } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this route is the consent boundary. Everything the integration does is
 // downstream of a repository being switched on here, so the two things it must never do are
@@ -35,7 +34,7 @@ import {
 // off - which reads as a setting that did not take, and is the exact thing the "everything
 // arrives disabled" posture is supposed to make trustworthy.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-http-"));
+const home = tempDir("mission-pipeline-http-");
 const originalPath = process.env.PATH;
 // An explicit `<PREFIX>_NODE_BIN` outranks every directory below, `MISSION_EXECUTABLE_PATHS`
 // included. A session launched by Mission Control (or an operator who pinned Node) exports

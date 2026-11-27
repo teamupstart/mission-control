@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tempDir } from "./temp-root.mjs";
 
 // The branch poller's half of issue #1511: the PR chip's "a CI check failed" alert.
 //
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 // run of the same job. The poller reads the commit's checks through GraphQL before it clears
 // anything, and keeps the failure unless that answer proves the later run was the same check.
 
-const dir = mkdtempSync(join(tmpdir(), "mission-pr-retried-checks-"));
+const dir = tempDir("mission-pr-retried-checks-");
 const gh = join(dir, "gh");
 const calls = join(dir, "calls");
 const answer = join(dir, "answer.json");

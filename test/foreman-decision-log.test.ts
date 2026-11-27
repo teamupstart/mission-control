@@ -4,7 +4,6 @@ import {
   closeSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   rmSync,
@@ -12,7 +11,6 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import {
@@ -24,8 +22,9 @@ import {
   type CompletionDecisionRecord,
 } from "../src/server/foreman/decision-log.ts";
 import { openPathUtilityLog } from "../src/main/utility-log.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const dir = mkdtempSync(join(tmpdir(), "mission-foreman-decision-log-"));
+const dir = tempDir("mission-foreman-decision-log-");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const held: CompletionDecisionRecord = {

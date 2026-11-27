@@ -1,17 +1,16 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ServerEvent, Session, SessionGoal } from "../src/shared/types.ts";
 import { resolvedSessionIntent } from "../src/shared/goal.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // POST /api/sessions/:id/goal/accept - a person's exit from a paused goal
 // (docs/plans/foreman-stuck-goal-recovery/phase-3-accept-objective.md). The route's answers
 // are a cross-phase contract: 404 without a goal, 409 without an objective, 200 with the full
 // SessionGoal otherwise, idempotently. It confirms the objective and never rewrites it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-goal-accept-"));
+const home = tempDir("mission-goal-accept-");
 process.env.MISSION_HOME = home;
 
 const { openDb, readSessionGoalSteering } = await import("../src/server/db.ts");

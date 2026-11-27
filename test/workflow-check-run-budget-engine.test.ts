@@ -18,7 +18,6 @@ import { on } from "node:events";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
 import type {
@@ -31,8 +30,9 @@ import type {
 import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 import { gitIn, seedGitHistory } from "./helpers/git-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-check-run-budget-"));
+const home = tempDir("mission-check-run-budget-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

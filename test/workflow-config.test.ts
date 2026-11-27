@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { repoAllowlisted } from "../src/shared/allowlist.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, BUG_FIX_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
@@ -10,8 +9,9 @@ import { DEFAULT_WORKFLOW_CONFIG, DEFAULT_WORKFLOW_POLICY } from "../src/shared/
 import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
 import { taskDefaultWorkflowId } from "../src/shared/task.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-config-"));
+const home = tempDir("mission-workflow-config-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

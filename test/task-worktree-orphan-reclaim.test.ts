@@ -2,7 +2,6 @@ import { after, test, type TestContext } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
@@ -14,10 +13,11 @@ import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import type { MuxSessions } from "../src/server/terminal/types.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { archiveKey } from "../src/shared/archives.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A physical home: macOS's temp directory sits behind the `/var` -> `/private/var` link, and
 // the orphan proof refuses any slot with a symbolic link at or above it - which is the point.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-orphan-reclaim-")));
+const home = realpathSync(tempDir("mission-orphan-reclaim-"));
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");

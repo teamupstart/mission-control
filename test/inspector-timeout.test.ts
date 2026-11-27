@@ -1,12 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the state dir BEFORE any value import that can resolve it - static imports are
 // hoisted above this line, so the server module below must load dynamically.
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-timeout-"));
+const home = tempDir("mission-inspector-timeout-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { TIMEOUT_MS, REPLY_TIMEOUT_MS } = await import("../src/server/inspector/worker.ts");

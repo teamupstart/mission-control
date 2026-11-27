@@ -65,6 +65,7 @@ Mission Control's product reference is organized by feature below.
 - [Contributing](../CONTRIBUTING.md)
 - [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
 - [Test suite process churn](runbooks/test-process-churn.md): measure how many processes the suite starts, and the fixture rules that keep endpoint security agents quiet.
+- [Test temp directories](test-temp-dirs.md): the private temp root each test process gets, the sweep that clears crashed runs, and the cleaner for machines that already leaked fixtures.
 
 ## Support
 

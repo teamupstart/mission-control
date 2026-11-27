@@ -1,15 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { WorktreesConfigPatchSchema } from "../src/shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-retention-config-"));
+const home = tempDir("mission-retention-config-");
 process.env.MISSION_HOME = home;
 execFileSync(process.execPath, ["--import", "tsx", "-e", "await import(process.env.DB_MODULE).then(m => m.openDb())"], {
   env: { ...process.env, DB_MODULE: new URL("../src/server/db.ts", import.meta.url).href }, stdio: "pipe",

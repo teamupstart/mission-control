@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Foreman's standing instructions are the prose half of its configuration, and this file is
 // about where that prose comes from: the markdown shipped with the app until the operator
@@ -17,12 +17,12 @@ import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 // Isolate the daemon's db BEFORE anything imports it: `config.ts` resolves STATE_DIR (and
 // DB_PATH off it) at module scope, so an unset home would point these writes at the
 // developer's live ~/.mission-control/harness.db from a unit test.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "foreman-instr-home-"));
+process.env.MISSION_HOME = tempDir("foreman-instr-home-");
 const { getAppConfig } = await import("../src/server/db.ts");
 
 /** Point the seed at a scratch file, then load the module fresh so nothing is cached. */
 async function withSeed(text: string | null): Promise<typeof import("../src/server/foreman/instructions.ts")> {
-  const dir = mkdtempSync(join(tmpdir(), "foreman-instr-"));
+  const dir = tempDir("foreman-instr-");
   const file = join(dir, "FOREMAN.md");
   if (text !== null) writeFileSync(file, text);
   // `MISSION_`-prefixed: `envVar` walks the MISSION_/FLEET_/HARNESS_ chain, so a bare

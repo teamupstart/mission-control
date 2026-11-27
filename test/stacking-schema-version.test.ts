@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Stacked pull requests adds columns to `tasks` and `inspector_prs`, so it is a schema version
 // of its own: a database written at the previous version gets a pre-migration recovery point
 // before the columns are added, exactly as every earlier column-adding upgrade does.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-schema-version-"));
+const home = tempDir("mission-stacking-schema-version-");
 process.env.MISSION_HOME = home;
 const { openDb, closeDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
 after(() => {

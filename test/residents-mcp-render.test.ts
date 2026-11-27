@@ -1,9 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkCodexNativeResidentMcp,
@@ -18,12 +17,13 @@ import { claudeSdkSpec } from "../src/server/harness/claude/sdk.ts";
 import { codexSdkSpec } from "../src/server/harness/codex/sdk.ts";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { ResidentMcpEntry, ResidentMcpLaunch, SdkLaunchOptions } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // How a resident's pinned MCP set reaches each harness, and how the scoped launcher hands a
 // secret to its one server. Drivers run against their scripted seams; the launcher runs as a
 // real process against a loopback redemption stand-in and fixture servers.
 
-const root = mkdtempSync(join(tmpdir(), "mission-mcp-render-"));
+const root = tempDir("mission-mcp-render-");
 after(() => rmSync(root, { recursive: true, force: true }));
 
 const SECRET = "render-sentinel-secret-7731";

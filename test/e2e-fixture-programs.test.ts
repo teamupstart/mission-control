@@ -1,10 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a fixture PROGRAM this change delivers as executable code, which no other
 // layer can see.
@@ -19,7 +19,7 @@ import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
 // Nothing here starts a browser, a daemon or a dashboard. These spawn the generated program
 // directly, which is the only layer that can watch it behave.
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-fixture-programs-")));
+const home = realpathSync(tempDir("mission-fixture-programs-"));
 after(() => rmSync(home, { recursive: true, force: true }));
 
 // ---- 1. the fake `jira`, and the writes it must absorb ----

@@ -1,8 +1,7 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
 import type { PersonaWorkloadEvent } from "../src/shared/repository-access.ts";
@@ -21,15 +20,16 @@ import type {
 import { DEFAULT_WORKFLOW_POLICY, emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { HostSuspendClock } from "../src/server/host-suspend.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
+const home = tempDir("mission-workflow-engine-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 // A directory for the one test that needs a real one, kept OUTSIDE the state dir. The daemon
 // owns what lives under `MISSION_HOME` and sweeps parts of it at startup; a test's stand-in
 // worktree planted in there passes or fails depending on what ran before it.
-const checkTree = mkdtempSync(join(tmpdir(), "mission-workflow-engine-tree-"));
+const checkTree = tempDir("mission-workflow-engine-tree-");
 after(() => rmSync(checkTree, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
@@ -3432,7 +3432,7 @@ for (const scenario of ["recover", "limit", "resubmit", "cancel", "vendor-wait",
 async function captureRepositoryFixture(t: TestContext, store: InstanceType<typeof WorkflowStore>, submissionId: string) {
   const { execFileSync } = await import("node:child_process");
   const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
-  const directory = mkdtempSync(join(tmpdir(), "mission-repository-review-supervision-"));
+  const directory = tempDir("mission-repository-review-supervision-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", directory]);
   writeFileSync(join(directory, "submitted.txt"), "submitted\n");
@@ -3500,7 +3500,7 @@ test("terminal-run maintenance verifies local lease and home ownership without r
   const request = { workloadId: callId, attemptId, submissionId, digest: snapshot.digest, locator: snapshot.locator };
   service.setActiveRequestLookup(key => key === callId ? request : null);
   const lease = await service.materialize(request, new AbortController().signal);
-  const providerHome = mkdtempSync(join(tmpdir(), "mission-repository-workload-"));
+  const providerHome = tempDir("mission-repository-workload-");
   t.after(() => rmSync(providerHome, { recursive: true, force: true }));
   new LocalRepositoryWorkloadOwnership(store, () => false).recordHome(callId, providerHome);
   const nonce = store.repositoryLocalOwner(callId)!.lease_nonce!;
@@ -3863,7 +3863,7 @@ for (const { id, description, query, severity } of [
       setInspectorConfig(prior);
       applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: false });
     });
-    const repo = mkdtempSync(join(tmpdir(), "mission-local-inspector-engine-"));
+    const repo = tempDir("mission-local-inspector-engine-");
     t.after(() => rmSync(repo, { recursive: true, force: true }));
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
     const commit = (name: string) => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",

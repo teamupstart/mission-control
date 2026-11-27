@@ -2,8 +2,7 @@
 // step is a stub that a later phase replaces without changing its shape.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -12,6 +11,7 @@ import { COMMANDS, findCommand, type CliIo } from "../src/cli/commands/index.ts"
 import { NOT_IMPLEMENTED_TEXT } from "../src/cli/commands/stub.ts";
 import { SETUP_STEPS } from "../src/cli/setup-steps/index.ts";
 import { SETUP_STEP_IDS } from "../src/cli/setup-steps/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function capture() {
   const out: string[] = [];
@@ -95,7 +95,7 @@ test("the built mctl bundle that bin.mctl names runs: help exits 0, a stub exits
   assert.equal(pkg.bin.mctl, "dist/cli/mctl.mjs");
   assert.match(pkg.scripts["build:cli"]!, /--outfile=dist\/cli\/mctl\.mjs/);
   assert.match(pkg.scripts.build!, /npm run build:cli/);
-  const dir = mkdtempSync(join(tmpdir(), "mission-mctl-build-"));
+  const dir = tempDir("mission-mctl-build-");
   try {
     const bundle = join(dir, "mctl.mjs");
     // The same script `bin.mctl` is built by, with its output redirected so `dist/` is untouched.

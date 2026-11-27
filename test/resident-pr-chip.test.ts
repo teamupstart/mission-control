@@ -1,16 +1,16 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { PrMatch } from "../src/server/registry.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The hook bridge sniffs a PR URL out of ANY tool output, so `gh pr view 1304` used to
 // decorate the card with #1304 exactly as `gh pr create` would. Only the session that OPENED
 // a pull request may wear it. A resident is stricter still: its task has no repository, so
 // the poller never visits it to confirm or retract a chip at all.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "resident-pr-chip-")));
+const home = realpathSync(tempDir("resident-pr-chip-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

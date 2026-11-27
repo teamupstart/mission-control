@@ -2,18 +2,18 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { cachedGitTree } from "./helpers/git-fixture.ts";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { PrRefs } from "../src/server/inspector/github.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Stacked pull requests against real git: the one-branch refresh at the repository root, the
 // stacked review diff after the parent moved, and the merge-based restack after a squash.
 // Each fixture is a bare "origin" plus clones, so nothing leaves the temp dir.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-git-"));
+const home = tempDir("mission-stacking-git-");
 process.env.HARNESS_HOME = home;
 const { freshRemoteBranchSha } = await import("../src/server/git/remote-default.ts");
 const { computeStackedDiff } = await import("../src/server/diff.ts");

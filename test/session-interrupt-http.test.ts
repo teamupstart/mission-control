@@ -1,11 +1,10 @@
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: `POST /api/sessions/:id/interrupt` is the one door between "wait for
 // this agent to finish work nobody wants" and "kill the session that holds all the context
@@ -20,7 +19,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // And one success, which is the whole gesture: the driver was asked to stop, the queue
 // behind it went, and the rows that had already left or were in doubt did not.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-interrupt-http-"));
+const home = tempDir("mission-session-interrupt-http-");
 process.env.MISSION_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");

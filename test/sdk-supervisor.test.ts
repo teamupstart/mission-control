@@ -3,9 +3,9 @@ import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the supervisor is the only thing that knows an embedded session's
 // harness-native id, its checkout and its task belong together. Terminal discovery
@@ -21,7 +21,7 @@ import { join } from "node:path";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "mission-sdk-sup-"));
+const home = tempDir("mission-sdk-sup-");
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
 process.env.HARNESS_HOME = join(home, "state");
 

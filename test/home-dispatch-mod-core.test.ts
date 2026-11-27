@@ -12,8 +12,7 @@ import type { ModState } from "../src/mod/host.ts";
 import type { HomeDispatchInbox } from "../src/shared/home-dispatch.ts";
 import { findDisallowedModCalls, isAllowedModCall, pathLiterals } from "../scripts/mod-calls.mjs";
 import { isFlagOffAnswer } from "../src/mod/client.ts";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CANNED_INBOX,
@@ -22,6 +21,7 @@ import {
   createFakeDaemon,
   createFakeModHost,
 } from "./helpers/home-dispatch-fakes.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -650,7 +650,7 @@ test("registration tells the daemon the launcher is off while its gate is closed
 });
 
 test("the mod-calls scan ignores a path quoted in a comment and still catches a real call", () => {
-  const root = mkdtempSync(join(tmpdir(), "mod-calls-"));
+  const root = tempDir("mod-calls-");
   try {
     mkdirSync(join(root, "src/mod"), { recursive: true });
     writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
@@ -740,7 +740,7 @@ test("a multi-line notice becomes one line: the engine draws newlines as replace
 });
 
 test("the mod-calls scan walks nested template literals, so a disallowed path cannot hide behind one", () => {
-  const root = mkdtempSync(join(tmpdir(), "mod-calls-nested-"));
+  const root = tempDir("mod-calls-nested-");
   try {
     mkdirSync(join(root, "src/mod"), { recursive: true });
     writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
@@ -768,7 +768,7 @@ test("the mod-calls scan walks nested template literals, so a disallowed path ca
 });
 
 test("the mod-calls scan treats a $ in a quoted path as an ordinary character, and only ${ as an interpolation", () => {
-  const root = mkdtempSync(join(tmpdir(), "mod-calls-dollar-"));
+  const root = tempDir("mod-calls-dollar-");
   try {
     mkdirSync(join(root, "src/mod"), { recursive: true });
     writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
@@ -791,7 +791,7 @@ test("the mod-calls scan treats a $ in a quoted path as an ordinary character, a
 });
 
 test("the mod-calls scan treats a regex literal inside ${} as one unit, so its braces do not end the template early", () => {
-  const root = mkdtempSync(join(tmpdir(), "mod-calls-regex-"));
+  const root = tempDir("mod-calls-regex-");
   try {
     mkdirSync(join(root, "src/mod"), { recursive: true });
     writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
@@ -814,7 +814,7 @@ test("the mod-calls scan treats a regex literal inside ${} as one unit, so its b
 });
 
 test("the mod-calls scan judges a plain quoted string whole: ${ is only an interpolation in a template", () => {
-  const root = mkdtempSync(join(tmpdir(), "mod-calls-plain-"));
+  const root = tempDir("mod-calls-plain-");
   try {
     mkdirSync(join(root, "src/mod"), { recursive: true });
     writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
@@ -835,7 +835,7 @@ test("the mod-calls scan judges a plain quoted string whole: ${ is only an inter
 });
 
 test("the mod-calls scan reads source with a real tokenizer: no regex, comment or space can hide a call", () => {
-  const root = mkdtempSync(join(tmpdir(), "mod-calls-tokens-"));
+  const root = tempDir("mod-calls-tokens-");
   try {
     mkdirSync(join(root, "src/mod"), { recursive: true });
     writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));

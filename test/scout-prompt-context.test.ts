@@ -2,11 +2,11 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: whether a published scout archive tells the truth about who asked for
 // what.
@@ -22,7 +22,7 @@ import type { Session, Task } from "../src/shared/types.ts";
 // existing install actually looks and then handed to openDb(), so every assertion here
 // also proves the migration path a real operator takes.
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-prompt-context-"));
+const home = tempDir("mission-scout-prompt-context-");
 process.env.MISSION_HOME = home;
 
 /**

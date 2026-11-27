@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -15,6 +13,7 @@ import {
 } from "../src/shared/decision-asks.ts";
 import { titleLine } from "../src/shared/title.ts";
 import type { PlanDecision } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a decision that reaches the operator without the context to make it.
 //
@@ -26,7 +25,7 @@ import type { PlanDecision } from "../src/shared/types.ts";
 // This drives the real MCP server over stdio against a stub daemon that records each review
 // request and refuses it, so an accepted call returns at once instead of waiting on a human.
 
-const home = mkdtempSync(join(tmpdir(), "request-input-context-"));
+const home = tempDir("request-input-context-");
 const received: { path: string; body: { title?: string; body?: string; decisions?: PlanDecision[] } }[] = [];
 const daemon = createServer((req: IncomingMessage, res) => {
   let raw = "";

@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   TASK_SOURCE_KINDS,
@@ -16,6 +15,7 @@ import type {
   WritebackContext,
   WritebackNotice,
 } from "../src/shared/task-source.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The CROSS-PHASE CONTRACT, pinned so the two phases that build on this one cannot be
 // broken silently. Phase 1 of the write-back plan owns and freezes everything asserted
@@ -35,7 +35,7 @@ import type {
 // same trap the phased plan forbids Phase 3 from walking into. The pairing between a flag
 // and its slot, which stays true either way, is pinned in `task-source-contract.test.ts`.
 
-const home = mkdtempSync(join(tmpdir(), "mission-writeback-handoff-"));
+const home = tempDir("mission-writeback-handoff-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const db = await import("../src/server/db.ts");

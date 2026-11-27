@@ -1,16 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { RuntimeMetaRead } from "../src/server/harness/types.ts";
 import type { Session, ServerEvent } from "@shared/types.ts";
 import type { StatusLineIngest } from "@shared/protocol.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
-process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-meta-"));
+process.env.HARNESS_HOME = tempDir("harness-meta-");
 const { Registry } = await import("../src/server/registry.ts");
 
 const PANE = mkMuxHandle({ session: "w", windowName: "w", paneId: "%3" });

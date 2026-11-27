@@ -1,10 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Stacked pull requests: the review diff of a stacked child is read WITHOUT running git
 // inside the child's worktree. The operator's boundary is literal - "never run git inside a
@@ -13,7 +13,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // override, `MISSION_GIT_BIN`), which records the directory it ran in and its arguments,
 // and the test asserts on that record.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-boundary-"));
+const home = tempDir("mission-stacking-boundary-");
 process.env.HARNESS_HOME = home;
 const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 const log = join(home, "git-calls.log");

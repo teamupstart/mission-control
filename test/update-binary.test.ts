@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile, rm, lstat, readlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, lstat, readlink } from "node:fs/promises";
 import fsPromises from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { crc32, deflateRawSync } from "node:zlib";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
@@ -16,6 +15,7 @@ import { binaryOffer, binaryStaged, binaryReceipt } from "./helpers/binary-updat
 import { validateBinaryManifest } from "../src/shared/binary-distribution.mjs";
 import { validateReceipt } from "../src/shared/install-receipt-schema.mjs";
 import type { GhRunner } from "../src/main/updater.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const release = (tag: string, id: number) => ({id, tag_name: tag, name: tag, body: "Changes", published_at: "2026-10-25T00:00:00Z", draft: false, prerelease: tag.startsWith("alpha-")});
@@ -324,7 +324,7 @@ function zip(entries: {name: string; data?: string; mode?: number; size?: number
 const executable = {name: "Mission Control.app/Contents/MacOS/Mission Control", data: "binary", mode: 0o100755};
 
 test("bounded extraction preserves executables and internal Electron framework links", async t => {
-  const root = await mkdtemp(join(tmpdir(), "mission-binary-zip-")); t.after(() => rm(root, {recursive: true, force: true}));
+  const root = await tempDirAsync("mission-binary-zip-"); t.after(() => rm(root, {recursive: true, force: true}));
   const archive = join(root, "app.zip"), out = join(root, "out"); await mkdir(out);
   await writeFile(archive, zip([executable,
     {name: "Mission Control.app/Contents/Frameworks/Example.framework/Versions/A/Example", data: "framework", mode: 0o100755},
@@ -339,7 +339,7 @@ test("bounded extraction preserves executables and internal Electron framework l
 });
 
 test("archive traversal, roots, aliases, links, collisions and expansion limits are refused", async t => {
-  const root = await mkdtemp(join(tmpdir(), "mission-binary-zip-refused-")); t.after(() => rm(root, {recursive: true, force: true}));
+  const root = await tempDirAsync("mission-binary-zip-refused-"); t.after(() => rm(root, {recursive: true, force: true}));
   const bad = [
     {name: "/tmp/escape", data: "x"}, {name: "Mission Control.app/../escape", data: "x"}, {name: "Other.app/file", data: "x"},
     {name: executable.name, data: "duplicate"}, {name: executable.name.toUpperCase(), data: "case alias"},
@@ -363,7 +363,7 @@ test("archive traversal, roots, aliases, links, collisions and expansion limits 
 });
 
 test("corrupt archive streams reject safely when destination creation is delayed", async t => {
-  const root = await mkdtemp(join(tmpdir(), "mission-binary-zip-stream-"));
+  const root = await tempDirAsync("mission-binary-zip-stream-");
   t.after(() => rm(root, {recursive: true, force: true}));
   const archive = join(root, "corrupt.zip");
   await writeFile(archive, zip([{...executable, size: 100}]));
@@ -378,7 +378,7 @@ test("corrupt archive streams reject safely when destination creation is delayed
 });
 
 test("canonical download streams progress, redacts credentials, detects corruption/truncation and settles cancellation", async t => {
-  const root = await mkdtemp(join(tmpdir(), "mission-binary-download-")); t.after(() => rm(root, {recursive: true, force: true}));
+  const root = await tempDirAsync("mission-binary-download-"); t.after(() => rm(root, {recursive: true, force: true}));
   const payload = "published immutable bytes", command = join(root, "gh"), asset = {...binaryOffer().manifest.assets[0]!, bytes: Buffer.byteLength(payload), sha256: digest(payload)};
   const script = async (body: string) => writeFile(command, `#!${process.execPath}\n${body}\n`, {mode: 0o700});
   await script(`if (process.env.GH_DEBUG || process.env.DEBUG) process.exit(4); console.log = () => {}; process.stdout.write(${JSON.stringify(payload)});`);
@@ -400,7 +400,7 @@ test("canonical download streams progress, redacts credentials, detects corrupti
 });
 
 test("a cancelled preparation settles its worker before cleanup and exposes only bundled-runtime environment", async t => {
-  const root = await mkdtemp(join(tmpdir(), "mission-binary-worker-")); t.after(() => rm(root, {recursive: true, force: true}));
+  const root = await tempDirAsync("mission-binary-worker-"); t.after(() => rm(root, {recursive: true, force: true}));
   const worker = join(root, "worker.cjs");
   await writeFile(worker, `process.on('message', m => { if(m.kind === 'prepare') { if(process.env.ELECTRON_RUN_AS_NODE !== '1' || process.env.NODE_OPTIONS || process.env.NODE_PATH) process.exit(3); process.send({kind:'progress',stage:'download',transfer:{received:25,total:100}}); } if(m.kind === 'cancel') setTimeout(()=>process.disconnect(), 30); });`);
   const abort = new AbortController(); let reported = false;
@@ -416,7 +416,7 @@ test("download cleanup preserves live, unknown and handed-off attempts", async t
   const {atomicMigrationJson} = await import("../scripts/install-migration.mjs");
   const {processIdentity} = await import("../scripts/update-lock.mjs");
   const {realpath, readdir} = await import("node:fs/promises");
-  const root = await realpath(await mkdtemp(join(tmpdir(), "mission-binary-cleanup-")));
+  const root = await realpath(await tempDirAsync("mission-binary-cleanup-"));
   t.after(() => rm(root, {recursive: true, force: true}));
   const store = join(root, "update-downloads"); await mkdir(store);
   const dead = {pid: 99999999, identity: "old process"};
@@ -435,7 +435,7 @@ test("discard protects uncertain helper handoffs but removes candidates when no 
   const {realpath} = await import("node:fs/promises");
   for (const scenario of ["unhanded", "orphan", "live", "unknown", "invalid"] as const) {
     await t.test(scenario, async t => {
-      const root = await realpath(await mkdtemp(join(tmpdir(), "mission-binary-discard-")));
+      const root = await realpath(await tempDirAsync("mission-binary-discard-"));
       t.after(() => rm(root, {recursive: true, force: true}));
       const directory = join(root, "update-downloads", "attempt-candidate");
       const bundle = join(directory, "extracted", "Mission Control.app");
@@ -509,7 +509,7 @@ test("the shared binary trust gate refuses a wrong signer and a non-notarized ap
 });
 
 test("the embedded preparation worker exits cleanly if its parent disconnects during download", async t => {
-  const root = await mkdtemp(join(tmpdir(), "mission-binary-disconnect-"));
+  const root = await tempDirAsync("mission-binary-disconnect-");
   t.after(() => rm(root, {recursive: true, force: true}));
   const gh = join(root, "gh");
   await writeFile(gh, `#!${process.execPath}\nsetInterval(() => {}, 100);\n`, {mode: 0o700});
@@ -527,7 +527,7 @@ test("the embedded preparation worker exits cleanly if its parent disconnects du
 });
 
 for (const appName of ['Mission Control.app', 'Agent Mission Control.app']) test(`archive root is pinned to the accepted manifest layout: ${appName}`, async t => {
-  const root = await mkdtemp(join(tmpdir(), 'mission-layout-'));
+  const root = await tempDirAsync('mission-layout-');
   t.after(() => rm(root, {recursive: true, force: true}));
   const archive = join(root, 'app.zip');
   const entry = {...executable, name: `${appName}/Contents/MacOS/Mission Control`};

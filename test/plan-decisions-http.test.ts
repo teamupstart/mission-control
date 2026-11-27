@@ -1,13 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config, exactly
 // as http-integration.test.ts does: the token the daemon checks and the one the MCP
 // client presents must be the same, or every /mcp write below 401s.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-plan-decisions-http-"));
+process.env.MISSION_HOME = tempDir("mission-plan-decisions-http-");
 
 const { openDb } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -20,6 +17,7 @@ const { reportBucket } = await import("../src/shared/session.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 openDb();
 const TOKEN = ensureToken();

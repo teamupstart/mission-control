@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer as createHttpServer, get, type IncomingMessage } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { closeHttpServer, OpenEndedRequests } from "../src/server/http-shutdown.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-daemon-shutdown-"));
+const root = tempDir("mission-daemon-shutdown-");
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const children = new Set<ChildProcess>();
 // A source-loaded daemon can wait behind the full suite's workers before it listens.

@@ -3,14 +3,13 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A headless `claude -p` runs Claude Code for real, so it fires the SAME hooks a human's
 // session does. `hooks/harness-hook.mjs` binds an event to a card with `captureTerminalEnv()`,
@@ -25,7 +24,7 @@ import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts
 // work queue it was keyed on.
 //
 // The fake bin reports the env it was handed, which is exactly what the hook would capture.
-const dir = mkdtempSync(join(tmpdir(), "headless-env-"));
+const dir = tempDir("headless-env-");
 const fakeBin = join(dir, "fake-claude.sh");
 const runArgs = join(dir, "args");
 const runStdin = join(dir, "stdin");

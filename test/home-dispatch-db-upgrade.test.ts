@@ -1,13 +1,13 @@
 // Schema 36 (headless mode) on an upgraded database: a version 35 file opens, gains only
 // additive tables and columns, keeps its rows, and a second open changes nothing.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-home-dispatch-upgrade-"));
+const home = tempDir("mission-home-dispatch-upgrade-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

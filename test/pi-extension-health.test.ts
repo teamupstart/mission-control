@@ -2,9 +2,8 @@ import { loadPiExtensionMetadata, PI_EXTENSION_LOAD_TIMEOUT_MS } from "../src/se
 // Health is read-only, bounded, and uses the same manifest and bridge as publication.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, writeFileSync, symlinkSync, rmSync, lstatSync, realpathSync, existsSync, watch } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, readlinkSync, writeFileSync, symlinkSync, rmSync, lstatSync, realpathSync, existsSync, watch } from "node:fs";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
 import { inspectPiExtension, canInstallPiExtension, piExtensionLinkPath } from "../src/server/environment/pi-extension.ts";
 import { missionToolsAvailability } from "../src/server/mission-tools.ts";
 import { MISSION_MCP_TOOLS } from "../src/server/mission-mcp.ts";
@@ -13,10 +12,11 @@ import { applyPiExtensionConfig, getPiExtensionConfig } from "../src/server/exte
 import { installPiExtensionFromSetup } from "../src/server/setup/pi-extension.ts";
 import { piMetadataSource, piBridgeSource, sealPiIntegration, writePiIntegration } from "./helpers/pi-integration.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
-const root = mkdtempSync(join(tmpdir(), "pi-health-"));
+const root = tempDir("pi-health-");
 const previous = { ...process.env };
 const extensions = join(root, "override");
 const link = join(extensions, "mission-control.js");

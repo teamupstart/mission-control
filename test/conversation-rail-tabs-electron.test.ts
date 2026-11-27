@@ -1,9 +1,8 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
@@ -11,7 +10,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ConversationActivity, type ActivityTab } from "../src/web/components/ConversationActivity.tsx";
 import { SUBAGENT_LIMIT } from "../src/shared/subagents.ts";
 import type { SubagentSummary, TranscriptMessage } from "../src/shared/types.ts";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The conversation rail's head with a third tab, in both of the conversation's fonts.
@@ -121,18 +121,18 @@ before(() => {
   const electron = require("electron") as string;
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const dir = mkdtempSync(join(tmpdir(), "mission-rail-tabs-"));
-  const userData = mkdtempSync(join(tmpdir(), "mission-rail-tabs-profile-"));
+  const dir = tempDir("mission-rail-tabs-");
+  const userData = tempDir("mission-rail-tabs-profile-");
   try {
     const htmlPath = join(dir, "rail.html");
     const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
     writeFileSync(htmlPath, page(styles));
-    const output = execFileSync(electron, [
+    const output = execFileSync(...electronGuiCommand(electron, [
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/rail-tabs-browser.cjs", import.meta.url)),
       htmlPath,
-    ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+    ]), { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
     measured = JSON.parse(output.trim()) as Record<string, Measured>;
   } finally {
     rmSync(dir, { force: true, recursive: true });

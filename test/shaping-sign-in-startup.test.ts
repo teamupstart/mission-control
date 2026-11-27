@@ -4,12 +4,12 @@
 // is off it reads nothing and reports nothing. Fake hosts only, no request is made, and the
 // memory store is forced so no Keychain is touched.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-sign-in-startup-"));
+const home = tempDir("mission-sign-in-startup-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_SHAPER_SIGN_IN_STORE = "memory";
 after(() => rmSync(home, { recursive: true, force: true }));

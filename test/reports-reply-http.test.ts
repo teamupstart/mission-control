@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ReportItem } from "../src/shared/reports.ts";
 import type { PendingTurn } from "../src/shared/types.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `POST /api/reports/:id/reply`, as the report card reaches it.
 //
@@ -15,7 +14,7 @@ import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 // turn queues it and the report is read all the same; a session that has exited refuses, and the
 // report stays unread. Nothing but the operator replies.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reports-reply-http-"));
+const home = tempDir("mission-reports-reply-http-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

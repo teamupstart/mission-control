@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { parse as parseToml } from "smol-toml";
@@ -8,6 +7,7 @@ import { parse as parseJson } from "jsonc-parser";
 import { CLAUDE_MCP_ALLOW, CODEX_MCP_NOT_REGISTERED, CODEX_MCP_UNUSABLE, MCP_TRUST_COLLECTION_MAX, enableMcpTrust, hasMcpTrust, mcpTrustPath, mcpTrustStatus, withMcpTrust } from "../src/server/setup/mcp-trust.ts";
 
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const codex = '# keep this\napproval_policy = "on-request"\n[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n[mcp_servers.other]\nurl = "https://example.invalid"\n';
 
@@ -50,7 +50,7 @@ test("Claude appends to an existing allow array without removing its comments", 
 });
 
 test("symlinked settings refuse repair without recovery files and allow satisfied no-ops", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mcp-trust-symlink-"));
+  const root = tempDir("mcp-trust-symlink-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const agent of ["claude", "codex"] as const) {
     const dir = join(root, agent);
@@ -95,7 +95,7 @@ test("Codex changes only the server default, preserving other servers, overrides
 });
 
 test("malformed and unsupported configs are refused without modifying the file", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
+  const home = tempDir("mcp-trust-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   for (const [agent, inputs] of [
     ["claude", ['{broken', '[]', 'null', '{"permissions": []}', '{"permissions":{"allow":"all"}}']],
@@ -112,7 +112,7 @@ test("malformed and unsupported configs are refused without modifying the file",
 });
 
 test("an unregistered Codex server names the integration install as its prerequisite", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
+  const home = tempDir("mcp-trust-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "config.toml");
   for (const input of ["", 'approval_policy = "on-request"\n[mcp_servers.other]\nurl = "https://example.invalid"\n']) {
@@ -134,7 +134,7 @@ test("an unregistered Codex server names the integration install as its prerequi
 });
 
 test("a disabled Codex server is not a registration trust can satisfy", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
+  const home = tempDir("mcp-trust-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "config.toml");
   // Codex skips an entry with `enabled = false`, so even an already-approved one must not read
@@ -159,7 +159,7 @@ test("a disabled Codex server is not a registration trust can satisfy", (t) => {
 });
 
 test("publication retains the original and recheck becomes satisfied without a second write", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
+  const home = tempDir("mcp-trust-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   for (const agent of ["claude", "codex"] as const) {
     const path = join(home, agent);
@@ -196,7 +196,7 @@ for (const scenario of [
   { name: "Codex falls back to its home config without CODEX_HOME", agent: "codex", selected: "codex-default", explicit: true, configDir: true, codexHome: false },
 ] as const) {
   test(scenario.name, async (t) => {
-    const root = mkdtempSync(join(tmpdir(), "mcp-trust-paths-"));
+    const root = tempDir("mcp-trust-paths-");
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const fixtureHome = join(root, "home");
     // Every candidate is distinct and disposable, including the home fallback. A broken
@@ -239,7 +239,7 @@ for (const scenario of [
 }
 
 test("Claude repair creates an absent settings file and reports Ready", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mcp-trust-first-setup-"));
+  const root = tempDir("mcp-trust-first-setup-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, "new-config", "settings.json");
   await withProcessEnv({

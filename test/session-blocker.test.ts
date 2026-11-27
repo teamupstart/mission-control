@@ -1,18 +1,17 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReportBlockerBody } from "../src/shared/protocol.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Durable session blockers (docs/plans/durable-session-blockers): the record is keyed by the
 // note key, so it has to survive a daemon restart for terminal and SDK sessions alike, follow
 // every key rotation, end with its task, and be pruned only once no session has held its key
 // for the window. An exit alone must never end it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-blocker-"));
+const home = tempDir("mission-session-blocker-");
 process.env.MISSION_HOME = home;
 
 const {

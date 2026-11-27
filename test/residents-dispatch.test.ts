@@ -2,13 +2,13 @@ import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 
 import type { Persona } from "../src/shared/workflow.ts";
 import type { Session } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A resident launch through the REAL Dispatcher, worktree and standing-instructions composer,
 // with only the SDK supervisor faked. What is asserted is what the driver would be handed:
@@ -18,7 +18,7 @@ import type { Session } from "../src/shared/types.ts";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-dispatch-"));
+const home = tempDir("mission-residents-dispatch-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";

@@ -1,15 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A dispatched task whose pool claim fails still launches, and its agent is told which step
 // failed and what it printed. Real Git and a real pooled slot; only the SDK supervisor is fake.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-claim-"));
+const home = tempDir("mission-dispatch-claim-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 // A stand-in bundle: the ask channel only checks that the path EXISTS, and every

@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What model a dispatched agent actually launches on.
 //
@@ -12,7 +12,7 @@ import { join } from "node:path";
 // parser-reserved shape is stored successfully but is later mistaken for an option or path
 // when the harness launches.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-model-"));
+const home = tempDir("mission-dispatch-model-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

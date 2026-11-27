@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { TaskSourceInstanceSchema } from "../src/shared/task-source.ts";
 import type { SweepResult, TaskCandidate, TaskSourceInstance } from "../src/shared/task-source.ts";
@@ -10,6 +9,7 @@ import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
 // HARNESS_HOME preamble below the way a value import would.
 import type { TaskRepoRoot } from "../src/server/repos.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the file that makes the task-source interface safe to hand
 // out. A source that got de-duplication wrong would re-file the same issue every sweep,
@@ -29,7 +29,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // (the ui-config-store.test.ts preamble) - `openDb` refuses the operator's real dir under
 // the test runner, so getting this wrong fails loudly instead of wiping live settings.
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-src-"));
+const home = tempDir("mission-task-src-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb, deleteTask, getTask, listTasks, countTaskSourceSeen, forgetTaskSourceSeen } =

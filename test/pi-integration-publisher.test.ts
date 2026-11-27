@@ -1,10 +1,9 @@
 // Installation must never sacrifice a healthy generation to a failed update.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import fs, { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
@@ -19,10 +18,11 @@ import { piGenerationPath, piIntegrationRoot, isManagedPiExtensionTarget } from 
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
 import { prunePiGenerations } from "../src/server/extensions/pi-retention.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
-const root = mkdtempSync(join(tmpdir(), "pi-publisher-"));
+const root = tempDir("pi-publisher-");
 const previous = { ...process.env };
 const home = join(root, "state");
 const source = join(root, "app", "dist", "pi-integration");

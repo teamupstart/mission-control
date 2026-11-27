@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import childProcess, { spawnSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { holdPiGeneration, removeIdlePiGeneration } from "../src/pi/generation-lease.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "pi-generation-lease-"));
+const root = tempDir("pi-generation-lease-");
 const buildId = "a".repeat(64);
 const generation = join(root, buildId);
 beforeEach(() => {

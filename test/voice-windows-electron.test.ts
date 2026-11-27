@@ -1,17 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { buildSync } from "esbuild";
 import { _electron, expect } from "@playwright/test";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
+import { withElectronStartupSlot } from "./helpers/electron-startup-slot.mjs";
 
 test("native voice windows follow content, the pointer display and tray anchor with the dashboard minimized", {
   skip: process.platform !== "darwin", timeout: 60_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
-  const dir = mkdtempSync(join(tmpdir(), "voice-windows-"));
+  const dir = tempDir("voice-windows-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const preload = join(dir, "surface.cjs");
   const entry = join(dir, "fixture.cjs");
@@ -54,7 +55,7 @@ test("native voice windows follow content, the pointer display and tray anchor w
         await main.webContents.executeJavaScript("void window.open('/" + surface + "', '" + surface + "')");
       }
     });` }, bundle: true, platform: "node", external: ["electron"], outfile: entry });
-  const app = await _electron.launch({ args: [entry, "--user-data-dir=" + dir] });
+  const app = await withElectronStartupSlot(() => _electron.launch({ args: [entry, "--user-data-dir=" + dir] }));
   t.after(() => app.close());
   for (const surface of ["pill", "popover"]) {
     const read = () => app.evaluate(({ BrowserWindow, screen }, title) => {

@@ -8,7 +8,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
   ClaudeSdkMessage,
@@ -30,6 +29,7 @@ import {
   PNG_IMAGE,
   writeImageDescriptor,
 } from "./helpers/llm-image-fixtures.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the new boundary around app-owned Claude calls. A regression
 // here is silent in the dangerous cases. Reusing a session lets one review influence the
@@ -38,7 +38,7 @@ import {
 // caller has given up. Every query below is scripted; the boundary case uses a token-free
 // fake binary behind the real vendor serializer, and no model is used.
 
-const root = mkdtempSync(join(tmpdir(), "claude-sdk-oneshot-"));
+const root = tempDir("claude-sdk-oneshot-");
 after(() => rmSync(root, { recursive: true, force: true }));
 
 class FakeQuery implements ClaudeSdkOneShotQuery {

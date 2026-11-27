@@ -1,9 +1,7 @@
 import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
 // Voice state (contract B): the pure mode rule, the reasons, and the daemon's store with a fake
 // clock - a hello and a shell report lapsing, a refused protocol version, and capabilities.
-import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import assert from "node:assert/strict";
 import test, { before } from "node:test";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
@@ -32,6 +30,7 @@ import {
 } from "../src/shared/voice.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
 import { voiceMicrophoneSetupStatus } from "../src/shared/voice-models.ts";
+import { tempDir } from "./temp-root.mjs";
 
 Object.assign(process.env, fixtureSupervisorEnv);
 before(() => ensureNativeStateLockAddon());
@@ -612,7 +611,7 @@ test("speech output belongs to the daemon and needs a supervised, capable listen
 });
 
 test("live transcript is ephemeral, grant-bound and replaces partial hypotheses before addressing", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-voice-"));
+  const speechDirectory = tempDir("transcript-voice-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   h.store.acceptHello(listenerId, HELLO);
@@ -649,7 +648,7 @@ test("live transcript is ephemeral, grant-bound and replaces partial hypotheses 
 });
 
 test("in Push-to-talk each hold's live transcript is its own, survives a pause and clears at key-up", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-hold-"));
+  const speechDirectory = tempDir("transcript-hold-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory, config: { listeningMode: "push-to-talk" } });
   t.after(() => h.store.reset());
@@ -686,7 +685,7 @@ test("in Push-to-talk each hold's live transcript is its own, survives a pause a
 });
 
 test("only new recognized words move the live transcript's five-second deadline", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-deadline-"));
+  const speechDirectory = tempDir("transcript-deadline-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -728,7 +727,7 @@ test("only new recognized words move the live transcript's five-second deadline"
 });
 
 test("alternating live transcript hypotheses cannot extend or reopen the same onset", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-revisions-"));
+  const speechDirectory = tempDir("transcript-revisions-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -757,7 +756,7 @@ test("alternating live transcript hypotheses cannot extend or reopen the same on
 });
 
 test("reordering live transcript words preserves the deadline, but another occurrence counts", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-reorder-"));
+  const speechDirectory = tempDir("transcript-reorder-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -777,7 +776,7 @@ test("reordering live transcript words preserves the deadline, but another occur
 });
 
 test("inline punctuation revisions cannot extend or reopen a live transcript", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-punctuation-"));
+  const speechDirectory = tempDir("transcript-punctuation-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -799,7 +798,7 @@ test("inline punctuation revisions cannot extend or reopen a live transcript", t
 });
 
 test("delayed finals from expired onsets cannot reopen or extend the live transcript", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-delayed-final-"));
+  const speechDirectory = tempDir("transcript-delayed-final-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -835,7 +834,7 @@ test("delayed finals from expired onsets cannot reopen or extend the live transc
 });
 
 test("a recent final-only onset shows the live transcript after the next audio onset", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-final-only-"));
+  const speechDirectory = tempDir("transcript-final-only-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -856,7 +855,7 @@ test("a recent final-only onset shows the live transcript after the next audio o
 });
 
 test("a newer wordless final preserves earlier live transcript text until its deadline", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-wordless-"));
+  const speechDirectory = tempDir("transcript-wordless-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -877,7 +876,7 @@ test("a newer wordless final preserves earlier live transcript text until its de
 });
 
 test("an expired latest onset's final cannot revive the live transcript", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-latest-final-"));
+  const speechDirectory = tempDir("transcript-latest-final-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -900,7 +899,7 @@ test("an expired latest onset's final cannot revive the live transcript", t => {
 });
 
 test("the first-preview hold reaches an Always-on directive only with its flag, as a live edit of the same capture", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "preview-hold-"));
+  const speechDirectory = tempDir("preview-hold-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory });
   t.after(() => h.store.reset());
@@ -927,7 +926,7 @@ test("the first-preview hold reaches an Always-on directive only with its flag, 
 });
 
 test("a Push-to-talk hold never carries the first-preview hold", t => {
-  const speechDirectory = mkdtempSync(join(tmpdir(), "preview-hold-ptt-"));
+  const speechDirectory = tempDir("preview-hold-ptt-");
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
   const h = harness({ speechDirectory, config: { listeningMode: "push-to-talk" }, flags: new Set([...ALL_FLAGS, VOICE_FIRST_PREVIEW_HOLD_FLAG]) });
   t.after(() => h.store.reset());

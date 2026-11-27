@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { kill } from "../src/server/actions.ts";
@@ -13,6 +12,7 @@ import { terminalResourceId } from "../src/shared/pane.ts";
 import { defaultHomeDeps, homeAlive, killHome, launchHome } from "../src/server/terminal/home.ts";
 import { defaultTerminalDeps } from "../src/server/terminal/registry.ts";
 import { teardownWorktree } from "../src/server/dispatcher.ts";
+import { tempDir } from "./temp-root.mjs";
 
 assert.ok(process.env.NODE_TEST_CONTEXT && process.env.MISSION_TEST_STATE, "Use the repository test preload");
 const tmuxBin = resolveBin(TMUX_BIN);
@@ -22,7 +22,7 @@ const originalTmux = process.env.TMUX;
 const unavailable = spawnSync(tmuxBin, ["-V"], {stdio: "ignore"}).status !== 0;
 
 class Fixture {
-  dir = mkdtempSync(join(tmpdir(), "mc-tmux-kill-"));
+  dir = tempDir("mc-tmux-kill-");
   socket = join(this.dir, "server.sock");
   fakeAgent = join(this.dir, "claude");
   // A script, not a symlink: a multicall coreutils (uutils, Ubuntu 26.04's default) picks

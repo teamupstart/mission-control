@@ -1,9 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-const home = mkdtempSync(join(tmpdir(), "mission-analytics-stack-"));
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
+const home = tempDir("mission-analytics-stack-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_TELEMETRY_ENVIRONMENT = "test";
 const { closeDb, openDb } = await import("../src/server/db.ts");

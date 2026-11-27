@@ -1,7 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -36,11 +35,12 @@ import { createRepositoryReader } from "../src/server/workflows/persona-workload
 import { captureStableWorkflowContext } from "../src/server/workflows/context.ts";
 
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 const signal = new AbortController().signal;
 function fixture(t: TestContext, format = "sha1", storage?: RepositoryArtifactStorage) {
-  const temp = mkdtempSync(join(tmpdir(), "artifact-fixture-")),
+  const temp = tempDir("artifact-fixture-"),
     checkout = join(temp, "source");
   const root = join(temp, "store");
   mkdirSync(checkout);

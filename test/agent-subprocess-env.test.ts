@@ -4,7 +4,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
@@ -14,10 +13,10 @@ import {
 // The CommonJS object, not the ESM namespace: only its properties can be mocked.
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-agent-env-test-"));
+const root = tempDir("mission-agent-env-test-");
 const operatorState = join(root, "operator-state");
 mkdirSync(operatorState, { recursive: true });
 writeFileSync(join(operatorState, "token"), "loopback-test-token\n", { mode: 0o600 });

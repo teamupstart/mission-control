@@ -1,9 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { KeepAwakeChild } from "../src/server/keep-awake.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the operator's Keep awake choice has to be in the database - the one
 // thing an upgrade carries across - and nothing about how it reads back may ever hold this
@@ -14,7 +13,7 @@ import type { KeepAwakeChild } from "../src/server/keep-awake.ts";
 
 // Set before anything imports the server graph: `config.ts` freezes the state directory the
 // moment it is evaluated, and an unset home would write this test's rows into a real one.
-const home = mkdtempSync(join(tmpdir(), "mission-keep-awake-preference-"));
+const home = tempDir("mission-keep-awake-preference-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

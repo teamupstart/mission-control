@@ -8,13 +8,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRotatingUpdateLogger, sanitizeLogLine } from "../src/main/update-log.ts";
 import { bundleShortVersion, plistShortVersion } from "../src/main/bundle-version.ts";
 import { sanitizeDiagnostic } from "../scripts/apply-update.mjs";
 import { plistVersion } from "../scripts/app-bundle-swap.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Lines a real staged build produces, each carrying something that must not reach the log.
@@ -89,7 +89,7 @@ const LEAKY_LINES: ReadonlyArray<{ line: string; secrets: string[]; keeps: RegEx
 ];
 
 test("every line the writer appends is redacted and timestamped", (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "mission-update-log-"));
+  const directory = tempDir("mission-update-log-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, "update.log");
   const log = createRotatingUpdateLogger(path);
@@ -112,7 +112,7 @@ test("every line the writer appends is redacted and timestamped", (t) => {
 });
 
 test("the log rotates rather than growing without bound, keeping one previous file", (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "mission-update-log-rotate-"));
+  const directory = tempDir("mission-update-log-rotate-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, "update.log");
   const log = createRotatingUpdateLogger(path);
@@ -135,7 +135,7 @@ test("the log rotates rather than growing without bound, keeping one previous fi
 });
 
 test("a broken log directory never breaks the update", (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "mission-update-log-broken-"));
+  const directory = tempDir("mission-update-log-broken-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   // A file where the log's parent directory should be: every write fails.
   const blocked = join(directory, "not-a-directory");
@@ -246,7 +246,7 @@ test("the main process reads a bundle's version the same way the swap script doe
   }
 
   // And the file-reading wrapper: a real bundle, and a path with nothing at it.
-  const directory = mkdtempSync(join(tmpdir(), "mission-bundle-version-"));
+  const directory = tempDir("mission-bundle-version-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const bundle = join(directory, "Mission Control.app");
   mkdirSync(join(bundle, "Contents"), { recursive: true });

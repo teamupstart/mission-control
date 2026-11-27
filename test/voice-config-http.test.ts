@@ -5,12 +5,12 @@ import assert from "node:assert/strict";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { randomUUID } from "node:crypto";
 import { after, beforeEach, mock, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
+const home = tempDir("mission-voice-http-");
 process.env.MISSION_HOME = home;
 const { closeDb, setAppConfig, getAppConfig, deleteAppConfig, openDb, upgradeDatabaseToCurrentSchema, upsertTask } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");

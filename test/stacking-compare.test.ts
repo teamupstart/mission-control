@@ -1,9 +1,9 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The real `compareCommits` adapter, through a fake `gh` that answers GitHub's compare API
 // with a scripted JSON body and applies the adapter's OWN `--jq` expression to it with real jq,
@@ -11,9 +11,9 @@ import { join } from "node:path";
 // sends, and how the adapter reads its output. The lifecycle tests script `compare` itself;
 // this is the one place its GitHub reading is checked.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-compare-"));
+const home = tempDir("mission-stacking-compare-");
 process.env.HARNESS_HOME = home;
-const dir = mkdtempSync(join(tmpdir(), "mission-compare-gh-"));
+const dir = tempDir("mission-compare-gh-");
 const bin = join(dir, "gh");
 const scenario = join(dir, "scenario.json");
 const calls = join(dir, "calls.jsonl");

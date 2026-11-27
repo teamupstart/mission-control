@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {buildSync} from 'esbuild';
 import {spawn} from 'node:child_process';
-import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import {join} from 'node:path';
 import {createRequire} from 'node:module';
+import { tempDir } from "./temp-root.mjs";
+import { acquireElectronStartupSlot, releaseAfterStartup } from "./helpers/electron-startup-slot.mjs";
 const require = createRequire(import.meta.url);
 
 test('Electron emits utility exit when quitting before utility launch completes', {skip:process.platform !== 'darwin', timeout:30000}, async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'mission-utility-launch-quit-'));
+  const root = tempDir('mission-utility-launch-quit-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const output = join(root, 'exit.json');
   const worker = join(root, 'worker.cjs');
@@ -27,7 +28,9 @@ test('Electron emits utility exit when quitting before utility launch completes'
     });
   `);
   const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;
+  const releaseStartup = await acquireElectronStartupSlot();
   const app = spawn(require('electron'), [main], {env, stdio: ['ignore', 'ignore', 'pipe']});
+  releaseAfterStartup(app, releaseStartup);
   t.after(() => app.kill('SIGKILL'));
   let stderr = '';
   app.stderr.on('data', chunk => { stderr += chunk; });
@@ -38,7 +41,7 @@ test('Electron emits utility exit when quitting before utility launch completes'
 });
 
 test('Electron waits for its utility to interrupt and reap a live check before quitting', {skip:process.platform !== 'darwin', timeout:30000}, async (t) => {
-  const root = mkdtempSync(join(tmpdir(),'mission-update-shutdown-'));
+  const root = tempDir('mission-update-shutdown-');
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   const output = join(root,'result.json');
   buildSync({stdin:{contents:`
@@ -65,7 +68,9 @@ test('Electron waits for its utility to interrupt and reap a live check before q
   `,resolveDir:process.cwd()},bundle:true,platform:'node',format:'esm',external:['electron'],outfile:join(root,'main.mjs')});
   writeFileSync(join(root,'package.json'),JSON.stringify({main:'main.mjs',type:'module'}));
   const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;
+  const releaseStartup = await acquireElectronStartupSlot();
   const app = spawn(require('electron'),[root],{env,stdio:['ignore','ignore','pipe']});
+  releaseAfterStartup(app, releaseStartup);
   t.after(()=>app.kill('SIGKILL'));
   let stderr=''; app.stderr.on('data',chunk=>{stderr+=chunk; process.stderr.write(chunk);});
   const code = await new Promise((resolve,reject)=> { app.on('error',reject); app.on('exit',resolve); });

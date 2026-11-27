@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -11,8 +10,9 @@ import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import type { WorkflowEvidenceCoverageClaim, WorkflowHumanDecision } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-evidence-preflight-"));
+const home = tempDir("mission-workflow-evidence-preflight-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

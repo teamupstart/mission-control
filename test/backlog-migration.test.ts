@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Guards the `queued` -> `backlog` rename's ONE data-losing edge: rows written
 // before the rename are still persisted as 'queued', and `loadActiveTasks` now
@@ -17,7 +17,7 @@ import { join } from "node:path";
 
 // MISSION_HOME *is* the state dir (harness-runtime's stateDir()), so the db lands
 // at <home>/harness.db - the same file db.ts will open below.
-const home = mkdtempSync(join(tmpdir(), "mission-migrate-"));
+const home = tempDir("mission-migrate-");
 process.env.MISSION_HOME = home;
 
 /** Write a pre-rename tasks row (status='queued') straight to the db file. */

@@ -4,7 +4,6 @@ import { after, test } from "node:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { belongsToLaunch, readLaunchProcess, LAUNCH_SCRIPT_FILE, LAUNCH_PID_FILE } from "../src/server/terminal/launch-process.ts";
 import type { Proc } from "../src/server/discovery/processes.ts";
@@ -12,8 +11,9 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { TerminalEnumeration } from "../src/server/terminal/enumerate.ts";
 import { canWriteTo, emulatorHandle } from "../src/shared/pane.ts";
 import { mkTask, mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-launch-identity-"));
+const home = tempDir("mission-launch-identity-");
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { correlate } = await import("../src/server/discovery/correlate.ts");

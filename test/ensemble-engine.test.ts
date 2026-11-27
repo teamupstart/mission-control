@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this is the engine that turns a compiled plan into real agents on an operator's
@@ -13,7 +13,7 @@ import { join } from "node:path";
  * state machine can be exercised deterministically, without spawning an agent or touching Git.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-engine-"));
+const home = tempDir("mission-ensemble-engine-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

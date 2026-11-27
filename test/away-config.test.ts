@@ -1,14 +1,14 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Away mode's config: a schema-validated blob over the `app_config` KV. Real db, so
 // the round-trip through zod's defaults is exercised, not mocked. Mirrors the setup in
 // harnesses-config.test.ts.
 
-const home = mkdtempSync(join(tmpdir(), "mission-away-cfg-"));
+const home = tempDir("mission-away-cfg-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

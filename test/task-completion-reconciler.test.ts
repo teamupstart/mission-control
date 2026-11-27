@@ -1,7 +1,6 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkSession, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
@@ -10,8 +9,9 @@ import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { isWorkDependency } from "../src/shared/task-dependency.ts";
 import type { TaskDependency } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-completion-reconciler-"));
+const home = tempDir("mission-task-completion-reconciler-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");

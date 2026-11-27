@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import test from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 // No test runner, tsx loader thread, or heartbeat in the child: they can accidentally
 // flush the native backup promise. A distant timer keeps the loop open like the runner
 // IPC channel does, without executing JS before the parent watchdog kills a stuck child.
 test("online backups settle on an idle event loop and release their keepalive on success and failure", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-backup-idle-"));
+  const root = tempDir("mission-backup-idle-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const helper = new URL("../src/server/database-backups/online.ts", import.meta.url).href;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", `

@@ -1,8 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
-import { readFile, appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, appendFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   PersonaWorkloadRequestSchema,
@@ -27,6 +26,7 @@ import {
   type RepositoryProvider,
   type RepositoryProviderLaunch,
 } from "../src/server/workflows/persona-workload/providers.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 function request(
   provider: "claude" | "codex" = "codex",
@@ -358,7 +358,7 @@ async function capabilityFixture(
   provider: "codex" | "claude",
   capabilities: { version: string; servers?: { name: string; enabled: boolean }[]; tools?: string[]; omitStructuredOutput?: boolean },
 ) {
-  const cwd = await mkdtemp(join(tmpdir(), "repository-provider-"));
+  const cwd = await tempDirAsync("repository-provider-");
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const binary = join(cwd, "provider.mjs");
   const script = new URL("./fixtures/repository-provider-cli.mjs", import.meta.url);
@@ -457,7 +457,7 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
 }
 
 test("env-node provider launchers use the configured Node and report a body-free capability failure", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "provider-launcher-"));
+  const root = await tempDirAsync("provider-launcher-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const binary = join(root, "codex.mjs");
   const nodeBinary = join(root, "runtime");

@@ -1,10 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a Bedrock model id that reaches Pi as something else.
 //
@@ -19,7 +19,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // id reaches Pi's runtime and is never rewritten"). The two runtimes are the same promise
 // made twice, so they are checked twice.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pi-terminal-model-"));
+const home = tempDir("mission-pi-terminal-model-");
 process.env.MISSION_HOME = home;
 process.env.HERDR_BIN = join(home, "missing-herdr");
 // A binary that exists, so bin resolution can never be what fails a launch. The terminal

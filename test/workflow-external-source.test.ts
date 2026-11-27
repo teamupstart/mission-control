@@ -1,12 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding, WorkflowCaptureExpectation } from "../src/shared/workflow.ts";
 import type { WorkflowRawCaptureRead } from "../src/server/workflows/context.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the ONLY way work that Mission Control itself selected can enter
 // the shipped Preview engine, and it has no route in front of it to reject a bad request.
@@ -19,7 +18,7 @@ import type { WorkflowRawCaptureRead } from "../src/server/workflows/context.ts"
 // And a refusal has to be resumable on the same submission, because the caller's remedy is
 // to restore its artifact and ask again, not to start over.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-external-"));
+const home = tempDir("mission-workflow-external-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

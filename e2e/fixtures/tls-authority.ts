@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * A throwaway certificate authority and a loopback server certificate it signed, standing in for a
@@ -21,7 +21,7 @@ export interface TestAuthority {
 }
 
 export function createTestAuthority(): TestAuthority {
-  const dir = mkdtempSync(join(tmpdir(), "mission-e2e-tls-"));
+  const dir = tempDir("mission-e2e-tls-");
   const at = (name: string) => join(dir, name);
   const openssl = (...args: string[]) => execFileSync("openssl", args, { stdio: "ignore" });
   openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=Mission Control E2E Proxy Root", "-keyout", at("ca.key"), "-out", at("ca.pem"));

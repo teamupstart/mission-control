@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // What is at stake: every route that holds a response open must register it with
@@ -10,10 +9,10 @@ import { join } from "node:path";
 // this proves the other two registrations through the real routes, by beginning shutdown the
 // way `closeHttpServer` does and asserting each response completes promptly.
 
-const home = mkdtempSync(join(tmpdir(), "mission-http-shutdown-routes-"));
+const home = tempDir("mission-http-shutdown-routes-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
-const dir = mkdtempSync(join(tmpdir(), "mission-http-shutdown-routes-tx-"));
+const dir = tempDir("mission-http-shutdown-routes-tx-");
 after(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
@@ -30,6 +29,7 @@ const { openEndedRequests } = await import("../src/server/http-shutdown.ts");
 const { mkSession } = await import("./helpers/session-fixture.ts");
 import type { Registry as RegistryType } from "../src/server/registry.ts";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 openDb();
 const TOKEN = ensureToken();

@@ -8,14 +8,14 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // MISSION_HOME must be set before anything that resolves the state dir is imported, which is
 // why every import that reaches it below is dynamic - a static import is hoisted above this
 // assignment and would resolve the operator's real directory.
-const home = mkdtempSync(join(tmpdir(), "workflow-disabled-nodes-db-"));
+const home = tempDir("workflow-disabled-nodes-db-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

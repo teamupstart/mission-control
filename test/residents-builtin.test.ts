@@ -1,15 +1,15 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Built-in residents: installed at daemon start, replaced by a NEW revision when an upgrade
 // changes them (so a pinned run keeps what it launched with), refused every edit and archive,
 // reserved by name, left out of settings snapshots, never archived by a restore, and shadowed
 // by an operator profile that already held the name.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-builtin-"));
+const home = tempDir("mission-residents-builtin-");
 process.env.HARNESS_HOME = join(home, "state");
 process.env.CLAUDE_SETTINGS_PATH = join(home, "claude-settings.json");
 

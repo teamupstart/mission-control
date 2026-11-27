@@ -1,13 +1,12 @@
 // Headless mode phase 1: every /dispatch/* route is gated by the `headless-mode` flag, answers
 // 501 once it is on, and the health capability follows the flag.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { after, beforeEach, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 // Above the imports: `openDb` refuses a state dir this file did not name.
-const home = mkdtempSync(join(tmpdir(), "mission-home-dispatch-routes-"));
+const home = tempDir("mission-home-dispatch-routes-");
 process.env.MISSION_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");

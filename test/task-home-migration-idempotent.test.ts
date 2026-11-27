@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The backfill from `tmux_session` -> `home_name` must run EXACTLY ONCE, on the start that
 // adds the column, and never again. `tmux_session` becomes a frozen fossil after the rename
@@ -16,7 +16,7 @@ import { join } from "node:path";
 // migrate() meets a `home_name` column that already exists. `addColumn` returns false, the
 // backfill is gated on it, and the fossil must stay buried.
 
-const home = mkdtempSync(join(tmpdir(), "mission-home-idem-"));
+const home = tempDir("mission-home-idem-");
 process.env.MISSION_HOME = home;
 
 /** Write a post-first-migration tasks row: both `tmux_session` and `home_name` exist. */

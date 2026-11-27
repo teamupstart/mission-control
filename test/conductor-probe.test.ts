@@ -4,16 +4,15 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-conductor-probe-"));
+const home = tempDir("mission-conductor-probe-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const checkout = join(home, "ai-conductor");

@@ -1,11 +1,11 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Session } from "../../src/shared/types.ts";
 import { expect, test as base } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 // Opt in with an installed binary. The server and its panes are real; only the model
 // provider is local and deterministic. A separate config root isolates every Herdr call.
@@ -16,7 +16,7 @@ const test = base.extend<{ realHerdr: HerdrFixture }>({
   // eslint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
   realHerdr: async ({}, use) => {
     if (!herdrBin || !isAbsolute(herdrBin)) throw new Error("Set MC_E2E_REAL_HERDR_BIN to an absolute Herdr binary path");
-    const home = mkdtempSync(join(tmpdir(), "h-"));
+    const home = tempDir("h-");
     const env = {
       XDG_CONFIG_HOME: join(home, "c"), HERDR_CONFIG_PATH: join(home, "c", "config.toml"),
       XDG_DATA_HOME: join(home, "d"), XDG_STATE_HOME: join(home, "s"),

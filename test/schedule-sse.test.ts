@@ -1,12 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
 import type { MissionSchedule } from "../src/shared/schedules.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the Recurring Missions catalog is SSE state, not a second poller. The
 // live map, the reconnect snapshot, and the two incremental events must all converge on ONE
@@ -19,7 +18,7 @@ import type { ServerEvent } from "../src/shared/types.ts";
 // has to equal the snapshot. The switch's compile-time exhaustiveness is enforced by tsc's
 // `never` branch and covered by typecheck; here the runtime convergence is pinned.
 
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-sse-"));
+const home = tempDir("mission-schedule-sse-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

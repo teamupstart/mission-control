@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { reviewToolResult } from "../src/shared/review-item.ts";
 import type { ReviewItem, ReviewKind } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
 
@@ -62,7 +62,7 @@ interface IdentityEnv {
 }
 
 async function captureRequestInput(identityEnv: IdentityEnv): Promise<Record<string, unknown>> {
-  const missionHome = mkdtempSync(join(tmpdir(), "mission-review-mcp-"));
+  const missionHome = tempDir("mission-review-mcp-");
   writeFileSync(join(missionHome, "token"), "integration-token\n");
   const captured = { review: null as Record<string, unknown> | null };
   const daemon = createServer((request, response) => {

@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -45,6 +44,7 @@ import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
+import { tempDir } from "./temp-root.mjs";
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
@@ -2230,7 +2230,7 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
 });
 
 test("an unreadable provider capability refuses before the terminal host starts", async (t) => {
-  const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-unreadable-"));
+  const repoRoot = tempDir("mission-pipeline-unreadable-");
   writeFileSync(join(repoRoot, ".worktrees"), "not a directory");
   t.after(() => {
     setPipelinesConfig({ enabled: false, repos: [] });
@@ -2274,7 +2274,7 @@ test("an unreadable provider capability refuses before the terminal host starts"
 });
 
 test("an authoring worktree cannot bypass the Engineer capability gate", async (t) => {
-  const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-collision-"));
+  const repoRoot = tempDir("mission-pipeline-collision-");
   const slug = "existing-provider-worktree";
   mkdirSync(join(repoRoot, ".worktrees", slug, ".pipeline"), { recursive: true });
   t.after(() => {

@@ -1,13 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PublishedWorkflowGraph } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Agent evidence belongs to the BINDING, not to a task's dispatch-time intent.
@@ -19,7 +19,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
  * `workflow_unbound`, which is a Persona asking for proof the daemon then would not accept.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-agent-evidence-"));
+const home = tempDir("mission-workflow-agent-evidence-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -154,7 +154,7 @@ async function evidenceRequest(
 }
 
 test("a manually attached workflow accepts agent evidence from a scout session", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-agent-evidence-repo-")));
+  const repo = realpathSync(tempDir("mission-agent-evidence-repo-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");
@@ -243,7 +243,7 @@ test("a manually attached workflow accepts agent evidence from a scout session",
 });
 
 test("coverage routes reject oversized bodies before JSON parsing", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-coverage-body-limit-")));
+  const repo = realpathSync(tempDir("mission-coverage-body-limit-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     const { app, session, workflows, versionId } = harness(repo, "coverage-body-limit-session");
@@ -282,8 +282,8 @@ test("coverage routes reject oversized bodies before JSON parsing", async () => 
  * one slot, and a path outside the checkout only lands if containment is not being applied.
  */
 test("a bound session with no task registers against its own single checkout", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-agent-evidence-taskless-")));
-  const outside = realpathSync(mkdtempSync(join(tmpdir(), "mission-agent-evidence-outside-")));
+  const repo = realpathSync(tempDir("mission-agent-evidence-taskless-"));
+  const outside = realpathSync(tempDir("mission-agent-evidence-outside-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");
@@ -363,7 +363,7 @@ test("a bound session with no task registers against its own single checkout", a
 });
 
 test("an unbound session still cannot register agent evidence", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-agent-evidence-unbound-")));
+  const repo = realpathSync(tempDir("mission-agent-evidence-unbound-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     const { app, workflows, session } = harness(repo, "unbound-scout-session");
@@ -391,7 +391,7 @@ test("an unbound session still cannot register agent evidence", async () => {
 });
 
 test("session evidence eligibility follows the active immutable Persona binding", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-evidence-eligibility-")));
+  const repo = realpathSync(tempDir("mission-evidence-eligibility-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     const { app, session, workflows, versionId } = harness(repo, "eligibility-session");
@@ -449,7 +449,7 @@ test("session evidence eligibility follows the active immutable Persona binding"
 });
 
 test("Foreman's registered view retains captured evidence without refilling the staging tray", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-evidence-captured-")));
+  const repo = realpathSync(tempDir("mission-evidence-captured-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     const { app, session, workflows, versionId } = harness(repo, "captured-session");

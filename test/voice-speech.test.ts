@@ -1,13 +1,13 @@
 import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test, { before } from "node:test";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { askAloudPossible, askSentence, resolveSpeechVoice, VOICE_SPEECH_DEFAULT_NEURAL, VOICE_SPEECH_PREPARE_LIMIT_MS } from "../src/shared/voice-speech.ts";
 import { VOICE_CONFIG_DEFAULTS, voiceStateOff } from "../src/shared/voice.ts";
 import { VoiceSpeechManager } from "../src/server/voice/speech.ts";
+import { tempDir } from "./temp-root.mjs";
 
 Object.assign(process.env, fixtureSupervisorEnv);
 before(() => ensureNativeStateLockAddon());
@@ -38,7 +38,7 @@ test("automatic prefers F4 then the best English system voice; an explicit voice
 });
 
 test("preparing, queued, failed and expired jobs preserve handoff order", async t => {
-  const home = mkdtempSync(join(tmpdir(), "speech-queue-"));
+  const home = tempDir("speech-queue-");
   const directory = join(home, "voice");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const { instance, proof } = fixtureVoiceSupervisor();
@@ -97,7 +97,7 @@ test("preparing, queued, failed and expired jobs preserve handoff order", async 
 
 test("stalled preparation fails on its deadline, advances the queue and discards late audio", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
-  const home = mkdtempSync(join(tmpdir(), "speech-preparation-"));
+  const home = tempDir("speech-preparation-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const { instance, proof } = fixtureVoiceSupervisor();
   const complete: Array<() => void> = [];
@@ -137,7 +137,7 @@ test("stalled preparation fails on its deadline, advances the queue and discards
 });
 
 test("cancelling active preparation aborts and stops synthesis before starting the next job", async t => {
-  const home = mkdtempSync(join(tmpdir(), "speech-cancel-"));
+  const home = tempDir("speech-cancel-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const { instance, proof } = fixtureVoiceSupervisor();
   const events: string[] = [];

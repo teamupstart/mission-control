@@ -1,8 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { claudeTui } from "../src/server/harness/claude/tui.ts";
 import { parsePaneDialog } from "../src/server/discovery/pane-dialog.ts";
 import { bindSession } from "../src/server/terminal/registry.ts";
@@ -12,6 +10,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { MULTI_SELECT, REVIEW_UNANSWERED } from "./fixtures/claude-panes.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PaneDeps } from "../src/server/actions.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Does `/submit-options` retire the operator's Foreman note on a pane form that sent the
 // child NOTHING?
@@ -33,7 +32,7 @@ import type { PaneDeps } from "../src/server/actions.ts";
 // approximations, for the reason that file gives: a fixture invented by the same author as
 // the parser agrees with the parser and not with the TUI.
 
-const home = mkdtempSync(join(tmpdir(), "mission-submit-retire-"));
+const home = tempDir("mission-submit-retire-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");

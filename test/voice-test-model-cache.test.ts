@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
 import { ensureCachedModelFile, voiceTestModel } from "./helpers/voice-test-model.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 test("cold unit shards stay offline, required downloads exhaust three attempts, offline corrupt hits fail", async t => {
-  const root = await mkdtemp(join(tmpdir(), "voice-cache-"));
+  const root = await tempDirAsync("voice-cache-");
   const previous = process.env.MISSION_VOICE_TEST_MODEL_DIR;
   process.env.MISSION_VOICE_TEST_MODEL_DIR = root;
   t.after(async () => {
@@ -32,7 +32,7 @@ test("cold unit shards stay offline, required downloads exhaust three attempts, 
 
 for (const [reason, corrupt] of [["size", "short"], ["digest", "bad bytes"]] as const) {
   test(`the required job atomically repairs a cache file with the wrong ${reason}`, async t => {
-    const root = await mkdtemp(join(tmpdir(), "voice-cache-repair-"));
+    const root = await tempDirAsync("voice-cache-repair-");
     t.after(() => rm(root, { recursive: true, force: true }));
     const good = "new bytes";
     const file = { ...VOICE_TEST_MODEL.files[0]!, path: "model.onnx", bytes: good.length,

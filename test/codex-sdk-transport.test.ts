@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 
 import { codexRunner, configureCodexRunnerTransport } from "../src/server/llm/codex.ts";
 import { killLiveCodexSdkRuns, runCodexSdkOneShot } from "../src/server/llm/codex-sdk.ts";
+import { testTempRoot } from "./temp-root.mjs";
 
 /**
  * What is at stake: this transport is a PARSING change, not a fetching one. `@openai/codex-sdk`
@@ -330,7 +330,7 @@ test("an sdk run is pinned to the exec transport's posture, not the process's", 
 
   assert.equal(
     sawThread?.workingDirectory,
-    tmpdir(),
+    testTempRoot(),
     "an unset working directory silently scopes the run to the daemon's own checkout",
   );
   assert.equal(sawThread?.sandboxMode, "read-only");

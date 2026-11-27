@@ -1,12 +1,12 @@
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-continuation-"));
+const home = tempDir("mission-review-continuation-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

@@ -397,6 +397,10 @@ test("the inbox is a registered overlay and draws the shared review card", () =>
   // review modal linked them.
   assert.match(inbox, /<ReviewCard[^/]*checkoutPaths=\{checkoutPaths\}\s+onOpenPath=\{openPath\}/);
   assert.match(inbox, /useWorkspacePaths\(files, session\.id, Boolean\(session\.cwd && onOpenPath\)\)/);
+  // The path handler reaches every question's memoized `Markdown`, which compares it by identity.
+  // Built once rather than wrapped inline per render, or every SSE frame re-parses every question.
+  assert.match(inbox, /onOpenPath=\{openPathAndLeave\}/);
+  assert.match(inbox, /const openSessionFile = useCallback\(/);
   // And the progress rendering is Phase 3's one leaf, not a second row of squares.
   assert.match(inbox, /<EnsembleProgressDots summary=\{item\.summary\} \/>/);
 });

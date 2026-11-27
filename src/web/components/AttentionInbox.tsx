@@ -1,4 +1,4 @@
-import { useContext, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
@@ -243,6 +243,24 @@ export function AttentionInbox({
     : null;
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
+  // The path handler is built ONCE and reads the latest `onClose` and `onOpenPath` through refs.
+  // It reaches every question's `Markdown`, whose memo compares the link handler by identity,
+  // and App rebuilds both props on every render - a fresh wrapper here re-parsed every open
+  // question on every SSE frame, where the inbox used to pass no handler and never did.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const openPathRef = useRef(onOpenPath);
+  openPathRef.current = onOpenPath;
+  const pathsLinkable = Boolean(onOpenPath);
+  const openPathAndLeave = useMemo(
+    () => pathsLinkable
+      ? (sessionId: string, path: string) => {
+          closeRef.current();
+          openPathRef.current?.(sessionId, path);
+        }
+      : undefined,
+    [pathsLinkable],
+  );
   const leave = (go: () => void) => () => {
     onClose();
     go();
@@ -384,7 +402,7 @@ export function AttentionInbox({
                 onComplete={onComplete && ((sessionId) => leave(() => onComplete(sessionId))())}
                 onReplyBox={onReplyBox}
                 files={files}
-                onOpenPath={onOpenPath && ((sessionId, path) => leave(() => onOpenPath(sessionId, path))())}
+                onOpenPath={openPathAndLeave}
                 onDismiss={dismiss(item)}
                 onLeave={onClose}
               />
@@ -433,7 +451,10 @@ function InboxReviewCards({
   onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
   const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
-  const openPath = onOpenPath ? (path: string) => onOpenPath(session.id, path) : undefined;
+  const sessionId = session.id;
+  // Stable while the handler and session are, for `Markdown`'s memo - see `openPathAndLeave`.
+  const openSessionFile = useCallback((path: string) => onOpenPath?.(sessionId, path), [onOpenPath, sessionId]);
+  const openPath = onOpenPath ? openSessionFile : undefined;
   return (
     <>
       {reviews.map((review) => (

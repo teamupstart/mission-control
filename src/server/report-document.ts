@@ -1,11 +1,13 @@
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
+import { ARCHIVE_PRIMARY_REPORT_PATH, ARCHIVE_REPORT_DIR, validateArchivePath } from "@shared/archives.ts";
 import { MARKDOWN_REMARK_PLUGINS } from "@shared/markdown-config.ts";
 import { REPORT_ID_PATTERN, REPORT_LIMITS, type ReportDocumentKind, type ReportItem } from "@shared/reports.ts";
+import { reportRelativeReferences } from "./archives/html.ts";
 import { STATE_DIR } from "./config.ts";
 import { readFileWithinCap } from "./session-files.ts";
 
@@ -21,6 +23,83 @@ import { readFileWithinCap } from "./session-files.ts";
 /** Where a report's attached document is stored. */
 export function reportDocumentDir(id: string, stateDir: string = STATE_DIR): string {
   return join(stateDir, "reports", id);
+}
+
+/**
+ * Where the files a document links to are stored, under its report's directory. Written as one
+ * directory rename, so a reader finds every companion or none.
+ */
+export const REPORT_COMPANIONS_DIR = "companions";
+
+/** One file a report's document links to, by its path relative to the document. */
+export interface ReportCompanion {
+  path: string;
+  bytes: Buffer;
+}
+
+/**
+ * The paths a document links to inside its own directory, which a report stores beside it.
+ *
+ * Read from the page Publish as scout would build (a Markdown document is rendered first), so
+ * what is stored is exactly what that page's links name. A path that could not sit beside
+ * `report/report.html` in an archive is left out, and so is `report.html` itself, which is the
+ * name the page takes there.
+ */
+export function linkedCompanionPaths(kind: ReportDocumentKind, bytes: Buffer): string[] {
+  const text = utf8(bytes);
+  if (text === null) return [];
+  const html = kind === "html" ? text : renderMarkdownPage(text, "");
+  return reportRelativeReferences(html)
+    .filter((path) => `${ARCHIVE_REPORT_DIR}/${path}` !== ARCHIVE_PRIMARY_REPORT_PATH
+      && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${path}`) !== null)
+    .sort();
+}
+
+/**
+ * The companions stored with `report`, sorted by path, so a page published twice lists them in
+ * the same order. A report posted before companions were stored has none. Entries that are not
+ * regular files, or whose path an archive could not hold, are skipped, and reads stop at the
+ * bounds the post enforced.
+ */
+export async function readStoredReportCompanions(
+  report: Pick<ReportItem, "id">,
+  stateDir?: string,
+): Promise<ReportCompanion[]> {
+  if (!REPORT_ID_PATTERN.test(report.id)) return [];
+  const root = join(reportDocumentDir(report.id, stateDir), REPORT_COMPANIONS_DIR);
+  const paths: string[] = [];
+  const visit = async (relative: string): Promise<void> => {
+    const entries = await readdir(relative ? join(root, relative) : root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      const path = relative ? `${relative}/${entry.name}` : entry.name;
+      if (validateArchivePath(`${ARCHIVE_REPORT_DIR}/${path}`) === null) continue;
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) paths.push(path);
+    }
+  };
+  await visit("");
+  const companions: ReportCompanion[] = [];
+  let total = 0;
+  for (const path of paths.sort()) {
+    if (companions.length >= REPORT_LIMITS.companionFiles) break;
+    const handle = await open(join(root, ...path.split("/")), constants.O_RDONLY | constants.O_NOFOLLOW)
+      .catch(() => null);
+    if (!handle) continue;
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > REPORT_LIMITS.companionBytes - total) continue;
+      const { bytes, exceeded } = await readFileWithinCap(handle, info.size);
+      if (exceeded) continue;
+      total += bytes.byteLength;
+      companions.push({ path, bytes: Buffer.from(bytes) });
+    } finally {
+      await handle.close();
+    }
+  }
+  return companions;
 }
 
 /** Why a stored document could not be read, with the status a route answers. */

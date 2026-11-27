@@ -250,6 +250,88 @@ export function extractVisibleText(html: string, cap: number = ARCHIVE_TEXT_LIMI
   return normalizeWhitespace(parts.join(" ")).slice(0, cap);
 }
 
+/**
+ * Every distinct path inside the report directory that a relative reference in `html` names,
+ * from URL attributes, `style` attributes and `<style>` elements, resolved the way the checker
+ * resolves them. A reference that climbs out of the directory, carries a scheme or is only a
+ * fragment is not one of these: it is never a file that could travel with the page.
+ *
+ * What a report posted with a document collects beside it, so that Publish as scout can carry
+ * the files its page links to (`reports.ts`).
+ */
+export function reportRelativeReferences(html: string): string[] {
+  let document: DefaultTreeAdapterTypes.Document;
+  try {
+    document = parse(html, PARSER_OPTIONS);
+  } catch {
+    return [];
+  }
+  const found = new Set<string>();
+  const collect = (values: readonly string[]): void => {
+    for (const value of values) {
+      const resolved = inReportReference(value);
+      if (resolved) found.add(resolved);
+    }
+  };
+  walk(document, (node) => {
+    if (!isElement(node)) return true;
+    for (const attr of node.attrs) collect(referenceValues(attributeName(attr), attr.value));
+    if (node.tagName.toLowerCase() === "style") collect(cssReferences(textOf(node)));
+    return true;
+  });
+  return [...found];
+}
+
+/**
+ * `html` with every attribute removed whose relative reference names a file not in `targets`,
+ * and the paths those attributes named, sorted.
+ *
+ * Publish as scout archives a report page with the files that were stored beside it. A link to
+ * one that was not stored (a report posted before companions were stored, a file over the
+ * limits, or one that was gone when the report was posted) would otherwise refuse the whole
+ * page. Removing the attribute keeps the text a person reads: an `<a>` without `href` is plain
+ * text, and the archive lists each path as missing.
+ *
+ * The rest of the document keeps its bytes: each attribute is cut out by its source location,
+ * never by re-serializing the tree. Only attributes are rewritten. A `<style>` element that
+ * names an unstored file is left alone, and the checker that runs after this still refuses it.
+ */
+export function unlinkMissingCompanions(
+  html: string,
+  targets: ReadonlySet<string>,
+): { html: string; unlinked: string[] } {
+  let document: DefaultTreeAdapterTypes.Document;
+  try {
+    document = parse(html, { ...PARSER_OPTIONS, sourceCodeLocationInfo: true });
+  } catch {
+    return { html, unlinked: [] };
+  }
+  const spans: Array<{ start: number; end: number }> = [];
+  const unlinked = new Set<string>();
+  walk(document, (node) => {
+    if (!isElement(node)) return true;
+    const locations = node.sourceCodeLocation?.attrs;
+    for (const attr of node.attrs) {
+      const missing = referenceValues(attributeName(attr), attr.value)
+        .map(inReportReference)
+        .filter((path): path is string => path !== null && !targets.has(path));
+      if (missing.length === 0) continue;
+      const location = locations?.[attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name] ?? locations?.[attr.name];
+      if (!location) continue;
+      spans.push({ start: location.startOffset, end: location.endOffset });
+      for (const path of missing) unlinked.add(path);
+    }
+    return true;
+  });
+  let out = html;
+  for (const span of spans.sort((a, b) => b.start - a.start)) {
+    let start = span.start;
+    while (start > 0 && /\s/.test(out[start - 1]!)) start -= 1;
+    out = out.slice(0, start) + out.slice(span.end);
+  }
+  return { html: out, unlinked: [...unlinked].sort() };
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -448,6 +530,22 @@ function urlProblem(raw: string, context: UrlContext): ArchiveHtmlProblem | null
   return null;
 }
 
+/** The reference values one attribute carries, as the checker reads them. */
+function referenceValues(name: string, value: string): string[] {
+  if (name === "style") return cssReferences(value);
+  return URL_ATTRIBUTES.has(name) ? splitUrlAttribute(name, value) : [];
+}
+
+/**
+ * The report-directory path a plain relative reference names, or null for anything else: an
+ * empty value, a fragment, a scheme, a protocol-relative URL or a path that climbs out.
+ */
+function inReportReference(raw: string): string | null {
+  const value = raw.trim();
+  if (value === "" || value.startsWith("#") || value.startsWith("//") || SCHEME_RE.test(value)) return null;
+  return resolveInsideReport(value);
+}
+
 /**
  * Resolve a relative reference against `report/report.html`, returning its path within the
  * report directory or null when it escapes.
@@ -507,12 +605,21 @@ function resolveInsideReport(raw: string): string | null {
  */
 function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null, selfContained = false): ArchiveHtmlProblem[] {
   const problems: ArchiveHtmlProblem[] = [];
-  const check = (value: string): void => {
-    // Every reference a stylesheet carries is fetched when the page opens, however it is
-    // spelled, so CSS is entirely a fetching slot and the navigational allowance never
-    // reaches it.
+  // Every reference a stylesheet carries is fetched when the page opens, however it is
+  // spelled, so CSS is entirely a fetching slot and the navigational allowance never
+  // reaches it.
+  for (const value of cssReferences(css)) {
     const problem = urlProblem(value, { linkTarget: false, clickable: false, relativeTargets, selfContained });
     if (problem) problems.push(problem);
+  }
+  return problems;
+}
+
+/** Every reference value `cssProblems` checks, in order, as written. */
+function cssReferences(css: string): string[] {
+  const values: string[] = [];
+  const check = (value: string): void => {
+    values.push(value);
   };
 
   let i = 0;
@@ -546,7 +653,7 @@ function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null, s
     }
     i += 1;
   }
-  return problems;
+  return values;
 }
 
 function startsWithAt(text: string, index: number, token: string): boolean {

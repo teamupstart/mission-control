@@ -407,21 +407,33 @@ job, exit, cleanup or restart path reaches it.
 
 | From the report | Captured as |
 |---|---|
-| the stored `.html` document | `report/report.html`, byte for byte |
+| the stored `.html` document | `report/report.html`, byte for byte except for links to files that were not stored (see below) |
 | the stored `.md` document | `report/report.html`, a static page the daemon renders with the dashboard's Markdown dialect (GitHub-flavoured; raw HTML and unsafe link schemes are dropped) |
+| the stored companions | `report/<path>`, byte for byte, as `report_companion` files |
 
-The bundle's title is the report's title. It has no prompt trail, no summary or tags, no
-companions and no `artifacts/` half; its source session is the session that posted the report,
-and its `source` is `report`. The bundle format is unchanged, so any reader opens it as a scout
-archive.
+The bundle's title is the report's title. It has no prompt trail, no summary or tags and no
+`artifacts/` half; its source session is the session that posted the report, and its `source` is
+`report`. The bundle format is unchanged, so any reader opens it as a scout archive.
+
+- **Companions are stored when the report is posted.** The files the document links to inside
+  its own directory (for example `variants.csv` or `data/recording.json` beside
+  `docs/reports/<slug>/report.html`) are copied with it into
+  `<state home>/reports/<id>/companions/`, up to 128 files and 16 MiB in all. A Markdown
+  document's links are read from its rendered page. A linked file that is missing, outside the
+  checkout, not a regular file or past those bounds is left out; it never refuses the report.
+  A link that climbs out of the document's directory is not a companion.
 
 - **The daemon builds the page.** `POST /api/reports/:id/publish` takes nothing but the id in
   its path. A body that names a page, a path or anything else is refused, and no checkout is
   read, so what is archived is always the document as it was posted.
-- **The same checker.** The page must pass the static checker every bundle passes. A report
-  bundle has no companions, so a relative link is refused along with anything that runs or
-  fetches. A refused page is answered with every problem named, shown on the card, and nothing
-  is written.
+- **The same checker.** The page must pass the static checker every bundle passes, against
+  the companions stored with the report. A relative link to a file that was not stored (a report
+  posted before companions were stored, or a file left out at post time) is unlinked rather than
+  refused: the attribute naming it is removed, so its text stays and the rest of the page keeps
+  its bytes, and the bundle is `partial` with each such path listed as a missing
+  `report_companion`. A link in a `<style>` element is not rewritten. Anything else the checker
+  refuses (a link that leaves the report directory, anything that runs or fetches) still refuses
+  the page: it is answered with every problem named, shown on the card, and nothing is written.
 - **One archive per report.** The archive id is derived from this machine's producer id, the
   report's id and when it was posted. Pressing again on a report that records its key checks
   only that the bundle is still present and returns it. When the key was lost (a lost response,

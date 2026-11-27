@@ -1306,7 +1306,7 @@ server.registerTool(
       body: z.string().trim().min(1).max(REPORT_LIMITS.body)
         .describe("Markdown: what you found or did, and what the operator should do with it"),
       file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional()
-        .describe("A checkout-relative .html or .md document to attach. Mission Control keeps a copy."),
+        .describe("A checkout-relative .html or .md document to attach. Mission Control keeps a copy, with the files it links to in its own directory."),
       url: z.string().trim().url().max(REPORT_LIMITS.url)
         .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
         .optional()

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import { agentDisplayName, sessionDisplayNameInput, withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
@@ -36,7 +36,14 @@ import { getTask as getDurableTask, inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import type { ReportPagePublication, ReportPagePublicationResult } from "./archives/manager.ts";
 import type { Registry } from "./registry.ts";
-import { buildReportPage, reportDocumentDir } from "./report-document.ts";
+import {
+  buildReportPage,
+  linkedCompanionPaths,
+  readStoredReportCompanions,
+  REPORT_COMPANIONS_DIR,
+  reportDocumentDir,
+  type ReportCompanion,
+} from "./report-document.ts";
 import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./session-files.ts";
 import { unref } from "./util/timers.ts";
 
@@ -204,6 +211,8 @@ interface StagedDocument {
   name: string;
   kind: ReportDocumentKind;
   bytes: Buffer;
+  /** The files the document links to inside its own directory, read when it was attached. */
+  companions: ReportCompanion[];
 }
 
 /** The timer the announce grace period runs on, injectable so a test can own the clock. */
@@ -716,15 +725,52 @@ export class ReportManager {
       throw error;
     }
     const handle = await open(target, constants.O_RDONLY);
+    let bytes: Buffer;
     try {
-      const { bytes, exceeded } = await readFileWithinCap(handle, REPORT_LIMITS.documentBytes);
-      if (exceeded) {
+      const read = await readFileWithinCap(handle, REPORT_LIMITS.documentBytes);
+      if (read.exceeded) {
         throw new ReportRefusal(`${file} is larger than the ${REPORT_LIMITS.documentBytes / 1024 / 1024} MiB a report may attach`, 413);
       }
-      return { name: basename(target), kind, bytes: Buffer.from(bytes) };
+      bytes = Buffer.from(read.bytes);
     } finally {
       await handle.close();
     }
+    return { name: basename(target), kind, bytes, companions: await this.stageCompanions(root, file, kind, bytes) };
+  }
+
+  /**
+   * Read the files the document links to inside its own directory, so Publish as scout can
+   * archive them with the page after the checkout is gone. Never refuses the report: a linked
+   * file that is missing, outside the checkout, not a regular file or past the bounds is left
+   * out, and the published page lists it as missing instead.
+   */
+  private async stageCompanions(root: string, file: string, kind: ReportDocumentKind, bytes: Buffer): Promise<ReportCompanion[]> {
+    const directory = posix.dirname(file);
+    const companions: ReportCompanion[] = [];
+    let total = 0;
+    for (const path of linkedCompanionPaths(kind, bytes)) {
+      if (companions.length >= REPORT_LIMITS.companionFiles) break;
+      let target: string;
+      try {
+        target = await resolveSessionFilePath(root, posix.join(directory, path));
+      } catch (error) {
+        if (error instanceof SessionFileError) continue;
+        throw error;
+      }
+      const handle = await open(target, constants.O_RDONLY).catch(() => null);
+      if (!handle) continue;
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > REPORT_LIMITS.companionBytes - total) continue;
+        const read = await readFileWithinCap(handle, info.size);
+        if (read.exceeded) continue;
+        total += read.bytes.byteLength;
+        companions.push({ path, bytes: Buffer.from(read.bytes) });
+      } finally {
+        await handle.close();
+      }
+    }
+    return companions;
   }
 
   /** Copy a document under its report's directory, through a rename so no half file is left. */
@@ -735,6 +781,17 @@ export class ReportManager {
     try {
       writeFileSync(temporary, document.bytes);
       renameSync(temporary, join(dir, document.name));
+      if (document.companions.length > 0) {
+        // Staged under a dot name and renamed into place whole: a reader that finds the
+        // directory finds every companion in it.
+        const staging = join(dir, `.${REPORT_COMPANIONS_DIR}.partial`);
+        for (const companion of document.companions) {
+          const path = join(staging, ...companion.path.split("/"));
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, companion.bytes);
+        }
+        renameSync(staging, join(dir, REPORT_COMPANIONS_DIR));
+      }
     } catch (error) {
       rmSync(dir, { recursive: true, force: true });
       throw error;
@@ -1182,11 +1239,19 @@ export class ReportManager {
     }
     const built = await buildReportPage(report, this.stateDir);
     if (!built.ok) return refuse(built.status, built.problems, report);
+    let companions: ReportCompanion[];
+    try {
+      companions = await readStoredReportCompanions(report, this.stateDir);
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      return refuse(500, [`could not read the files stored with this report: ${why}`], report);
+    }
     const published = await port.publish({
       reportId: report.id,
       reportCreatedAt: report.createdAt,
       title: report.title,
       page: built.page,
+      companions,
       session: { id: report.sessionId, name: report.author.name, taskId: report.taskId },
       repositoryLabel: report.repository ? basename(report.repository) : null,
     });

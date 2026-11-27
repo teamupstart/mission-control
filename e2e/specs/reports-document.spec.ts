@@ -337,3 +337,53 @@ test("Open report reads the stored copy after the checkout file is gone, and Pub
   await page.keyboard.press("Escape");
   await expect(entryReader).toBeHidden();
 });
+
+test("Publish as scout carries the files a report links to beside it, and lists a link it could not keep as missing", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(180_000);
+  const { session } = await startSession(daemon, "Measure speech-start filtering");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "inbox", enabled: true }, "PUT");
+
+  // The report links to two data files beside it and one that was never written. The checkout
+  // copies are then deleted: what publishes is what Mission Control stored when it was posted.
+  const dir = join(session.cwd!, "docs", "reports", "speech-start");
+  mkdirSync(join(dir, "data"), { recursive: true });
+  writeFileSync(join(dir, "variants.csv"), "variant,phantom words\nstrict,0\n");
+  writeFileSync(join(dir, "data", "recording.json"), "{\"utterances\":14}\n");
+  writeFileSync(join(dir, "report.html"), `<!doctype html><html><head><meta charset="utf-8"><title>Speech start</title></head><body>
+<h1>Speech start</h1>
+<p>Raw data: <a href="variants.csv">variants.csv</a>, <a href="data/recording.json">recording.json</a>,
+<a href="routing-diffs.json">routing-diffs.json</a>.</p>
+</body></html>`);
+  await report(daemon, session.cwd!, {
+    title: "Speech-start filtering measured",
+    body: "Report and raw data attached.",
+    file: "docs/reports/speech-start/report.html",
+  });
+  rmSync(join(session.cwd!, "docs"), { recursive: true, force: true });
+
+  const inbox = await openInbox(page);
+  const card = inbox.getByRole("article", { name: "Report: Speech-start filtering measured" });
+  if (!(await card.getByRole("button", { name: "Publish as scout" }).isVisible())) {
+    await card.getByRole("button", { name: "Speech-start filtering measured" }).click();
+  }
+  await card.getByRole("button", { name: "Publish as scout" }).click();
+  await expect(card.getByRole("status").filter({ hasText: "Published" })).toBeVisible({ timeout: 30_000 });
+  await expect(card.getByRole("alert")).toHaveCount(0);
+  await capture(card, "10-card-published-with-companions", page);
+
+  await card.getByRole("button", { name: "Open archive" }).click();
+  await expect(inbox).toBeHidden();
+  const archive = page.getByRole("region", { name: "Scout report" });
+  await expect(archive.getByRole("heading", { level: 1 })).toContainText("Speech-start filtering measured", { timeout: 30_000 });
+  const evidence = page.getByRole("complementary", { name: "Evidence" });
+  await expect(evidence.getByRole("button", { name: /report\/variants\.csv/ })).toContainText("Report companion");
+  await expect(evidence.getByRole("button", { name: /report\/data\/recording\.json/ })).toContainText("Report companion");
+  const missing = archive.getByRole("list", { name: "Missing evidence" });
+  await expect(missing.getByRole("listitem")).toHaveCount(1);
+  await expect(missing).toContainText("routing-diffs.json");
+  await expect(missing).toContainText("not stored with it when it was posted");
+  // The stored data file opens from the archive, with no checkout behind it.
+  await evidence.getByRole("button", { name: /report\/variants\.csv/ }).click();
+  await expect(archive.getByText("strict,0")).toBeVisible({ timeout: 20_000 });
+  await capture(page, "11-archive-with-companions", page);
+});

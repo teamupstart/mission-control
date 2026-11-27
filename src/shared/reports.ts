@@ -27,6 +27,13 @@ export const REPORT_LIMITS = {
   path: 1024,
   /** The attached document, copied into the state home when the report is posted. */
   documentBytes: 2 * 1024 * 1024,
+  /**
+   * The files an HTML or Markdown document links to inside its own directory, stored with it so
+   * Publish as scout can archive them beside the page. A file past either bound is not stored,
+   * and the published page lists it as missing.
+   */
+  companionFiles: 128,
+  companionBytes: 16 * 1024 * 1024,
 } as const;
 
 /** How a report left to read. Null while it is unread. */

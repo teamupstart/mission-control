@@ -9,19 +9,23 @@ import {
   ARCHIVE_FORMAT_VERSION,
   ARCHIVE_PRIMARY_ARTIFACT_ID,
   ARCHIVE_PRIMARY_REPORT_PATH,
+  ARCHIVE_REPORT_DIR,
   ARCHIVE_TEXT_LIMITS,
+  archiveArtifactId,
   archiveKey,
   archiveRepoSlot,
   formatArchiveDigest,
   decodeArchiveCursor,
   isArchiveId,
   parseArchiveKey,
+  validateArchivePath,
   type ArchiveArtifactView,
   type ArchiveCaptureStatus,
   type ArchiveDetail,
   type ArchiveIdentity,
   type ArchiveManifest,
   type ArchiveManifestArtifact,
+  type ArchiveManifestMissing,
   type ArchivePage,
   type ArchiveSearchQuery,
   type ArchiveSummary,
@@ -39,7 +43,7 @@ import {
   type ArchiveCaptureScope,
 } from "./capture-store.ts";
 import { resolveRoots } from "./checkout.ts";
-import { validateStaticReportHtml } from "./html.ts";
+import { unlinkMissingCompanions, validateStaticReportHtml } from "./html.ts";
 import { ArchiveLibrary } from "./library.ts";
 import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
 import { loadArchiveProducer, type ArchiveProducerIdentity } from "./producer.ts";
@@ -144,6 +148,12 @@ export interface ReportPagePublication {
   reportCreatedAt: number;
   title: string;
   page: Buffer;
+  /**
+   * The files stored with the report's document, by path relative to it. Each is archived beside
+   * the page under `report/`. A relative link the page makes to any other file is unlinked and
+   * listed as missing.
+   */
+  companions: ReadonlyArray<{ path: string; bytes: Buffer }>;
   /** The session that posted the report, recorded as the archive's source session. */
   session: { id: string; name: string; taskId: string | null };
   /** A label for the report's repository, when it recorded one. Informational. */
@@ -170,6 +180,28 @@ export function reportArchiveId(producerId: string, reportId: string, reportCrea
   hex[16] = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
   const h = hex.join("");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/** A manifest holds at most this many missing entries; past it, the last one counts the rest. */
+const MAX_REPORT_MISSING = 64;
+
+/** The manifest's missing entries for the links a published report page had unlinked. */
+function reportMissingCompanions(paths: readonly string[]): ArchiveManifestMissing[] {
+  const reason = "linked from the report, but not stored with it when it was posted, so the link was removed";
+  const listed = paths.length > MAX_REPORT_MISSING ? paths.slice(0, MAX_REPORT_MISSING - 1) : paths;
+  const missing: ArchiveManifestMissing[] = listed.map((path) => ({
+    kind: "report_companion",
+    expectedSource: path.slice(0, 1024),
+    reason,
+  }));
+  if (paths.length > listed.length) {
+    missing.push({
+      kind: "report_companion",
+      expectedSource: null,
+      reason: `${paths.length - listed.length} more linked files were not stored with the report, so their links were removed`,
+    });
+  }
+  return missing;
 }
 
 export interface ArchiveManagerOptions {
@@ -996,16 +1028,25 @@ export class ArchiveManager {
     } catch {
       return { ok: false, status: 422, problems: ["the document is not UTF-8 text"] };
     }
-    // No companions: a report bundle holds the page alone, so a relative link has nothing to name.
-    const checked = validateStaticReportHtml(html, new Set());
+    // The page sits at `report/report.html` with the files stored beside the report's document. A
+    // relative link to any other file is unlinked and named as missing rather than refusing the
+    // page: the file was never stored, so no later press could publish it either.
+    const primaryName = ARCHIVE_PRIMARY_REPORT_PATH.slice(ARCHIVE_REPORT_DIR.length + 1);
+    const companions = input.companions.filter((companion) =>
+      companion.path !== primaryName && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${companion.path}`) !== null);
+    const targets = new Set([primaryName, ...companions.map((companion) => companion.path)]);
+    const unlinked = unlinkMissingCompanions(html, targets);
+    const checked = validateStaticReportHtml(unlinked.html, targets);
     if (!checked.ok) return { ok: false, status: 422, problems: checked.problems.map((problem) => problem.message) };
+    const page = unlinked.unlinked.length > 0 ? Buffer.from(unlinked.html, "utf8") : input.page;
+    const missing = reportMissingCompanions(unlinked.unlinked);
 
     const identity: ArchiveIdentity = {
       producerId: this.producer.id,
       archiveId: reportArchiveId(this.producer.id, input.reportId, input.reportCreatedAt),
     };
     const key = archiveKey(identity.producerId, identity.archiveId);
-    const sha256 = formatArchiveDigest(createHash("sha256").update(input.page).digest("hex"));
+    const sha256 = formatArchiveDigest(createHash("sha256").update(page).digest("hex"));
     if (!sha256) return { ok: false, status: 500, problems: ["the page could not be digested"] };
 
     return this.withMutation(key, async () => {
@@ -1050,7 +1091,7 @@ export class ArchiveManager {
       const outcome = await publishBundle(identity, { libraryRoot: this.libraryPath, rename: this.renameDir }, async (stageDir) => {
         const target = join(stageDir, ...ARCHIVE_PRIMARY_REPORT_PATH.split("/"));
         await mkdir(join(target, ".."), { recursive: true, mode: 0o700 });
-        await writeFile(target, input.page, { mode: 0o600, flag: "wx" });
+        await writeFile(target, page, { mode: 0o600, flag: "wx" });
         const artifacts: ArchiveManifestArtifact[] = [{
           id: ARCHIVE_PRIMARY_ARTIFACT_ID,
           role: "primary_report",
@@ -1058,9 +1099,25 @@ export class ArchiveManager {
           originalPath: null,
           archivePath: ARCHIVE_PRIMARY_REPORT_PATH,
           mediaType: null,
-          bytes: input.page.byteLength,
+          bytes: page.byteLength,
           sha256,
         }];
+        for (const [index, companion] of companions.entries()) {
+          const archivePath = `${ARCHIVE_REPORT_DIR}/${companion.path}`;
+          const companionTarget = join(stageDir, ...archivePath.split("/"));
+          await mkdir(join(companionTarget, ".."), { recursive: true, mode: 0o700 });
+          await writeFile(companionTarget, companion.bytes, { mode: 0o600, flag: "wx" });
+          artifacts.push({
+            id: archiveArtifactId(index + 1),
+            role: "report_companion",
+            repoSlot: null,
+            originalPath: null,
+            archivePath,
+            mediaType: null,
+            bytes: companion.bytes.byteLength,
+            sha256: formatArchiveDigest(createHash("sha256").update(companion.bytes).digest("hex"))!,
+          });
+        }
         // Both times are the report's own posting time, never the clock, so publishing the same
         // page under the same key always writes a byte-identical manifest. A republish after the
         // bundle was removed by hand, before a reconciliation pass pruned its index row, then
@@ -1074,7 +1131,7 @@ export class ArchiveManager {
             id: identity.archiveId,
             createdAt: at,
             completedAt: at,
-            captureStatus: "complete",
+            captureStatus: missing.length > 0 ? "partial" : "complete",
             title: input.title.slice(0, ARCHIVE_TEXT_LIMITS.title),
             question: null,
             prompts: null,
@@ -1097,7 +1154,7 @@ export class ArchiveManager {
           },
           primaryArtifactId: ARCHIVE_PRIMARY_ARTIFACT_ID,
           artifacts,
-          missing: [],
+          missing,
           contentDigest: archiveContentDigest(artifacts),
         };
         return { ok: true, manifest };

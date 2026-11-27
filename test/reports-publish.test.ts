@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -28,6 +28,7 @@ const { ReportManager, reportDocumentDir } = await import("../src/server/reports
 const { renderMarkdownPage } = await import("../src/server/report-document.ts");
 const { ArchiveManager, reportArchiveId } = await import("../src/server/archives/manager.ts");
 const { ArchiveStore } = await import("../src/server/archives/store.ts");
+const { verifyArchiveBundle } = await import("../src/server/archives/bundle.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
@@ -185,6 +186,7 @@ test("a bundle at the report's key that this report did not publish is a conflic
     reportCreatedAt: report.createdAt,
     title: "Someone else's page",
     page: Buffer.from("<html><body><p>Not this report</p></body></html>"),
+    companions: [],
     session: { id: "s-someone-else", name: "Other", taskId: null },
     repositoryLabel: null,
   });
@@ -556,6 +558,205 @@ test("a page the static checker refuses is refused with its problems, and nothin
   assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
 });
 
+const LINKED_HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Findings</title></head><body>" +
+  "<p>Data: <a href=\"variants.csv\">variants.csv</a>, <a href=\"data/recording.json\">recording.json</a>, " +
+  "<a href=\"gate.diff\">gate.diff</a>.</p><img alt=\"chart\" src=\"chart.png\"></body></html>";
+
+test("files a report's document links to beside it are stored when it is posted, and published with the page", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  mkdirSync(join(checkout, "docs", "reports", "run", "data"), { recursive: true });
+  writeFileSync(join(checkout, "docs", "reports", "run", "variants.csv"), "variant,score\na,1\n");
+  writeFileSync(join(checkout, "docs", "reports", "run", "data", "recording.json"), "{\"frames\":3}\n");
+  writeFileSync(join(checkout, "docs", "reports", "run", "gate.diff"), "-old\n+new\n");
+  writeFileSync(join(checkout, "docs", "reports", "run", "chart.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const report = await post("docs/reports/run/report.html", LINKED_HTML, "Linked data");
+  // The checkout goes away before the press: what publishes is what was stored at post time.
+  rmSync(join(checkout, "docs"), { recursive: true, force: true });
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.equal(archivedPage(archiveId).toString("utf8"), LINKED_HTML, "a page whose links were all stored keeps its bytes");
+  const written = manifest(archiveId);
+  assert.equal(written.archive.capture_status, "complete");
+  assert.deepEqual(written.missing, []);
+  const companions = (written.content.artifacts as Array<{ role: string; archive_path: string }>)
+    .filter((artifact) => artifact.role === "report_companion")
+    .map((artifact) => artifact.archive_path);
+  assert.deepEqual(companions, ["report/chart.png", "report/data/recording.json", "report/gate.diff", "report/variants.csv"]);
+  assert.equal(readFileSync(join(root, PRODUCER, archiveId, "report", "data", "recording.json"), "utf8"), "{\"frames\":3}\n");
+  const verified = await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId });
+  assert.equal(verified.kind, "verified", JSON.stringify(verified));
+
+  const again = await publish(report.id);
+  assert.equal(again.body.replayed, true);
+});
+
+test("links to files that were never stored are unlinked and listed as missing, so the page still publishes", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout, reports } = setup();
+  writeFileSync(join(checkout, "variants.csv"), "variant,score\na,1\n");
+  const report = await post("report.html", LINKED_HTML, "Partly stored");
+  // A report posted before companions were stored has none at all.
+  const older = await post("older.html", LINKED_HTML, "Posted before companions");
+  rmSync(join(reportDocumentDir(older.id, home), "companions"), { recursive: true, force: true });
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.match(page, /<a href="variants\.csv">variants\.csv<\/a>/, "a stored file keeps its link");
+  assert.match(page, /<a>recording\.json<\/a>/, "an unstored file keeps its text and loses its link");
+  assert.match(page, /<img alt="chart">/);
+  const written = manifest(archiveId);
+  assert.equal(written.archive.capture_status, "partial");
+  assert.deepEqual(
+    (written.missing as Array<{ kind: string; expected_source: string }>).map((entry) => [entry.kind, entry.expected_source]),
+    [["report_companion", "chart.png"], ["report_companion", "data/recording.json"], ["report_companion", "gate.diff"]],
+  );
+  assert.equal(
+    (await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind,
+    "verified",
+    "the unlinked page passes the same check every bundle is read under",
+  );
+
+  const olderPublished = await publish(older.id);
+  assert.equal(olderPublished.status, 200, JSON.stringify(olderPublished.body));
+  const olderManifest = manifest(reportArchiveId(PRODUCER, older.id, older.createdAt));
+  assert.equal(olderManifest.missing.length, 4);
+  assert.equal(reports.get(older.id)?.publishedArchiveKey, olderPublished.body.archiveKey);
+});
+
+test("a Markdown document's relative links travel the same way", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  writeFileSync(join(checkout, "table.csv"), "a,b\n");
+  const report = await post("notes.md", "# Notes\n\n[table](table.csv) and [gone](gone.csv)\n", "Markdown links");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const written = manifest(reportArchiveId(PRODUCER, report.id, report.createdAt));
+  assert.ok((written.content.artifacts as Array<{ archive_path: string }>).some((artifact) => artifact.archive_path === "report/table.csv"));
+  assert.deepEqual((written.missing as Array<{ expected_source: string }>).map((entry) => entry.expected_source), ["gone.csv"]);
+});
+
+test("a link that climbs out of the document's directory is neither stored nor unlinked, and still refuses the page", async () => {
+  const { post, publish, bundles, checkout } = setup();
+  mkdirSync(join(checkout, "sub"), { recursive: true });
+  writeFileSync(join(checkout, "secret.txt"), "outside\n");
+  const report = await post("sub/report.html", "<html><body><a href=\"../secret.txt\">x</a></body></html>", "Escaping");
+  assert.equal(existsSync(join(reportDocumentDir(report.id, home), "companions")), false);
+  const refused = await publish(report.id);
+  assert.equal(refused.status, 422);
+  assert.match(refused.body.problems!.join(" "), /leaves the report directory/);
+  assert.deepEqual(bundles(), []);
+});
+
+/** The archive paths of a manifest's companions, and the paths it lists as missing. */
+function companionsOf(written: Record<string, any>): { stored: string[]; missing: Array<string | null> } {
+  return {
+    stored: (written.content.artifacts as Array<{ role: string; archive_path: string }>)
+      .filter((artifact) => artifact.role === "report_companion")
+      .map((artifact) => artifact.archive_path),
+    missing: (written.missing as Array<{ expected_source: string | null }>).map((entry) => entry.expected_source),
+  };
+}
+
+test("a report stores at most the companion file limit: the file past it is unlinked and listed as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const names = Array.from({ length: REPORT_LIMITS.companionFiles + 1 }, (_, index) => `c${String(index).padStart(3, "0")}.txt`);
+  for (const name of names) writeFileSync(join(checkout, name), `${name}\n`);
+  const links = names.map((name) => `<a href="${name}">${name}</a>`).join(" ");
+  const report = await post("many.html", `<html><body><p>${links}</p></body></html>`, "Many companions");
+  const storedDir = join(reportDocumentDir(report.id, home), "companions");
+  assert.equal(readdirSync(storedDir).length, REPORT_LIMITS.companionFiles, "exactly the limit is stored");
+  assert.equal(existsSync(join(storedDir, names.at(-1)!)), false, "the file past the limit is not stored");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, names.slice(0, -1).map((name) => `report/${name}`));
+  assert.deepEqual(missing, [names.at(-1)]);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.match(page, new RegExp(`<a href="${names.at(-2)}">`), "the last file within the limit keeps its link");
+  assert.match(page, new RegExp(`<a>${names.at(-1)}</a>`), "the file past the limit keeps its text and loses its link");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report stores companions up to exactly the byte limit: a file that would pass it is unlinked and listed as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const small = 10;
+  // a.bin and b.bin together are exactly the limit; c.bin is one byte past it.
+  writeFileSync(join(checkout, "a.bin"), Buffer.alloc(REPORT_LIMITS.companionBytes - small, 0x61));
+  writeFileSync(join(checkout, "b.bin"), Buffer.alloc(small, 0x62));
+  writeFileSync(join(checkout, "c.bin"), Buffer.alloc(1, 0x63));
+  // One file alone over the limit is never stored, whatever came before it.
+  writeFileSync(join(checkout, "huge.bin"), Buffer.alloc(REPORT_LIMITS.companionBytes + 1, 0x68));
+  const html = "<html><body><a href=\"a.bin\">a</a> <a href=\"b.bin\">b</a> <a href=\"c.bin\">c</a> <a href=\"huge.bin\">huge</a></body></html>";
+  const report = await post("bytes.html", html, "Byte limit");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")).sort(), ["a.bin", "b.bin"]);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/a.bin", "report/b.bin"]);
+  assert.deepEqual(missing, ["c.bin", "huge.bin"]);
+  assert.equal(readFileSync(join(root, PRODUCER, archiveId, "report", "a.bin")).byteLength, REPORT_LIMITS.companionBytes - small);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.match(page, /<a href="b\.bin">b<\/a>/);
+  assert.match(page, /<a>c<\/a> <a>huge<\/a>/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a manifest lists up to 64 unlinked paths; past that, 63 are listed and one entry counts the rest", async () => {
+  const { post, publish, manifest, archivedPage, root } = setup();
+  const MAX_MISSING = 64;
+  for (const count of [MAX_MISSING, MAX_MISSING + 1]) {
+    // None of these files exists in the checkout, so none is stored and every link is unlinked.
+    const names = Array.from({ length: count }, (_, index) => `m${String(index).padStart(3, "0")}.csv`);
+    const links = names.map((name) => `<a href="${name}">${name}</a>`).join(" ");
+    const report = await post(`missing-${count}.html`, `<html><body><p>${links}</p></body></html>`, `Missing ${count}`);
+    const published = await publish(report.id);
+    assert.equal(published.status, 200, JSON.stringify(published.body));
+    const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+    const written = manifest(archiveId);
+    assert.equal(written.archive.capture_status, "partial");
+    const missing = written.missing as Array<{ kind: string; expected_source: string | null; reason: string }>;
+    assert.equal(missing.length, MAX_MISSING, `${count} unlinked paths fill the manifest's ${MAX_MISSING} entries`);
+    assert.ok(missing.every((entry) => entry.kind === "report_companion"));
+    if (count === MAX_MISSING) {
+      assert.deepEqual(missing.map((entry) => entry.expected_source), names, "at the limit, every path is listed");
+    } else {
+      assert.deepEqual(missing.slice(0, -1).map((entry) => entry.expected_source), names.slice(0, MAX_MISSING - 1));
+      assert.deepEqual(missing.at(-1), {
+        kind: "report_companion",
+        expected_source: null,
+        reason: "2 more linked files were not stored with the report, so their links were removed",
+      });
+    }
+    const page = archivedPage(archiveId).toString("utf8");
+    assert.doesNotMatch(page, /href=/, "every link to an unstored file is removed, listed or counted");
+    assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+  }
+});
+
+test("stored companions that cannot be read answer 500 with the error, and nothing is archived", { skip: asRoot }, async () => {
+  const { post, publish, bundles, reports, checkout } = setup();
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("locked.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Locked companions");
+  const storedDir = join(reportDocumentDir(report.id, home), "companions");
+  assert.equal(existsSync(join(storedDir, "data.csv")), true);
+  chmodSync(storedDir, 0o000);
+  try {
+    const refused = await publish(report.id);
+    assert.equal(refused.status, 500, JSON.stringify(refused.body));
+    assert.match(refused.body.problems!.join(" "), /^could not read the files stored with this report: .*EACCES/);
+  } finally {
+    chmodSync(storedDir, 0o700);
+  }
+  assert.deepEqual(bundles(), [], "no archive is written");
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+});
+
 test("publishing a report whose stored copy has gone missing is refused, and nothing is archived", async () => {
   const { post, publish, bundles, reports } = setup();
   const report = await post("gone.html", STATIC_HTML);
@@ -708,7 +909,7 @@ test("a press against a library that cannot be read answers 500 and writes nothi
   after(() => archives.stop());
   const page = Buffer.from(STATIC_HTML);
   const publication = (reportId: string) => ({
-    reportId, reportCreatedAt: 1, title: "Locked library", page,
+    reportId, reportCreatedAt: 1, title: "Locked library", page, companions: [],
     session: { id: "s-locked", name: "Locked", taskId: null }, repositoryLabel: null,
   });
 

@@ -1280,7 +1280,6 @@ export class WorkflowEngine {
         // failure of a call the host slept through is evidence about the host.
         hostSuspended = !!callResult.error
           && callResult.providerFailure !== "token_exhausted"
-          && !!claimed.reviewInput
           && mark !== undefined
           && this.hostSuspend.suspendedMsSince(mark) > 0;
         this.store.finishLlmCall(
@@ -1990,10 +1989,12 @@ export class WorkflowEngine {
   }
 
   /**
-   * Retry a Persona call that failed while the host was suspended, without spending the
-   * operation's call budget: the call is recorded as `persona_host_suspended`, which the
-   * budget does not count. The same operation continues, so the budget it already spent and
-   * any correction it owes carry over.
+   * Retry a Persona call that failed while the host was suspended, without spending its
+   * budget. With frozen review input, the call is recorded as `persona_host_suspended`, which
+   * the operation's call budget does not count, and the same operation continues, so the budget
+   * it already spent and any correction it owes carry over. Without it, the budget is the
+   * node's infrastructure attempts, and the `host_suspended_attempt` excuse recorded here takes
+   * this attempt out of `infraAttemptsSpent`.
    */
   private scheduleHostSuspendedRetry(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
     const run = this.store.getRun(runId);

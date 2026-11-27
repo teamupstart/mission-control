@@ -1184,6 +1184,54 @@ test("a sleep that ended before a call started cannot excuse that call", async (
   assert.equal(store.listEvents("run-sleep-stale").some((event) => event.kind === "persona_infrastructure_exhausted"), true);
 });
 
+test("a Persona attempt without review input is also excused by a host sleep", async () => {
+  // The legacy path: no frozen review input, so the budget is the node's three infrastructure
+  // attempts rather than the operation's two calls. Three sleeps would have spent all of it.
+  const store = seedSubmission("sleep-legacy", providerRetryGraph);
+  const node = providerRetryGraph.nodes.find((candidate) => candidate.id === "p");
+  assert.ok(node && node.kind === "persona");
+  store.insertAttempt({
+    id: "legacy-attempt-1", submissionId: "submission-sleep-legacy", nodeId: "p", attempt: 1,
+    state: "queued", persona: node.persona, inputFingerprint: "legacy", now: 1,
+  });
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let clock = 12_000_000;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    if (calls <= 3) throw new Error("codex exec timed out");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  const engine = hostSuspendEngine(store, runner, () => clock, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-legacy");
+    for (let excused = 1; excused <= 3; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-sleep-legacy", "p");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      assert.equal(store.latestAttemptForNode("submission-sleep-legacy", "p")?.reviewInput, undefined);
+      assert.equal(store.getRun("run-sleep-legacy")?.status, "running", `still running after sleep ${excused}`);
+      if (excused === 3) suspend.asleep = false;
+      clock = store.latestAttemptForNode("submission-sleep-legacy", "p")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-sleep-legacy")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 4);
+  assert.equal(store.hostSuspendedAttempts("submission-sleep-legacy", "p"), 3);
+  assert.deepEqual(personaCallCodes("run-sleep-legacy"),
+    ["persona_host_suspended", "persona_host_suspended", "persona_host_suspended", null]);
+  assert.equal(store.listEvents("run-sleep-legacy").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+});
+
 test("every call a host sleep overlaps is excused, however many there are", async () => {
   const store = seedSubmission("sleep-night", providerRetryGraph);
   const suspend = scriptedSuspend();

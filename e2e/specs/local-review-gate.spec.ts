@@ -613,13 +613,14 @@ test("Local review switched off holds a locally reviewed head as missing its loc
   await expect.poll(async () => (await mergeRow(daemon))?.mergeBlock, { timeout: 60_000, intervals: [100] })
     .toBe("local-review-missing");
   expect(merges(daemon), "the local record alone merged nothing").toEqual([]);
-  // The head is reviewed on GitHub instead, which is what may authorize a later merge.
+  // The head goes to the GitHub review instead. That review never completes in this spec (see
+  // above), so the local record is all there is, and over further sweeps it still merges nothing.
   await expect.poll(() => diffReads(daemon).length, { timeout: 60_000 }).toBeGreaterThan(0);
-  const head = merges(daemon)[0];
-  if (head) {
-    expect(head.sha, "any merge is of the reviewed head").toBe(run.head);
-    expect((await ledger(daemon))?.round ?? 0, "and only after a GitHub round").toBeGreaterThanOrEqual(1);
-  }
+  const sweeps = prReads(daemon).length;
+  await expect.poll(() => prReads(daemon).length, { timeout: 60_000 }).toBeGreaterThanOrEqual(sweeps + 2);
+  expect(merges(daemon), "the local record never authorized a merge").toEqual([]);
+  expect((await mergeRow(daemon))?.mergeBlock).toBe("local-review-missing");
+  expect((await ledger(daemon))?.round, "no GitHub round completed").toBe(0);
 });
 
 test("the merge queue names a missing local review, and Trust names the review a merge relies on", async ({ dashboard, daemon }) => {

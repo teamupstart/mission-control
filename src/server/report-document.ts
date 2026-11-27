@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import { lstat, open, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { lstat, open, realpath } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
@@ -8,6 +8,7 @@ import { ARCHIVE_PRIMARY_REPORT_PATH, ARCHIVE_REPORT_DIR, validateArchivePath } 
 import { MARKDOWN_REMARK_PLUGINS } from "@shared/markdown-config.ts";
 import { REPORT_ID_PATTERN, REPORT_LIMITS, type ReportDocumentKind, type ReportItem } from "@shared/reports.ts";
 import { reportRelativeReferences } from "./archives/html.ts";
+import { caseDistinctPaths } from "./archives/paths.ts";
 import { STATE_DIR } from "./config.ts";
 import { readFileWithinCap } from "./session-files.ts";
 
@@ -49,10 +50,15 @@ export function linkedCompanionPaths(kind: ReportDocumentKind, bytes: Buffer): s
   const text = utf8(bytes);
   if (text === null) return [];
   const html = kind === "html" ? text : renderMarkdownPage(text, "");
-  return reportRelativeReferences(html)
+  const paths = reportRelativeReferences(html)
     .filter((path) => !isUnderPrimaryReport(path)
       && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${path}`) !== null)
     .sort();
+  // Paths that collide on a case-insensitive volume (the same path in another case, or a file
+  // where another path needs a directory) cannot all be stored or archived. One is kept, chosen
+  // the same way every time; a link to any other is unlinked as missing.
+  const distinct = caseDistinctPaths(paths);
+  return paths.filter((path) => distinct.has(path));
 }
 
 /**
@@ -61,8 +67,10 @@ export function linkedCompanionPaths(kind: ReportDocumentKind, bytes: Buffer): s
  * `report.html/`; a link to either is unlinked as missing when the page is published.
  */
 export function isUnderPrimaryReport(path: string): boolean {
+  // Case-folded: on a case-insensitive volume (the macOS default) `Report.html` names the page.
   const primary = ARCHIVE_PRIMARY_REPORT_PATH.slice(ARCHIVE_REPORT_DIR.length + 1);
-  return path === primary || path.startsWith(`${primary}/`);
+  const folded = path.toLowerCase();
+  return folded === primary || folded.startsWith(`${primary}/`);
 }
 
 /**
@@ -77,11 +85,12 @@ export function isUnderPrimaryReport(path: string): boolean {
  * stored, so publishing without it would lose it.
  */
 export async function readStoredReportCompanions(
-  report: Pick<ReportItem, "id" | "document">,
+  report: Pick<ReportItem, "id">,
+  page: Buffer,
   stateDir?: string,
   hooks: StoredCompanionReadHooks = {},
 ): Promise<ReportCompanion[]> {
-  if (!REPORT_ID_PATTERN.test(report.id) || !report.document) return [];
+  if (!REPORT_ID_PATTERN.test(report.id)) return [];
   const absent = (error: NodeJS.ErrnoException): null => {
     if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
     throw error;
@@ -98,21 +107,24 @@ export async function readStoredReportCompanions(
   const root = join(reportDir, REPORT_COMPANIONS_DIR);
   const rootInfo = await lstat(root).catch(absent);
   if (!rootInfo?.isDirectory()) return [];
-  const document = await readStoredReportDocument(report, stateDir);
-  const candidates = linkedCompanionPaths(document.kind, document.bytes).slice(0, REPORT_LIMITS.companionLookups);
+  // Chosen from the page being published, never from a second read of the stored document, so
+  // the links the archive keeps and the files it carries come from one snapshot.
+  const candidates = linkedCompanionPaths("html", page).slice(0, REPORT_LIMITS.companionLookups);
   const companions: ReportCompanion[] = [];
   let total = 0;
   for (const path of candidates) {
     if (companions.length >= REPORT_LIMITS.companionFiles) break;
     const filePath = join(root, ...path.split("/"));
     await hooks.beforeOpen?.(filePath);
-    const handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    // `O_NONBLOCK` so a named pipe put in the store cannot hold the open waiting for a writer;
+    // the regular-file check below then rejects it. A regular file reads the same either way.
+    const handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
       .catch((error: NodeJS.ErrnoException) => {
         // Not stored (never, or gone since), a symlink put in its place, or a path through a
         // file: it is not a stored companion, so its link is unlinked as missing. Any other
         // failure (permissions, I/O) is thrown, so Publish answers 500 rather than archiving, for
         // ever, a page without a file it holds.
-        if (error.code === "ENOENT" || error.code === "ELOOP" || error.code === "ENOTDIR") return null;
+        if (error.code === "ENOENT" || error.code === "ELOOP" || error.code === "ENOTDIR" || error.code === "ENXIO") return null;
         throw error;
       });
     if (!handle) continue;
@@ -121,14 +133,28 @@ export async function readStoredReportCompanions(
       const info = await handle.stat();
       if (!info.isFile() || info.size > REPORT_LIMITS.companionBytes - total) continue;
       // `O_NOFOLLOW` guards only the last component: a directory on the way swapped for a
-      // symlink is followed by `open`. So the handle is checked after the fact. The path must
-      // still resolve inside the store, and the file there must be the one that was opened. A
-      // handle reached through a swapped directory fails one or the other, whether or not the
-      // swap was undone in between, and is left out rather than read.
-      const real = await realpath(filePath).catch(() => null);
-      if (!real || !real.startsWith(`${root}${sep}`)) continue;
-      const atPath = await stat(real).catch(() => null);
-      if (!atPath || atPath.dev !== info.dev || atPath.ino !== info.ino) continue;
+      // symlink is followed by `open`, whether it points outside the store or at another
+      // directory inside it. So the handle is checked after the fact, component by component
+      // from the canonical reports store: every directory on the path must be a real directory,
+      // never a symlink, and the file at the end must be the one the handle holds. A handle
+      // reached through a swapped directory fails, whether or not the swap was undone in between,
+      // and is left out rather than read. Gone since the open is absence; any other failure
+      // (permissions, I/O) is thrown, so Publish answers 500 rather than unlinking a file it
+      // holds into a permanent partial archive.
+      const segments = [report.id, REPORT_COMPANIONS_DIR, ...path.split("/")];
+      let walked = reportsStore;
+      let contained = true;
+      for (const [index, segment] of segments.entries()) {
+        walked = join(walked, segment);
+        const entry = await lstat(walked).catch(absent);
+        const last = index === segments.length - 1;
+        if (!entry || entry.isSymbolicLink()
+          || (last ? !entry.isFile() || entry.dev !== info.dev || entry.ino !== info.ino : !entry.isDirectory())) {
+          contained = false;
+          break;
+        }
+      }
+      if (!contained) continue;
       const { bytes, exceeded } = await readFileWithinCap(handle, info.size);
       if (exceeded) continue;
       total += bytes.byteLength;

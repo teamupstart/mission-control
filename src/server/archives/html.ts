@@ -104,6 +104,9 @@ const NON_CONTENT_ELEMENTS = new Set(["script", "style", "noscript", "template",
 /** SVG bookkeeping - real text inside an inline diagram (`text`, `title`, `desc`) is kept. */
 const SVG_METADATA_ELEMENTS = new Set(["metadata", "defs", "symbol", "clippath", "mask"]);
 
+/** The HTML standard's ASCII whitespace: what separates attributes. */
+const HTML_WHITESPACE = new Set(["\t", "\n", "\f", "\r", " "]);
+
 /** A scheme, per RFC 3986, is what turns a reference into somewhere else entirely. */
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
@@ -349,7 +352,9 @@ export function unlinkMissingCompanions(
   let cursor = 0;
   for (const span of spans.sort((a, b) => a.start - b.start)) {
     let start = span.start;
-    while (start > cursor && /\s/.test(html[start - 1]!)) start -= 1;
+    // HTML whitespace only (tab, LF, FF, CR, space): a non-breaking space is part of a preceding
+    // unquoted attribute value, never a separator, and stays.
+    while (start > cursor && HTML_WHITESPACE.has(html[start - 1]!)) start -= 1;
     parts.push(html.slice(cursor, start));
     cursor = span.end;
   }

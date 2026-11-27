@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
 import { agentDisplayName, sessionDisplayNameInput, withCurrentReferenceNames } from "@shared/display-name.ts";
@@ -71,6 +71,14 @@ export class ReportRefusal extends Error {
   constructor(message: string, readonly status: 400 | 403 | 404 | 409 | 413) {
     super(message);
   }
+}
+
+/** Why a post was refused: a linked file exists in the checkout but could not be read. */
+function unreadableCompanion(path: string, error: NodeJS.ErrnoException): ReportRefusal {
+  return new ReportRefusal(
+    `${path}, which the document links to, could not be read (${error.code ?? error.message}); nothing was posted. Post again once it is readable, or remove the link.`,
+    409,
+  );
 }
 
 /** What a reply hands the outbox: one operator message for one session. */
@@ -290,11 +298,14 @@ export interface ReportManagerOptions {
    * is opened. A test seam for the window a symlink swap would race; the daemon passes none.
    */
   beforeCompanionOpen?: (path: string) => Promise<void> | void;
+  /** Called with the checkout root after the document was read, before companions are collected. A test seam. */
+  beforeCompanionCapture?: (root: string) => Promise<void> | void;
 }
 
 export class ReportManager {
   private readonly stateDir: string;
   private readonly beforeCompanionOpen?: (path: string) => Promise<void> | void;
+  private readonly beforeCompanionCapture?: (root: string) => Promise<void> | void;
   private readonly now: () => number;
   private readonly timers: ReportTimers;
   private readonly stopFlags: () => void;
@@ -326,6 +337,7 @@ export class ReportManager {
   constructor(private readonly registry: Registry, options: ReportManagerOptions = {}) {
     this.stateDir = options.stateDir ?? STATE_DIR;
     this.beforeCompanionOpen = options.beforeCompanionOpen;
+    this.beforeCompanionCapture = options.beforeCompanionCapture;
     this.now = options.now ?? Date.now;
     this.timers = options.timers ?? REAL_TIMERS;
     this.stopEvents = registry.subscribe((event) => this.observe(event));
@@ -753,7 +765,16 @@ export class ReportManager {
    * out, and the published page lists it as missing instead.
    */
   private async stageCompanions(root: string, file: string, kind: ReportDocumentKind, bytes: Buffer): Promise<ReportCompanion[]> {
-    const realRoot = await realpath(root).catch(() => null);
+    await this.beforeCompanionCapture?.(root);
+    // A checkout that is gone has no companions. One that cannot be resolved for another reason
+    // (permissions, I/O) refuses the post, so its linked files are not silently left out.
+    const realRoot = await realpath(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+      throw new ReportRefusal(
+        `the checkout could not be read to collect the files the document links to (${error.code ?? error.message}); nothing was posted. Post again once it is readable.`,
+        409,
+      );
+    });
     if (!realRoot) return [];
     const directory = posix.dirname(file);
     const companions: ReportCompanion[] = [];
@@ -762,18 +783,52 @@ export class ReportManager {
       if (companions.length >= REPORT_LIMITS.companionFiles) break;
       // The scout capture's containment rule: every component is checked with `lstat` and none
       // may be a symlink, and the file's identity is recorded here, before the open.
-      const resolved = await resolveCheckoutFile(realRoot, posix.join(directory, path));
-      if (!resolved.ok) continue;
+      const relative = posix.join(directory, path);
+      // The containment check says only that the path was refused. A file that is absent, or
+      // that the check refused for its shape (a symlink, not a regular file), is left out. One
+      // that exists but cannot even be examined (permissions, I/O) refuses the post with its
+      // cause, so the report can be posted again once it is readable, rather than being stored
+      // without data that was there.
+      const leaveOut = async (): Promise<void> => {
+        await lstat(join(realRoot, ...relative.split("/"))).catch((error: NodeJS.ErrnoException) => {
+          if (["ENOENT", "ENOTDIR", "ELOOP", "ENAMETOOLONG"].includes(error.code ?? "")) return null;
+          throw unreadableCompanion(path, error);
+        });
+      };
+      const resolved = await resolveCheckoutFile(realRoot, relative);
+      if (!resolved.ok) {
+        await leaveOut();
+        continue;
+      }
       await this.beforeCompanionOpen?.(resolved.path);
       // `O_NOFOLLOW` refuses a symlink swapped into the final component after that check. A
       // directory on the way swapped for a symlink is still followed by `open`, so the handle's
       // identity must be the one resolved above: a file reached through a swapped parent is a
       // different file, and is left out rather than read.
-      const handle = await open(resolved.path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+      // `O_NONBLOCK` so a named pipe swapped in after the check cannot hold the open waiting for
+      // a writer; the regular-file check below rejects it.
+      const handle = await open(resolved.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        .catch((error: NodeJS.ErrnoException) => {
+          // Gone, or swapped for a symlink or a socket, since the check: left out, as a missing
+          // file is. Any other failure is the file being unreadable, which refuses the post.
+          if (["ENOENT", "ENOTDIR", "ELOOP", "ENXIO"].includes(error.code ?? "")) return null;
+          throw unreadableCompanion(path, error);
+        });
       if (!handle) continue;
       try {
         const info = await handle.stat();
         if (!info.isFile() || info.dev !== resolved.dev || info.ino !== resolved.ino) continue;
+        // The identity alone does not prove where the handle was reached from: a directory moved
+        // out of the checkout and replaced by a symlink to its new place still holds the same
+        // file. So containment is checked again now that the file is open, before any byte is
+        // read. Every component must still be a real directory inside the checkout, and the path
+        // must still name the file the handle holds.
+        const again = await resolveCheckoutFile(realRoot, relative);
+        if (!again.ok) {
+          await leaveOut();
+          continue;
+        }
+        if (again.dev !== info.dev || again.ino !== info.ino) continue;
         if (info.size > REPORT_LIMITS.companionBytes - total) continue;
         const read = await readFileWithinCap(handle, info.size);
         if (read.exceeded) continue;
@@ -1254,7 +1309,7 @@ export class ReportManager {
     if (!built.ok) return refuse(built.status, built.problems, report);
     let companions: ReportCompanion[];
     try {
-      companions = await readStoredReportCompanions(report, this.stateDir);
+      companions = await readStoredReportCompanions(report, built.page, this.stateDir);
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error);
       return refuse(500, [`could not read the files stored with this report: ${why}`], report);

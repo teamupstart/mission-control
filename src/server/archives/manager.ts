@@ -45,7 +45,7 @@ import {
 import { resolveRoots } from "./checkout.ts";
 import { unlinkMissingCompanions, validateStaticReportHtml } from "./html.ts";
 import { ArchiveLibrary } from "./library.ts";
-import { ArchivePathError, archiveDir, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
+import { ArchivePathError, archiveDir, caseDistinctPaths, isInside, resolveArchiveFile, statRealDirectory, trashRoot } from "./paths.ts";
 import { loadArchiveProducer, type ArchiveProducerIdentity } from "./producer.ts";
 import { ArchiveReconciler, type ArchiveReconcilePass } from "./reconciler.ts";
 import { ArchiveStore, type ArchiveRow } from "./store.ts";
@@ -1038,9 +1038,21 @@ export class ArchiveManager {
     // relative link to any other file is unlinked and named as missing rather than refusing the
     // page: the file was never stored, so no later press could publish it either.
     const primaryName = ARCHIVE_PRIMARY_REPORT_PATH.slice(ARCHIVE_REPORT_DIR.length + 1);
-    const companions = input.companions.filter((companion) =>
-      companion.path !== primaryName && !companion.path.startsWith(`${primaryName}/`)
-      && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${companion.path}`) !== null);
+    // Case-folded throughout: on a case-insensitive volume `Report.html` is the page's own path,
+    // and companions whose paths collide there (the same path in another case, or a file where
+    // another needs a directory) cannot all be written. `caseDistinctPaths` keeps one of each.
+    const eligible = input.companions.filter((companion) => {
+      const key = companion.path.toLowerCase();
+      return key !== primaryName && !key.startsWith(`${primaryName}/`)
+        && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${companion.path}`) !== null;
+    });
+    const distinct = caseDistinctPaths(eligible.map((companion) => companion.path));
+    const seen = new Set<string>();
+    const companions = eligible.filter((companion) => {
+      if (!distinct.has(companion.path) || seen.has(companion.path)) return false;
+      seen.add(companion.path);
+      return true;
+    });
     const targets = new Set([
       ...(input.documentName === primaryName ? [primaryName] : []),
       ...companions.map((companion) => companion.path),

@@ -5,6 +5,7 @@ import {
   unlinkMissingCompanions,
   validateStaticReportHtml,
 } from "../src/server/archives/html.ts";
+import { caseDistinctPaths } from "../src/server/archives/paths.ts";
 
 // The two helpers that let Publish as scout archive a report page whose links name files beside
 // it: one lists what the page links to inside its own directory, so a report stores those files
@@ -103,9 +104,31 @@ test("unlinking thousands of missing links in one pass keeps every other byte, a
   assert.match(result.html, /<a href="kept\.csv">both<\/a>/);
 });
 
+test("only HTML whitespace before a removed attribute goes: a non-breaking space ending an unquoted value stays", () => {
+  const html = page(`<span class=quiet\u00a0 href="gone.csv">t</span>`);
+  const result = unlinkMissingCompanions(html, new Set());
+  assert.deepEqual(result.unlinked, ["gone.csv"]);
+  assert.equal(result.html, html.replace(' href="gone.csv"', ""), "only the ASCII space and the attribute are removed");
+  assert.ok(result.html.includes("<span class=quiet\u00a0>t</span>"), "the class value keeps its non-breaking space");
+});
+
 test("a <style> element that names an unstored file is not rewritten, and the checker still refuses it", () => {
   const html = page("<p>x</p>", "<style>.x{background:url(gone.png)}</style>");
   const result = unlinkMissingCompanions(html, new Set());
   assert.deepEqual(result, { html, unlinked: [] });
   assert.equal(validateStaticReportHtml(result.html, new Set()).ok, false);
+});
+
+test("paths that collide on a case-insensitive volume keep one, decided in sorted order whatever the input order", () => {
+  const keep = (paths: string[]) => [...caseDistinctPaths(paths)].sort();
+  // A file where another path needs a directory, either way round.
+  assert.deepEqual(keep(["data/x.csv", "Data"]), ["Data"]);
+  assert.deepEqual(keep(["data", "DATA/x.csv"]), ["DATA/x.csv"]);
+  assert.deepEqual(keep(["a/b", "a/B/c.csv"]), ["a/B/c.csv"]);
+  // The same path in another case.
+  assert.deepEqual(keep(["data.csv", "Data.csv"]), ["Data.csv"]);
+  // Directories that differ only in case merge harmlessly: both files are kept.
+  assert.deepEqual(keep(["dir/b.csv", "Dir/a.csv"]), ["Dir/a.csv", "dir/b.csv"]);
+  // Nothing to fold: everything is kept.
+  assert.deepEqual(keep(["x/y.csv", "x/z.csv", "w.csv"]), ["w.csv", "x/y.csv", "x/z.csv"]);
 });

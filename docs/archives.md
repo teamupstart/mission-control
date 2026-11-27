@@ -420,20 +420,35 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   `docs/reports/<slug>/report.html`) are copied with it into
   `<state home>/reports/<id>/companions/`, up to 128 files and 16 MiB in all, looked up from at most the first 512 linked paths in sorted order. A Markdown
   document's links are read from its rendered page. A linked file that is missing, outside the
-  checkout, not a regular file or past those bounds is left out; it never refuses the report.
+  checkout, not a regular file (a named pipe is opened without blocking and rejected) or past
+  those bounds is left out. A linked file that exists but cannot be read (`EACCES`, `EIO`)
+  refuses the post, naming the file and the error, so the report can be posted again once it is
+  readable rather than stored without data that was there; so does a checkout that cannot be
+  resolved for any reason other than being gone. Paths that collide on a case-insensitive volume
+  (the same path in another letter case, or a file where another linked path needs a directory,
+  such as `Data` and `data/x.csv`) cannot all be stored or archived, so one is kept, decided in
+  sorted order, and a link to any other is unlinked as missing. Directories that differ only in
+  case merge harmlessly and keep all their files.
   Companions follow the scout capture's containment rule: no path component may be a symbolic
   link, and the file opened must be the file that was checked (opened without following a final
-  symlink, and its device and inode compared), so a file or folder swapped for a symlink while
+  symlink, its device and inode compared, and the path checked again after the open, before any
+  byte is read, so a folder moved out of the checkout and replaced by a symlink is caught even
+  though the file itself is unchanged), so a file or folder swapped for a symlink while
   the report is being posted is left out rather than read. Publishing reads the store under the
   same rule: only the `reports` store is canonicalized, the report's own directory and its
-  `companions` store beneath it must each be a real directory, and each opened file must still
-  resolve inside that store to the same device and inode, so a stored directory swapped for a symlink is
-  never followed, even if the swap is undone straight after the open. The store is never
-  listed: publishing opens only the paths the stored page links to, capped at the same 512
+  `companions` store beneath it must each be a real directory, and after each file is opened every
+  component of its path is checked with `lstat`: each directory must be a real directory, never a
+  symlink (to outside the store or to another directory inside it), and the file must be the one
+  opened, by device and inode. So a stored directory swapped for a symlink is never followed, even if the swap is undone straight after the open. The store is never
+  listed: publishing opens only the paths the page it is publishing links to (taken from
+  that one built page, never from a second read of the stored document), capped at the same 512
   lookups as posting, so every stored companion is read however deep its directories, and a
-  store swapped for a symlink to a large tree cannot stall a publish.
+  store swapped for a symlink to a large tree cannot stall a publish. A stored companion that
+  is gone, or was replaced by a symlink or a named pipe, is unlinked as missing; any other
+  failure reading it fails the publish with a 500 and writes no archive.
   A link that climbs out of the document's directory is not a companion. Neither is a sibling
-  named `report.html`, the name the page itself takes in the archive, nor any path beneath it
+  named `report.html` in any letter case (on a case-insensitive volume `Report.html` is the
+  page's own path), the name the page itself takes in the archive, nor any path beneath it
   (`report.html/data.csv`): from a document with any
   other name, a link to it is unlinked and listed as missing rather than left pointing at the
   page.
@@ -444,8 +459,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
 - **The same checker.** The page must pass the static checker every bundle passes, against
   the companions stored with the report. A relative link to a file that was not stored (a report
   posted before companions were stored, or a file left out at post time) is unlinked rather than
-  refused: the attribute naming it is removed, so its text stays and the rest of the page keeps
-  its bytes, and the bundle is `partial` with each such path listed as a missing
+  refused: the attribute naming it is removed, with the HTML whitespace before it (never a
+  non-breaking space, which belongs to a preceding unquoted value), so its text stays and the
+  rest of the page keeps its bytes, and the bundle is `partial` with each such path listed as a missing
   `report_companion`. The whole attribute goes, so a `srcset` or `style` attribute that also names
   a stored file loses that reference too; the stored file stays in the bundle and is listed with
   its evidence. An attribute that also carries a reference the checker refuses for another

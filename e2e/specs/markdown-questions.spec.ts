@@ -258,6 +258,20 @@ test("a path link in the open inbox survives an update arriving under it and sti
   const link = body(inbox).getByRole("link", { name: "README.md" });
   await expect(link).toBeVisible();
   const before = await link.elementHandle();
+  /*
+   * Whether the update re-parsed this question, read off a list item the Markdown renderer drew.
+   * React keeps an element's current props on its DOM node and replaces that object whenever it
+   * re-renders the element with new props - which a re-parse always does, since it builds every
+   * element afresh even when the output is identical. A memo that holds keeps the same object.
+   * It is a React-internal key, read here only as a probe; nothing in the app depends on it.
+   */
+  const item = await body(inbox).getByRole("listitem").filter({ hasText: RENAME }).elementHandle();
+  type Probe = { __questionItemProps?: unknown };
+  await item!.evaluate((el) => {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"));
+    if (!key) throw new Error("no React props on the list item");
+    (window as unknown as Probe).__questionItemProps = (el as unknown as Record<string, unknown>)[key];
+  });
 
   // An update with the inbox open: a second question from the same session, drawn live.
   const SECOND = "Should the CLI help change as well?";
@@ -267,6 +281,12 @@ test("a path link in the open inbox survives an update arriving under it and sti
 
   // The first question's link is the same element it was, and every question links the path.
   expect(await before!.evaluate((el) => el.isConnected)).toBe(true);
+  // And the update did not re-parse the question that did not change.
+  expect(await item!.evaluate((el) => {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"));
+    return Boolean(key) && (el as unknown as Record<string, unknown>)[key!] ===
+      (window as unknown as Probe).__questionItemProps;
+  }), "the update re-rendered the question that did not change").toBe(true);
   await expect(body(inbox).getByRole("link", { name: "README.md" })).toHaveCount(2);
   await capture(inbox, "06-inbox-link-after-update", page);
   await link.first().click();

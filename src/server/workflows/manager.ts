@@ -3441,6 +3441,9 @@ export class WorkflowManager {
       // A cancelled or failed owner still decides, and it decides no: it never finishes a local
       // review, so it can neither vouch for a head nor let an older run's pass stand in for one.
       if (run.status === "cancelled" || run.status === "failed") return null;
+      // A run repairing GitHub findings stays on the GitHub path, exactly as its gate does, so
+      // the worker keeps answering those threads even if the head would now match.
+      if (run.status === "waiting_for_new_head") return null;
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       if (version?.completionPolicy.kind !== "inspector") return null;
       const review = this.localReviewState(run.id, version);

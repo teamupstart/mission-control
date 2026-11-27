@@ -5057,3 +5057,16 @@ for (const newer of [
     assert.equal(await ask(), null, "a terminal newer owner decides no, and the older pass does not stand in");
   });
 }
+
+test("a run repairing GitHub findings keeps the worker on the GitHub path even when its head would match", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the head matches the passed local review");
+  // The gate sent this run to repair published GitHub findings (for example while the repository
+  // held the merge grant, which was since removed). The head and its tree are unchanged.
+  db.prepare(`UPDATE workflow_runs SET status = 'waiting_for_new_head', current_phase = 'inspector_findings' WHERE id = ?`)
+    .run(seeded.ids.run);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_new_head");
+  assert.equal(await ask(), null, "the worker's answer agrees with the gate's: stay on the GitHub path");
+});

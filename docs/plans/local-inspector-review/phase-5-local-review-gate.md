@@ -160,7 +160,9 @@ matched head stays matched after the workflow finishes). A run that merely share
 repository is not an owner. A newer owner whose version has no Local Inspector stage, or whose
 latest attempt skipped, failed or blocked, is no match even when an older run passed the same
 tree, because that newer run's gate waits for the GitHub review. A newer owner that was cancelled
-or failed is no match too: it never finishes a local review. Only while the newer run's Local
+or failed is no match too: it never finishes a local review. So is a newer owner in
+`waiting_for_new_head`, repairing GitHub findings, which keeps the worker answering those threads
+exactly as the run's gate keeps the GitHub path. Only while the newer run's Local
 Inspector review is still pending (a node queued, running or waiting, or a round that has not
 reached the stage) in a run still going does an older run's pass keep vouching for a head it
 already reviewed.

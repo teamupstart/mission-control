@@ -62,6 +62,8 @@ async function review(mcp, prompt) {
       const file = changed.items[0];
       const absent = file?.path === "submitted.txt" && file.metadata?.absent === true;
       if (!outsideDiff.items[0]?.text.startsWith("# ") || (!absent && !file?.text)) throw Error("Submitted checkout is unavailable");
+      // A clean first review: the stage passes and releases the Pull Request action.
+      if (prompt.includes("E2E_LOCAL_INSPECTOR_CLEAN")) return inspectorResult("No unresolved issues in the submitted checkout");
       if (absent || file.text.startsWith("fixed")) {
         if (absent && prompt.includes("- submitted.txt\n")) throw Error("Removed file should be outside the diff");
         const fingerprint = /- ([a-f0-9]+) - submitted\.txt:/.exec(prompt)?.[1];

@@ -45,3 +45,19 @@ for (const [name, heads] of [
     assert.doesNotMatch(view.title, /Final clean review published/);
   });
 }
+
+test("a head matched to a passed local review reads as reviewed locally, in either posture", () => {
+  const head = "c".repeat(40);
+  for (const mode of ["live", "dry-run"] as const) {
+    const view = inspectorChipView({ ...reviewed, mode, round: 0, reviewedHeadSha: head, observedHeadSha: head,
+      localReviewHeadSha: head })!;
+    assert.equal(view.mark, "✓");
+    assert.equal(view.tone, "insp-clean");
+    assert.match(view.title, /^GitHub Inspector: reviewed locally before the pull request opened, at cccccccc\./);
+    assert.match(view.title, /No GitHub review ran and nothing was posted/);
+  }
+  // A later head is not the reviewed one: the chip falls back to the GitHub state.
+  const moved = inspectorChipView({ ...reviewed, round: 0, observedHeadSha: "e".repeat(40), localReviewHeadSha: head })!;
+  assert.doesNotMatch(moved.title, /reviewed locally/);
+  assert.equal(moved.tone, "insp-queued");
+});

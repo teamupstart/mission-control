@@ -377,8 +377,15 @@ export function InspectorSettingsPanel({
               <p className="settings-hint">
                 Review in the workflow before the pull request opens. With Inspector on, workflows
                 containing a Local Inspector stage review the submitted checkout and return findings
-                to the session. Dry run and Live both allow local review. GitHub reviews continue
-                after the pull request opens.
+                to the session. Dry run and Live both allow local review.
+              </p>
+              <p className="settings-hint">
+                After the pull request opens, a pushed head whose content matches a passed local
+                review gets no GitHub review and no comments, and its workflow completes. Any other
+                head - a later push that changes the content, a workflow version without the stage,
+                a pull request opened outside a workflow - is reviewed on GitHub as before: posted
+                in Live, recorded only in Dry run. Repositories holding the merge grant keep the
+                GitHub review for every head.
               </p>
             </ConsoleCard>
           )}

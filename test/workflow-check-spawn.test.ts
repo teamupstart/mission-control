@@ -233,9 +233,12 @@ test("a timeout is infrastructure, never a non-zero exit", async () => {
  * check's deadlines to read.
  */
 function scriptSleep(sleptMs: number): () => void {
+  // On `performance.now()`, not `Date.now()`: a deadline of a millisecond or two can come due
+  // before the millisecond wall clock has moved at all, and a clock that reads zero elapsed
+  // reports zero sleep, which would let the timer fire on the wall clock after all.
   return configureHostSuspendClock({
-    mark: () => ({ at: Date.now(), suspendedMs: 0 }),
-    suspendedMsSince: (since) => Math.min(sleptMs, Date.now() - since.at),
+    mark: () => ({ at: performance.now(), suspendedMs: 0 }),
+    suspendedMsSince: (since) => Math.min(sleptMs, performance.now() - since.at),
   });
 }
 

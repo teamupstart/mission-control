@@ -218,7 +218,11 @@ test("only a confirmed replacement becomes the saved hotkey, including across a 
   assert.equal(await saved(), null);
 });
 
-test("Speak replies aloud off survives a daemon restart and a later voice choice", async () => {
+test("Speak replies aloud off survives a daemon restart and a later voice choice", async t => {
+  // Leave the shared config as the next test expects it, whatever order the file runs in.
+  t.after(async () => {
+    assert.equal((await json("/api/voice/config", "PUT", { speech: { voice: null, playback: true } })).status, 200);
+  });
   const saved = async () => (await (await json("/api/voice/config")).json()).config.speech;
   assert.equal((await saved()).playback, true, "spoken replies are on by default");
   assert.equal((await json("/api/voice/config", "PUT", { speech: { playback: false } })).status, 200);

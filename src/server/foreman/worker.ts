@@ -88,6 +88,7 @@ import {
 import type { QueueConfig } from "./queue-machine.ts";
 import {
   PromptedFailureTracker,
+  PromptedHoldLog,
   decidePromptedWrapup,
   planPromptedWrapup,
   promptedVerificationHistory,
@@ -262,6 +263,21 @@ const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
 /** Consecutive prompted-wrap-up attempts that got nowhere - see PromptedFailureTracker. */
 const promptedFailures = new PromptedFailureTracker();
+/** One pending-handoff line per held generation; see `PromptedHoldLog`. */
+const promptedHolds = new PromptedHoldLog();
+
+/** Log a held generation once, and forget holds that no longer exist. */
+function notePromptedHold(session: Session, live: readonly Session[], candidate: PromptedCandidate): void {
+  promptedHolds.retainOnly(new Set(live.map((s) => s.agentSessionId ?? s.id)));
+  const cycle = session.workCycle;
+  if (!cycle) return;
+  if (candidate.kind !== "skip" || !candidate.operatorHold) {
+    promptedHolds.forget(cycle.logicalKey);
+    return;
+  }
+  if (!promptedHolds.shouldLog(cycle.logicalKey, cycle.generation)) return;
+  log(`${session.name}: prompted automatic wrap-up pending - ${candidate.why}; send Resume automatic handoff to release it`);
+}
 
 /** Pre-claim reviewer failures are not recovery sends, so bound them separately. */
 const SHIP_RECOVERY_REVIEW_FAILURE_CAP = 3;
@@ -2305,6 +2321,7 @@ export async function processPromptedWrapup(
     cfg: pcfg,
     now: Date.now(),
   });
+  notePromptedHold(session, live, candidate);
   if (candidate.kind === "skip") return false;
   if (candidate.kind === "retire") {
     const current = await refreshPromptedCandidate(client, pcfg, candidate);

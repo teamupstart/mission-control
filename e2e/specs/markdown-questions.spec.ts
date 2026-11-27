@@ -87,7 +87,9 @@ async function openReview(page: Page): Promise<Locator> {
 
 async function openInbox(page: Page): Promise<Locator> {
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
-  const button = page.locator("button.pulse-seg", { hasText: "to answer" });
+  // By role: Settings > Display draws a preview of this same pulse, and only the title bar's is
+  // a button by that name.
+  const button = page.getByRole("button", { name: "to answer" });
   await expect(async () => {
     if (!(await inbox.isVisible())) await button.click({ timeout: 3000 });
     await expect(inbox).toBeVisible({ timeout: 3000 });
@@ -209,3 +211,32 @@ for (const markdown of [false, true]) {
     await expect(body(modal).getByRole("link", { name: "README.md" })).toBeVisible();
   });
 }
+
+/*
+ * The inbox opens over any page, so a path clicked in it has to bring the session into view
+ * first: from Settings it used to close the inbox and leave Settings on screen, and a Fleet
+ * filter that excluded the session hid the detail the file opens in.
+ */
+test("a path clicked in the inbox over Settings, with a Fleet filter hiding the session, opens the file on Fleet", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  const session = await dispatch(daemon);
+  await ask(daemon, session.cwd!);
+  await page.reload();
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await page.locator(".filter-box").click();
+  await filter.fill("no-session-matches-this");
+  await page.evaluate(() => { window.location.hash = "#/settings"; });
+  await expect(page).toHaveURL(/#\/settings/);
+
+  const inbox = await openInbox(page);
+  await body(inbox).getByRole("link", { name: "README.md" }).click();
+  await expect(inbox).toBeHidden();
+  await expect(page).toHaveURL(/#\/fleet/);
+  await expect(filter).toHaveValue("");
+  await expect(
+    page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: "README.md" }),
+  ).toHaveAttribute("aria-selected", "true");
+});

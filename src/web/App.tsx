@@ -3917,6 +3917,22 @@ export function App(): React.JSX.Element {
     if (layout === "board") setBoardOpen(true);
   }
 
+  /**
+   * Open one of a session's checkout files from the inbox, from wherever the operator was.
+   *
+   * `focusSession`'s reason, for a file: the inbox opens over any page, and `openSessionPath`
+   * only selects - so from Settings it closed the inbox and left Settings on screen, and a Fleet
+   * filter that excluded the session hid the detail the file opens in. The file opens only once
+   * the move to Fleet is accepted, so a dirty draft's "leave anyway?" still gets its say.
+   */
+  function openSessionPathOnFleet(sessionId: string, path: string): void {
+    navigate({ page: "fleet" }, (allowed) => {
+      if (!allowed) return;
+      setFilter("");
+      openSessionPath(sessionId, path);
+    });
+  }
+
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
   // Whether the CURRENT layout has anything to draw. Both layouts render provisioning tasks;
@@ -5915,7 +5931,7 @@ export function App(): React.JSX.Element {
                   pinned={pinnedBand}
                   files={files}
                   // The question stays pending; "to answer" brings the operator back to decide.
-                  onOpenPath={openSessionPath}
+                  onOpenPath={openSessionPathOnFleet}
                 />
               )}
               {/* Open report: an agent report's attached document, from its stored copy. Opened from

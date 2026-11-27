@@ -42647,6 +42647,104 @@ body.foreman-sidecar-open .modal-backdrop {
   align-items: first baseline;
 }
 
+/* A session's call sign beside its title while Always-on listens (`CallSignMark`), in voice's
+   listening green so it reads as "the name you can say". One shape per Settings > Display >
+   Board card > Call sign style; each lifts above the tile's stretched open button, as the
+   jump keycap does, so its text can be selected and read. */
+.cs-mic {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.cs-mark {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  color: var(--voice-listening);
+}
+.cs-mark.cs-sub {
+  flex: initial;
+  color: var(--muted);
+  font-weight: 500;
+}
+.cs-mark.cs-sub b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--voice-listening);
+  font-weight: 650;
+}
+.cs-badge,
+.cs-rail {
+  padding: 0 7px 0 5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--voice-listening) 13%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 40%, var(--border));
+}
+.cs-chip {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px 0 4px;
+  border-radius: 5px;
+  letter-spacing: 0.02em;
+  background: color-mix(in oklab, var(--voice-listening) 18%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 45%, var(--border));
+}
+/* The edge tab rides the top border like the task type tab (`.tk-tab`), in one row with it so
+   neither needs to know the other's width. */
+.tile-edge-tabs {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  z-index: 1;
+  display: inline-flex;
+  gap: 6px;
+}
+.tile-edge-tabs > .tk-tab {
+  position: static;
+}
+.cs-tab {
+  padding: 0 8px 0 6px;
+  font-size: 9.5px;
+  font-weight: 720;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--voice-listening) 14%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 45%, var(--border));
+  border-radius: 5px;
+}
+.cs-tab .cs-mic {
+  width: 10px;
+  height: 10px;
+}
+/* The Console rail row's compact form: the title ellipsises, the pill never does. */
+.rail-name.has-call-sign {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rail-name.has-call-sign > .rail-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-name .cs-rail {
+  font-size: 10.5px;
+  font-weight: 620;
+}
+
 /* Wraps rather than clips: the board's drill-in detail is a narrow pane, and the band's one
    action must stay reachable there. The facts give way first, then the action takes a line. */
 .resident-band {

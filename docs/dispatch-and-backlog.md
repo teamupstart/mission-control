@@ -208,6 +208,11 @@ word, a name that sounds like another agent's, one short syllable, or a voice co
 warnings explain and never block; **Dispatch** stays enabled whatever they say. Closed, the fold's
 summary names the call sign beside the Persona.
 
+Left blank, the task is given a call sign as it launches when a safe one is free: a distinctive
+name no other agent is heard as, from a short built-in list. If every safe name is taken, it
+launches without one. Your own call sign is always kept. See
+[Automatic call signs](voice.md#automatic-call-signs).
+
 A call sign is not the title and changes nothing the launch provisions. It is annotation, like
 priority: an update may set or clear it while the agent runs (a resident's task takes none; see
 [Call signs](voice.md#call-signs)), and with the

@@ -13,6 +13,8 @@ import { VOICE_SPEECH_NEURAL_VOICES, type VoiceMicrophoneReading } from "@shared
 import {
   knownVoiceCapabilities,
   VOICE_FLAG,
+  VOICE_FIRST_PREVIEW_HOLD_FLAG,
+  VOICE_FIRST_PREVIEW_VOICED_MS,
   VOICE_MODEL_STATE_NONE,
   VOICE_HELLO_LAPSE_MS,
   VOICE_LISTENER_PROTOCOL_MAJOR,
@@ -237,13 +239,16 @@ export class VoiceStateStore {
     // Only automatic capture ends at the separator. A hold ends on key release.
     const automatic = capture && state.mode === "listening";
     const separator = automatic ? separatorWord : undefined;
+    // The first-preview hold is Always-on only: a hold's preview shows as before.
+    const firstPreviewVoicedMs = automatic && this.deps.enabled(VOICE_FIRST_PREVIEW_HOLD_FLAG) ? VOICE_FIRST_PREVIEW_VOICED_MS : undefined;
     if (sameCapture && (!canUpdateTiming || (last.directive.endOfSpeechMs === endOfSpeechMs &&
-        last.directive.separator === separator))) return last.directive;
-    // A timing or separator edit wakes pollers but keeps the same authorization for automatic audio already captured.
+        last.directive.separator === separator && last.directive.firstPreviewVoicedMs === firstPreviewVoicedMs))) return last.directive;
+    // A timing, separator or preview-hold edit wakes pollers but keeps the same authorization for automatic audio already captured.
     const previousGrant = sameCapture ? last.directive.captureRevision : undefined;
     const captureRevision = automatic ? previousGrant ?? randomUUID() : undefined;
     this.timingRevision = sameCapture ? this.timingRevision + 1 : 0;
-    const directive = { capture, speak: null, inputDevice, endOfSpeechMs, ...(separator && { separator }), roster: state.roster.map(entry => entry.name),
+    const directive = { capture, speak: null, inputDevice, endOfSpeechMs, ...(separator && { separator }),
+      ...(firstPreviewVoicedMs && { firstPreviewVoicedMs }), roster: state.roster.map(entry => entry.name),
       pauseMs: null, revision: captureRevision ? `${captureRevision}:${this.timingRevision}` : randomUUID(),
       ...(captureRevision && { captureRevision }) };
     // Only successive key presses and releases share pending delivery rights.

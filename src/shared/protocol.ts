@@ -1553,9 +1553,11 @@ export const DispatchSchema = z
     personaId: TaskPersonaIdSchema.optional(),
     /**
      * A call sign: a short name the operator can say to address this task's session by voice
-     * (the `voice` preview). Trimmed, 1 to 40 characters. Omitted is none. Accepted whether or
-     * not the flag is on, so a task keeps the name it was given; only the dashboard's field is
-     * behind the flag.
+     * (the `voice` preview). Trimmed, 1 to 40 characters. Omitted, the task is given one from
+     * `AUTO_CALL_SIGN_DICTIONARY` when it launches, whether or not the flag is on, if a safe name is
+     * free; when every safe name is taken it launches without one (`chooseAutoCallSign`'s fallback
+     * in `src/shared/voice-call-signs.ts`). Accepted whether or not the flag is on, so a task keeps
+     * the name it was given; only the dashboard's field is behind the flag.
      */
     callSign: SpokenNameSchema.optional(),
     /**
@@ -1964,7 +1966,7 @@ const UpdateTaskFieldsSchema = z
      * nothing the launch provisioned, so it may change while the agent runs.
      */
     callSign: SpokenNameSchema.nullable().optional().describe(
-      "Call sign: a short spoken name (1 to 40 characters) this task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available. Not the title. Null takes it off. A resident's task takes none",
+      "Call sign: a short spoken name (1 to 40 characters) this task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available. Not the title. Null takes it off. A task launched with none is given a distinctive one if a safe name is free, and launches without one when every safe name is taken. A resident's task takes none",
     ),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
@@ -4431,6 +4433,19 @@ export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
 export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
 
 /**
+ * How a session's call sign is drawn on its Board card while Always-on is listening, when the
+ * card keeps the session's title (`docs/voice.md#call-signs-on-always-on-cards`): a muted line
+ * under the title, a pill after it, a chip before it, a tab on the card's top border, or not at
+ * all. `off` hides the element only: the call sign stays saved and voice still routes to it.
+ * Push-to-talk titles a card by its call sign whatever this says. Persisted on operators'
+ * machines, so append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the
+ * picker's order.
+ */
+export const CALL_SIGN_CARD_STYLES = ["subtitle", "badge", "chip", "tab", "off"] as const;
+export const CallSignCardStyleSchema = z.enum(CALL_SIGN_CARD_STYLES);
+export type CallSignCardStyle = (typeof CALL_SIGN_CARD_STYLES)[number];
+
+/**
  * Resident name with call sign styles (`docs/residents.md`). Persisted on operators' machines, so
  * append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the panel's order, and
  * the one a stored list is kept in.
@@ -4648,6 +4663,8 @@ export const UI_CONFIG_DEFAULTS = {
   taskKindCard: "tab",
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
+  /** A call sign under the title, shown by default. Off is a choice in the same picker. */
+  callSignCardStyle: "subtitle" as CallSignCardStyle,
   residentCardNameStyles: [] as readonly ResidentCardNameStyle[],
   keybindings: {},
   /**
@@ -4821,6 +4838,10 @@ export const UiConfigSchema = z.object({
   backgroundAgentsStyle: BackgroundAgentsStyleSchema
     .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
     .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
+  /** `.catch` like `backgroundAgentsStyle`: a style a newer build added reads as the default. */
+  callSignCardStyle: CallSignCardStyleSchema
+    .default(UI_CONFIG_DEFAULTS.callSignCardStyle)
+    .catch(UI_CONFIG_DEFAULTS.callSignCardStyle),
   /**
    * Read leniently: a style a newer build added is dropped after a downgrade while the ones this
    * build knows are kept, and anything that is not a list reads as none, rather than failing the
@@ -5081,6 +5102,8 @@ export const UiConfigPatchSchema = z.preprocess(
     blockedPlacement: BlockedPlacementSchema.optional(),
     // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
     backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
+    // Strict for the same reason: a bad write is a 400, never a stored Subtitle line.
+    callSignCardStyle: CallSignCardStyleSchema.optional(),
     // Strict for the same reason: an unknown style is a 400, never silently dropped. Stored
     // once each, in the panel's order.
     residentCardNameStyles: z

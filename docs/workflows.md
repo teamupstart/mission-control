@@ -2961,7 +2961,9 @@ full resubmission requirement still applies. The durable adoption also preserves
 Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
 **Recheck GitHub Inspector** only appears while the run is in a live gate wait that the
 evaluator can process. It reevaluates the current durable observation and remains waiting until
-GitHub Inspector's normal sweep has seen a new head. A spent blocked run has no working recheck,
+GitHub Inspector's normal sweep has seen a new head. GitHub Inspector no longer sweeps a pull
+request it has read closed or merged, so a recheck of a wait on one also reads it from GitHub
+directly (see **PR closed** below). A spent blocked run has no working recheck,
 so the dashboard omits it and the daemon refuses a direct request without writing a recheck
 audit event.
 
@@ -2978,6 +2980,20 @@ lifts the block, a closed or merged answer leaves it, and a failed read leaves i
 on the run's timeline. If GitHub cannot be reached, a pull request whose last read was open
 still recovers. Recovery restores the wait the block interrupted, including the repair-push
 wait, without a full restart or another Persona round.
+
+A pull request can also finish before the gate hears about it: it merges while the workflow's
+Pull Request action is still settling, or the daemon restarts after GitHub Inspector read it
+closed. GitHub Inspector has already stopped polling it, so no fresh observation will arrive.
+When the gate's own pinned pull request is retired on a read that said closed or merged, or
+because Shipping merged it, the gate blocks as **PR closed** instead of waiting. The run's
+timeline records that the block came from the retired record and whether the closure
+preceded gate entry. The gate checks this when it opens, at every daemon start, and on
+**Check again**. **Check again** on such a wait also reads the pull request from GitHub, so a
+pull request that was reopened resumes polling and the wait comes back. A merge is never a
+pass: the run is not completed, no review is waived, no finding is cleared, and the task and
+its session stay as they were. A retired record whose last read did not say the pull request
+finished, or one that is not the pull request the gate pinned, proves nothing, and the run
+keeps waiting until **Check again** reads GitHub.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
@@ -3174,10 +3190,14 @@ The defaults in **Library > Commands > Local Inspector** are **Major and above**
 per run**, a **10-minute timeout** and **Block for operator action** on exhaustion. Lower-severity
 findings are advisory. Blocking findings return a repair packet to the session. The session can
 repair and resubmit before the workflow opens a pull request or runs CI. The workflow's repair
-limit applies to those rounds. A returned repository review spends an execution even if its
-findings cannot be retained. If the allowance runs out with blocking findings still open or
-a review result that could not be processed, the stage pauses for operator action even when
-its exhaustion policy is **Skip**.
+limit applies to those rounds. A repository review spends an execution once its provider
+returns a response, even if the stage then rejects that response: a malformed verdict, a verdict
+without a verified repository query, a failed audit, an interruption, or findings that cannot be
+retained. A review that fails before its provider returns spends nothing, and its retry runs on the
+same allowance: for example an unavailable provider, or a daemon restart while the provider is
+still running. A restart after the provider returned still spends the execution. If the
+allowance runs out with blocking findings still open or a review result that could not be
+processed, the stage pauses for operator action even when its exhaustion policy is **Skip**.
 
 Submission capture records whether local review is enabled. When the preview, Inspector or
 local review is off, the stage skips with a note. An enabled stage blocks for operator action

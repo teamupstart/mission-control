@@ -9,7 +9,9 @@ obligation:
    **Open dossier**. Nothing else in that run moves until it is answered.
 2. **Questions from agents** - every pending [review](sessions.md#review-channel-mcp), grouped by the
    session that raised it and **answered right here**: the same card the per-session review
-   modal draws, diff/plan/question and option menus included. A member of an ensemble carries
+   modal draws, diff/plan/question and option menus included. A checkout path in a question links
+   here exactly as it does in that modal: clicking it closes the inbox and opens the file in the
+   session's Files tab, and the question stays pending. A member of an ensemble carries
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
 3. **Session control requests** - with the preview enabled, each request shows who asked and why.

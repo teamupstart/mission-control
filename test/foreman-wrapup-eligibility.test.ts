@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { GOAL_OPERATOR_HANDOFF_ONLY } from "../src/shared/goal.ts";
 import { automaticWrapupBlock } from "../src/server/foreman/wrapup-eligibility.ts";
 
 function block(over: Partial<Parameters<typeof automaticWrapupBlock>[0]> = {}) {
@@ -232,4 +233,56 @@ test("the plan exemption does not reach past the review-artifact classifier", ()
     null,
     "with the safeguard off there was nothing to exempt from in the first place",
   );
+});
+
+// #1807: a recurring report mission whose prompt said "Do not open a PR" stopped concluding.
+// The hold was answered before the review-artifact retirement, and both callers answer a hold
+// by leaving the generation armed and recording nothing, so the run never left `running`.
+test("an operator hold never masks a completion that is ineligible for any handoff", () => {
+  const held = [
+    "Write the weekly dependency report. Do not open a PR.",
+    `Write the weekly dependency report.\n${GOAL_OPERATOR_HANDOFF_ONLY}`,
+    "Write the weekly dependency report.\nOperator handoff restriction: no PR\nAutomatic handoff: operator only",
+  ];
+  for (const objective of held) {
+    assert.equal(block({ objective })?.kind, "review_artifact", objective);
+  }
+  assert.equal(
+    block({ taskKind: "scout", objective: "Implement the fix. Do not open a PR." })?.kind,
+    "scout",
+  );
+  assert.equal(
+    block({ taskKind: "chat", objective: "Implement the fix. Do not open a PR." })?.kind,
+    "human_ended",
+  );
+});
+
+test("an operator hold still reserves a completion that would otherwise be handed off", () => {
+  assert.equal(block({ objective: "Implement retry handling. Do not open a PR." })?.kind, "operator_hold");
+  assert.equal(
+    block({ objective: `Implement retry handling.\n${GOAL_OPERATOR_HANDOFF_ONLY}` })?.kind,
+    "operator_hold",
+  );
+  assert.equal(block({ objective: "Do not open a PR." })?.kind, "operator_hold", "a hold with no deliverable");
+  assert.equal(
+    block({ objective: "Write the weekly dependency report. Do not open a PR.", skipReviewArtifactWrapup: false })?.kind,
+    "operator_hold",
+    "with the artifact safeguard off, a report is ordinary work and the hold applies",
+  );
+  assert.equal(
+    block({ taskKind: "scout", objective: "Implement the fix. Do not open a PR.", skipScoutWrapup: false })?.kind,
+    "operator_hold",
+    "with the Scout safeguard off, a Scout is ordinary work and the hold applies",
+  );
+});
+
+test("the hold's own annotation is not read as the deliverable", () => {
+  // A contextual restriction quotes the operator's words, which can name a review artifact
+  // ("until I review the plan") without the task being one.
+  const objective = [
+    "Implement retry handling in the uploader.",
+    "Operator handoff restriction: Leave publication with me. Review the plan first.",
+    GOAL_OPERATOR_HANDOFF_ONLY,
+  ].join("\n");
+  assert.equal(block({ objective })?.kind, "operator_hold");
 });

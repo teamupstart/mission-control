@@ -381,6 +381,43 @@ test("a retriage made while the prompt is being typed survives the assignment", 
   assert.deepEqual(after.labels, ["infra", "urgent"]);
 });
 
+test("an unnamed task handed to a running agent takes a distinct call sign in the claim, and a named one keeps its own", async () => {
+  // The assign claim is the second launch path that names a task (the dispatcher's is the
+  // first). It must read the names already spoken for at the moment it commits, so a task
+  // launching meanwhile under the very name this one would have taken keeps it, and the
+  // name this one does take lands on the stored row.
+  const { AUTO_CALL_SIGN_DICTIONARY, chooseAutoCallSign } = await import("../src/shared/voice-call-signs.ts");
+  const { namesSoundAlike } = await import("../src/shared/voice-names.ts");
+  const { allocateCallSign } = await import("../src/server/voice/call-sign-allocation.ts");
+  for (const [id, own] of [["unnamed", undefined], ["named", "Captain"]] as const) {
+    const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-call-sign-${id}-`);
+    tasks.useCallSignAllocation((task) => allocateCallSign(task, [], r.listTasks()));
+    r.upsertTask(mkTask({ id, repoRoot: clone, ...(own ? { callSign: own } : {}) }));
+    const firstChoice = chooseAutoCallSign([], id)!;
+    const res = await tasks.assign(id, sessionId, {
+      paneReady,
+      reset: cleanReset,
+      inject: async () => {
+        // Another launch claims a name while the prompt is being typed.
+        r.upsertTask(mkTask({ id: `${id}-other`, status: "dispatching", callSign: firstChoice, repoRoot: clone }));
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+    assert.equal(res.ok, true, res.ok ? undefined : res.error);
+    const stored = getStoredTask(id)!;
+    assert.equal(stored.status, "running");
+    if (own) {
+      assert.equal(stored.callSign, own, "an operator's own call sign is kept");
+      continue;
+    }
+    const sign = stored.callSign!;
+    assert.ok((AUTO_CALL_SIGN_DICTIONARY as readonly string[]).includes(sign), `took ${sign}`);
+    assert.notEqual(sign, firstChoice, "the name claimed while typing was not taken");
+    assert.equal(namesSoundAlike(sign, firstChoice), false, "never heard as a name claimed before the commit");
+    assert.equal(r.getTask(id)!.callSign, sign, "the Registry holds the stored name");
+  }
+});
+
 test("dependency edits cannot enter while assignment owns the task", async () => {
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-dependency-lock-");
   r.upsertTask(mkTask({ id: "lock-pre", repoRoot: clone, title: "Merge first" }));

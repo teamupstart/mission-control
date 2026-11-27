@@ -2,7 +2,7 @@ import type { Registry } from "./registry.ts";
 import type { TaskManager } from "./tasks.ts";
 import { SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
-import { envVar } from "./config.ts";
+import { checkoutDiagnosticClass, orphanedWorktreeReclaimMode, worktreeCleanupReportOnly } from "./worktrees/orphaned-task-checkout.ts";
 import { getWorktreesConfig } from "./worktrees/config.ts";
 import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
 import {
@@ -74,26 +74,52 @@ export { isRetentionCandidate, taskResourceGeneration };
 
 export const SEVEN_DAY_RETENTION_MS = 7 * RETENTION_DAY_MS;
 
-export function backgroundWorktreeCleanupMode(value = envVar("WORKTREE_CLEANUP_PREVIEW")) {
-  if (value && value !== "enforce") return "report-only";
+export function backgroundWorktreeCleanupMode() {
+  if (worktreeCleanupReportOnly()) return "report-only";
   return featureEnabled(SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID) ? "enforce" : "configured";
 }
 
-/** Existing Worktrees diagnostics, with bounded output and no private claim data. */
-export function backgroundWorktreeRetentionStatus(tasks: readonly Task[]) {
+/**
+ * Existing Worktrees diagnostics, with bounded output and no checkout paths or private claim
+ * data.
+ *
+ * `slotPath` is the dispatcher's `worktreeSlotPath`, supplied by the caller so this module
+ * imports nothing that owns teardown.
+ */
+export async function backgroundWorktreeRetentionStatus(
+  tasks: readonly Task[],
+  slotPath: (taskId: string, position: number) => string,
+) {
   const owners = new Map(tasks.filter(isRetentionRetryable).map((task) => [task.id, task]));
   const rows = listTaskWorktreeRetention().flatMap((row) => {
     const task = owners.get(row.taskId);
     if (!task || row.generation !== taskResourceGeneration(task)) return [];
-    return [{
+    return [{ task, row }];
+  });
+  const entries = await Promise.all(rows.slice(0, 100).map(async ({ task, row }) => {
+    const refs = taskRepoRefs(task).filter((ref) => ref.worktreePath);
+    return {
       taskId: task.id,
-      paths: taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []),
+      // One entry per held checkout, identified by its repository position, never by path.
+      // `class` is what is on disk there right now, read from the filesystem for this response
+      // and never cached. `dangling-link` is what an orphan looks like; the blocker below says
+      // whether its full proof passed.
+      checkouts: await Promise.all(refs.map(async (ref) => ({
+        position: ref.position,
+        provider: ref.provider,
+        class: await checkoutDiagnosticClass(ref, slotPath(task.id, ref.position)),
+      }))),
       unownedSince: row.unownedSince,
       cleanupDueAt: row.unownedSince !== null ? row.cleanupDueAt : null,
       blocker: row.lastError,
-    }];
-  });
-  return { mode: backgroundWorktreeCleanupMode(), entries: rows.slice(0, 100), total: rows.length };
+    };
+  }));
+  return {
+    mode: backgroundWorktreeCleanupMode(),
+    orphanReclaim: orphanedWorktreeReclaimMode(),
+    entries,
+    total: rows.length,
+  };
 }
 
 /** Default window, retained for callers that need the shipped policy rather than current config. */
@@ -262,14 +288,17 @@ export const defaultRetentionObserverDeps: Omit<RetentionObserverDeps, "listTask
 export function createDaemonRetentionObserver(
   registry: Pick<Registry, "listTasks" | "refreshTaskAutomaticCleanup">,
   tasks: Pick<TaskManager, "backgroundWorktreeUseBlocker" | "backgroundWorktreeOccupancyBlocker" |
-    "backgroundWorktreeSafety" | "enqueueRetentionCleanup">,
+    "backgroundWorktreeReportOnly" | "backgroundWorktreeActivity" | "enqueueRetentionCleanup">,
   now = Date.now,
 ): TaskWorktreeRetentionObserver {
   const retentionMs = () => backgroundWorktreeCleanupMode() === "configured"
     ? defaultRetentionObserverDeps.retentionMs() : SEVEN_DAY_RETENTION_MS;
-  const reportOnlyBlocker = (task: Task, path: string) => tasks.backgroundWorktreeSafety(task, path, false);
+  const reportOnlyBlocker = (task: Task, path: string) => tasks.backgroundWorktreeReportOnly(task, path);
   return new TaskWorktreeRetentionObserver({
     ...defaultRetentionObserverDeps,
+    // Orphan-aware only while `orphaned-worktree-reclaim` is evaluated; otherwise exactly the
+    // default Git probe. The same probe re-reads the checkouts inside TaskManager's guards.
+    probe: (task) => tasks.backgroundWorktreeActivity(task),
     listTasks: () => registry.listTasks(),
     now,
     retentionMs,

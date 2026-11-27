@@ -61,6 +61,12 @@ A settled card stays visible while one of its controls has focus or its action i
 progress, including when the dashboard reconnects to the daemon. Once both end, the card
 gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
+Click anywhere on a **Sent to** receipt, on the dashboard, the pill or the tray popover, to
+dismiss it at once. The receipt is also one **Dismiss** button that Tab reaches, as does
+**⌘⌥V** (**View > Focus Voice Confirmation**) on a floating card; press Return or Space.
+Only that receipt closes: the cards around it close the gap and keep their own countdowns and
+reading intervals. Cards still counting down, choosing a recipient, held or offering a recovery
+action do not dismiss on click.
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
 If you remove the task’s call sign, its held turn remains recallable after a daemon restart or after you switch Voice off and back on.
@@ -1089,13 +1095,67 @@ annotation, like priority: nothing is provisioned from it, so an update may set 
 the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, and so do the MCP
 `create_task` and `update_task` tools; `get_task` and `list_tasks` report it.
 
-While Voice can hear you, a session with a call sign is titled by it on its Board card and its
-Console rail row, and its Open button and the fleet filter use the same name. That is while
-Always-on is listening, and in Push-to-talk both while waiting for the shortcut and while it is
-held, since the next hold may address any agent. Muted, auto-muted for a call, not listening and
-Voice off keep the session's ordinary title, as does a session without a call sign. Resident
-cards follow the same rule with their [reference names](#reference-names)
-(`voiceCardsShowSpokenNames` in `src/shared/voice.ts`).
+In Push-to-talk, while waiting for the shortcut, while it is held and after release, a session
+with a call sign is titled by it on its Board card and its Console rail row. Its Open button
+uses the same name, since the next hold may address any agent. Muted, auto-muted for a call, not
+listening and Voice off keep the session's ordinary title and draw no call sign, as does a
+session without a call sign. The fleet filter matches a call sign whenever Voice can hear you.
+Resident cards are titled by their [reference names](#reference-names) both while Always-on
+listens and in Push-to-talk (`voiceCardsShowSpokenNames` in `src/shared/voice.ts`).
+
+### Call signs on Always-on cards
+
+While Always-on is listening, a session card keeps the session's own title, and its Open button
+is named by that title. The call sign is drawn as a separate element in the style chosen under
+**Settings > Display > Board card > Call sign**. That choice is one radio group, offered while the
+`voice` flag is on, with a preview card beside it that redraws as you pick:
+
+- **Subtitle line** (the default): a muted line under the title reads "Say Juniper", with the name
+  in green. The title keeps its whole width, and each card is one short line taller.
+- **Trailing badge**: a green pill after the title, before the jump key. A long title is cut a
+  little sooner.
+- **Leading chip**: a chip before the title.
+- **Edge tab**: a tab on the card's top border, beside the task type tab.
+- **Off**: the title alone. Only the element is hidden: the call sign stays saved, the fleet filter
+  still matches it, and voice still routes to it.
+
+The Console rail row has room for one compact pill after its title, which it draws for every
+style but Off. Each style reads "Call sign Juniper" to a screen reader. The choice is
+`callSignCardStyle` in the UI config (`CALL_SIGN_CARD_STYLES` in `src/shared/protocol.ts`), stored
+and searchable like the other Display choices, and Push-to-talk ignores it. The decision and its
+four variants were picked from mock-ups with the operator; the variants were kept as choices.
+
+### Automatic call signs
+
+A task launched without a call sign is given a safe one when one is available, so a session can
+normally be addressed by voice. When every safe name is taken, the fallback below launches the
+task without one. Assignment happens whether or not Voice is on, so the name is already settled
+when Voice is turned on. A call sign you typed, or one set through `create_task` or `update_task`, is
+always kept. The name is drawn from `AUTO_CALL_SIGN_DICTIONARY` in `src/shared/voice-call-signs.ts`:
+a few dozen two-syllable everyday nouns such as Badger, Juniper and Topaz, each of which passes
+`validateSpokenName` on its own, and no two of which sound alike. A test holds both rules for every
+entry.
+
+The choice (`chooseAutoCallSign`) skips any name that draws a `validateSpokenName` warning
+against a name already spoken for: a resident's name or reference name, the call sign of every
+unfinished task, including one still launching or waiting in the backlog, and every call sign on
+the roster. Sound-alikes are measured the way routing measures them. Each task starts at its own
+point in the list, so concurrent launches spread out. If every name is taken, the choice falls back
+in two steps:
+
+1. It reuses the exact name of a finished task that is still listed as not running. That task
+   leaves the roster at once, as it would for any agent that takes its name.
+2. If no name can be reused safely, the task launches without a call sign. It is never given a
+   name that could be heard as another agent's. You can still set one by hand.
+
+The name is chosen in the same synchronous write that claims the launch (`Dispatcher.dispatch`,
+and the claim that hands a backlog task to a running agent), so concurrent dispatches cannot take
+the same name. It is stored in `tasks.call_sign` like a typed one, so it stays the same for the
+task's life, across relaunches and daemon restarts. Clearing it and launching again runs the
+choice again. That choice starts at the same point for the same task, so it picks the same name
+when that name is still safe, and the next safe one when it is not. With Voice off the name is
+still assigned and stored, but no card draws it and nothing routes by voice. Once Voice can hear you, cards show and route it like any call sign: beside the title
+while Always-on listens, and as the title in Push-to-talk.
 
 A resident's task takes no call sign: the resident answers to its profile's names, and the roster
 would leave a call sign out while its card printed it. Creating or updating one with a call sign
@@ -1382,6 +1442,97 @@ to an input gap or to a later phrase passing the capture limit, with the hold's 
 for the hold and posts nothing, and `test/voice-state.test.ts` that each hold's live transcript starts
 empty, keeps its words through a pause and clears at key-up.
 
+### First-preview hold measurements
+
+[`e2e/specs/voice-first-preview-hold.spec.ts`](../e2e/specs/voice-first-preview-hold.spec.ts) checks
+that the flag starts off, that its toggle changes the Always-on directive live without a new capture
+grant, and then measures the hold through the real overlay. Each native test drives the release Swift
+listener loop with a 16 kHz playlist at microphone callback pace, into an isolated daemon with three
+call-signed sessions. It plays the playlist once with the flag off and once with it on, and records
+every text the dashboard's live transcript overlay shows with its time. Both native tests require
+that the final transcripts, their routes and their outcomes are identical in the two runs.
+
+The synthesized test, whose windows are labeled, also requires in each run that Carol's confirmation
+is cancelled and that the spoken "Cancel." after it is recorded as a control action. It then compares
+two whole-run counts: the number of non-speech windows that showed words may not be higher with the
+flag on, and the number of utterances that reached a useful preview, meaning a preview whose first
+word is the word spoken, must be the same in both runs. Because the overlay draws finals too, it
+also requires live previews on their own: in each run, at least 3 of the 9 utterances whose final
+lands in their window must show the spoken word before that final. A final shows once, as its
+window's last change, so a correct text that another change follows is a live preview. It asserts
+nothing per window or per utterance; the per-window results below are measurements. Each run writes its counts, timings and
+recognized text, never audio, to `e2e/.artifacts/voice-preview-hold/`. With `MC_E2E_EVIDENCE` set it
+also films the overlay corner and writes captioned GIFs of the "Okay." reply and the "Yes." after
+typing, with the flag off and on, for review, each with a single-frame sheet of the frames around
+speech onset and every change of the overlay's text.
+
+The synthesized playlist mixes macOS `say` speech with a synthesized room floor of about -44 dBFS.
+It has 6 non-speech windows (room only, fast and slow typing, a knock, a breath, a knock and a
+breath) and 11 utterances: five one-word replies ("Yes.", "No.", "Okay.", "Stop.", and "Yes." after
+typing), five call signs ("Max, stop.", "Steve, check the build.", "Steve, stop." after a knock, a
+quiet "Max, run the tests." and "Carol, run the tests."), and a spoken "Cancel.". On November 26,
+2026, four off and on pairs on a Mac mini with the installed
+`parakeet-v2-ee09c569-ctc110m-accdafd8` models gave:
+
+| Summed over 4 pairs | Flag off | Flag on |
+| --- | --- | --- |
+| Non-speech windows that showed words | 15 of 24 | 3 of 24 (-80%) |
+| Utterances that showed other words first ("Yeah." before "Yes.", "Mm-hmm." before "Okay.") | 18 of 44 | 4 of 44 (-78%) |
+| Utterances that reached a useful preview | 44 of 44 | 44 of 44 |
+| Finals, routes and outcomes identical | | every pair |
+
+Latency is the time from speech onset to the first useful live preview, kept apart from the final,
+because the overlay draws both. A useful text counts as a live preview when another overlay change
+follows it in its window, when it differs from the final transcript, or when it appeared before the
+phrase could have closed: the end-of-speech delay after onset, 2000 ms, or 500 ms for the Cancel that
+the cancel window shortens. The spec scores each run this way (`medianMsToFirstUsefulLivePreview`).
+Over eleven off and on pairs of the same playlist, 109 of 121 utterances with the flag off and 112
+with it on had an established live preview; the rest showed the spoken word only as their final, or as a
+preview identical to it and too late to tell apart, mostly the short synthesized "Yes." and "Cancel.".
+
+| Eleven pairs, live previews only | Flag off | Flag on | Paired, on minus off |
+| --- | --- | --- | --- |
+| Median ms to the first useful live preview, all utterances | 876 (109) | 947 (112) | +107 ms, later in 66 of 105 |
+| One-word replies | 880 (50) | 808 (51) | +83 ms, later in 28 of 48 |
+| Call signs | 876 (55) | 1003 (55) | +117 ms, later in 36 of 55 |
+| Spoken Cancel | 792 (4) | 975 (6) | +222 ms, later in 2 of 2 |
+
+The paired column compares the same utterance in the same pair where both runs had a live preview.
+The hold therefore adds about 110 ms to the first useful live preview at the median. The preview
+loop samples every 800 ms from wherever the capture started, so any single utterance moves by up to
+800 ms between runs, and only the paired medians over many runs show the shift. An earlier reading
+of the same runs that counted finals as previews showed no median change; it was wrong because about
+half of its first useful texts were finals. Finals, and with them routing and the effect of a spoken
+Cancel, did not change.
+
+The operator also recorded about 90 seconds of their own speech, with consent, on the room's webcam
+microphone: room silence, typing, one-word replies, call signs, two Cancels and a quiet call sign. The
+recording stays on that machine and is not in the repository. The test reads it from
+`MISSION_PREVIEW_HOLD_HUMAN_WAV` and is skipped without it. It has no timed labels, so its test asserts
+only that the finals, routes and outcomes are identical, and keeps each run's raw overlay timeline.
+The readings below were taken from those timelines by hand. In three off and on pairs the finals,
+routes and outcomes were identical, 8 captures per run, including Carol's confirmation cancelled by
+voice. With the flag off the overlay showed 4, 5 and 4 fillers per run ("Okay.", "'Kay.",
+"Mm-hmm.", "Yeah."), during room noise and just before "Carol" and both Cancels. With the flag on it
+showed none of those. It showed one filler per run: a room-noise phrase that stayed open from about
+7.5 s to 30 s finished as the final "Okay.", and the overlay showed that final, routed as ignored.
+With the flag off the same final was not shown, because its earlier preview had already expired and
+an expired phrase cannot reopen the overlay. That final then stayed as the overlay's first word while
+the operator kept speaking.
+
+What these runs did not establish:
+
+- One room, one webcam microphone and one speaker. No headset, no other voices and no background conversation.
+- In the noisy room, phrases stayed open through short pauses, so the operator's one-word replies
+  merged into longer phrases and could not be measured on their own. That end-of-speech behavior,
+  and noise that a final decodes into words, are outside this preview.
+- The hold does not stop a noise phrase that builds up 300 ms of voiced frames, such as sustained
+  typing: 3 of the 24 synthesized non-speech windows still showed a word.
+- The 300 ms threshold was chosen on the scout's set, and these playlists are small.
+- Push-to-talk and dictation into a focused editor were not measured; the Swift tests cover that
+  Push-to-talk is never held and that an editor preview is held exactly like the overlay.
+- The Linux listener does not read the hold.
+
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.
 - `test/voice-routing.test.ts`: each routing rule, an exact first word with a later name asking
@@ -1421,6 +1572,27 @@ empty, keeps its words through a pause and clears at key-up.
 - `test/voice-call-sign.test.ts`: the schemas, a call sign set and cleared on a running task, and
   one refused on a resident's task, created or updated.
 - `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.
+- `test/voice-call-sign-allocation.test.ts`: every dictionary name passes validation and no two
+  sound alike; a claimed name or a sound-alike is skipped; a finished task's exact name is reused
+  before a task goes unnamed; an explicit call sign is kept; eight concurrent launches take eight
+  distinct names, each stored on its task row and kept when launched again. Through a real launch
+  claim: with every name held the task is still claimed and its launch goes on with no call sign
+  stored, and with one finished task's name free that exact name is reused.
+- `test/task-assign.test.ts`: an unnamed task handed to a running agent takes a name in the assign
+  claim, avoiding one another launch claimed while the prompt was typed; a named task keeps its own.
+- `test/call-sign-card-style.test.ts`: which voice modes draw the call sign beside the title or as
+  it; the stored default and its strict write; each style's markup with the title kept; Push-to-talk
+  drawing no second copy; the rail's compact pill; and the five-way radio group behind the flag with
+  its preview following the choice.
+- `e2e/specs/voice-always-on-call-sign-style.spec.ts`: three dispatched sessions keep their titles
+  with "Say <call sign>" under them; Settings offers five radios with Subtitle line checked, and each
+  pick moves the preview and every card; Off draws nothing while an utterance to the call sign still
+  routes; the Console rail shows the pill.
+- `e2e/specs/voice-auto-call-sign.spec.ts`: four concurrent dispatches through the real route,
+  one with its own call sign, take distinct dictionary names that are stored and listed on the
+  roster. A message addressed to one is routed to it, and the Board cards show every name in
+  Push-to-talk while waiting, while held, after release and after a reload. Words captured while
+  the shortcut is held and addressed to another assigned name are sent to that agent on release.
 - `test/display-name.test.ts`: a call sign and a reference name as the first rank, and a
   resident never named by its task's call sign.
 - `e2e/specs/voice-call-sign.spec.ts`: "Will" draws the everyday-word warning with Dispatch still
@@ -1815,3 +1987,40 @@ transcript rises above the toast's cards and returns to its place when they clos
 too short for both, the toast stack also gives up height and scrolls, so every countdown,
 Cancel and Send now stays reachable. The floating pill and the tray popover are separate
 desktop windows above the dashboard and do not move the transcript.
+
+#### First-preview hold (preview)
+
+Room noise, typing and a desk knock can open a phrase with no speech in it. The listener decodes
+every open phrase every 800 ms for the live transcript, and the speech model tends to fill a short,
+near-silent snapshot with a filler such as “Okay.”, “Yeah.” or “Mm-hmm.”. The final decode of the
+same phrase is usually empty, so nothing is routed, but the filler flashes on screen.
+
+The **Voice first-preview hold** preview flag (`voice-first-preview-hold`, in Settings > Feature
+flags, off by default) holds back a phrase's first live words until that phrase holds 300 ms of
+audio the voice activity detector marked voiced. From then on its words update on every pass as
+before. The count belongs to one phrase: a new phrase, after an end-of-speech pause, an input
+interruption or a live delay edit that closes the open one, starts again from zero.
+
+The hold changes only what the live preview publishes: the transcript overlay and the dictation
+preview in a focused editor. It does not change:
+
+- the final decode, the roster priming, or what is posted to `/voice/utterances`;
+- routing, call signs, the separator word or spoken Cancel;
+- the audio heartbeat and the focus check the listener sends while a phrase is open;
+- Push-to-talk holds, which preview as before;
+- the overlay's five-second expiry once words are shown.
+
+The daemon sends `firstPreviewVoicedMs: 300` in the Always-on listener directive while the flag is
+on, and omits it otherwise, so with the flag off the directive and the listener behave exactly as
+before. Turning the flag on or off is a live directive edit: it keeps the open microphone and its
+capture grant, like a separator edit, and applies from the next preview pass. A phrase whose words
+are already on screen keeps showing them; one whose earlier passes showed no words, because the
+hold was off but its decode found nothing or failed, or neither the overlay nor a focused editor took
+its words, is held like a new one. The macOS listener reads the field. The Linux listener
+ignores it and previews as before.
+
+The 300 ms threshold comes from a scout that replayed synthesized speech and noise through a copy
+of the listener's speech gate with a simulated preview loop. It reduced the non-speech phrases
+that showed words by 72%, with no change in the median time to the first correct preview on its
+room-microphone set. Measured against this build through the real overlay, the hold adds about
+110 ms at the median to the first useful live preview; see [Tests](#first-preview-hold-measurements).

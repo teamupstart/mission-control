@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { VoiceCard } from "../src/shared/voice-routing.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
-import { VoiceCardView } from "../src/web/components/VoiceCardView.tsx";
+import { VoiceCardView, type VoiceCardActions } from "../src/web/components/VoiceCardView.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 import type { DashboardVoiceCard } from "../src/web/lib/voice-card-clock.ts";
 
@@ -103,4 +103,23 @@ test("the floating pill stacks every open countdown oldest first and drops the s
   assert.equal(popover.match(/>Cancel</g)?.length, 1);
   assert.match(popover, /run the release checklist/);
   assert.match(popover, /Voice message/);
+});
+
+test("only a delivered receipt with per-recipient rows renders the Dismiss control", () => {
+  const withDismiss: VoiceCardActions = { ...actions, dismiss() {} };
+  const render = (card: VoiceCard, cardActions: VoiceCardActions = withDismiss) => renderToStaticMarkup(createElement(VoiceCardView, { card, actions: cardActions, operation }));
+  const base = { reason: "exact", deadline: null, candidates: [], openQuestions: 0 } satisfies Partial<VoiceCard>;
+  const will = { ...target, name: "Will", key: "resident:will" };
+  const split: VoiceCard = { ...base, id: "split", state: "sent", parts: [{ target, text: "check CI", outcome: "sent" },
+    { target: will, text: "stop", command: "stop", outcome: "sent" }] };
+  assert.match(render(split), /aria-label="Dismiss: Sent to Steve, Stop sent to Will"/);
+  assert.match(render(split), /class="vc-dismiss"/);
+  for (const state of ["pending", "resolving", "unsure", "queued", "held", "not-running", "cancelled", "failed"] as const) {
+    assert.doesNotMatch(render({ ...base, id: state, state, deadline: state === "pending" ? Date.now() + 4000 : null,
+      parts: [{ target, text: "check CI" }] }), /vc-dismiss/, state);
+  }
+  // A submitted voice answer shows the daemon's sentence, not a Sent to row.
+  assert.doesNotMatch(render({ ...base, id: "answer", state: "sent", reason: "voice-answer", detail: "Answer submitted.", parts: [{ target, text: "yes" }] }), /vc-dismiss/);
+  // A surface without the action renders the receipt without a control.
+  assert.doesNotMatch(render({ ...split, id: "plain" }, actions), /vc-dismiss/);
 });

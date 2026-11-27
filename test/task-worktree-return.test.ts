@@ -550,10 +550,10 @@ test("the disposable census reports an unowned linked checkout without task prov
   const unownedId = "unowned-census-checkout";
   const unowned = checkout(t, unownedId);
   const census = await disposableWorktreeCensus(w.registry.listTasks());
-  const path = worktreeSlotPath(unownedId, 0);
-  assert.deepEqual(census.entries.find((entry) => entry.path === path), {
-    path, taskId: null, checkState: null, gitMetadata: "readable",
+  assert.deepEqual(census.entries.find((entry) => entry.root === "task" && entry.name === unownedId), {
+    root: "task", name: unownedId, taskId: null, checkState: null, gitMetadata: "readable", orphanEvidence: null,
   });
+  assert.ok(!JSON.stringify(census).includes(worktreeSlotPath(unownedId, 0)), "the census carries no checkout path");
   assert.ok(existsSync(unowned.worktreePath));
 });
 
@@ -565,7 +565,7 @@ test("an unregistered directory stays on disk and appears with its blocker", asy
   w.state.now += WEEK;
   await w.observer.runPass();
   assert.ok(existsSync(w.path));
-  assert.ok(backgroundWorktreeRetentionStatus(w.registry.listTasks()).entries.find((row) =>
+  assert.ok((await backgroundWorktreeRetentionStatus(w.registry.listTasks(), worktreeSlotPath)).entries.find((row) =>
     row.taskId === w.task.id && row.blocker));
   const census = await disposableWorktreeCensus(w.registry.listTasks());
   assert.equal(census.entries.find((entry) => entry.taskId === w.task.id)?.gitMetadata, "unverified");
@@ -724,7 +724,7 @@ for (const [setting, enabled, mode, localWork, disableBeforeDue] of [
     await observer.runPass();
     const deadline = w.state.now + (mode === "configured" ? 11 * DAY : WEEK);
     assert.equal(w.row()?.cleanupDueAt, deadline);
-    assert.equal(backgroundWorktreeRetentionStatus(registry.listTasks()).mode, mode);
+    assert.equal((await backgroundWorktreeRetentionStatus(registry.listTasks(), worktreeSlotPath)).mode, mode);
     w.state.now = deadline;
     if (disableBeforeDue) {
       assert.equal(setFlag(false).ok, true);
@@ -738,7 +738,7 @@ for (const [setting, enabled, mode, localWork, disableBeforeDue] of [
       assert.deepEqual(pass.cleanups, {});
       assert.equal(w.row()?.claimToken, null);
       assert.equal(w.row()?.lastAttemptAt, null);
-      const diagnostic = backgroundWorktreeRetentionStatus(registry.listTasks())
+      const diagnostic = (await backgroundWorktreeRetentionStatus(registry.listTasks(), worktreeSlotPath))
         .entries.find((entry) => entry.taskId === w.task.id);
       assert.equal(diagnostic?.cleanupDueAt, deadline);
       assert.match(diagnostic?.blocker ?? "", localWork ? /uncommitted, untracked or ignored work/ : /report only/);

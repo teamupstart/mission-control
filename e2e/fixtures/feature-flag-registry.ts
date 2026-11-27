@@ -12,6 +12,7 @@ export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 export const SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID = "seven-day-worktree-cleanup" as const;
+export const ORPHANED_WORKTREE_RECLAIM_FLAG_ID = "orphaned-worktree-reclaim" as const;
 export const SHAPER_SIGN_IN_FLAG_ID = "shaper-sign-in" as const;
 export const RESIDENT_CARD_NAMES_FLAG_ID = "resident-card-names" as const;
 

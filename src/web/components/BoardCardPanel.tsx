@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { ResidentDrawerInertNote } from "./ResidentPlacementPanel.tsx";
 
 import {
@@ -17,6 +18,7 @@ import {
   type DisplayItemGroup,
 } from "../lib/board-card.ts";
 import {
+  PREVIEW_CALL_SIGN,
   PREVIEW_PIPELINE_RUN,
   PREVIEW_RESIDENT,
   PREVIEW_RESIDENT_WITH_CALL_SIGN,
@@ -72,9 +74,12 @@ function ChoicePicker<K extends DisplayChoiceKey>({
   choice,
 }: {
   choice: DisplayChoice<K>;
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const value = useUiConfig()[choice.key];
   const name = `display-choice-${choice.key}`;
+  // Asked of every choice so the hook order never depends on the list; only a flagged one uses it.
+  const flagOn = useFeatureFlag(choice.flag ?? VOICE_FLAG);
+  if (choice.flag && !flagOn) return null;
   return (
     <div className="display-choice">
       <span className="settings-toggle-text">
@@ -237,6 +242,14 @@ export function BoardCardPanel(): React.JSX.Element {
   const hidden = config.hiddenDisplayItems;
   const session = usePreviewSession();
   const previewResident = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID) ? PREVIEW_RESIDENT_WITH_CALL_SIGN : PREVIEW_RESIDENT;
+  // A second, ordinary session card while voice is on, so the Call sign choice moves a card
+  // in this picture: the first card is a resident, and a resident takes no call sign.
+  const callSignPreview = useFeatureFlag(VOICE_FLAG);
+  const callSignSession = useMemo(() => ({
+    ...session,
+    id: `${session.id}-call-sign`,
+    name: "Migrate the billing reconciliation job to the new ledger",
+  }), [session]);
   const groups = DISPLAY_ITEM_GROUPS.filter((group) =>
     DISPLAY_ITEMS.some((item) => item.group === group),
   );
@@ -270,6 +283,18 @@ export function BoardCardPanel(): React.JSX.Element {
             Background sub-agents picker moves this picture both ways: the chip is the tile's
             own to draw, and the tree is this frame's, as it is the board's. */}
         {config.backgroundAgentsStyle === "nested" && <SubagentTree session={session} />}
+        {callSignPreview && (
+          <SessionTile
+            session={callSignSession}
+            callSignElement={PREVIEW_CALL_SIGN}
+            onOpen={() => {}}
+            draggingRepo={null}
+            onDropped={() => {}}
+            onDropError={() => {}}
+            onDropConfirm={() => {}}
+            shortcutChord={cardShortcutChord(CARD_SHORTCUT_KEYS[1])}
+          />
+        )}
       </>
     ),
     // The same fixture session, so the header and the card above it describe one session.

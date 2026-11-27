@@ -28,6 +28,10 @@ struct Directive: Decodable {
     let roster: [String]
     /// The Always-on separator word. Absent for held capture and from older daemons.
     let separator: String?
+    /// The voiced audio, in milliseconds, an Always-on phrase must hold before its first live preview
+    /// is shown. Present only while the daemon's first-preview hold preview is on; absent, every
+    /// preview shows as it always has. It never changes what is decoded or delivered as the final.
+    let firstPreviewVoicedMs: Int?
 }
 
 struct Hello: Encodable {
@@ -331,15 +335,22 @@ struct HeldPreview: PreviewSnapshot {
     }
 }
 
+/// Publishes live words for the phrase a snapshot holds. `firstPreviewReady` holds back an
+/// utterance's first words, in the overlay and in a focused editor, until it returns true for that
+/// utterance's snapshot; after that every later pass of the same utterance shows as before. The
+/// audio heartbeat, the focus check and every final decode are unaffected by it.
 @MainActor func runTranscriptPreview<Snapshot: PreviewSnapshot>(
     isRunning: @escaping () -> Bool, snapshot: @escaping () -> Snapshot?, pendingOnset: () -> Int64?,
     decode: @escaping (Snapshot) async throws -> String?,
     report: @escaping (String, Int64?, String?) async -> Bool,
     editorFocused: @escaping (Int64) async -> Bool = { _ in false },
     updateEditor: @escaping (Int64, String) async throws -> Void = { _, _ in },
+    firstPreviewReady: @escaping (Snapshot) -> Bool = { _ in true },
     pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(800)) }
 ) async {
     var decoding: Task<Void, Never>?
+    // The utterance whose first preview has passed the hold. A new onset is a new utterance.
+    var released: Int64?
     defer { decoding?.cancel() }
     while !Task.isCancelled && isRunning() {
         if let segment = snapshot() {
@@ -350,11 +361,18 @@ struct HeldPreview: PreviewSnapshot {
                 decoding = Task { @MainActor in
                     defer { decoding = nil }
                     let editor = await editorFocused(onset)
-                    guard (editor || overlay), !Task.isCancelled, let words = try? await decode(segment), !Task.isCancelled, isRunning(),
+                    guard (editor || overlay), !Task.isCancelled else { return }
+                    if released != onset { guard firstPreviewReady(segment) else { return } }
+                    guard let words = try? await decode(segment), !Task.isCancelled, isRunning(),
                           snapshot()?.onset == onset else { return }
+                    // Released only once words reach a surface: a pass that decoded none, failed, or whose words
+                    // neither the editor nor the overlay took leaves the utterance held, so a hold turned on
+                    // later still waits for its voiced audio.
+                    let hasWords = !words.allSatisfy(\.isWhitespace)
                     if editor {
                         do {
                             try await updateEditor(onset, words)
+                            if hasWords { released = onset }
                         } catch {
                             guard !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
                             fputs("Voice listener could not deliver a dictation preview.\n", stderr)
@@ -362,7 +380,7 @@ struct HeldPreview: PreviewSnapshot {
                     }
                     guard overlay else { return }
                     let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
-                    if !tail.isEmpty { _ = await report("words", onset, tail) }
+                    if !tail.isEmpty, await report("words", onset, tail) { released = onset }
                 }
             }
         } else if let onset = pendingOnset() {
@@ -399,6 +417,8 @@ protocol SegmentTranscriber {
     var onInputClosed: (() -> Void)?
     /// Follows live directive edits, like the end-of-speech delay.
     var separator: String?
+    /// The first-preview hold in force for this Always-on capture, or nil for none. Follows live edits.
+    var firstPreviewVoicedMs: Int?
 
     let daemon: Daemon
 
@@ -409,12 +429,21 @@ protocol SegmentTranscriber {
 
     /// Applies a directive edit to this open Always-on capture without closing the microphone, when
     /// the directive still authorizes it: the new end-of-speech delay and separator word take
-    /// effect for speech that has not been decoded yet. Returns false when the capture must reopen.
-    func applyLiveEdit(captureRevision: String?, held: Bool, endOfSpeechMs: Int, separator: String?) -> Bool {
+    /// effect for speech that has not been decoded yet, and the first-preview hold from the next
+    /// preview pass. Returns false when the capture must reopen.
+    func applyLiveEdit(captureRevision: String?, held: Bool, endOfSpeechMs: Int, separator: String?,
+                       firstPreviewVoicedMs: Int?) -> Bool {
         guard !held, let captureRevision, captureRevision == revision, let mic, mic.isRunning else { return false }
         mic.updateEndOfSpeechMs(endOfSpeechMs)
         self.separator = separator
+        self.firstPreviewVoicedMs = firstPreviewVoicedMs
         return true
+    }
+
+    /// Whether an Always-on phrase holds enough voiced audio for its first preview under the hold in force now.
+    func firstPreviewReady(_ phrase: Segment) -> Bool {
+        guard let hold = firstPreviewVoicedMs, hold > 0 else { return true }
+        return phrase.voicedSamples >= hold * 16
     }
 
     /// Decodes one segment with the separator in force now, so a live edit reaches every later decode.
@@ -580,8 +609,8 @@ protocol SegmentTranscriber {
                 let duration = next.endOfSpeechMs ?? (held ? 800 : Directive.defaultEndOfSpeechMs)
                 if capture {
                     guard (1...30_000).contains(duration) else { throw CaptureError.format }
-                    if current?.applyLiveEdit(captureRevision: next.captureRevision, held: held,
-                                              endOfSpeechMs: duration, separator: next.separator) == true {
+                    if current?.applyLiveEdit(captureRevision: next.captureRevision, held: held, endOfSpeechMs: duration,
+                                              separator: next.separator, firstPreviewVoicedMs: next.firstPreviewVoicedMs) == true {
                         revision = next.revision
                         continue
                     }
@@ -602,6 +631,8 @@ protocol SegmentTranscriber {
                     let captureRevision = held ? next.revision : next.captureRevision ?? next.revision
                     let batch = Capture(captureRevision, daemon: daemon)
                     batch.separator = held ? nil : next.separator
+                    // Push-to-talk previews are never held: a hold shows its words as before.
+                    batch.firstPreviewVoicedMs = held ? nil : next.firstPreviewVoicedMs
                     current = batch
                     let limit = captureLimit
                     let microphone = try openInput(next.inputDevice, held, duration, limit, { [daemon] onset in
@@ -628,7 +659,8 @@ protocol SegmentTranscriber {
                         guard held else {
                             await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.preview },
                                 pendingOnset: pendingOnset, decode: decode, report: report,
-                                editorFocused: editorFocused, updateEditor: updateEditor)
+                                editorFocused: editorFocused, updateEditor: updateEditor,
+                                firstPreviewReady: { [weak batch] phrase in batch?.firstPreviewReady(phrase) ?? true })
                             return
                         }
                         // A pause inside a hold ends only a recognition phrase. The preview keeps the whole hold.

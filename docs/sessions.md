@@ -2137,10 +2137,15 @@ Goal and advances its objective version, while steering changes only the latest 
 The reconciler carries forward requirements for review, evidence and publication that still
 apply. An explicit instruction to stop or reserve review or publication for the operator
 records an operator-only handoff in the objective. Foreman leaves automatic completion pending
-across later changes to the objective. A turn that requests both release and a deliverable
-change keeps the hold. Once the Goal reflects the intended work, send **Resume automatic
-handoff** as its own message to lift the restriction and let Foreman evaluate the next
-completed work cycle.
+across later changes to the objective. A chat task with no explicit Workflow is still
+retired under a hold. A Scout or a review artifact is still retired only while its
+safeguard under **Settings → Foreman → Safety** is on; see
+[the completion safeguards](foreman.md#registered-proof-after-a-continuation). With the
+safeguards on, a recurring mission whose run writes a report under a no-PR instruction
+concludes. With a safeguard off, that class of work is ordinary work and the hold keeps it
+pending. A turn that requests both release and a deliverable change keeps the hold. Once the
+Goal reflects the intended work, send **Resume automatic handoff** as its own message to lift
+the restriction and let Foreman evaluate the next completed work cycle.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;
@@ -3577,8 +3582,9 @@ your decision is a `request_input` question; that half of the description never 
   naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
   not mark it read.
 - **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
-  document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived
-  unless you press it. The card then reads **Published** with **Open archive**, which opens the
+  document, with the files it links to beside it that were stored when the report was posted, to
+  the [scout archive](archives.md#how-a-report-produces-one). A link to a file that was not
+  stored is unlinked and listed as missing evidence. Nothing is archived unless you press it. The card then reads **Published** with **Open archive**, which opens the
   archive on the Scouts page; a document the archive refuses (a script, say) lists every problem
   on the card and publishes nothing. Pressing it again returns the same archive. If that archive
   is deleted or leaves the library, the card offers **Publish as scout** again; see

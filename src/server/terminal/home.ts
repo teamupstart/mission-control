@@ -376,6 +376,44 @@ export async function homeAlive(
 }
 
 /**
+ * Is the recorded home POSITIVELY gone? Stricter than `homeAlive(...) === false` only in what
+ * it can additionally prove, never in what it accepts.
+ *
+ * `homeAlive` answers `null` whenever identity cannot be checked: a legacy home with no
+ * resource id, or a multiplexer whose inventory could not be read. That stays right for every
+ * caller that reads it. This adds exactly one more positive finding: the backend that recorded
+ * the home answered that its server is not running, and no process of that backend runs for
+ * this user, so no session or pane of ANY name can carry the home. No title is consulted, so a
+ * rename cannot turn a live home into an absent one and undo `killHome`'s refusal.
+ *
+ * A legacy home with no resource id is provable only through the backend it recorded
+ * (`homeBackend`); with none recorded, or on the emulator axis, it stays unprovable.
+ */
+export async function homeAbsenceEstablished(
+  name: string,
+  deps: HomeDeps = defaultHomeDeps,
+  preferredBackend: string | null = null,
+  resourceId: string | null = null,
+): Promise<boolean> {
+  const alive = await homeAlive(name, deps, preferredBackend, resourceId);
+  if (alive !== null) return alive === false;
+  if (resourceId?.startsWith("emulator:")) return false;
+  const id = resourceId
+    ? MULTIPLEXER_IDS.find((candidate) => resourceId.startsWith(`multiplexer:${candidate}:`))
+    : MULTIPLEXER_IDS.find((candidate) => candidate === preferredBackend);
+  if (!id || (preferredBackend !== null && preferredBackend !== id)) return false;
+  const backend = deps.multiplexers[id];
+  if (binUnavailableReason(backend.bin, backend.label, deps)) return false;
+  const stopped = backend.sessions?.serverStopped;
+  if (!stopped) return false;
+  try {
+    return (await stopped()) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What tearing down a named home did.
  *
  * `asked` is the field that matters, and it is separate from `ok` on purpose: a teardown

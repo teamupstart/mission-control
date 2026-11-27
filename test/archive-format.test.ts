@@ -216,7 +216,7 @@ test("an unsupported format version is its own answer, not a schema failure", ()
 test("the kind vocabulary is append-only and already contains the kinds a reader may meet", () => {
   // Order and membership are the contract, not the set: a manifest carries one of these
   // strings, so reordering or renaming would orphan bundles that already declare one.
-  assert.deepEqual([...ARCHIVE_KINDS], ["scout", "plan"]);
+  assert.deepEqual([...ARCHIVE_KINDS], ["scout", "plan", "checkout"]);
 });
 
 test("a legacy scout-archive manifest still parses, and reads as a scout", () => {

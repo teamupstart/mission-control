@@ -1,6 +1,7 @@
 import type { ArchiveKind } from "@shared/archives.ts";
 import { planPlanCapture } from "../plans/capture-plan.ts";
 import { planScoutCapture } from "../scouts/capture-plan.ts";
+import { planCheckoutCapture } from "./checkout-capture-plan.ts";
 import type { CapturePlanner } from "./plan.ts";
 
 /**
@@ -20,6 +21,7 @@ import type { CapturePlanner } from "./plan.ts";
 const PLANNERS: Partial<Record<ArchiveKind, CapturePlanner>> = {
   scout: planScoutCapture,
   plan: planPlanCapture,
+  checkout: planCheckoutCapture,
 };
 
 /** The planner for one kind, or null when this build cannot produce that kind of archive. */

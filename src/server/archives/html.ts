@@ -104,6 +104,9 @@ const NON_CONTENT_ELEMENTS = new Set(["script", "style", "noscript", "template",
 /** SVG bookkeeping - real text inside an inline diagram (`text`, `title`, `desc`) is kept. */
 const SVG_METADATA_ELEMENTS = new Set(["metadata", "defs", "symbol", "clippath", "mask"]);
 
+/** The HTML standard's ASCII whitespace: what separates attributes. */
+const HTML_WHITESPACE = new Set(["\t", "\n", "\f", "\r", " "]);
+
 /** A scheme, per RFC 3986, is what turns a reference into somewhere else entirely. */
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
@@ -248,6 +251,169 @@ export function extractVisibleText(html: string, cap: number = ARCHIVE_TEXT_LIMI
     return true;
   });
   return normalizeWhitespace(parts.join(" ")).slice(0, cap);
+}
+
+/**
+ * Every distinct path inside the report directory that a relative reference in `html` names,
+ * from URL attributes, `style` attributes and `<style>` elements, resolved the way the checker
+ * resolves them. A reference that climbs out of the directory, carries a scheme or is only a
+ * fragment is not one of these: it is never a file that could travel with the page.
+ *
+ * What a report posted with a document collects beside it, so that Publish as scout can carry
+ * the files its page links to (`reports.ts`).
+ */
+export function reportRelativeReferences(html: string): string[] {
+  let document: DefaultTreeAdapterTypes.Document;
+  try {
+    document = parse(html, PARSER_OPTIONS);
+  } catch {
+    return [];
+  }
+  const found = new Set<string>();
+  const collect = (values: readonly string[]): void => {
+    for (const value of values) {
+      const resolved = inReportReference(value);
+      if (resolved) found.add(resolved);
+    }
+  };
+  walk(document, (node) => {
+    if (!isElement(node)) return true;
+    for (const attr of node.attrs) collect(referenceValues(attributeName(attr), attr.value));
+    if (node.tagName.toLowerCase() === "style") collect(cssReferences(textOf(node)));
+    return true;
+  });
+  return [...found];
+}
+
+/**
+ * `html` with every attribute removed whose relative reference names a file not in `targets`,
+ * and the paths those attributes named, sorted.
+ *
+ * Publish as scout archives a report page with the files that were stored beside it. A link to
+ * one that was not stored (a report posted before companions were stored, a file over the
+ * limits, or one that was gone when the report was posted) would otherwise refuse the whole
+ * page. Removing the attribute keeps the text a person reads: an `<a>` without `href` is plain
+ * text, and the archive lists each path as missing.
+ *
+ * The rest of the document keeps its bytes: each attribute is cut out by its source location,
+ * never by re-serializing the tree. In a `<style>` element, a reference to an unstored file is
+ * rewritten token by token instead (a `url(...)` becomes `none`, an `@import` rule is removed
+ * whole), and the rest of the stylesheet keeps its bytes.
+ *
+ * The unit is the attribute, never one value inside it. A `srcset` or `style` attribute that
+ * names one unstored file and one stored file loses both references. That is deliberate: rewriting
+ * a single candidate or `url()` would mean re-serializing srcset and CSS grammar, including
+ * `data:` URLs whose commas defeat a naive split. The stored file is still in the bundle and
+ * listed with its evidence, and an `<img>`'s own `src` is a separate attribute that is kept.
+ */
+export function unlinkMissingCompanions(
+  html: string,
+  targets: ReadonlySet<string>,
+  aliases: ReadonlyMap<string, string> = new Map(),
+): { html: string; unlinked: string[] } {
+  let document: DefaultTreeAdapterTypes.Document;
+  try {
+    document = parse(html, { ...PARSER_OPTIONS, sourceCodeLocationInfo: true });
+  } catch {
+    return { html, unlinked: [] };
+  }
+  // An attribute span is removed with the whitespace before it; a stylesheet span is replaced.
+  const spans: Array<{ start: number; end: number; replacement?: string }> = [];
+  const unlinked = new Set<string>();
+  walk(document, (node) => {
+    if (!isElement(node)) return true;
+    const locations = node.sourceCodeLocation?.attrs;
+    const tag = node.tagName.toLowerCase();
+    if (tag === "style") {
+      // A `<style>` element's reference to a file that was not stored is rewritten in place: a
+      // `url(...)` becomes `none` and an `@import` rule is removed whole, so nothing is fetched.
+      // Every other byte of the stylesheet stays.
+      for (const child of childrenOf(node)) {
+        if (!isText(child)) continue;
+        const location = child.sourceCodeLocation;
+        // Located by offset into the source, so only text the parser kept byte for byte (no
+        // newline normalization) is rewritten; anything else is left for the checker to refuse.
+        if (!location || html.slice(location.startOffset, location.endOffset) !== child.value) continue;
+        for (const token of cssReferenceTokens(child.value)) {
+          if (token.kind === "literal" || token.start < 0) continue;
+          const path = inReportReference(token.value);
+          if (!path || targets.has(path)) continue;
+          // A missing `url(...)` becomes `none`. A missing `@import` loses its whole rule: an empty
+          // target (`@import "";`) would resolve to the page's own URL and still be fetched.
+          spans.push(token.kind === "import" && token.ruleStart !== undefined && token.ruleEnd !== undefined
+            ? { start: location.startOffset + token.ruleStart, end: location.startOffset + token.ruleEnd, replacement: "" }
+            : { start: location.startOffset + token.start, end: location.startOffset + token.end, replacement: "none" });
+          unlinked.add(path);
+        }
+      }
+    }
+    for (const attr of node.attrs) {
+      const name = attributeName(attr);
+      const values = referenceValues(name, attr.value);
+      // A single-URL attribute naming an alias (the page's own name in another spelling) is
+      // rewritten to the name it has in the archive, keeping any query or fragment, so the link
+      // still resolves. Only that attribute's text changes.
+      if (aliases.size > 0 && name !== "style" && values.length === 1 && values[0] === attr.value) {
+        const aliased = aliasedReference(attr.value, aliases);
+        const location = locations?.[attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name] ?? locations?.[attr.name];
+        if (aliased !== null && location) {
+          const source = html.slice(location.startOffset, location.endOffset);
+          const written = source.slice(0, source.indexOf("=") < 0 ? source.length : source.indexOf("=")).trimEnd();
+          spans.push({
+            start: location.startOffset,
+            end: location.endOffset,
+            replacement: `${written}="${aliased.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`,
+          });
+          continue;
+        }
+      }
+      const missing = values
+        .map(inReportReference)
+        .filter((path): path is string => path !== null && !targets.has(path));
+      if (missing.length === 0) continue;
+      // Only an attribute whose sole problem is files that were not stored is removed. One that
+      // also carries a reference the checker refuses for another reason (a path that climbs out,
+      // a fetching scheme) is left whole, so removing it can never hide that refusal.
+      const context = name === "style"
+        ? { linkTarget: false, clickable: false, relativeTargets: targets }
+        : { linkTarget: LINK_TARGET_ATTRIBUTES.has(name), clickable: isClickableDestination(tag, name), relativeTargets: targets };
+      if (values.some((value) => {
+        const problem = urlProblem(value, context);
+        return problem !== null && problem.code !== "missing_companion";
+      })) continue;
+      const location = locations?.[attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name] ?? locations?.[attr.name];
+      if (!location) continue;
+      spans.push({ start: location.startOffset, end: location.endOffset });
+      for (const path of missing) unlinked.add(path);
+    }
+    return true;
+  });
+  // One pass over the document: the retained text between removed attributes is collected in
+  // order and joined once, so the work stays linear however many links a page drops. Each cut
+  // also takes the whitespace before the attribute, back to the end of the previous cut.
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const span of spans.sort((a, b) => a.start - b.start)) {
+    if (span.replacement !== undefined) {
+      parts.push(html.slice(cursor, span.start), span.replacement);
+      cursor = span.end;
+      continue;
+    }
+    let start = span.start;
+    // HTML whitespace only (tab, LF, FF, CR, space): a non-breaking space is part of a preceding
+    // unquoted attribute value, never a separator, and stays. And a removed attribute followed by
+    // `/` keeps the whitespace before it: in `<image width=10 href="gone.svg"/>` that separator is
+    // what keeps the slash out of the unquoted `width` value and the tag self-closing.
+    let after = span.end;
+    while (after < html.length && HTML_WHITESPACE.has(html[after]!)) after += 1;
+    if (html[after] !== "/") {
+      while (start > cursor && HTML_WHITESPACE.has(html[start - 1]!)) start -= 1;
+    }
+    parts.push(html.slice(cursor, start));
+    cursor = span.end;
+  }
+  parts.push(html.slice(cursor));
+  return { html: parts.join(""), unlinked: [...unlinked].sort() };
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +615,35 @@ function urlProblem(raw: string, context: UrlContext): ArchiveHtmlProblem | null
 }
 
 /**
+ * `raw` with its path replaced by the alias target when the path it names is an alias, keeping
+ * the query and fragment; null when it names no alias.
+ */
+function aliasedReference(raw: string, aliases: ReadonlyMap<string, string>): string | null {
+  const value = raw.trim();
+  const path = inReportReference(value);
+  const target = path === null ? undefined : aliases.get(path);
+  if (target === undefined) return null;
+  const cut = value.search(/[?#]/);
+  return cut < 0 ? target : `${target}${value.slice(cut)}`;
+}
+
+/** The reference values one attribute carries, as the checker reads them. */
+function referenceValues(name: string, value: string): string[] {
+  if (name === "style") return cssReferences(value);
+  return URL_ATTRIBUTES.has(name) ? splitUrlAttribute(name, value) : [];
+}
+
+/**
+ * The report-directory path a plain relative reference names, or null for anything else: an
+ * empty value, a fragment, a scheme, a protocol-relative URL or a path that climbs out.
+ */
+function inReportReference(raw: string): string | null {
+  const value = raw.trim();
+  if (value === "" || value.startsWith("#") || value.startsWith("//") || SCHEME_RE.test(value)) return null;
+  return resolveInsideReport(value);
+}
+
+/**
  * Resolve a relative reference against `report/report.html`, returning its path within the
  * report directory or null when it escapes.
  *
@@ -507,13 +702,56 @@ function resolveInsideReport(raw: string): string | null {
  */
 function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null, selfContained = false): ArchiveHtmlProblem[] {
   const problems: ArchiveHtmlProblem[] = [];
-  const check = (value: string): void => {
-    // Every reference a stylesheet carries is fetched when the page opens, however it is
-    // spelled, so CSS is entirely a fetching slot and the navigational allowance never
-    // reaches it.
+  // Every reference a stylesheet carries is fetched when the page opens, however it is
+  // spelled, so CSS is entirely a fetching slot and the navigational allowance never
+  // reaches it.
+  for (const value of cssReferences(css)) {
     const problem = urlProblem(value, { linkTarget: false, clickable: false, relativeTargets, selfContained });
     if (problem) problems.push(problem);
-  };
+  }
+  return problems;
+}
+
+/** Every reference value `cssProblems` checks, in order, as written. */
+function cssReferences(css: string): string[] {
+  return cssReferenceTokens(css).map((token) => token.value);
+}
+
+/**
+ * One reference a stylesheet makes, with where it sits in the stylesheet's own text.
+ *
+ * `url` is a `url(...)` token, `import` an `@import` target (a `url(...)` or a quoted string), and
+ * `literal` a scheme-bearing string. A bare `@import` target the scanner can only read with a
+ * pattern has no span (`start` and `end` are -1): it is checked, but never rewritten.
+ */
+interface CssReferenceToken {
+  value: string;
+  kind: "url" | "import" | "literal";
+  start: number;
+  end: number;
+  /**
+   * For an `@import`, the whole rule: from `@import` through its closing `;` (or the end of the
+   * stylesheet when it has none). Rewriting removes the rule, never just its target.
+   */
+  ruleStart?: number;
+  ruleEnd?: number;
+}
+
+/** The end of the `@import` rule whose target ends at `from`: just past its `;`. */
+function importRuleEnd(css: string, from: number): number {
+  for (let i = from; i < css.length; i += 1) {
+    const char = css[i]!;
+    if (char === ";") return i + 1;
+    // A block opener or closer before any `;` means the rule was never terminated: stop at the
+    // target so nothing beyond it is touched.
+    if (char === "{" || char === "}") return from;
+  }
+  return css.length;
+}
+
+/** Every reference value `cssProblems` checks, in order, with its span in `css`. */
+function cssReferenceTokens(css: string): CssReferenceToken[] {
+  const tokens: CssReferenceToken[] = [];
 
   let i = 0;
   while (i < css.length) {
@@ -527,26 +765,41 @@ function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null, s
       const literal = readCssString(css, i, char);
       // Only scheme-bearing literals: an ordinary `font-family: "Inter"` or a `content: "→"`
       // is not a reference, and refusing every string would refuse every stylesheet.
-      if (SCHEME_RE.test(literal.value) || literal.value.startsWith("//")) check(literal.value);
+      if (SCHEME_RE.test(literal.value) || literal.value.startsWith("//")) {
+        tokens.push({ value: literal.value, kind: "literal", start: i, end: literal.end });
+      }
       i = literal.end;
       continue;
     }
     if (startsWithAt(css, i, "url(")) {
       const value = readCssFunctionArgument(css, i + 4);
-      check(value.value);
+      tokens.push({ value: value.value, kind: "url", start: i, end: value.end });
       i = value.end;
       continue;
     }
     if (startsWithAt(css, i, "@import")) {
-      const rest = css.slice(i + 7);
-      const target = /^\s*(?:url\(\s*)?(['"]?)([^'")\s;]*)\1/.exec(rest);
-      if (target?.[2]) check(target[2]);
+      let j = i + 7;
+      while (j < css.length && /\s/.test(css[j]!)) j += 1;
+      if (startsWithAt(css, j, "url(")) {
+        const value = readCssFunctionArgument(css, j + 4);
+        tokens.push({ value: value.value, kind: "import", start: j, end: value.end, ruleStart: i, ruleEnd: importRuleEnd(css, value.end) });
+        i = value.end;
+        continue;
+      }
+      if (css[j] === '"' || css[j] === "'") {
+        const literal = readCssString(css, j, css[j]!);
+        tokens.push({ value: literal.value, kind: "import", start: j, end: literal.end, ruleStart: i, ruleEnd: importRuleEnd(css, literal.end) });
+        i = literal.end;
+        continue;
+      }
+      const target = /^\s*(['"]?)([^'")\s;]*)\1/.exec(css.slice(i + 7));
+      if (target?.[2]) tokens.push({ value: target[2], kind: "import", start: -1, end: -1 });
       i += 7;
       continue;
     }
     i += 1;
   }
-  return problems;
+  return tokens;
 }
 
 function startsWithAt(text: string, index: number, token: string): boolean {

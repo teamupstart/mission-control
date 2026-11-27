@@ -488,6 +488,54 @@ test("a document that cannot be stored leaves no report, no event and no partial
   assert.equal(readFileSync(join(reportDocumentDir(stored.id, join(home, "working-state")), "findings.md"), "utf8"), "# Findings\n");
 });
 
+test("a linked companion that cannot be stored leaves no report, no event and no partial report directory", async () => {
+  const registry = new Registry();
+  const events: ServerEvent[] = [];
+  registry.subscribe((event) => events.push(event));
+  const dir = checkout();
+  writeFileSync(join(dir, "findings.html"), "<html><body><a href=\"data.csv\">data</a></body></html>");
+  writeFileSync(join(dir, "data.csv"), "a,b\n");
+  const session = mkSession({ id: "s-companion-store-fail", cwd: dir, workspaceRoot: dir });
+  const d = db.openDb();
+  const reportCount = () => (d.prepare("SELECT COUNT(*) AS n FROM reports").get() as { n: number }).n;
+  const nextId = () => `r-${((d.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'reports'").get() as { seq: number } | undefined)?.seq ?? 0) + 1}`;
+
+  // Each case fails after the document itself was written: once while staging the companions
+  // (the staging directory's name is taken by a file), once on the rename that puts them in place
+  // (the final `companions` name is taken by a non-empty directory).
+  const cases = [
+    { name: "staging", block: (reportDir: string) => {
+      mkdirSync(reportDir, { recursive: true });
+      writeFileSync(join(reportDir, ".companions.partial"), "in the way");
+    }, error: /ENOTDIR|EEXIST/ },
+    { name: "rename", block: (reportDir: string) => mkdirSync(join(reportDir, "companions", "in-the-way"), { recursive: true }),
+      error: /ENOTEMPTY|EEXIST|EISDIR|EPERM/ },
+  ];
+  for (const failure of cases) {
+    const stateDir = join(home, `companion-${failure.name}-fail-state`);
+    const reports = new ReportManager(registry, { stateDir });
+    after(() => reports.stop());
+    const id = nextId();
+    failure.block(reportDocumentDir(id, stateDir));
+    const rowsBefore = reportCount();
+    const eventsBefore = events.length;
+    const listedBefore = reports.listForSession("s-companion-store-fail").map((r) => r.id);
+    await assert.rejects(
+      reports.post(session, { title: `Companion ${failure.name} fails`, body: "b", file: "findings.html" }),
+      failure.error,
+      failure.name,
+    );
+    assert.equal(reportCount(), rowsBefore, `${failure.name}: the insert was rolled back`);
+    assert.equal(upserts(events.slice(eventsBefore)).length, 0, `${failure.name}: no window was told about it`);
+    assert.deepEqual(reports.listForSession("s-companion-store-fail").map((r) => r.id), listedBefore, `${failure.name}: no report is listed`);
+    assert.ok(!existsSync(reportDocumentDir(id, stateDir)), `${failure.name}: the document, staged companions and report directory were removed`);
+
+    // Nothing was left wedged: the same post stores the document and its companion.
+    const stored = await reports.post(session, { title: `Stored after ${failure.name}`, body: "b", file: "findings.html" });
+    assert.equal(readFileSync(join(reportDocumentDir(stored.id, stateDir), "companions", "data.csv"), "utf8"), "a,b\n");
+  }
+});
+
 test("a commit that fails after the document was copied removes the copy, stores no report and tells no window", async () => {
   const registry = new Registry();
   const events: ServerEvent[] = [];

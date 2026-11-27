@@ -232,6 +232,8 @@ export interface MissionState {
   voiceCards: Map<string, DashboardVoiceCard>;
   fadingVoiceCards: ReadonlySet<string>;
   setVoiceCardRetention: (id: string, retention: VoiceCardRetention) => void;
+  /** Close one settled receipt now. Other cards keep their own expiry timers. */
+  dismissVoiceCard: (id: string) => void;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
@@ -415,6 +417,21 @@ export function useEventStream(): MissionState {
     scheduleVoiceExpiry(expiry.card, retention);
     if (expiry.retention === "in-use") setVoiceCards(limitVoiceOutcomes);
   }, [scheduleVoiceExpiry, voiceExpiry, limitVoiceOutcomes]);
+  const dismissVoiceCard = useCallback((id: string) => {
+    const expiry = voiceExpiry.get(id);
+    // Only a settled receipt leaves early; a countdown or recipient choice stays with the daemon.
+    if (!expiry || !voiceCardCanExpire(expiry.card)) return;
+    window.clearTimeout(expiry.timer ?? undefined);
+    window.clearTimeout(expiry.fadeTimer);
+    voiceExpiry.delete(id);
+    setVoiceCardFading(id, false);
+    setVoiceCards(current => {
+      if (!current.has(id)) return current;
+      const next = new Map(current);
+      next.delete(id);
+      return next;
+    });
+  }, [voiceExpiry, setVoiceCardFading]);
   const [voice, setVoice] = useState<VoiceState | null>(null);
   const acknowledgeVoiceMode = useCallback((ack: VoiceState) => setVoice(current => withNewerVoiceMode(current, ack)), []);
   const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
@@ -1151,6 +1168,7 @@ export function useEventStream(): MissionState {
     voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
+    dismissVoiceCard,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

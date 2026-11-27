@@ -19,6 +19,20 @@ import { SeparatorWordSchema, VOICE_SEPARATOR_DEFAULT } from "./voice-separator.
 export const VOICE_FLAG = "voice" as const;
 
 /**
+ * The preview flag for the Always-on first-preview hold: a phrase shows no live words until it
+ * holds `VOICE_FIRST_PREVIEW_VOICED_MS` of voiced audio. It changes only what the live preview
+ * shows; final decoding, routing and delivery are the same with it on or off.
+ */
+export const VOICE_FIRST_PREVIEW_HOLD_FLAG = "voice-first-preview-hold" as const;
+
+/**
+ * Voiced audio an Always-on phrase must hold before its first live preview, while
+ * `VOICE_FIRST_PREVIEW_HOLD_FLAG` is on. 300 ms is the knee the phantom-filler scout measured:
+ * most of the false previews gone, for no measured median latency to the first correct preview.
+ */
+export const VOICE_FIRST_PREVIEW_VOICED_MS = 300;
+
+/**
  * The flags voice depends on. A flag cannot require another, so voice reads as unavailable
  * with the reason `flags` while any of these is off, and the Setup panel's `voice-previews`
  * row offers to turn them on.
@@ -251,6 +265,20 @@ export function voiceCardsShowSpokenNames(state: Pick<VoiceState, "mode" | "push
     (state?.mode === "push-to-talk" && !!state.pushToTalkSession);
 }
 
+/**
+ * How a session card shows its call sign while voice can hear it (`voiceCardsShowSpokenNames`):
+ * `title` in the dedicated Push-to-talk mode, waiting for the shortcut or held, where the call
+ * sign replaces the title because the next hold may address any card; `element` while
+ * Always-on listens, where the card keeps the session's title and draws the call sign beside it
+ * in the operator's `callSignCardStyle`; null otherwise. Resident cards are not affected.
+ */
+export type VoiceCardCallSignMode = "title" | "element";
+
+export function voiceCardCallSignMode(state: Pick<VoiceState, "mode" | "pushToTalkSession"> | null | undefined): VoiceCardCallSignMode | null {
+  if (!voiceCardsShowSpokenNames(state)) return null;
+  return state?.mode === "listening" ? "element" : "title";
+}
+
 export const VoiceListenerDirectiveSchema = z.object({
   speak: SpeakDirectiveSchema.nullable().default(null),
   capture: z.boolean(),
@@ -262,6 +290,11 @@ export const VoiceListenerDirectiveSchema = z.object({
    * a listener must not rewrite it into a spoken name when it opens a capture.
    */
   separator: z.string().min(1).optional(),
+  /**
+   * Voiced milliseconds an Always-on phrase must hold before its first live preview, present only
+   * while `VOICE_FIRST_PREVIEW_HOLD_FLAG` is on. A listener that ignores it previews as before.
+   */
+  firstPreviewVoicedMs: z.number().int().positive().optional(),
   pauseMs: z.number().nullable().optional(),
   captureRevision: z.string().min(1).optional(),
   revision: z.string().min(1),

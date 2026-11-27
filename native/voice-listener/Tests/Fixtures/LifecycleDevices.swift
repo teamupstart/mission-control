@@ -17,6 +17,8 @@ final class Segment {
     let endedAt: Int64
     let startedAtHostUs: Int64 = 125
     let speechStartHostUs: Int64
+    /// The lifecycle fixture's phrases count as fully voiced: the first-preview hold never holds them.
+    let voicedSamples = Int.max
     init(_ label: String, endedAt: Int64 = 1, onset: Int64 = 625) {
         self.label = label
         self.endedAt = endedAt

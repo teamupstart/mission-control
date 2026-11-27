@@ -557,3 +557,11 @@ export async function transcriptSample(daemon: VoiceDaemon, sample: import("../.
   });
   return (await response.json()).accepted;
 }
+
+/** Read the directive the fixture listener is served now, as a listener's poll without a revision does. */
+export async function listenerDirective(daemon: VoiceDaemon): Promise<VoiceListenerDirective> {
+  const headers = { "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+  const response = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
+  if (!response.ok) throw new Error(`The listener directive answered ${response.status}`);
+  return await response.json() as VoiceListenerDirective;
+}

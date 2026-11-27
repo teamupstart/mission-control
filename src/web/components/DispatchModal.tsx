@@ -3457,7 +3457,7 @@ function DispatchModal({
                     value={draft.callSign}
                     onChange={(callSign) => update({ callSign })}
                     roster={callSignRoster}
-                    placeholder="A short spoken name, like Atlas"
+                    placeholder="Leave blank to get one automatically"
                   />
                 )}
                 {draft.kind === "plan" && (

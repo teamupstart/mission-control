@@ -52,8 +52,12 @@ export const SCOUT_ARCHIVE_FORMAT = "mission-control/scout-archive";
  *
  * A kind being READABLE here says nothing about what this build can WRITE. The capture path
  * keeps its own registry of the kinds it knows how to produce.
+ *
+ * `checkout` preserves the local-only files of a task checkout Git no longer recognizes,
+ * captured by automatic retention immediately before that directory is removed. It has no
+ * report, so its bundles are always `partial` and say so in `missing`.
  */
-export const ARCHIVE_KINDS = ["scout", "plan"] as const;
+export const ARCHIVE_KINDS = ["scout", "plan", "checkout"] as const;
 export type ArchiveKind = (typeof ARCHIVE_KINDS)[number];
 
 /**

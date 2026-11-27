@@ -10,6 +10,8 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import {
   canonicalVoiceState,
   VOICE_CONFIG_DEFAULTS,
+  VOICE_FIRST_PREVIEW_HOLD_FLAG,
+  VOICE_FIRST_PREVIEW_VOICED_MS,
   VOICE_HELLO_LAPSE_MS,
   VOICE_LISTENER_PROTOCOL_VERSION,
   VOICE_MAX_HOLD_MS,
@@ -895,4 +897,50 @@ test("an expired latest onset's final cannot revive the live transcript", t => {
   assert.equal(h.store.state().transcript?.text, "new phrase");
   h.advance(1);
   assert.equal(h.published.at(-1)?.transcript, undefined);
+});
+
+test("the first-preview hold reaches an Always-on directive only with its flag, as a live edit of the same capture", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "preview-hold-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const off = h.store.directive();
+  assert.ok(off.capture && off.captureRevision);
+  assert.equal("firstPreviewVoicedMs" in off, false, "flag off: the directive is exactly what it was before the hold existed");
+
+  h.flags.add(VOICE_FIRST_PREVIEW_HOLD_FLAG);
+  const on = h.store.directive();
+  assert.equal(on.firstPreviewVoicedMs, VOICE_FIRST_PREVIEW_VOICED_MS);
+  assert.equal(on.firstPreviewVoicedMs, 300);
+  assert.notEqual(on.revision, off.revision, "turning the preview on wakes the listener's long poll");
+  assert.equal(on.captureRevision, off.captureRevision, "and keeps the open microphone's grant");
+  assert.equal(on.separator, off.separator);
+  assert.equal(on.endOfSpeechMs, off.endOfSpeechMs);
+  assert.equal(h.store.directive(), on, "an unchanged state reissues the same directive");
+
+  h.flags.delete(VOICE_FIRST_PREVIEW_HOLD_FLAG);
+  const again = h.store.directive();
+  assert.equal("firstPreviewVoicedMs" in again, false);
+  assert.equal(again.captureRevision, off.captureRevision);
+  assert.deepEqual({ ...again, revision: off.revision }, off, "turning it off restores the flag-off directive");
+});
+
+test("a Push-to-talk hold never carries the first-preview hold", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "preview-hold-ptt-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory, config: { listeningMode: "push-to-talk" }, flags: new Set([...ALL_FLAGS, VOICE_FIRST_PREVIEW_HOLD_FLAG]) });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const report = (patch: Partial<VoiceShellReport> = {}) => {
+    h.advance(1);
+    h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } },
+      pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: h.hostNowUs(), ...patch });
+  };
+  report();
+  report({ pushToTalk: true, pushToTalkPressedAtHostUs: h.hostNowUs() + 1 });
+  const hold = h.store.directive();
+  assert.ok(hold.capture);
+  assert.equal(hold.firstPreviewVoicedMs, undefined);
 });

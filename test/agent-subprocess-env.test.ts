@@ -11,6 +11,9 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+// The CommonJS object, not the ESM namespace: only its properties can be mocked.
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -384,25 +387,75 @@ test("restart recovery removes a turn-one outcome whose launch is over, and keep
   // A launch still running: its state home exists.
   const live = createDisposableAgentStateHome();
   writeFileSync(`${live}.turn-one`, "shaped");
-  // An orphan that cannot be removed - a non-empty directory - sorted ahead of the others.
-  const stuck = join(DISPOSABLE_STATE_ROOT, `session-0-stuck-turn-one-${tag}`);
-  mkdirSync(join(`${stuck}.turn-one`, "held"), { recursive: true });
-  utimesSync(`${stuck}.turn-one`, longAgo, longAgo);
+  // An orphaned outcome name held by a non-empty directory, as an interrupted run leaves one. A
+  // plain `rm` refuses it with EISDIR, so it used to survive, and warn, on every daemon start.
+  const directory = join(DISPOSABLE_STATE_ROOT, `session-directory-turn-one-${tag}`);
+  mkdirSync(join(`${directory}.turn-one`, "held"), { recursive: true });
+  utimesSync(`${directory}.turn-one`, longAgo, longAgo);
   const warn = console.warn;
-  const warnings: unknown[] = [];
-  console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
   try {
     reconcileDisposableAgentStateHomes();
-    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed despite the stuck one");
+    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed");
+    assert.equal(existsSync(`${directory}.turn-one`), false, "a directory at an orphaned outcome's name was reclaimed too");
     assert.equal(readFileSync(`${fresh}.turn-one`, "utf8"), "shaped", "a recent outcome is kept for a dispatch that may still read it");
     assert.equal(readFileSync(`${live}.turn-one`, "utf8"), "shaped", "a live launch's outcome is kept for its dispatch");
-    assert.ok(warnings.some((w) => String(w).includes(`could not remove the orphaned turn-one outcome session-0-stuck-turn-one-${tag}`)), "the stuck one was logged");
+    const mine = warnings.filter((args) => String(args[0]).includes(tag));
+    assert.deepEqual(mine, [], "nothing of this run's was left to warn about");
+    // So the next start finds nothing of this run's to retry.
+    warnings.length = 0;
+    reconcileDisposableAgentStateHomes();
+    assert.deepEqual(warnings.filter((args) => String(args[0]).includes(tag)), [], "and a second start has nothing to say about them");
   } finally {
     console.warn = warn;
-    rmSync(`${stuck}.turn-one`, { recursive: true, force: true });
+    rmSync(`${directory}.turn-one`, { recursive: true, force: true });
     rmSync(`${orphan}.turn-one`, { force: true });
     rmSync(`${fresh}.turn-one`, { force: true });
     rmSync(`${live}.turn-one`, { force: true });
     rmSync(live, { recursive: true, force: true });
+  }
+});
+
+test("restart recovery logs an outcome it cannot remove in one line and goes on with the rest", async (t) => {
+  const { reconcileDisposableAgentStateHomes } = await import("../src/server/agent-subprocess-env.ts");
+  const { DISPOSABLE_STATE_ROOT } = await import("../src/server/terminal/launch-process.ts");
+  const tag = `${process.pid}-${Date.now()}`;
+  const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+  // Sorted ahead of the reclaimable one, so the scan must get past the failure to reach it.
+  const stuck = join(DISPOSABLE_STATE_ROOT, `session-0-stuck-turn-one-${tag}`);
+  const orphan = join(DISPOSABLE_STATE_ROOT, `session-orphaned-turn-one-${tag}`);
+  for (const home of [stuck, orphan]) {
+    writeFileSync(`${home}.turn-one`, "original");
+    utimesSync(`${home}.turn-one`, longAgo, longAgo);
+  }
+  // The failure is simulated rather than built from permissions: a genuinely unremovable fixture in
+  // the shared root would outlive an interrupted run and be retried by every daemon start after it.
+  const removeForReal = fs.rmSync;
+  t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
+    if (String(args[0]) === `${stuck}.turn-one`) {
+      throw Object.assign(new Error(`EACCES: permission denied, rm '${String(args[0])}'`), { code: "EACCES" });
+    }
+    return removeForReal(...args);
+  });
+  syncBuiltinESMExports();
+  const warn = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    reconcileDisposableAgentStateHomes();
+    assert.equal(existsSync(`${orphan}.turn-one`), false, "the orphaned outcome was reclaimed despite the stuck one");
+    const mine = warnings.filter((args) => String(args[0]).includes(tag));
+    assert.equal(mine.length, 1, "the stuck one was logged once");
+    assert.equal(mine[0]!.length, 1, "as a message alone, with no error object to print a stack for");
+    const [line] = mine[0] as [string];
+    assert.match(line, new RegExp(`could not remove the orphaned turn-one outcome session-0-stuck-turn-one-${tag}\\.turn-one: EACCES`));
+    assert.equal(line.includes("\n"), false, "on one line");
+  } finally {
+    console.warn = warn;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(`${stuck}.turn-one`, { force: true });
+    rmSync(`${orphan}.turn-one`, { force: true });
   }
 });

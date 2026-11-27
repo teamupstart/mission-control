@@ -16,7 +16,8 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`),
 [Unified split inbox](attention-and-alerts.md#unified-split-inbox-preview) (`inbox-split`),
 [Stalled section in Idle](attention-and-alerts.md#stuck-rows) (`idle-stalled`),
-[Voice addressing](voice.md) (`voice`) and
+[Voice addressing](voice.md) (`voice`),
+[Voice first-preview hold](voice.md#first-preview-hold-preview) (`voice-first-preview-hold`) and
 [Markdown questions](sessions.md#markdown-questions-preview) (`markdown-questions`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
@@ -39,6 +40,15 @@ entry points on every request. Turning it off does not pause saved missions or c
 existing dashboard API. See [Recurring missions](recurring-missions.md#creating-missions-from-a-session-through-mcp).
 `test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
 creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
+
+**Reclaim orphaned task worktrees** (`orphaned-worktree-reclaim`) lets automatic worktree
+retention return two classes it otherwise holds for ever: disposable task checkouts Git no
+longer recognizes, and tasks whose terminal home can be proved absent. It is its own flag rather
+than an extension of `seven-day-worktree-cleanup`, because that flag only chooses the retention
+window and turning it off still enforces cleanup; a new class of unattended deletion needs an
+off switch of its own. Its session policy is protected: a session can read it but not change it.
+`MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` evaluates both classes from read-only evidence
+whatever the flag says. See [Orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
 
 **Local Inspector** (`local-inspector`) exposes the pre-PR workflow stage, its Command tuning
 and the Local review setting in GitHub Inspector. It uses the repository workload independently
@@ -203,6 +213,7 @@ authority require an operator. Each new feature flag declares its session policy
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
 | `seven-day-worktree-cleanup` | preview | Seven-day task worktree retention. Off uses the configured window | [Worktrees and checks](worktrees-and-checks.md#task-worktree-retention) |
+| `orphaned-worktree-reclaim` | preview | Automatic retention of disposable task checkouts Git no longer recognizes, after archiving their local-only files, and of tasks whose terminal home is proved absent. Off holds both classes as before | [Worktrees and checks](worktrees-and-checks.md#orphaned-task-checkouts) |
 | `background-reasoning-effort` | preview | Per-call effort settings for background jobs, Foreman and GitHub Inspector. Turning it off suspends the saved overrides for new calls | [Models](models.md#reasoning-effort-for-background-work) |
 | `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
@@ -220,6 +231,7 @@ authority require an operator. Each new feature flag declares its session policy
 | `inbox-split` | preview | The attention inbox's list-and-pane layout: its tabs, one row per question and report, the detail pane drawing each row's existing card, moving on to the next row when the open one is settled, J and K, and the stacked layout below 800 px. Off, the stacked inbox is drawn as before. It stores nothing of its own | [Unified split inbox](attention-and-alerts.md#unified-split-inbox-preview) |
 | `idle-stalled` | preview | Idle's Stalled section on the Board and the Console rail, its head count, the card's fact sheet and fixes, and removing the two idle stall rules from the inbox's Stuck section. It also opens `POST /api/sessions/:id/inbox-message`, which the `inbox` flag opens too. Switching it off returns those stalls to the inbox's Stuck section while the `inbox` preview is on (with `inbox` off there is no Stuck section, so they appear in neither); dismissals carry over | [Stuck rows](attention-and-alerts.md#stuck-rows), [UI](ui.md) |
 | `voice` | preview | Every voice route (`/api/voice/*` and `/voice/*`, listed in [Voice addressing](voice.md#routes)), the `voice_state`, `voice_roster`, and `voice_card` events, the `voice` and `voiceCards` reconnect snapshot fields, the speech model manager, the Settings > Voice category with its roster, the **Call sign** field under Dispatch > Advanced, the **Reference name** field on a resident profile, and the Setup panel's Voice family. A call sign or reference name already saved is kept while the flag is off, and the task and profile routes accept one either way, but it names an agent (in the inbox, cards, alerts, the Away digest and report authors) only while the flag is on. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
+| `voice-first-preview-hold` | preview | The `firstPreviewVoicedMs` field of the Always-on listener directive, which makes the macOS listener hold a phrase's first live words, in the transcript overlay and a focused editor's dictation preview, until it holds 300 ms of voiced audio. Final decoding, routing, delivery, Push-to-talk and the overlay's expiry are unchanged. Turning it off or on is a live directive edit that keeps the open microphone | [Voice addressing](voice.md#first-preview-hold-preview) |
 | `markdown-questions` | preview | Markdown rendering of a `request_input` question's body on the review card, in the attention inbox and in the conversation's question entries. The agent-facing rule asking for Markdown `context` is not gated | [Sessions](sessions.md#markdown-questions-preview) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.

@@ -165,6 +165,9 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
   } catch (error) {
     return block(`Local Inspector could not complete repository review. ${scrubSecrets(error instanceof Error ? error.message : "Retry after checking repository access and provider setup.").slice(0, 1000)}`);
   } finally {
+    // A review that threw may still have returned from its provider: a repository adapter
+    // rejection (malformed verdict, no verified query, audit failure) arrives here as a throw.
+    // The store keeps that claim, because the workload recorded the return durably.
     if (!reviewReturned && reservation?.granted) reservation.release?.();
   }
 }

@@ -596,6 +596,10 @@ export const PersonaWorkloadEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...eventBase, type: z.literal("accepted") }),
   z.strictObject({ ...eventBase, type: z.literal("repository_verified") }),
   z.strictObject({ ...eventBase, type: z.literal("persona_started") }),
+  // The provider returned a response. Everything after this point - verdict parsing, audit
+  // sealing, repository-evidence checks - judges a reply that was actually bought, so the
+  // daemon's execution accounting reads this event, never the verdict's fate.
+  z.strictObject({ ...eventBase, type: z.literal("persona_returned") }),
   z.strictObject({ ...eventBase, type: z.literal("cancelled") }),
   z.strictObject({
     ...eventBase,
@@ -613,6 +617,8 @@ export type PersonaWorkloadEvent = z.infer<typeof PersonaWorkloadEventSchema>;
 export const PersonaWorkloadReconciliationSchema = z.strictObject({
   workloadId: id,
   state: z.enum(["unknown", "running", "terminal"]),
+  // 128 audited queries plus accepted, repository_verified, persona_started,
+  // persona_returned, cancelled and terminal.
   events: z.array(PersonaWorkloadEventSchema).max(134),
 });
 export type PersonaWorkloadReconciliation = z.infer<

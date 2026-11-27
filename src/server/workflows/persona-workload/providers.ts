@@ -7,7 +7,8 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   REPOSITORY_OPERATION_IDS,
   PersonaWorkloadProviderResultSchema, InspectorWorkloadProviderResultSchema,
-  type PersonaWorkloadRequest,
+  PersonaWorkloadResultSchema, parseRepositoryWorkloadVerdict,
+  type PersonaWorkloadRequest, type PersonaWorkloadResult,
   type RepositoryCapabilityReason,
 } from "@shared/repository-access.ts";
 import { providerJsonSchema } from "../../llm/json-schema.ts";
@@ -23,7 +24,11 @@ export interface RepositoryProviderLaunch {
 }
 export interface RepositoryProviderResult {
   verdict: unknown;
-  usage: Record<string, number>;
+  /**
+   * The provider's own usage report, unvalidated. A provider that has its reply never throws
+   * on reply content: the executor records the return first, then judges verdict and usage.
+   */
+  usage: unknown;
   providerRunId?: string;
 }
 export type RepositoryProvider = (
@@ -198,10 +203,19 @@ export async function runCodexRepositoryWorkload(
     { signal: launch.signal, outputSchema: launch.request.accounting.purpose === "inspector_review" ? inspectorSchema : personaSchema },
     "await_terminal",
   );
+  // The provider has returned its reply. A reply that is not JSON, or a usage report that is
+  // not a token record, is a returned but invalid reply: it reaches the executor, which records
+  // the return before rejecting it, instead of failing here as if the provider never answered.
+  let reply: unknown;
+  try {
+    reply = JSON.parse(result.finalResponse);
+  } catch {
+    reply = undefined;
+  }
   return {
-    verdict: providerVerdict(launch.request, JSON.parse(result.finalResponse)),
+    verdict: providerVerdict(launch.request, reply),
     ...(thread.id ? { providerRunId: thread.id } : {}),
-    usage: z.record(z.string(), z.number()).parse(result.usage ?? {}),
+    usage: result.usage ?? {},
   };
 }
 export const runClaudeRepositoryWorkload: RepositoryProvider = async (
@@ -283,14 +297,11 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
         const refusal = claudeProviderFailure(frame);
         if (refusal) throw refusal;
         if (!ready) throw new RepositoryCapabilityError("tool_inventory");
-        if (
-          frame.subtype !== "success" ||
-          frame.is_error ||
-          frame.structured_output === undefined
-        )
+        if (frame.subtype !== "success" || frame.is_error)
           throw Error("Invalid provider result");
+        // A successful result without structured output is a returned reply with no verdict.
         return {
-          verdict: providerVerdict(launch.request, frame.structured_output),
+          verdict: frame.structured_output === undefined ? undefined : providerVerdict(launch.request, frame.structured_output),
           providerRunId: frame.session_id,
           usage: {
             input_tokens: frame.usage.input_tokens,
@@ -308,6 +319,20 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
     run.close();
   }
 };
+/**
+ * The provider worker's report of a returned reply. A reply whose verdict, or whose usage, the
+ * workload result cannot carry is still a reply that was returned, so it is reported as
+ * `invalid_verdict`, which the daemon charges, never as a provider failure, which it refunds.
+ */
+export function repositoryWorkerResult(request: PersonaWorkloadRequest, output: RepositoryProviderResult): PersonaWorkloadResult {
+  const verdict = parseRepositoryWorkloadVerdict(request.accounting.purpose, output.verdict);
+  const accounting = { usage: output.usage, ...(output.providerRunId ? { providerRunId: output.providerRunId } : {}) };
+  const reported = PersonaWorkloadResultSchema.safeParse(verdict.success
+    ? { status: "completed", result: verdict.data, ...accounting }
+    : { status: "failed", code: "invalid_verdict", ...accounting });
+  return reported.success ? reported.data : { status: "failed", code: "invalid_verdict" };
+}
+
 export const REPOSITORY_PROVIDERS = {
   claude: runClaudeRepositoryWorkload,
   codex: runCodexRepositoryWorkload,

@@ -30,7 +30,8 @@ if (args[0] === "--version") {
       // A provider offering a verdict cannot rescue a mismatched inventory.
       console.log(JSON.stringify({
         type: "result", subtype: "success", is_error: false,
-        structured_output: { result: { kind: "persona_verdict", verdict: fixture.verdict } },
+        // A returned reply can lack its structured verdict altogether.
+        ...(fixture.omitStructuredOutput ? {} : { structured_output: { result: { kind: "persona_verdict", verdict: fixture.verdict } } }),
         usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0,
       }));
       break;

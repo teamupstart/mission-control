@@ -13,7 +13,7 @@ export type CallSignMarkStyle = Exclude<CallSignCardStyle, "off"> | "rail";
 
 function MicGlyph(): React.JSX.Element {
   return (
-    <svg className="cs-mic" viewBox="0 0 16 16" aria-hidden focusable="false">
+    <svg className="cs-mic" width="11" height="11" viewBox="0 0 16 16" aria-hidden focusable="false">
       <path d="M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z" />
       <path d="M4 7.5a4 4 0 0 0 8 0M8 11.5v3M5.5 14.5h5" />
     </svg>

@@ -13,6 +13,9 @@ import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-call-sign-allocation-"));
 process.env.HARNESS_HOME = home;
+// A binary that exists, so agent-binary resolution is never what stops a launch here (CI has no
+// `claude` on PATH): the launches below must reach the provisioning seam each test stubs.
+process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 
 const { AUTO_CALL_SIGN_DICTIONARY, chooseAutoCallSign } = await import("../src/shared/voice-call-signs.ts");
 const { namesSoundAlike, validateSpokenName } = await import("../src/shared/voice-names.ts");
@@ -22,7 +25,10 @@ const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { getTask } = await import("../src/server/db.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+after(() => {
+  delete process.env.MISSION_CLAUDE_BIN;
+  rmSync(home, { recursive: true, force: true });
+});
 
 function entry(over: Partial<SpokenName> & Pick<SpokenName, "name">): SpokenName {
   return {

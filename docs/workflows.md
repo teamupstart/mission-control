@@ -723,6 +723,35 @@ history, but it does not apply criterion-mapped readiness, deliver an evidence-r
 create a Persona or Check attempt. An action with any reachable Persona or Check keeps the normal
 fresh-evidence rule.
 
+A restart or an update can leave the bound session `exited`, or not yet restored, while an
+action is waiting on its turn. A terminal session also reads `exited` for a few seconds whenever
+a discovery sweep misses its process, until the next sweep finds it again. The action does not
+block on that. While the binding stays active and names that session, the action keeps waiting
+for up to ten minutes for it to come back, and nothing advances while the session is away. Each
+return starts the ten minutes over, so separate short misses never add up to a block. If the
+session is still gone after ten minutes, the run blocks with **action did not finish**
+(`session_lost`). That block spends no repair round, and the run page says the action is checked
+again on its own rather than that the review is stopped for good.
+
+The ten minutes last only as long as the binding does. A session that is really removed, rather
+than briefly missed, ends it sooner: a terminal session left out of discovery for longer than
+its eight-second exit linger, or a session that ends for good, is evicted, and eviction orphans
+its binding. The run is blocked straight away (**session gone**), and the action then blocks as
+`session_lost` because the binding no longer names its session. Neither the automatic re-check
+nor **Check the action again** applies there, because both need an active binding. Reattach the
+workflow to a live session or cancel the run.
+
+The re-check follows the binding, not the conversation. When the session the binding names is
+running again in the same conversation, Mission Control checks the action again by itself. So
+does a terminal successor adopted through **Continue in terminal**, because the binding moves to
+it. In either case the run continues from the delivery, pickup and turn it had already recorded,
+and the instruction is never typed a second time. A conversation resumed under a new session
+any other way does not move the binding, so it does not clear the block. The run's next move is
+**Check the action again**, offered through `retry`, which spends no repair round and stays
+available even when every round is spent. It does the same re-check by hand, and refuses with a
+reason while the bound session is still away. Resubmitting for fresh evidence is offered too,
+but only while the run has a repair round left.
+
 Publishing snapshots the action exactly as it snapshots a Persona - name, description,
 instruction, required skill, completion, source id and source revision. Editing or archiving
 the source afterwards cannot reach a version already published; version history marks the
@@ -2936,7 +2965,9 @@ full resubmission requirement still applies. The durable adoption also preserves
 Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
 **Recheck GitHub Inspector** only appears while the run is in a live gate wait that the
 evaluator can process. It reevaluates the current durable observation and remains waiting until
-GitHub Inspector's normal sweep has seen a new head. A spent blocked run has no working recheck,
+GitHub Inspector's normal sweep has seen a new head. GitHub Inspector no longer sweeps a pull
+request it has read closed or merged, so a recheck of a wait on one also reads it from GitHub
+directly (see **PR closed** below). A spent blocked run has no working recheck,
 so the dashboard omits it and the daemon refuses a direct request without writing a recheck
 audit event.
 
@@ -2953,6 +2984,20 @@ lifts the block, a closed or merged answer leaves it, and a failed read leaves i
 on the run's timeline. If GitHub cannot be reached, a pull request whose last read was open
 still recovers. Recovery restores the wait the block interrupted, including the repair-push
 wait, without a full restart or another Persona round.
+
+A pull request can also finish before the gate hears about it: it merges while the workflow's
+Pull Request action is still settling, or the daemon restarts after GitHub Inspector read it
+closed. GitHub Inspector has already stopped polling it, so no fresh observation will arrive.
+When the gate's own pinned pull request is retired on a read that said closed or merged, or
+because Shipping merged it, the gate blocks as **PR closed** instead of waiting. The run's
+timeline records that the block came from the retired record and whether the closure
+preceded gate entry. The gate checks this when it opens, at every daemon start, and on
+**Check again**. **Check again** on such a wait also reads the pull request from GitHub, so a
+pull request that was reopened resumes polling and the wait comes back. A merge is never a
+pass: the run is not completed, no review is waived, no finding is cleared, and the task and
+its session stay as they were. A retired record whose last read did not say the pull request
+finished, or one that is not the pull request the gate pinned, proves nothing, and the run
+keeps waiting until **Check again** reads GitHub.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
@@ -3149,10 +3194,14 @@ The defaults in **Library > Commands > Local Inspector** are **Major and above**
 per run**, a **10-minute timeout** and **Block for operator action** on exhaustion. Lower-severity
 findings are advisory. Blocking findings return a repair packet to the session. The session can
 repair and resubmit before the workflow opens a pull request or runs CI. The workflow's repair
-limit applies to those rounds. A returned repository review spends an execution even if its
-findings cannot be retained. If the allowance runs out with blocking findings still open or
-a review result that could not be processed, the stage pauses for operator action even when
-its exhaustion policy is **Skip**.
+limit applies to those rounds. A repository review spends an execution once its provider
+returns a response, even if the stage then rejects that response: a malformed verdict, a verdict
+without a verified repository query, a failed audit, an interruption, or findings that cannot be
+retained. A review that fails before its provider returns spends nothing, and its retry runs on the
+same allowance: for example an unavailable provider, or a daemon restart while the provider is
+still running. A restart after the provider returned still spends the execution. If the
+allowance runs out with blocking findings still open or a review result that could not be
+processed, the stage pauses for operator action even when its exhaustion policy is **Skip**.
 
 Submission capture records whether local review is enabled. When the preview, Inspector or
 local review is off, the stage skips with a note. An enabled stage blocks for operator action

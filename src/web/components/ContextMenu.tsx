@@ -8,6 +8,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
+import { openExternal } from "../lib/open-external.ts";
 import {
   resolveContextActions,
   type ContextAction,
@@ -133,13 +134,7 @@ export function ContextMenuHost({
       if (!navigator.clipboard?.readText) throw new Error("Clipboard reads are unavailable");
       return navigator.clipboard.readText();
     },
-    openExternal: async (href) => {
-      if (window.missionDesktop) {
-        await window.missionDesktop.openExternal(href);
-        return;
-      }
-      window.open(href, "_blank", "noopener,noreferrer");
-    },
+    openExternal,
     announce,
   }), [announce, copyFeedback.copy]);
 

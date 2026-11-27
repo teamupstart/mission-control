@@ -7,6 +7,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 
@@ -95,7 +96,7 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
   const field = callSignOf(dialog);
   await expect(field).toBeVisible();
-  await expect(field).toHaveAttribute("placeholder", "A short spoken name, like Atlas");
+  await expect(field).toHaveAttribute("placeholder", "Leave blank to get one automatically");
   await expect(dialog.getByText("Type a name to see how you would say it.")).toBeVisible();
   const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
   for (const value of ["scout", "plan", "chat", "bugfix", "document", "ship"]) {
@@ -150,7 +151,7 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   }, { timeout: 60_000 }).toBe("idle");
   expect(session.task?.callSign).toBe("Alice");
 
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   const row = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Alice", exact: true }) });
   await expect(row).toHaveCount(1);
@@ -208,7 +209,7 @@ test("a warned call sign is dispatched as typed: the task keeps it and the roste
   }, { timeout: 60_000 }).toBe("idle");
   expect(session.task?.callSign).toBe("Will");
 
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   const row = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Will", exact: true }) });
   await expect(row).toHaveCount(1);
@@ -233,7 +234,7 @@ test("a shelved task's call sign survives a restart, reads back in the editor, a
   await expect(page.locator("main.board")).toBeVisible();
 
   // The built-in resident's row shows the roster has loaded, so the absence is not just early.
-  await page.goto(`${daemon.baseURL}/#/settings/voice`);
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   await expect(roster.getByRole("cell", { name: "Agent Shepherd", exact: true }).first()).toBeVisible();
   await expect(roster.getByRole("cell", { name: "Marlowe", exact: true })).toHaveCount(0);

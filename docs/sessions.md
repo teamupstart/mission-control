@@ -2137,10 +2137,15 @@ Goal and advances its objective version, while steering changes only the latest 
 The reconciler carries forward requirements for review, evidence and publication that still
 apply. An explicit instruction to stop or reserve review or publication for the operator
 records an operator-only handoff in the objective. Foreman leaves automatic completion pending
-across later changes to the objective. A turn that requests both release and a deliverable
-change keeps the hold. Once the Goal reflects the intended work, send **Resume automatic
-handoff** as its own message to lift the restriction and let Foreman evaluate the next
-completed work cycle.
+across later changes to the objective. A chat task with no explicit Workflow is still
+retired under a hold. A Scout or a review artifact is still retired only while its
+safeguard under **Settings → Foreman → Safety** is on; see
+[the completion safeguards](foreman.md#registered-proof-after-a-continuation). With the
+safeguards on, a recurring mission whose run writes a report under a no-PR instruction
+concludes. With a safeguard off, that class of work is ordinary work and the hold keeps it
+pending. A turn that requests both release and a deliverable change keeps the hold. Once the
+Goal reflects the intended work, send **Resume automatic handoff** as its own message to lift
+the restriction and let Foreman evaluate the next completed work cycle.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;

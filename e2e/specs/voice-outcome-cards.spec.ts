@@ -270,6 +270,7 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await page.evaluate(() => { window.location.hash = "#/library/personas/new"; });
   const nameField = page.getByRole("textbox", { name: "Name", exact: true });
   await nameField.fill("Unfinished reviewer");
+  await nameField.blur();
   await page.clock.install();
   await say(daemon, "Steve, check again");
   const done = page.getByRole("status").filter({ hasText: "Steve has finished" });
@@ -312,6 +313,7 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(repo).toHaveValue(daemon.repo);
   await expect(intent).toHaveValue("Only for the follow-up");
   await expect(attachment).toBeVisible();
+  await attachment.focus();
   await say(daemon, "Will, check again");
   await page.getByRole("status").filter({ hasText: "Will has finished" }).getByRole("button", { name: "Start a follow-up task" }).click();
   await expect(intent).toHaveValue("", { timeout: 3000 });
@@ -653,6 +655,6 @@ test("a nonblocking question after daemon restart leaves the spoken turn queued 
     const session = sessions.find(s => s.id === steve.id);
     return [session?.pendingReviews, session?.openQuestions, session?.pendingTurns.map(turn => turn.spokenWords)];
   }).toEqual([0, 1, ["check the release"]]);
-  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: steve.name }).first()).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: steve.task!.callSign! }).first()).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "Held for Steve" })).toHaveCount(0);
 });

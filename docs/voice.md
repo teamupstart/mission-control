@@ -4,10 +4,27 @@ Voice addressing is being built in phases behind the **Voice addressing** previe
 When it is finished, the operator will talk to an agent by name, with speech recognized on this
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
+While listening, Voice types into the focused text field in the active dashboard. This works in
+Dispatch, session messages, comments, search and other editable fields. The live microphone
+updates the draft as you speak, including while you hold push-to-talk. Email and numeric
+fields accept live updates using their native editing rules. Before routing unclaimed speech,
+the daemon asks connected dashboards which field currently has focus. A confirmed editor can receive
+dictation while a background dashboard is unresponsive. Routing to a session requires every connected
+dashboard to confirm that no editor has focus. Dictation replaces selected
+text at the caret. You can focus a field after you start speaking or switch fields mid-phrase.
+The next update puts the phrase so far in the focused field. The previous field keeps its last
+preview. The final transcript goes to the field focused at recognition. Each phrase replaces
+its own preview, even when the next phrase has already started. If you correct a preview,
+later recognition for that phrase preserves your edit, including after you return to the field.
+Once a field has claimed
+a phrase, leaving the field keeps that phrase out of session routing. Start a new phrase outside
+an editor to address a session. Names and commands such as “cancel” are ordinary draft text while editing.
+
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
-recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
+recognizes speech locally. You can speak for up to a minute, then pause in Always-on or release
+push-to-talk to review the complete message. The standalone sherpa-onnx listener recognizes recordings on macOS
 and Linux. The corner confirmation card names the recipient and shows the spoken words.
 Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now.
 Tab to an overflowing transcript and use the arrow keys or End to read it. The countdown bar and
@@ -44,6 +61,12 @@ A settled card stays visible while one of its controls has focus or its action i
 progress, including when the dashboard reconnects to the daemon. Once both end, the card
 gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
+Click anywhere on a **Sent to** receipt, on the dashboard, the pill or the tray popover, to
+dismiss it at once. The receipt is also one **Dismiss** button that Tab reaches, as does
+**⌘⌥V** (**View > Focus Voice Confirmation**) on a floating card; press Return or Space.
+Only that receipt closes: the cards around it close the gap and keep their own countdowns and
+reading intervals. Cards still counting down, choosing a recipient, held or offering a recovery
+action do not dismiss on click.
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
 If you remove the task’s call sign, its held turn remains recallable after a daemon restart or after you switch Voice off and back on.
@@ -57,15 +80,44 @@ Each follow-up opens a fresh draft on the finished task’s repository. The regu
 draft stays available when the follow-up closes. If you leave the follow-up through a setup
 or launch repair link, reopening Dispatch restores its instructions and attachments.
 
-In **Settings > Voice > Input**, choose **End-of-speech delay** to set how long the listener
+In **Settings > Voice > Listening**, choose **End-of-speech delay** to set how long the listener
 waits for more speech. The default is 2 seconds. Speaking again before the delay elapses keeps
 the words in the same utterance. Changes take effect while listening and persist after restart.
 **Listening mode** defaults to **Always-on**. Choose **Push-to-talk** to keep the
 microphone closed between holds. Hold the configured desktop hotkey to speak and
-release it to finish the utterance, including during calls. A missing shortcut
+release it to finish the utterance, including during calls. Release is the only normal way
+a hold's message ends: a pause while the key is down does not split it, so the words before and
+after the pause stay together, in order, and nothing reaches Recently heard, a confirmation card
+or a session until key-up. Each hold is a new message, routed on its own words, so two holds can
+address two agents. The safeguards below still end a hold without sending it. A missing shortcut
 or disconnected desktop keeps capture off. A missing key-up discards the hold
-after two minutes. Tap-to-mute, manual mute, call auto-mute, and the automatic
-end-of-speech delay apply to Always-on. Switching back restores their saved values.
+after two minutes, and speech a hold loses to an input gap or to the capture limit discards the
+whole hold. Tap-to-mute, manual mute, call auto-mute, the automatic
+end-of-speech delay and the separator word apply to Always-on. Switching back restores their saved values.
+
+In Always-on, a **Separator word** (`separatorWord`, default **bagel**) ends one message and
+starts the next without a pause. “Steve, check the build, bagel, Carol, give me a report on the
+status of some project” sends “check the build” to Steve and “give me a report on the status of
+some project” to Carol. Each message gets its own Recently heard entry, routing, confirmation
+card and Cancel, and neither contains the separator. Set the word in **Settings > Voice > Listening**
+beside End-of-speech delay. It persists with the other Voice settings. Use one word of letters,
+numbers, apostrophes or hyphens. “Cancel”, “stop”, “reply” and “submit” are refused because they
+are already voice commands. Clear the field to restore “bagel”, or press Escape to abandon an edit.
+Only the standalone word separates, in any letter case and with attached sentence marks such as
+“Bagel.”, so “bagels” and “bagel’s” stay ordinary words. A quoted “"bagel"” is also ordinary text.
+Separators at either end or next to each other leave no empty message. A capture of only the
+word sends nothing and appears in Recently heard as “separator word only”. A spoken “cancel”
+after the separator cancels the message just before it, never an older pending one. If the part
+before it opened no message, as in “Steve, check the build, bagel, then report status, bagel,
+cancel”, Recently heard records “nothing to cancel” and Steve's message stays pending. If the word is also a call sign, a
+capture that starts with it addresses that agent, and the word still separates everywhere else.
+
+The daemon applies the separator to the final transcript, so it works with every listener
+backend and the live transcript and dictation previews show what was said, separator included.
+While a text field has focus, the word is ordinary draft text, like names and “cancel”. In
+Push-to-talk, and during a held key in a call, the separator is ordinary speech: “Steve, check the
+build, bagel, then run the tests” in one hold sends all of it, “bagel” included, to Steve. Key
+release ends the utterance and the next hold starts another.
 
 The separate **Cancel window** starts after routing.
 While a delivery countdown is open, automatic capture uses a half-second pause so a spoken
@@ -73,7 +125,7 @@ While a delivery countdown is open, automatic capture uses a half-second pause s
 If a protocol 4.0 helper is still running during an upgrade, restart it with the updated listener
 to use live delay changes.
 
-Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
+Settings > Voice > On screen > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default. On macOS it appears under the menu bar on the display with
 the pointer, including while the dashboard is minimized. A floating card appears without taking
 keyboard focus. From another app, use **⌘Tab** to switch to Mission Control. Press **⌘⌥V** or
@@ -96,9 +148,17 @@ route gives an open cancel window priority over a newer outcome. When the displa
 countdown expires, it switches to another open window even if the event stream is disconnected.
 With no countdown open or message selected, an address awaiting a recipient choice appears
 ahead of delivery results, including messages held behind a question.
-When several messages remain, the Voice message selector lets you revisit their cards,
+The floating pill shows every open countdown at once, one pill per message, oldest at the
+top and newer ones beneath. Each pill keeps its recipient, its own countdown, Send now and
+Cancel. “Say cancel to stop” appears once, under the newest pill, because a spoken “cancel”
+acts on the newest message. When a message is sent, cancelled or reaches its deadline, its
+pill leaves the stack and the pills below move up without restarting their countdowns. Once
+no countdown is open, the pill returns to showing one card at a time.
+When several messages remain on the tray popover, or on the pill after its countdowns close,
+the Voice message selector lets you revisit their cards,
 including individual turns held for the same agent. A new countdown takes priority even
-when you selected another pending delivery. A stop receipt updates its own card and keeps
+when you selected another pending delivery. While its countdown is open, the pill you last acted on is
+the one the popover shows when you switch placement. A stop receipt updates its own card and keeps
 the current countdown selected. When the new window closes, the surface returns to your
 selection if its card is still available and eligible.
 If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
@@ -172,7 +232,11 @@ closed. Run the development command from a terminal app that already has microph
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
 prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
 
-On startup and every ten seconds, the helper posts protocol 4.1 to `/voice/listener/hello`.
+On startup and every ten seconds, the helper posts protocol 4.2 to `/voice/listener/hello`.
+The response carries the daemon's protocol version. With 4.2 on both sides, FluidAudio
+can capture a minute and report overflow. Against a 4.0 or 4.1 daemon, the helper keeps
+the 30-second total buffer limit, including closing silence, and settles a dropped
+phrase with the legacy `finish` report.
 Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
 Standalone listeners generate a UUID per process. The desktop supervisor generates its own
 UUID and passes it to each managed helper after the previous child exits. This lets its
@@ -241,8 +305,14 @@ Its final `words` update carries `final: true` to replace the last partial and r
 words when the next phrase starts.
 
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
-response header. The native helper retains completed phrases in capture order and decodes
-them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
+response header. During a hold the helper still ends a recognition phrase after 800 ms of
+silence, so each decode stays within the recognizer's limit, but those phrases are internal. It
+reports only the hold's first speech onset, retains the phrases in capture order, and after a
+confirmed release decodes each one and posts their joined text as a single utterance. Its word
+timings are measured from the first phrase's first sample, and its capture bounds run from that
+phrase's start through the last phrase's end. The live transcript and a dictation preview show
+the whole hold so far under that one onset: the helper decodes each completed phrase once and
+the open phrase on every pass. It can retain up to 120 seconds of segmented PCM per hold.
 The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
 If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
 When releasing push-to-talk returns Voice to waiting for the hotkey or to call auto-mute, the capture-off response includes
@@ -264,6 +334,9 @@ During push-to-talk the helper retains the interrupted prefix for up to two seco
 If delayed key-up falls on or before the last contiguous sample boundary, the helper
 can finish the phrase using only samples through release. A key-up in the gap discards it.
 If the gap falls between utterances, the helper clears the lead-in and accepts the next phrase immediately.
+Because a hold is one message, speech a hold loses to a gap or to the per-phrase capture limit
+discards the whole hold rather than delivering the rest without it. The helper settles the
+hold's onset once, with the capture-limit notice when that was the cause, and reports the discard on stderr.
 
 The shell timestamps every snapshot, including idle heartbeats, at observation time with
 `reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
@@ -294,13 +367,21 @@ a hold. Legacy Unix key timestamps are accepted as input and have no delivery au
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
 steady background noise can continue between utterances. Parakeet transcribes each segment
-after the silence interval specified by the directive’s `endOfSpeechMs`. If the 30-second buffer fills
-before that boundary, the listener discards the whole utterance, including any further
-speech before the next silence boundary. During a key hold, the prefix remains recoverable
-for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
-When CTC is available, the helper uses the directive's roster to rescore those same samples.
+after the silence interval specified by the directive’s `endOfSpeechMs`. On macOS,
+one addressed phrase can span up to 60 seconds from speech onset through the last voiced
+frame, including pauses inside the phrase. The lead-in and closing silence have separate
+budgets. FluidAudio processes the complete phrase in overlapping encoder windows, one at
+a time, and merges their timed tokens before routing. Exceeding the limit produces a voice
+card asking you to repeat the message in shorter parts. The same explanation appears in
+Recently heard. Capture resumes after silence. During a key hold, the prefix remains
+recoverable for two more seconds in case a delayed key-up timestamp falls within the limit.
+When CTC is available, the helper uses the directive's roster to rescore the opening encoder window.
 Only a correction aligned to the leading address can change the transcript and its timing
 labels. The helper preserves a standalone “cancel” and its punctuation even when CTC suggests a roster name.
+For automatic capture the directive's `separator` names the Always-on separator word. The helper
+also preserves an opening separator, so “Bagel.” or “bagel Carol, check the build” reaches the
+daemon intact, unless the suggested name is a call sign spelled the same way. A separator edit
+issues a new directive revision with the same capture grant, so the open microphone keeps listening.
 The rest of the decoder transcript, including its punctuation, passes through verbatim.
 Word timings come from the decoder. When a CTC correction changes the word count, the listener
 divides the measured span evenly among the corrected words. Interior boundaries are estimates.
@@ -330,6 +411,20 @@ when it detects speech and carries that timestamp through clipping and transcrip
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
+An automatic capture that contains the [separator word](#voice-settings) routes as one utterance
+per part, with IDs `<id>:1`, `<id>:2` and so on. A capture ID cannot contain `:`, so these never
+collide with another capture. A later part is dated from its first word's `startMs` when that
+part's timings spell its words, otherwise from the part before it. Parts route in spoken order and
+stop at the first refused one, so a spoken “cancel” after the separator always follows the
+message it cancels. The response is then `accepted: false`, and a retry of the same capture ID
+routes from the refused part on with the original split, even if the separator word has changed.
+The daemon keeps each separated capture's record of routed parts for five minutes on its host
+clock, so a retry never sends a part twice. An automatic capture whose host timing is older than
+that is refused before the separator is read, so it can neither split again nor route as one
+message after a separator edit. A capture dated only in Unix time is refused when it splits and is older than five minutes. Turning Voice off or clearing Recently heard ends a separated capture and drops the
+speech its waiting parts kept: a later retry opens none of its parts.
+Every part is bound to the sessions on the roster when the capture arrived; if another session
+takes over a call sign before a later part is delivered, that part reports `not-running`.
 The response is `{ accepted }`. A terminal refusal produces a diagnostic without the
 transcript, and the listener continues with later speech. While listening, the daemon can route a capture immediately.
 A POST made while push-to-talk is held waits for the shell's key-up timestamp before
@@ -379,11 +474,17 @@ listener reports the first voiced sample before waiting for silence or decoding.
 daemon allows 250 ms for the final microphone buffer and its loopback onset report.
 If speech began during the countdown, delivery of the selected message waits for
 that segment's result. A bare “cancel” cancels that message even if recognition
-finishes after the countdown. Other speech releases the message for delivery.
-If the listener drops a segment or capture closes before the segment is complete,
-the listener promptly reports completion so the daemon can release that reservation.
-If no completion arrives, the reservation expires 35 seconds after the daemon
-creates it. Send now still claims the message immediately.
+finishes after the countdown. If that follow-up exceeds the FluidAudio capture limit,
+the daemon cancels the reserved message and displays the retry notice. Other recognized
+speech releases the message for delivery.
+For other dropped or interrupted segments, the listener promptly reports completion
+so the daemon can release the reservation.
+If no completion arrives, the reservation expires after 90 seconds for negotiated
+long capture or 35 seconds for older FluidAudio listeners and Sherpa. An onset inside a
+push-to-talk hold adds the two-minute hold limit to that budget, because the hold's transcript
+arrives only after key-up: the countdown does not deliver a message the hold reserved while the
+key is still down, and a Cancel the hold carries still reaches it. Send now still claims the
+message immediately, during a hold or not.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
@@ -678,7 +779,10 @@ credential. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit f
 The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
 The listener validates the recording before claiming
 the daemon lease, so a rejected file can be corrected and retried immediately. With capture
-permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances.
+permission from the daemon, it detects speech and posts timed utterances. When a field has
+focus, Sherpa decodes the growing phrase during playback and replaces the preview with the
+final transcript. Outside a field, it applies roster hotwords and routes the completed phrase.
+If the daemon cannot confirm editor focus, Sherpa skips that phrase and continues listening to the recording.
 The selected pause still applies after 20 seconds of speech. If a command exceeds the 30-second
 capture limit before the pause completes, Sherpa drops the command and resumes at the next phrase. During
 playback the development listener reports its file input as granted and enumerates
@@ -773,10 +877,25 @@ Two environment variables, read when the daemon starts:
 ## Voice settings
 
 **Settings > Voice** opens with the mode line: a dot, the mode in words and, when voice cannot
-listen, every reason it cannot, with **Open Setup**. Below it is **Who you can address**, the
-[roster](#who-can-be-addressed).
+listen, every reason it cannot, with **Open Setup**. The mode line stays above five tabs, one per
+job. The panel opens on **Listening**. Left and Right arrow keys move between tabs. A settings
+search result opens the tab that holds its control before highlighting it.
 
-Under **Input**, **Input device** chooses the microphone (`inputDevice`): **Built-in microphone**
+| Tab | Groups and rows |
+| --- | --- |
+| **Listening** | **Microphone**: Listening mode, Input device, Mute hotkey (Push-to-talk hotkey in Push-to-talk), Auto-mute on calls. **Ending a message**: End-of-speech delay, Separator word, Cancel window |
+| **Names & routing** | **Who you can address**, the [roster](#who-can-be-addressed). **When a sentence is unclear**: When unsure (Ask or Show), then the [decision model](#faster-routing) and its keys |
+| **Spoken replies** | **Spoken replies**: the [voice picker](#mission-control-voices), Play sample and the voice download. **Answering by voice**: Plan forms by voice |
+| **On screen** | **Live transcript**, **Confirmation card**, **In the window** (the indicators) |
+| **Recently heard** | The utterances voice heard, how each was matched and what happened, and Clear |
+
+In Push-to-talk, End-of-speech delay, Separator word, Auto-mute on calls and Ask aloud are
+disabled and keep their saved values, and each says why: End-of-speech delay reads “Applies to
+Always-on listening. Push-to-talk ends on key release.”, Separator word reads “Applies to Always-on
+listening. In Push-to-talk the word is ordinary speech.”, Auto-mute on calls reads “Applies to
+Always-on listening.”, and Ask aloud reads “Ask aloud requires Always-on listening.”
+
+**Input device** chooses the microphone (`inputDevice`): **Built-in microphone**
 (`built-in`, the default), **macOS default input** (`system-default`), or one of the devices the
 live listener lists in its hello. With no listener the menu offers the first two, and the row
 says so. The one exception is a saved device that is not listed now (unplugged, or no listener):
@@ -784,19 +903,23 @@ it stays in the menu as **Saved device (not connected)**, so the menu never show
 was not made. `GET /api/voice/devices` returns `{ devices, listener }` for this menu; a listener
 interprets the id.
 
-Below that are the behavior rows:
+**Separator word** (`separatorWord`, default `bagel`) follows End-of-speech delay under
+**Listening > Ending a message**. In Always-on it ends one message and starts the next without a
+pause, as described at the top of this page. It is disabled in Push-to-talk, where key release ends
+the utterance and the word is ordinary speech.
 
-| Row | Field | Default |
-| --- | --- | --- |
-| Mute hotkey / Push-to-talk hotkey | `hotkey` | Control+Command+Option+V |
-| Auto-mute on calls | `autoMuteDuringCalls` | on |
-| Cancel window (duration or Off) | `cancelWindow { enabled, seconds }` | on, 4 seconds |
-| Unsure (Ask or Show) | `whenUnsure` | `show` |
-| Plan forms by voice | `planFormsByVoice` | on |
+| Row | Tab | Field | Default |
+| --- | --- | --- | --- |
+| Mute hotkey / Push-to-talk hotkey | Listening | `hotkey` | Control+Command+Option+V |
+| Auto-mute on calls | Listening | `autoMuteDuringCalls` | on |
+| Separator word | Listening | `separatorWord` | `bagel` |
+| Cancel window (duration or Off) | Listening | `cancelWindow { enabled, seconds }` | on, 4 seconds |
+| When unsure (Ask or Show) | Names & routing | `whenUnsure` | `show` |
+| Plan forms by voice | Spoken replies | `planFormsByVoice` | on |
 
 ### Faster routing
 
-The **Faster routing** group chooses the decision model (`decisionProvider`) and holds a key for
+On the **Names & routing** tab, the **When a sentence is unclear** group chooses the decision model (`decisionProvider`) and holds a key for
 each provider, since a key belongs to a provider.
 
 - The line at the top names the provider in use. When no provider is in use, it reads
@@ -860,7 +983,7 @@ The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. In Always-on, click any indicator to mute or unmute. In Push-to-talk, the floating indicator and status line display the hold hint while waiting and “Release to finish” during capture. Hover over or focus a compact indicator to read the same guidance. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
+The indicators are configured under **Settings > Voice > On screen > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. In Always-on, click any indicator to mute or unmute. In Push-to-talk, the floating indicator and status line display the hold hint while waiting and “Release to finish” during capture. Hover over or focus a compact indicator to read the same guidance. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
 
 If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
 
@@ -880,6 +1003,55 @@ when the model has verified and the listener can play audio. The weights come
 from Supertone and carry the BigScience OpenRAIL-M licence, including the
 use restrictions in Attachment A. [Original model and licence](https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE)
 and [pinned sherpa-onnx conversion](https://huggingface.co/csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/tree/cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4).
+
+In **Settings > Voice > Spoken replies**, Automatic uses F4 once downloaded on a
+listener that can play it. Until then it uses the best installed English voice
+the Mac listener offers, preferring Premium, then Enhanced, then standard.
+Without a playable voice, Mission Control shows the question on screen.
+The shipping Mac listener advertises no audio playback and no system voices.
+You can still save a voice choice or download the model while on Automatic.
+With this helper, questions appear on screen and both Play sample and Ask
+aloud stay disabled.
+
+Choose any Mission Control voice to save the choice and start the shared
+download, or stay on Automatic and press **Download**. Cancel keeps your
+selection. Press **Download** to start again, or **Retry** after an error.
+A saved voice that is missing stays selected and silent. Install a missing Apple
+voice in System Settings > Accessibility > Read & Speak, or choose another voice.
+**Play sample** uses the same listener and capture pause as a spoken question.
+As soon as the daemon reports a live sample, **Stop** can end it, even while
+the picker is waiting for the reply to its play request.
+
+### Signed Mac playback checklist
+
+**Signed-helper capability check, November 25, 2026.** The probe ran
+`codesign --verify` on the installed Mission Control 2.3.0 listener and the
+checkout’s release helper (`dist/native/voice-listener`). It started each helper
+against a disposable loopback server and recorded its first hello.
+The recorded command `python3 /tmp/f35-voice-hello.py` exited 0 and printed
+this line for both helpers.
+
+```text
+Protocol 4.1 backend fluidaudio speech {"audio": false, "systemVoices": []}
+```
+
+To find the probe in the voice picker review, match `installed-2-3-0-listener-check-command-output.txt`
+and its SHA-256 digest `ff90abea7be2766ee02e0347df7fae7fbe6c8cca80e7ee92a6fa77c53e975526`.
+Artifact IDs are specific to each snapshot. In round 8, segment 0, this transcript is
+`txt_b380b7f45e3b55ee72e8350f75d0b98b`. For the speaker, microphone and on-screen fallback
+results, see the [November 25 quiet-room trial](#november-25-2026-quiet-room-trial).
+
+**Pending on hardware.** These picker checks require a signed listener that
+has passed the speaker and microphone check and advertises playback. On that
+build, select Always-on and Ask aloud with two named agents. Run each check
+with downloaded F4 and an installed Apple voice.
+
+- Play a picker sample, listen for the chosen voice, then use Stop during a
+  second sample. Check Recently heard for any words captured from playback.
+- Say something either agent could own. Listen for exactly one question and
+  answer by name. Confirm that the selected agent receives the message.
+- Tap the mute hotkey during a spoken question. Confirm speech stops and manual
+  mute stays off. Mute before another question and confirm it stays silent.
 
 With the Voice preview enabled, POST to `/api/voice/speech/model/download` to
 start or resume. DELETE cancels an in-progress download. Each file must match
@@ -922,6 +1094,68 @@ and carried to the session card as `TaskSummary.callSign` while the task has one
 annotation, like priority: nothing is provisioned from it, so an update may set or clear it while
 the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, and so do the MCP
 `create_task` and `update_task` tools; `get_task` and `list_tasks` report it.
+
+In Push-to-talk, while waiting for the shortcut, while it is held and after release, a session
+with a call sign is titled by it on its Board card and its Console rail row. Its Open button
+uses the same name, since the next hold may address any agent. Muted, auto-muted for a call, not
+listening and Voice off keep the session's ordinary title and draw no call sign, as does a
+session without a call sign. The fleet filter matches a call sign whenever Voice can hear you.
+Resident cards are titled by their [reference names](#reference-names) both while Always-on
+listens and in Push-to-talk (`voiceCardsShowSpokenNames` in `src/shared/voice.ts`).
+
+### Call signs on Always-on cards
+
+While Always-on is listening, a session card keeps the session's own title, and its Open button
+is named by that title. The call sign is drawn as a separate element in the style chosen under
+**Settings > Display > Board card > Call sign**. That choice is one radio group, offered while the
+`voice` flag is on, with a preview card beside it that redraws as you pick:
+
+- **Subtitle line** (the default): a muted line under the title reads "Say Juniper", with the name
+  in green. The title keeps its whole width, and each card is one short line taller.
+- **Trailing badge**: a green pill after the title, before the jump key. A long title is cut a
+  little sooner.
+- **Leading chip**: a chip before the title.
+- **Edge tab**: a tab on the card's top border, beside the task type tab.
+- **Off**: the title alone. Only the element is hidden: the call sign stays saved, the fleet filter
+  still matches it, and voice still routes to it.
+
+The Console rail row has room for one compact pill after its title, which it draws for every
+style but Off. Each style reads "Call sign Juniper" to a screen reader. The choice is
+`callSignCardStyle` in the UI config (`CALL_SIGN_CARD_STYLES` in `src/shared/protocol.ts`), stored
+and searchable like the other Display choices, and Push-to-talk ignores it. The decision and its
+four variants were picked from mock-ups with the operator; the variants were kept as choices.
+
+### Automatic call signs
+
+A task launched without a call sign is given a safe one when one is available, so a session can
+normally be addressed by voice. When every safe name is taken, the fallback below launches the
+task without one. Assignment happens whether or not Voice is on, so the name is already settled
+when Voice is turned on. A call sign you typed, or one set through `create_task` or `update_task`, is
+always kept. The name is drawn from `AUTO_CALL_SIGN_DICTIONARY` in `src/shared/voice-call-signs.ts`:
+a few dozen two-syllable everyday nouns such as Badger, Juniper and Topaz, each of which passes
+`validateSpokenName` on its own, and no two of which sound alike. A test holds both rules for every
+entry.
+
+The choice (`chooseAutoCallSign`) skips any name that draws a `validateSpokenName` warning
+against a name already spoken for: a resident's name or reference name, the call sign of every
+unfinished task, including one still launching or waiting in the backlog, and every call sign on
+the roster. Sound-alikes are measured the way routing measures them. Each task starts at its own
+point in the list, so concurrent launches spread out. If every name is taken, the choice falls back
+in two steps:
+
+1. It reuses the exact name of a finished task that is still listed as not running. That task
+   leaves the roster at once, as it would for any agent that takes its name.
+2. If no name can be reused safely, the task launches without a call sign. It is never given a
+   name that could be heard as another agent's. You can still set one by hand.
+
+The name is chosen in the same synchronous write that claims the launch (`Dispatcher.dispatch`,
+and the claim that hands a backlog task to a running agent), so concurrent dispatches cannot take
+the same name. It is stored in `tasks.call_sign` like a typed one, so it stays the same for the
+task's life, across relaunches and daemon restarts. Clearing it and launching again runs the
+choice again. That choice starts at the same point for the same task, so it picks the same name
+when that name is still safe, and the next safe one when it is not. With Voice off the name is
+still assigned and stored, but no card draws it and nothing routes by voice. Once Voice can hear you, cards show and route it like any call sign: beside the title
+while Always-on listens, and as the title in Push-to-talk.
 
 A resident's task takes no call sign: the resident answers to its profile's names, and the roster
 would leave a call sign out while its card printed it. Creating or updating one with a call sign
@@ -1063,6 +1297,10 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
 absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
+Its `speech_playback_unsupported` code keeps questions on screen. The
+`speech_voice_unavailable` code means the listener supports playback but voice
+selection found no match. The picker uses the choice and download state to
+offer the appropriate remedy.
 A missed speech stop confirmation makes the listener unavailable even while its hello is live.
 The daemon sets `capabilities.listener.code` to `speech_stop_unconfirmed`, which tells the shell
 to replace the helper. The accompanying `reason` supplies the display text.
@@ -1115,10 +1353,13 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
 - `POST /voice/listener/speech?revision=…` accepts `{ phase, speechStartUs }` from the
-  listener that owns capture. A `start` reports the first voiced sample. After push-to-talk
+  listener that owns capture. A `start` reports speech onset. After push-to-talk
   release, the daemon still accepts an onset from that hold's revision if the sample falls
-  between key-down (inclusive) and the release cutoff (exclusive). The listener waits up to
-  one second for the onset acknowledgment before posting its transcript with the same onset and revision.
+  between key-down (inclusive) and the release cutoff (exclusive). FluidAudio waits up to
+  one second for the onset acknowledgment. During speech, a `focus` request lets either listener
+  discover an editor that gained focus after onset. When the acknowledgment includes
+  `x-voice-dictation: 1`, the listener can send `preview` updates with the current transcript in `text`.
+  The final utterance carries the same onset and capture revision.
   A `finish` releases a segment that produced no accepted transcript, including overlong
   audio once it can no longer be recovered at key-up.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkSession?, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
@@ -1171,6 +1412,36 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 
 ## Tests
 
+On November 25, 2026, the macOS long-message test ran under the installed Mission Control
+2.3.0 desktop runtime with the release Swift listener and local CPU-only FluidAudio models
+(`parakeet-v2-ee09c569-ctc110m-accdafd8`). It fed 60 seconds of synthesized speech
+(960,000 samples at 16 kHz) into the microphone tap in real time. With either three
+seconds of closing silence or a push-to-talk release, the dashboard showed one pending
+message and the addressed SDK test session received all 197 message words in order
+exactly once.
+
+No-Mistakes Review run `a34548e5-84be-44e2-b104-df06c5fa0eff` retains the result as
+`desktop-delivery-command-output.txt` (SHA-256
+`7a37037f2d4076584e643d8460e75fbd3a2a5903208d3342817b9bdfb0d9f676`).
+To repeat the measurement, follow
+[macOS voice build and tests](../CONTRIBUTING.md#macos-voice-build-and-tests) and run the
+[long-capture spec](../e2e/specs/voice-long-capture.spec.ts).
+
+The [push-to-talk hold spec](../e2e/specs/voice-push-to-talk-hold.spec.ts) drives the same
+release listener with two dedicated holds. The first holds through a 3.5-second pause, longer than
+the saved one-second delay, and says “bagel”; the second addresses another agent. While each key
+is down it samples Recently heard, the pending cards and the session receipts and requires that
+none changes. It then checks one message per hold with every word in order, a live transcript that
+kept the words from before the pause, delivery of each message to its own session, and the
+disabled Always-on settings still holding their saved values. A second test plays the same kind of
+audio in Always-on and checks that the delay still ends a message and the separator still splits one.
+`native/voice-listener/Tests/VoiceListenerTests/HeldMessageTests.swift` covers the hold's single
+onset, the joined message and its timings, the cached preview and the discard of a hold that lost speech
+to an input gap or to a later phrase passing the capture limit, with the hold's onset settled once.
+`test/voice-listener-lifecycle.test.ts` checks that the listener then reports the capture limit once
+for the hold and posts nothing, and `test/voice-state.test.ts` that each hold's live transcript starts
+empty, keeps its words through a pause and clears at key-up.
+
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.
 - `test/voice-routing.test.ts`: each routing rule, an exact first word with a later name asking
@@ -1210,6 +1481,27 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 - `test/voice-call-sign.test.ts`: the schemas, a call sign set and cleared on a running task, and
   one refused on a resident's task, created or updated.
 - `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.
+- `test/voice-call-sign-allocation.test.ts`: every dictionary name passes validation and no two
+  sound alike; a claimed name or a sound-alike is skipped; a finished task's exact name is reused
+  before a task goes unnamed; an explicit call sign is kept; eight concurrent launches take eight
+  distinct names, each stored on its task row and kept when launched again. Through a real launch
+  claim: with every name held the task is still claimed and its launch goes on with no call sign
+  stored, and with one finished task's name free that exact name is reused.
+- `test/task-assign.test.ts`: an unnamed task handed to a running agent takes a name in the assign
+  claim, avoiding one another launch claimed while the prompt was typed; a named task keeps its own.
+- `test/call-sign-card-style.test.ts`: which voice modes draw the call sign beside the title or as
+  it; the stored default and its strict write; each style's markup with the title kept; Push-to-talk
+  drawing no second copy; the rail's compact pill; and the five-way radio group behind the flag with
+  its preview following the choice.
+- `e2e/specs/voice-always-on-call-sign-style.spec.ts`: three dispatched sessions keep their titles
+  with "Say <call sign>" under them; Settings offers five radios with Subtitle line checked, and each
+  pick moves the preview and every card; Off draws nothing while an utterance to the call sign still
+  routes; the Console rail shows the pill.
+- `e2e/specs/voice-auto-call-sign.spec.ts`: four concurrent dispatches through the real route,
+  one with its own call sign, take distinct dictionary names that are stored and listed on the
+  roster. A message addressed to one is routed to it, and the Board cards show every name in
+  Push-to-talk while waiting, while held, after release and after a reload. Words captured while
+  the shortcut is held and addressed to another assigned name are sent to that agent on release.
 - `test/display-name.test.ts`: a call sign and a reference name as the first rank, and a
   resident never named by its task's call sign.
 - `e2e/specs/voice-call-sign.spec.ts`: "Will" draws the everyday-word warning with Dispatch still
@@ -1301,6 +1593,8 @@ two of three Samantha playbacks and in all three matching silent controls. The
 word can occur with no playback. Its source in the original trials remains unknown,
 and the default setting missed too many controls to establish silence. Mac playback
 therefore remains unavailable.
+
+<a id="november-25-2026-quiet-room-trial"></a>
 
 In a quiet-room repeat on November 25, an isolated test sent the release helper the
 actual question “Steve or Will?” with the same 250 ms playback delay and 500 ms
@@ -1594,4 +1888,11 @@ action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.
 
 With the Voice preview enabled, Settings > Voice lets you show the live transcript as a wrapping corner card or a bottom-center capsule. The card starts at the bottom right and can move to the bottom left. The overlay starts enabled and displays up to 20 recognized words. Set **Maximum transcript words** to any whole number from 1 to 100.
 
-Microphone ready indicates active capture. Audio detected means the listener has detected speech and is waiting for recognized words. Transcribing shows words as recognition progresses, even before a name matches. Screen readers announce the phase when it changes. The rolling words remain available to read in the overlay. Muting voice or losing capture hides the overlay. Partial words are for display only. Addressing uses the completed phrase.
+Both styles appear when the listener recognizes words and hide five seconds after the last new word. New words extend that time or reopen a hidden overlay. The microphone can keep listening while the overlay is hidden. Screen readers still announce microphone readiness, audio detection, and transcription. Muting voice or losing capture hides it immediately. Partial words are for display only. Addressing uses the completed phrase.
+
+The transcript never covers a corner toast. Where the two share the bottom of the window (the
+bottom-right card always, the capsule and the bottom-left card in narrower windows), the
+transcript rises above the toast's cards and returns to its place when they close. In a window
+too short for both, the toast stack also gives up height and scrolls, so every countdown,
+Cancel and Send now stays reachable. The floating pill and the tray popover are separate
+desktop windows above the dashboard and do not move the transcript.

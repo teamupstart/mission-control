@@ -119,6 +119,8 @@ test("a written cache round-trips", () => {
     taskKindCard: "off",
     // Off its default, so it cannot round-trip by falling back.
     backgroundAgentsStyle: "chip",
+    // Off its default, so it cannot round-trip by falling back.
+    callSignCardStyle: "tab",
     // Both on, off the default, so it cannot round-trip by falling back.
     residentCardNameStyles: ["subtitle", "chip"],
     keybindings: { select: "shift+Tab" },
@@ -177,6 +179,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
   assert.equal(config.backgroundAgentsStyle, "chip");
+  assert.equal(config.callSignCardStyle, "tab");
   assert.deepEqual(config.residentCardNameStyles, ["subtitle", "chip"]);
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, {

@@ -782,12 +782,22 @@ close finishes, so a stalled close cannot make descriptors pile up.
 
 ### Where a shaper sign-in is kept
 
-**Not in use yet.** The store described here is built, but nothing in the daemon calls it:
-shaper sign-in itself arrives in a later change, and until then no sign-in is kept, no
-Keychain item is written and the switch below has no effect. What follows is the contract
-that sign-in will keep.
+**A preview.** Shaper sign-in runs only while the `task-shaping` and `shaper-sign-in` flags
+are on. A sign-in is made in **Settings > Task shaping**
+([Signing in from Settings](task-shaping.md#signing-in-from-settings)) or through the daemon's
+API ([Signing in over the API](task-shaping.md#signing-in-over-the-api)). A shaper that
+carries the sign-in marker asks the sign-in service for its access token on every call, from
+memory, and sends it only to its server's origin.
 
-A remote shaper that needs an OAuth sign-in will have its tokens kept by the daemon, one record
+**In short.** The shaper's row in Settings says where its sign-in is kept: "Kept in the macOS
+Keychain" or "Kept in memory". What is kept is the access token and the refresh token, with
+when the token expires and which client obtained it. They are never written to a file
+Mission Control owns, to its database, to a settings backup or snapshot, to the browser or to
+a log. The daemon reads them, and so can another program running as you that the Keychain
+lets in, as below. **Sign out** in Settings removes them and revokes them at the server. The
+rest of this section is the detail.
+
+A remote shaper that needs an OAuth sign-in has its tokens kept by the daemon, one record
 per connection. A connection is one server URL, scope and authorization server. The record holds
 the access token, the refresh token, when the access token expires, the scope granted, the
 client that obtained the tokens, and the connection itself. Mission Control never writes a
@@ -815,6 +825,18 @@ does. macOS ties the item to the program that created it, so when a different pr
 to read it, such as the desktop app reading an item the daemon wrote from a checkout, or
 after an update replaces the program, macOS asks you whether to allow it. **Always Allow**
 lets that program read the item from then on without asking; **Allow** asks again next time.
+
+**What the browser sees.** The dashboard opens the authorization URL, which carries the client
+id, the OAuth `state` parameter and the PKCE challenge, and the browser follows the
+authorization server's redirect to the daemon's callback, which carries the code. The browser
+never sees a token or the PKCE verifier, and without the verifier a code or a `state` it saw
+cannot be used. The dashboard keeps the authorization URL in the page's memory only, never in
+browser storage, and a reload drops it.
+
+**Removing a sign-in.** **Sign out** on the shaper's row in **Settings > Task shaping**, or on
+its entry under **Sign-ins no shaper uses**, removes the record from the Keychain or from
+memory and revokes the tokens at the authorization server. Switching `shaper-sign-in` off
+removes nothing: held sign-ins stay where they are and are not refreshed, so they may lapse.
 
 **Removing a sign-in by hand.** Open **Keychain Access**, choose your default keychain
 (**login**, unless you changed it), search for `Mission Control shaper sign-in`, and delete the item whose label names the

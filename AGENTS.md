@@ -23,6 +23,7 @@ npm run dev
 npm run build
 npm run typecheck
 npm run lint
+npm run konsistent
 npm test
 npm run test:electron
 npm run test:e2e
@@ -129,7 +130,10 @@ requires successful push CI for the release commit and ref.
 
 Route new session-initiated requests for operator input or approval, including MCP session control requests, to the attention inbox. Keep their decision controls out of the conversation window.
 
-For new or changed settings, follow the [setting onboarding contract](CONTRIBUTING.md#onboard-a-setting).
+For new or changed settings, declare the stable searchable key, read/write behavior and access
+policy at the owner. Share dashboard validation and mutation effects. Record the reason for
+protected or operational controls and update coverage. The fixed `mission_settings` tool supports
+find, get and set. See the [setting onboarding contract](CONTRIBUTING.md#onboard-a-setting).
 
 New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the preview, default-on, and retirement stages.
 
@@ -243,7 +247,7 @@ Tests in `test/` use `node:test` and `node:assert/strict`. React rendering tests
 `renderToStaticMarkup`. Oxlint bans jsdom, Testing Library, Vitest, Jest, and bare
 `node:assert` in `test/` and `e2e/` (`repository/test-imports`).
 
-Browser specs in `e2e/` use `@playwright/test` and run only under `npm run test:e2e`.
+Browser specs under `e2e/specs/` use `@playwright/test` and run only under `npm run test:e2e`.
 They drive the built dashboard served by the built daemon, so run `npm run build`
 first. Tests in `test/` run under `npm test` and must pass on a fresh checkout.
 
@@ -332,6 +336,7 @@ Treat these paths as controlled:
 - Relevant tests pass.
 - `npm run typecheck` passes.
 - `npm run lint` passes.
+- `npm run konsistent` passes.
 - `npm run build` and `npm run smoke` pass when build or runtime surfaces changed.
 - `npm run test:e2e` passes when UI surfaces changed, with a spec covering the new behavior.
 - README and linked technical docs match the implementation.

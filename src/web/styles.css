@@ -7308,17 +7308,19 @@ a.btn {
 .storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
 .storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .storage-problem-list li.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
-/* Storage is one category with five tabs. The tab strip sits on the pane's measure, and each
+/* Storage and Voice are each one category with five tabs. The tab strip sits on the pane's measure, and each
    tab's bands stack with the same air as two settings sections. */
 .storage-panel { display: grid; gap: 0; }
-.storage-tabs {
+.storage-tabs,
+.settings-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
   margin: 0 0 16px;
   border-bottom: 1px solid var(--border-soft);
 }
-.storage-tab {
+.storage-tab,
+.settings-tab {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -7334,8 +7336,8 @@ a.btn {
   cursor: pointer;
   white-space: nowrap;
 }
-.storage-tab:hover { color: var(--fg); }
-.storage-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
+.storage-tab:hover, .settings-tab:hover { color: var(--fg); }
+.storage-tab.is-active, .settings-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
 .storage-tab small { font-family: var(--mono); font-size: 10.5px; font-weight: 500; color: var(--dim); }
 .storage-tab small.storage-green { color: var(--idle); }
 .storage-tab-dot {
@@ -23177,6 +23179,12 @@ button.wf-carried.is-link:focus-visible {
 }
 .voice-key-input {
   width: 190px;
+}
+.voice-separator-input {
+  width: 12ch;
+}
+.voice-separator-error {
+  display: block;
 }
 /* A spoken-name field's heard-as preview (call sign, reference name): the sentence the operator
    would say, a four-step meter that loses a step per warning, and one line per warning. Amber,
@@ -42401,6 +42409,104 @@ body.foreman-sidecar-open .modal-backdrop {
   align-items: first baseline;
 }
 
+/* A session's call sign beside its title while Always-on listens (`CallSignMark`), in voice's
+   listening green so it reads as "the name you can say". One shape per Settings > Display >
+   Board card > Call sign style; each lifts above the tile's stretched open button, as the
+   jump keycap does, so its text can be selected and read. */
+.cs-mic {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.cs-mark {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  color: var(--voice-listening);
+}
+.cs-mark.cs-sub {
+  flex: initial;
+  color: var(--muted);
+  font-weight: 500;
+}
+.cs-mark.cs-sub b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--voice-listening);
+  font-weight: 650;
+}
+.cs-badge,
+.cs-rail {
+  padding: 0 7px 0 5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--voice-listening) 13%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 40%, var(--border));
+}
+.cs-chip {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px 0 4px;
+  border-radius: 5px;
+  letter-spacing: 0.02em;
+  background: color-mix(in oklab, var(--voice-listening) 18%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 45%, var(--border));
+}
+/* The edge tab rides the top border like the task type tab (`.tk-tab`), in one row with it so
+   neither needs to know the other's width. */
+.tile-edge-tabs {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  z-index: 1;
+  display: inline-flex;
+  gap: 6px;
+}
+.tile-edge-tabs > .tk-tab {
+  position: static;
+}
+.cs-tab {
+  padding: 0 8px 0 6px;
+  font-size: 9.5px;
+  font-weight: 720;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--voice-listening) 14%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 45%, var(--border));
+  border-radius: 5px;
+}
+.cs-tab .cs-mic {
+  width: 10px;
+  height: 10px;
+}
+/* The Console rail row's compact form: the title ellipsises, the pill never does. */
+.rail-name.has-call-sign {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rail-name.has-call-sign > .rail-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-name .cs-rail {
+  font-size: 10.5px;
+  font-weight: 620;
+}
+
 /* Wraps rather than clips: the board's drill-in detail is a narrow pane, and the band's one
    action must stay reachable there. The facts give way first, then the action takes a line. */
 .resident-band {
@@ -43280,6 +43386,24 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
 .shaping-env li.is-set span { color: var(--idle); }
 .shaping-env li.is-unset span { color: var(--attention); }
+/* A marked row's sign-in: its state, the daemon's reason and its controls, all inside the row. */
+.shaping-sign-in { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg); }
+.shaping-sign-in-state { margin: 0; font-size: 12px; font-weight: 600; color: var(--fg); }
+.shaping-sign-in.is-signed_in .shaping-sign-in-state { color: var(--idle); }
+.shaping-sign-in.is-renewing .shaping-sign-in-state, .shaping-sign-in.is-off .shaping-sign-in-state { color: var(--attention); }
+.shaping-sign-in.is-off .shaping-sign-in-state { font-weight: 500; }
+.shaping-sign-in-reason { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-sign-in-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.shaping-sign-in-actions:empty { display: none; }
+.shaping-sign-in-actions .btn { padding: 4px 9px; font-size: 12px; }
+.shaping-sign-in [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-unused-sign-ins ul { margin: 0; padding: 0 12px 12px; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.shaping-unused-sign-ins li { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.shaping-unused-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.shaping-unused-copy code { align-self: flex-start; max-width: 100%; font: 11.5px/1.5 var(--mono); }
+.shaping-unused-copy span { font-size: 11.5px; color: var(--dim); }
+.shaping-unused-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-unused-sign-ins li .btn { flex: none; padding: 4px 9px; font-size: 12px; }
 .shaping-row-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .shaping-row-actions .btn { padding: 5px 9px; font-size: 12px; }
 .shaping-move { min-width: 30px; }
@@ -43728,20 +43852,26 @@ button.vi { cursor: pointer; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .pulse-seg:has(.pulse-n) .pulse-dot,
 .topbar[data-rung~="5"]:has(.vi-topbar) .dispatch-btn .kb-hint { display: none; }
 
-.voice-hardware-settings {
+/* Settings > Voice: the mode line, then a tab strip on the Storage panel's rules. */
+.voice-settings .settings-tabs { margin-top: 4px; }
+.voice-settings .kb-capture { min-width: 66px; }
+.voice-settings .kb-row-desc:empty { display: none; }
+
+.voice-spoken-replies .kb-row, .voice-spoken-replies .kb-row-controls { flex-wrap: wrap; }
+.voice-spoken-replies .kb-row-controls { min-width: 0; max-width: 100%; }
+.voice-picker-row {
   display: grid;
-  line-height: 1.5;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
 }
-.voice-hardware-settings .kb-row { padding: 6px 8px; }
-.voice-hardware-settings .kb-capture { min-width: 66px; }
-.voice-hardware-settings .kb-row-desc:empty { display: none; }
+.voice-picker-row > label { align-self: start; padding-top: 5px; }
+.voice-spoken-replies .kb-row-text { flex: 1 1 220px; }
+.voice-picker-row [role="status"] { grid-column: 2; margin: 0; }
+.voice-spoken-replies .settings-select { max-width: 100%; min-width: 0; }
+.voice-spoken-replies .voice-model-progress { flex: 1 1 180px; }
+.voice-spoken-replies .settings-hint { margin: 4px 10px 8px; }
 
 .voice-settings { container-type: inline-size; }
-@container (max-width: 460px) {
-  .voice-hardware-settings { grid-template-columns: 1fr; }
-}
 
 /* Conversation Idle rail preview. The count stays visible when its section is collapsed. */
 .idle-rail-total {

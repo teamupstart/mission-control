@@ -34,15 +34,16 @@ final class Segment {
     private let exclusive: Bool
     let opening: Int
     let segments: AsyncStream<Segment>
-    // This device yields completed segments and has no unfinished PCM between them.
-    var preview: Segment? { nil }
+    private(set) var preview: Segment?
     private(set) var isRunning = true
     private var disruption: DispatchSourceSignal?
     private var heldPhrases: [Segment] = []
+    /// Like the real microphone, a hold that lost speech delivers none of it at release.
+    private var heldLost = false
     private let source: AsyncStream<Segment>.Continuation
 
-    init(selection: String, held: Bool, endOfSpeechMs: Int, onSpeechStart: @escaping (Int64) -> Void,
-         onSegmentDropped: @escaping (Int64) -> Void, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
+    init(selection: String, held: Bool, endOfSpeechMs: Int, limit: CaptureLimit, onSpeechStart: @escaping (Int64) -> Void,
+         onSegmentDropped: @escaping SegmentDropped, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         exclusive = selection == "exclusive"
         if exclusive, Self.exclusiveOwner?.isRunning == true {
             observe("overlapping microphones")
@@ -54,6 +55,7 @@ final class Segment {
         (segments, source) = AsyncStream.makeStream()
         if exclusive { Self.exclusiveOwner = self }
         observe("silence interval \(endOfSpeechMs) ms")
+        observe("capture limit \(limit.rawValue) s")
         observe("opened \(opening)")
         if ["reconfigured", "unplugged"].contains(selection) && opening == 1 {
             signal(SIGUSR1, SIG_IGN)
@@ -67,7 +69,13 @@ final class Segment {
             source.resume()
         }
         if held {
-            if selection == "partial-hold" {
+            if selection == "held-capture-limit" {
+                // A first phrase, then a later phrase of the same hold runs past the capture limit.
+                heldPhrases = [Segment("first phrase")]
+                onSpeechStart(625)
+                heldLost = true
+                onSegmentDropped(625, .captureLimit)
+            } else if selection == "partial-hold" {
                 let complete = Segment("completed hold")
                 heldPhrases = [complete]
                 onSpeechStart(complete.speechStartHostUs)
@@ -82,14 +90,26 @@ final class Segment {
                 Recognizer.pendingDecode = nil
             }
             observe("holding audio")
+        } else if selection == "hands-free-dictation" {
+            let partial = Segment("Steve, check")
+            preview = partial
+            onSpeechStart(partial.speechStartHostUs)
+            signal(SIGUSR1, SIG_IGN)
+            let endpoint = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+            endpoint.setEventHandler { [weak self] in
+                self?.preview = nil
+                self?.source.yield(Segment("Steve, check the build"))
+            }
+            disruption = endpoint
+            endpoint.resume()
         } else if selection == "stalled-onset" {
             for segment in [Segment("Cancel."), Segment("next", endedAt: 2, onset: 1625)] {
                 onSpeechStart(segment.speechStartHostUs)
                 source.yield(segment)
             }
-        } else if selection == "dropped-segment" {
+        } else if selection == "dropped-segment" || selection == "capture-limit" {
             onSpeechStart(123_456)
-            onSegmentDropped(123_456)
+            onSegmentDropped(123_456, selection == "capture-limit" ? .captureLimit : .interrupted)
         } else if selection == "unfinished-segment" {
             onSpeechStart(123_456)
         } else if selection == "two-segments" {
@@ -123,6 +143,9 @@ final class Segment {
         source.resume()
     }
 
+    // The lifecycle fixture has no PCM to preview; a hold decodes only at release.
+    var heldPreview: HeldPreview? { nil }
+
     @discardableResult func stop(releasedAt: Int64? = nil) -> [Segment] {
         disruption?.cancel()
         isRunning = false
@@ -131,7 +154,7 @@ final class Segment {
         if releasedAt != nil {
             Recognizer.pendingDecode?.resume()
             Recognizer.pendingDecode = nil
-            return heldPhrases + [Segment("final phrase")]
+            return heldLost ? [] : heldPhrases + [Segment("final phrase")]
         }
         return []
     }
@@ -139,9 +162,19 @@ final class Segment {
     deinit { observe("released microphone \(opening)") }
 }
 
-struct FixtureUtterance: Encodable { let text: String }
+struct FixtureUtterance: HoldTranscript {
+    let id = UUID().uuidString
+    let backend = "fluidaudio"
+    let capturedAt = Int64(Date().timeIntervalSince1970 * 1000)
+    let text: String
 
-@MainActor struct Recognizer {
+    static func message(_ phrases: [(segment: Segment, transcript: FixtureUtterance?)]) -> FixtureUtterance? {
+        let text = phrases.compactMap { $0.transcript?.text }
+        return text.isEmpty ? nil : FixtureUtterance(text: text.joined(separator: " "))
+    }
+}
+
+@MainActor struct Recognizer: SegmentTranscriber {
     static var pendingDecode: CheckedContinuation<Void, Never>?
     let ctc: Bool? = nil
 
@@ -157,6 +190,10 @@ struct FixtureUtterance: Encodable { let text: String }
         let names = try JSONEncoder().encode(roster)
         observe("prime " + String(decoding: names, as: UTF8.self))
         return nil
+    }
+
+    func transcribe(_ segment: Segment, boosting: Bool?, separator: String?) async throws -> FixtureUtterance? {
+        try await transcribe(segment, boosting: boosting)
     }
 
     func transcribe(_ segment: Segment, boosting: Bool?) async throws -> FixtureUtterance? {

@@ -2,7 +2,7 @@ import { invalidateSettingsConfig } from "./lib/settings-config-refresh.ts";
 import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { ShapingConfigView } from "@shared/shaping.ts";
+import type { ShapingConfigView, ShapingSignInView } from "@shared/shaping.ts";
 import { receiveVoiceCard, receiveVoiceCountdown, VoiceCardClock, type DashboardVoiceAnswer, type DashboardVoiceCard, type VoiceCardRetention } from "./lib/voice-card-clock.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
@@ -57,6 +57,7 @@ import {
   observeSettingsRestored,
   settingsRestoreMarkerChanged,
 } from "./lib/settings-restore-coordinator.ts";
+import { NO_SHAPING_SIGN_INS, shapingSignInsAfter } from "./lib/shaping-sign-ins.ts";
 
 /**
  * Unknown event types already warned about. A version-skewed daemon emitting an
@@ -211,6 +212,13 @@ export interface MissionState {
   /** Observe each confirmed shaping config, as `subscribeFeatureFlags` does for flags. */
   subscribeShaping: (listener: (config: ShapingConfigView | null) => void) => () => void;
   /**
+   * Shaper sign-in's list from SSE. Empty before the first snapshot and whenever `task-shaping`
+   * or `shaper-sign-in` is off: the daemon sends it only while both are on, and clears it with an
+   * empty frame when either turns off. It never holds an authorization URL: a sign-in's link is
+   * only in the reply of the request that started it.
+   */
+  shapingSignIns: ShapingSignInView[];
+  /**
    * The daemon's voice state (contract B of the voice plan). Null before the first snapshot and
    * while the `voice` flag is off at connect time. Mute replies and stream frames share a mode
    * revision. The stream supplies the remaining fields, including roster-only updates (contract C).
@@ -224,6 +232,8 @@ export interface MissionState {
   voiceCards: Map<string, DashboardVoiceCard>;
   fadingVoiceCards: ReadonlySet<string>;
   setVoiceCardRetention: (id: string, retention: VoiceCardRetention) => void;
+  /** Close one settled receipt now. Other cards keep their own expiry timers. */
+  dismissVoiceCard: (id: string) => void;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
@@ -353,6 +363,7 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const [shapingSignIns, setShapingSignIns] = useState<ShapingSignInView[]>(NO_SHAPING_SIGN_INS);
   const [voiceWindowId, setVoiceWindowId] = useState<string>();
   const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, DashboardVoiceAnswer>());
   const [openVoiceQuestion, setOpenVoiceQuestion] = useState<{ sessionId: string; reviewId: string } | null>(null);
@@ -406,6 +417,21 @@ export function useEventStream(): MissionState {
     scheduleVoiceExpiry(expiry.card, retention);
     if (expiry.retention === "in-use") setVoiceCards(limitVoiceOutcomes);
   }, [scheduleVoiceExpiry, voiceExpiry, limitVoiceOutcomes]);
+  const dismissVoiceCard = useCallback((id: string) => {
+    const expiry = voiceExpiry.get(id);
+    // Only a settled receipt leaves early; a countdown or recipient choice stays with the daemon.
+    if (!expiry || !voiceCardCanExpire(expiry.card)) return;
+    window.clearTimeout(expiry.timer ?? undefined);
+    window.clearTimeout(expiry.fadeTimer);
+    voiceExpiry.delete(id);
+    setVoiceCardFading(id, false);
+    setVoiceCards(current => {
+      if (!current.has(id)) return current;
+      const next = new Map(current);
+      next.delete(id);
+      return next;
+    });
+  }, [voiceExpiry, setVoiceCardFading]);
   const [voice, setVoice] = useState<VoiceState | null>(null);
   const acknowledgeVoiceMode = useCallback((ack: VoiceState) => setVoice(current => withNewerVoiceMode(current, ack)), []);
   const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
@@ -614,6 +640,8 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which is the same answer as a cleared frame.
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
+          // Absent while either flag is off, which is the same answer as a cleared frame.
+          setShapingSignIns((prev) => shapingSignInsAfter(prev, msg));
           if (msg.voice && msg.voice.mode !== "off") {
             // A reconnect also carries receipts missed since this stream's last event ID.
             // Previously seen outcomes keep their local timers and any in-use recovery action.
@@ -891,6 +919,9 @@ export function useEventStream(): MissionState {
           setShaping(msg.config);
           for (const listener of shapingListeners.current) listener(msg.config);
           break;
+        case "shaping_sign_ins":
+          setShapingSignIns((prev) => shapingSignInsAfter(prev, msg));
+          break;
         case "voice_state":
           setVoice(current => withNewerVoiceMode(msg.state, current));
           if (msg.state.mode === "off") {
@@ -909,6 +940,12 @@ export function useEventStream(): MissionState {
           break;
         case "voice_open_question":
           if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
+          break;
+        case "voice_dictation":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-dictation", { detail: msg }));
+          break;
+        case "voice_dictation_probe":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-dictation-probe", { detail: msg }));
           break;
         case "voice_confirm_focus":
           if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-confirm-focus", { detail: msg }));
@@ -1125,11 +1162,13 @@ export function useEventStream(): MissionState {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    shapingSignIns,
     voice,
     acknowledgeVoiceMode,
     voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
+    dismissVoiceCard,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

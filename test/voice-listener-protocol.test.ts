@@ -46,7 +46,7 @@ for (const [backend, Client] of [["fluidaudio", FakeVoiceListener], ["sherpa-onn
       setVoiceConfig({ muted: false });
       const initial = await listener.poll();
       assert.ok(initial.captureRevision && initial.captureRevision !== initial.revision);
-      assert.deepEqual(initial, { revision: initial.revision, captureRevision: initial.captureRevision, speak: null, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 2000, pauseMs: null });
+      assert.deepEqual(initial, { revision: initial.revision, captureRevision: initial.captureRevision, speak: null, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 2000, separator: "bagel", pauseMs: null });
       const words = [{ text: "hello", startMs: 0, endMs: 320 }];
       assert.deepEqual(await (await listener.utterance("hello", words, initial.revision)).json(), { accepted: true });
       const pending = listener.poll(initial.revision);
@@ -587,6 +587,44 @@ test("Sherpa publishes quiet, onset and growing partials from unfinished PCM bef
   assert.equal(states.at(-1), "words Steve, check the build");
   assert.deepEqual(finals, ["Steve, check the build"]);
 });
+
+for (const failure of ["start acknowledgement", "prefix decode", "preview POST"] as const) {
+  test("Sherpa recovers the onset after a failed " + failure, async () => {
+    const phases: string[] = [];
+    const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/directive")) return Response.json({ capture: true, revision: "active", roster: [], inputDevice: "built-in" });
+      const body = JSON.parse(String(init.body));
+      if (path.endsWith("/speech")) {
+        phases.push(body.phase);
+        if (failure === "start acknowledgement" && body.phase === "start") throw new Error("lost acknowledgement");
+        if (failure === "preview POST" && body.phase === "preview" && body.text === "first") return new Response(null, { status: 503 });
+      } else if (path.endsWith("/utterances")) phases.push(body.text);
+      return Response.json({ accepted: true }, { headers: { "x-voice-dictation": "1" } });
+    });
+    let exhausted = false;
+    const play = playRecording(client, () => ({
+      get exhausted() { return exhausted; },
+      async next({ preview }) {
+        assert.ok(preview);
+        await preview.update(1, new Float32Array(1));
+        await preview.update(1, new Float32Array(2));
+        exhausted = true;
+        return { done: false, value: { samples: new Float32Array(3) } };
+      },
+    }), async samples => {
+      if (failure === "prefix decode" && samples.length === 1) throw new Error("incomplete prefix");
+      return { text: ["first", "interim", "final"][samples.length - 1]!, tokens: [], timestamps: [], durations: [] };
+    });
+    if (failure === "start acknowledgement") {
+      await assert.rejects(play, /lost acknowledgement/);
+      assert.deepEqual(phases, ["start", "finish"]);
+    } else {
+      await play;
+      assert.deepEqual(phases, failure === "preview POST" ? ["start", "preview", "preview", "final"] : ["start", "preview", "final"]);
+    }
+  });
+}
 
 test("a stalled preview coalesces new prefixes and lets final addressing finish first", { timeout: 3000 }, async () => {
   const started = deferred();

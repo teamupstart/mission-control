@@ -553,7 +553,7 @@ function metadataProblem(metadata: AuthorizationServerMetadata, authorizationSer
 }
 
 /** Two authorization server identifiers, compared as parsed URLs and tolerant of one trailing `/`, as the SDK compares them. */
-function issuersMatch(a: string, b: string): boolean {
+export function issuersMatch(a: string, b: string): boolean {
   let [x, y] = [a, b];
   try { [x, y] = [new URL(a).href, new URL(b).href]; } catch { /* compared as written */ }
   return x === y || (x.endsWith("/") && x.slice(0, -1) === y) || (y.endsWith("/") && y.slice(0, -1) === x);

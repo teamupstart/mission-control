@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { seedRepo, type DaemonHandle } from "../fixtures/daemon.ts";
 import { FAKE_GH_ISSUE_ID, FAKE_GH_ISSUE_URL } from "../fixtures/fake-agents.ts";
@@ -70,7 +71,7 @@ async function putSources(
   sources: Array<Record<string, unknown>>,
 ): Promise<void> {
   const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
-    data: { sources },
+    data: { revision: await taskSourcesRevision(page, daemon), sources },
   });
   expect(res.ok(), await res.text()).toBe(true);
 }

@@ -7,6 +7,8 @@
 // the daemon's: `previewShapingIntent` only draws a click before its answer arrives.
 
 import { z } from "zod";
+import { SHAPER_SIGN_IN_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { residentMcpLoopbackHost } from "@shared/resident-mcp.ts";
 import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import {
   canonicalJson,
@@ -28,6 +30,7 @@ import {
   type ShapingIntent,
   type ShapingReferenceStatus,
   type ShapingRun,
+  type ShapingSignInView,
   type ShapingStage,
   type UnsupportedShaperView,
 } from "@shared/shaping.ts";
@@ -610,6 +613,430 @@ export function shaperReceives(shaper: Shaper): { remote: boolean; sent: string[
       + "The text it does send is passed on as written: a prompt, title, fact or summary that contains a path, "
       + "file contents or a secret sends that too.",
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Signing a shaper in
+
+/** One control a marked row's sign-in offers. Each is drawn with an `aria-label` that names the shaper. */
+export type ShaperSignInControl = "sign-in" | "open" | "copy" | "cancel" | "sign-out";
+
+/** What a marked row says about its sign-in, and the controls it offers. */
+export type ShaperSignInRow =
+  /** `shaper-sign-in` is off: one sentence and no control. */
+  | { kind: "off"; text: string }
+  | {
+    kind: "status";
+    state: ShapingSignInView["state"];
+    text: string;
+    /** The daemon's fixed sentence for this state, when it gave one. */
+    reason: string | null;
+    controls: ShaperSignInControl[];
+    /** The connection the row's sign-in is, or null before the daemon lists one. */
+    connection: string | null;
+    /** The authorization URL this window holds for the pending sign-in, or null. */
+    link: string | null;
+  };
+
+export const SIGN_IN_OFF_TEXT = `Sign-in is switched off, so this shaper is not called. Turn on the Shaper sign-in feature flag (${SHAPER_SIGN_IN_FLAG_ID}) to sign in here.`;
+
+/** Each state's sentence, as the row shows it. */
+export const SIGN_IN_STATE_TEXT = Object.freeze({
+  signedOut: "Not signed in.",
+  pendingHere: "Waiting for the browser.",
+  pendingElsewhere: "Waiting for the browser. Started in another window, or before this page was reloaded.",
+  keychain: "Signed in. Kept in the macOS Keychain.",
+  memory: "Signed in until Mission Control restarts. Kept in memory.",
+  renewing: "Renewing the sign-in.",
+} as const);
+
+/** The sign-in a row shows: the entry whose `shapers` holds the row's id. */
+export function signInForShaper(signIns: readonly ShapingSignInView[], id: string): ShapingSignInView | null {
+  return signIns.find((entry) => entry.shapers.includes(id)) ?? null;
+}
+
+/**
+ * What a row says about its shaper's sign-in, or null for a shaper with no `auth` marker. A
+ * marked shaper with no entry in the list yet is signed out. A pending sign-in offers the link
+ * only to the window that started it and still holds it in `links`, since the list never
+ * carries the authorization URL; any other window offers Sign in, which starts a new sign-in
+ * that replaces the pending one, and Cancel sign-in.
+ */
+export function shaperSignInRow(
+  shaper: Shaper,
+  id: string,
+  options: { enabled: boolean; signIns: readonly ShapingSignInView[]; links: Readonly<Record<string, string>> },
+): ShaperSignInRow | null {
+  if (!shaperSignInTarget(shaper)) return null;
+  if (!options.enabled) return { kind: "off", text: SIGN_IN_OFF_TEXT };
+  const entry = signInForShaper(options.signIns, id);
+  const status = (text: string, controls: ShaperSignInControl[], link: string | null = null): ShaperSignInRow => ({
+    kind: "status", state: entry?.state ?? "signed_out", text, reason: entry?.reason ?? null, controls, connection: entry?.id ?? null, link,
+  });
+  if (!entry) return status(SIGN_IN_STATE_TEXT.signedOut, ["sign-in"]);
+  switch (entry.state) {
+    case "signed_out":
+      return status(SIGN_IN_STATE_TEXT.signedOut, ["sign-in"]);
+    case "pending": {
+      const link = Object.hasOwn(options.links, entry.id) ? options.links[entry.id]! : null;
+      return link
+        ? status(SIGN_IN_STATE_TEXT.pendingHere, ["open", "copy", "cancel"], link)
+        : status(SIGN_IN_STATE_TEXT.pendingElsewhere, ["sign-in", "cancel"]);
+    }
+    case "signed_in":
+      return status(entry.storage === "keychain" ? SIGN_IN_STATE_TEXT.keychain : SIGN_IN_STATE_TEXT.memory, ["sign-out"]);
+    case "renewing":
+      return status(SIGN_IN_STATE_TEXT.renewing, ["sign-in", "sign-out"]);
+  }
+}
+
+/** The sign-ins no known shaper names, which Settings lists apart so each can be signed out. */
+export function unusedSignIns(signIns: readonly ShapingSignInView[]): ShapingSignInView[] {
+  return signIns.filter((entry) => entry.shapers.length === 0);
+}
+
+/**
+ * Whether the dashboard may open an authorization URL the daemon sent: `https:`, or plain
+ * `http:` to this machine's loopback, the rule every sign-in URL already follows. The desktop
+ * bridge checks nothing about a URL, so this is the check before it.
+ */
+export function signInUrlOpenable(value: string): boolean {
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  return url.protocol === "https:" || (url.protocol === "http:" && residentMcpLoopbackHost(url));
+}
+
+/** A connection's state in a sign-in list, or `absent` when the list does not name it. */
+export type SignInListState = ShapingSignInView["state"] | "absent";
+
+/** The state `signIns` shows for `connection`. */
+export function signInStateIn(signIns: readonly ShapingSignInView[], connection: string | null): SignInListState {
+  return (connection === null ? undefined : signIns.find((entry) => entry.id === connection)?.state) ?? "absent";
+}
+
+/**
+ * Which attempt `signIns` shows pending for `connection`: the entry's `attempt`, the one the
+ * sign-in reply that started it carried. Null when the connection is not pending.
+ */
+export function signInAttemptIn(signIns: readonly ShapingSignInView[], connection: string | null): number | null {
+  const entry = connection === null ? undefined : signIns.find((item) => item.id === connection);
+  return entry?.state === "pending" ? entry.attempt ?? null : null;
+}
+
+/** Where a list leaves a connection: its state, and which attempt when it is pending. */
+export interface SignInPosition {
+  state: SignInListState;
+  attempt: number | null;
+}
+
+/** The position `signIns` shows for `connection`. */
+export function signInPositionIn(signIns: readonly ShapingSignInView[], connection: string | null): SignInPosition {
+  return { state: signInStateIn(signIns, connection), attempt: signInAttemptIn(signIns, connection) };
+}
+
+function samePosition(a: SignInPosition, b: SignInPosition): boolean {
+  return a.state === b.state && a.attempt === b.attempt;
+}
+
+/**
+ * How many times each connection's position has changed in the lists a window has seen, by
+ * connection id: its state, or which attempt is pending, so one pending sign-in replacing another
+ * counts. A request records the counts as it is sent, and its reply compares them with the counts
+ * when it lands: a change in between is not undone by the state coming back to what it was, as a
+ * sign-in that went pending and was cancelled elsewhere comes back to signed out.
+ */
+export type SignInMoves = Readonly<Record<string, number>>;
+
+/** The counts after the list goes from `before` to `after`. Returns `moves` itself when no position changed. */
+export function signInMovesAfter(
+  moves: SignInMoves,
+  before: readonly ShapingSignInView[],
+  after: readonly ShapingSignInView[],
+): SignInMoves {
+  let next: Record<string, number> | null = null;
+  for (const id of new Set([...before, ...after].map((entry) => entry.id))) {
+    if (samePosition(signInPositionIn(before, id), signInPositionIn(after, id))) continue;
+    next ??= { ...moves };
+    next[id] = (next[id] ?? 0) + 1;
+  }
+  return next ?? moves;
+}
+
+/** How many times `connection` changed position between the counts a request was sent with and those now. */
+export function signInMovesSince(sent: SignInMoves, now: SignInMoves, connection: string | null): number {
+  return connection === null ? 0 : (now[connection] ?? 0) - (sent[connection] ?? 0);
+}
+
+/** Whether `connection` changed position between the counts a request was sent with and those now. */
+export function signInMovedSince(sent: SignInMoves, now: SignInMoves, connection: string | null): boolean {
+  return signInMovesSince(sent, now, connection) !== 0;
+}
+
+/**
+ * The link a window keeps when a sign-in reply hands it `url` for `connection`, or null.
+ * `attempt` is the reply's `attempt`, which names the sign-in it started, and `moves` is how
+ * many times the connection changed position while the request was in flight:
+ *
+ * - the list shows this attempt pending: its event came first, and the link is seen pending;
+ * - no change: the reply came first, and the link waits for its event, as long as the list keeps
+ *   showing what it shows now; on a row already pending that is the attempt this one replaces;
+ * - the list shows an older attempt pending: whatever moved, this attempt's own event is still
+ *   to come, since a daemon lists its attempts in the order it begins them, and the link waits;
+ * - anything else: the sign-in moved on before the reply landed. It finished, was cancelled or
+ *   was replaced elsewhere, even back to the state it started in. There is no link to keep or
+ *   open, so a later pending sign-in is never offered a link it did not start.
+ */
+export function signInLinkFor(
+  signIns: readonly ShapingSignInView[],
+  connection: string,
+  reply: { url: string; attempt: number },
+  moves: number,
+): ShaperSignInLink | null {
+  const now = signInPositionIn(signIns, connection);
+  const { url, attempt } = reply;
+  if (now.state === "pending" && now.attempt === attempt) return { url, attempt, seenPending: true, waitingIn: null };
+  return moves === 0 || olderAttempt(now, attempt) ? { url, attempt, seenPending: false, waitingIn: now } : null;
+}
+
+/**
+ * Whether `position` shows an attempt pending that began before `attempt`. One daemon numbers its
+ * attempts in the order it begins them, and lists them in that order, so while the list shows an
+ * older attempt, `attempt`'s own event has yet to arrive.
+ */
+function olderAttempt(position: SignInPosition, attempt: number): boolean {
+  return position.state === "pending" && position.attempt !== null && position.attempt < attempt;
+}
+
+/**
+ * The links a window keeps once a reply hands it `link` for `connection`. A link replaces an
+ * earlier attempt's on that connection, never a later one's: two rows that share a connection can
+ * each send Sign in, the later attempt replaces the earlier at the daemon, and the earlier reply
+ * may land last, with no link or with one still waiting for its event. Either way the later
+ * attempt's link stays. Whatever is held still ends through `signInLinksAfter` once the list can
+ * no longer show its own attempt pending. Returns `current` itself when nothing is kept.
+ *
+ * Attempt order holds within one daemon. A link left waiting for its event when the daemon
+ * restarted can outrank the new daemon's numbers, which start at a random point. It is never
+ * offered, as no list shows its attempt again, but until the list leaves pending it keeps the new
+ * daemon's link from being held, and the row reads as pending elsewhere and offers Sign in.
+ */
+export function signInLinkHeld(
+  current: Readonly<Record<string, ShaperSignInLink>>,
+  connection: string,
+  link: ShaperSignInLink | null,
+): Readonly<Record<string, ShaperSignInLink>> {
+  return signInLinkKept(current, connection, link) ? { ...current, [connection]: link } : current;
+}
+
+/**
+ * Whether `signInLinkHeld` keeps `link`: there is one, and no later attempt's link is held on its
+ * connection. A reply whose link is not kept started an attempt a later one already replaced, so
+ * it opens no page and shows no refusal: its URL would end on the callback's "The sign-in did not
+ * finish." page.
+ */
+export function signInLinkKept(
+  current: Readonly<Record<string, ShaperSignInLink>>,
+  connection: string,
+  link: ShaperSignInLink | null,
+): link is ShaperSignInLink {
+  if (!link) return false;
+  const held = Object.hasOwn(current, connection) ? current[connection]! : null;
+  return !held || held.attempt <= link.attempt;
+}
+
+const SIGN_IN_ROW_PREFIX = "row:";
+const SIGN_IN_CONNECTION_PREFIX = "connection:";
+
+/** The key of a shaper row's sign-in controls: their busy state and refusals live under it. */
+export function signInRowKey(shaper: string): string {
+  return `${SIGN_IN_ROW_PREFIX}${shaper}`;
+}
+
+/**
+ * The key of a connection's own controls: an unused entry's Sign out, and the busy state of every
+ * Cancel sign-in or Sign out of that connection, whichever row or entry sent it.
+ */
+export function signInConnectionKey(connection: string): string {
+  return `${SIGN_IN_CONNECTION_PREFIX}${connection}`;
+}
+
+/** The shaper id a row control's key names, or null for an unused entry's connection key. */
+export function signInRowShaper(key: string): string | null {
+  return key.startsWith(SIGN_IN_ROW_PREFIX) ? key.slice(SIGN_IN_ROW_PREFIX.length) : null;
+}
+
+/**
+ * A connection in a state, as one comparable string: what a refusal is shown against. A pending
+ * one names its attempt too, so a refusal about one pending sign-in goes once another replaces it.
+ */
+export function signInSubject(connection: string | null, state: SignInListState, attempt: number | null = null): string {
+  const pending = state === "pending" && attempt !== null ? `@${attempt}` : "";
+  return `${connection ?? ""}|${state}${pending}`;
+}
+
+/** The connection a sign-in control acts on: a row's is the one whose `shapers` names it. */
+export function signInControlConnection(signIns: readonly ShapingSignInView[], key: string): string | null {
+  return key.startsWith(SIGN_IN_ROW_PREFIX) ? signInForShaper(signIns, key.slice(SIGN_IN_ROW_PREFIX.length))?.id ?? null
+    : key.startsWith(SIGN_IN_CONNECTION_PREFIX) ? key.slice(SIGN_IN_CONNECTION_PREFIX.length) : null;
+}
+
+/** Whether a link not yet seen pending may still see its attempt pending at `position`. */
+function stillWaiting(position: SignInPosition, link: ShaperSignInLink): boolean {
+  return (link.waitingIn !== null && samePosition(position, link.waitingIn)) || olderAttempt(position, link.attempt);
+}
+
+/** Whether `signIns` shows the attempt `link` started as the one pending on its connection. */
+function linkPending(signIns: readonly ShapingSignInView[], connection: string, link: ShaperSignInLink): boolean {
+  // Only a pending entry names an attempt, so a match is that attempt pending.
+  return signInAttemptIn(signIns, connection) === link.attempt;
+}
+
+/**
+ * The links a window keeps for its pending sign-ins after the list changes. A link lives while
+ * the list shows its own attempt pending on its connection. One not yet seen pending is kept while
+ * the list still shows the position it was stored in, or an attempt pending that began before its
+ * own, so a reply that lands before its event, or before the events of the attempts ahead of it,
+ * does not lose it. It is dropped at the first other position that is not its attempt. Once seen
+ * pending, any other position ends it: another state, none, or another attempt pending, as when
+ * another window's sign-in replaced it. Returns `current` itself when nothing changed.
+ */
+export function signInLinksAfter(
+  current: Readonly<Record<string, ShaperSignInLink>>,
+  signIns: readonly ShapingSignInView[],
+): Readonly<Record<string, ShaperSignInLink>> {
+  let changed = false;
+  const next: Record<string, ShaperSignInLink> = {};
+  for (const [connection, link] of Object.entries(current)) {
+    if (linkPending(signIns, connection, link)) {
+      if (link.seenPending) next[connection] = link;
+      else { next[connection] = { ...link, seenPending: true, waitingIn: null }; changed = true; }
+    } else if (!link.seenPending && stillWaiting(signInPositionIn(signIns, connection), link)) {
+      next[connection] = link;
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : current;
+}
+
+/**
+ * The authorization URL each row may offer, by connection: only a held link whose own attempt is
+ * the one the list shows pending. A link still waiting for its event, or one whose sign-in another
+ * window replaced in the list just drawn, offers nothing, so a row never opens or copies a link
+ * that would end on the callback's "The sign-in did not finish." page.
+ */
+export function signInLinksShown(
+  held: Readonly<Record<string, ShaperSignInLink>>,
+  signIns: readonly ShapingSignInView[],
+): Readonly<Record<string, string>> {
+  const shown: Record<string, string> = {};
+  for (const [connection, link] of Object.entries(held)) {
+    if (linkPending(signIns, connection, link)) shown[connection] = link.url;
+  }
+  return shown;
+}
+
+/**
+ * What a sign-in control's refusal is about: the connection the control acts on and the state
+ * the list shows for it, as one comparable string. A row's control (`row:<shaper id>`) acts on
+ * the connection whose `shapers` names it; an unused entry's (`connection:<id>`) on that id.
+ */
+export function signInControlSubject(signIns: readonly ShapingSignInView[], key: string): string {
+  const connection = signInControlConnection(signIns, key);
+  return signInSubject(connection, signInStateIn(signIns, connection), signInAttemptIn(signIns, connection));
+}
+
+/**
+ * Whether a refusal that just landed still describes its row. `target` is the connection the
+ * request acted on as it was sent: a Sign out's connection, or the connection a row named when
+ * its Sign in went out, null when it named none. The refusal no longer applies once the row names
+ * another connection than the one targeted, such as after another window changed the shaper's
+ * scope, or once that connection changed state while the request was in flight.
+ */
+export function signInRefusalApplies(
+  request: { sent: SignInMoves; target: string | null },
+  now: { moves: SignInMoves; signIns: readonly ShapingSignInView[]; key: string },
+): boolean {
+  const current = signInControlConnection(now.signIns, now.key);
+  if (request.target !== null && current !== request.target) return false;
+  return !signInMovedSince(request.sent, now.moves, request.target ?? current);
+}
+
+/**
+ * What each listed shaper signs in to, by id, as one comparable string: its `auth` target's URL,
+ * scope and issuer, or null for a shaper that does not sign in. Read from the definitions the
+ * list draws, so it holds for a row whether or not the sign-in list has an entry for it. A shadowed
+ * folder shaper is left out, as its row offers no sign-in; the registered one of that id is used.
+ */
+export function signInTargetsByShaper(groups: readonly ShapingListGroup[]): Readonly<Record<string, string | null>> {
+  const targets: Record<string, string | null> = {};
+  for (const row of groups.flatMap((group) => group.rows)) {
+    if (row.duplicate || (row.origin === "discovered" && row.folderState === "shadowed") || Object.hasOwn(targets, row.id)) continue;
+    const target = row.shaper ? shaperSignInTarget(row.shaper) : null;
+    targets[row.id] = target ? canonicalJson(target) : null;
+  }
+  return targets;
+}
+
+/**
+ * Whether a shaper row still signs in to what it did when a request went out. A refusal or a
+ * link from before another window changed the shaper's URL, scope or issuer is about a
+ * connection the row no longer has, whether or not the sign-in list names either one.
+ */
+export function signInTargetUnchanged(
+  sent: Readonly<Record<string, string | null>>,
+  now: Readonly<Record<string, string | null>>,
+  shaper: string,
+): boolean {
+  return (Object.hasOwn(sent, shaper) ? sent[shaper] : null) === (Object.hasOwn(now, shaper) ? now[shaper] : null);
+}
+
+/** A sign-in control's refusal, with the subject it was shown against. */
+export interface ShaperSignInRefusal {
+  text: string;
+  /** `signInControlSubject` while the refusal still applies. */
+  subject: string;
+  /**
+   * For a row's refusal, what the shaper signed in to when it was shown, from
+   * `signInTargetsByShaper`. Absent for an unused entry's, which names its connection itself.
+   */
+  target?: string | null;
+}
+
+/**
+ * The refusals a window keeps after the list or the shaper definitions change. A refusal answers
+ * one moment of its control's connection: once the list shows that connection in another state,
+ * or the row's shaper on another connection, such as another window signing it in or out, the
+ * refusal no longer describes the row and is dropped. A row's refusal is dropped too once its
+ * shaper signs in to another URL, scope or issuer, which `targets` shows even when the list names
+ * no connection for the row at either time. Returns `current` itself when nothing changed.
+ */
+export function signInRefusalsAfter(
+  current: Readonly<Record<string, ShaperSignInRefusal>>,
+  signIns: readonly ShapingSignInView[],
+  targets?: Readonly<Record<string, string | null>>,
+): Readonly<Record<string, ShaperSignInRefusal>> {
+  let changed = false;
+  const next: Record<string, ShaperSignInRefusal> = {};
+  for (const [key, refusal] of Object.entries(current)) {
+    const shaper = signInRowShaper(key);
+    const retargeted = targets !== undefined && shaper !== null && refusal.target !== undefined
+      && !signInTargetUnchanged({ [shaper]: refusal.target }, targets, shaper);
+    if (!retargeted && signInControlSubject(signIns, key) === refusal.subject) next[key] = refusal;
+    else changed = true;
+  }
+  return changed ? next : current;
+}
+
+/** A pending sign-in's link, as the window that started it holds it. */
+export interface ShaperSignInLink {
+  url: string;
+  /** The attempt the link is for, from the sign-in reply, as the list's pending entry names it. */
+  attempt: number;
+  /** Whether the list has shown this attempt pending since the link arrived. */
+  seenPending: boolean;
+  /** Before then, the position the list showed when the link arrived, which it may keep showing. */
+  waitingIn: SignInPosition | null;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { workflowGraphFingerprint } from "./workflows/graph-fingerprint.ts";
-import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
+import { RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
 import type { SdkUsage, TranscriptBoundary, TranscriptSession } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
@@ -2625,7 +2625,7 @@ function createSchemaObjects(d: DatabaseSync): void {
     -- Custom server DEFINITIONS live in app_config (residents.mcpServers) and travel with
     -- settings snapshots. Their SECRET VALUES live only here: written by a save, read only by
     -- a launch's snapshot, never returned by a route, published, logged or captured by a
-    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/service.ts). Keyed by the
+    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/publication.ts). Keyed by the
     -- server's id and the field ("env:NAME", "header:Name", "query:name").
     CREATE TABLE IF NOT EXISTS resident_mcp_secrets (
       server_id   TEXT NOT NULL,
@@ -4280,6 +4280,8 @@ function migrate(d: DatabaseSync): void {
   // guard falls back to the full fingerprint for those rows, which is exactly what it did
   // before, so an upgraded database keeps its historical behaviour on historical rows.
   addColumn(d, "workflow_submissions", "repository_fingerprint", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_packet", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_checkout", "TEXT");
   addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
   // Existing staged rows are images. The append-only kind lets text/log evidence share the
   // reservation and generation lifecycle without changing any historical row's meaning.
@@ -10116,11 +10118,12 @@ export function recordTaskWorktreeObservation(
       const fresh = outcome === "seeded" || outcome === "changed" || outcome === "replaced";
       const windowChanged = existing && existing.retention_ms !== retentionMs;
       if (fresh || windowChanged) {
-        const lastChanged = fresh ? now : Math.max(existing!.last_changed_at, existing!.unowned_since ?? 0);
-        const due = fresh ? lastChanged + retentionMs
+        const cutoff = fresh ? worktreeRetentionCutoff(now, null, retentionMs)
+          : worktreeRetentionCutoff(existing!.last_changed_at, existing!.unowned_since, retentionMs);
+        const due = fresh ? cutoff
           : retentionMs < existing!.retention_ms
-            ? Math.max(lastChanged + retentionMs, now + RETENTION_OBSERVE_INTERVAL_MS)
-            : Math.max(lastChanged + retentionMs, existing!.cleanup_due_at);
+            ? Math.max(cutoff, now + RETENTION_OBSERVE_INTERVAL_MS)
+            : Math.max(cutoff, existing!.cleanup_due_at);
         d.prepare(`UPDATE task_worktree_retention SET cleanup_due_at = ?, retention_ms = ? WHERE task_id = ?`)
           .run(due, retentionMs, taskId);
       }
@@ -17453,10 +17456,11 @@ export function setSkillsAck(noteKey: string, generation: number, now = Date.now
 }
 
 const appConfigRevisions = new Map<string, number>();
+const appConfigRevisionSource = randomUUID();
 
 /** A daemon-local generation for conditional setting replacement. */
 export function appConfigRevision(entry: AppConfigEntry): string {
-  return String(appConfigRevisions.get(entry.key) ?? 0);
+  return `${appConfigRevisionSource}:${appConfigRevisions.get(entry.key) ?? 0}`;
 }
 
 function bumpAppConfigRevision(entry: AppConfigEntry): void {

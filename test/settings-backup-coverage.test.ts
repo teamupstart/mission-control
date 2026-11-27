@@ -136,6 +136,9 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "setup.banner",
       // Task shaping's registered shapers and settings, edited in Settings > Task shaping.
       "shaping",
+      // Shaper sign-in's client registrations. `operational` with NO backup domain: they name
+      // this daemon's loopback redirect URI, and they hold no token.
+      "shaping.signIn",
       "shipping",
       "skills",
       // When each storage warning's occurrence began. `operational`, never restored: it dates
@@ -220,6 +223,13 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.backupDomain, null);
   assert.equal(APP_CONFIG_ENTRIES.keepAwake.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.keepAwake.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.shapingSignIn.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.shapingSignIn.backupDomain, null);
+  assert.equal(
+    SETTINGS_CONFIG_BACKUP_ENTRIES.some((entry) => entry.key === "shaping.signIn"),
+    false,
+    "a settings backup must never capture or restore shaper sign-in's client registrations",
+  );
   assert.equal(
     SETTINGS_CONFIG_BACKUP_ENTRIES.some((entry) => entry.key === "keepAwake"),
     false,
@@ -231,6 +241,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     hotkey: "setting",
     autoMuteDuringCalls: "setting",
     endOfSpeechMs: "setting",
+    separatorWord: "setting",
     showTranscript: "setting",
     transcriptStyle: "setting",
     transcriptCorner: "setting",

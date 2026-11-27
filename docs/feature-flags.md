@@ -39,6 +39,15 @@ existing dashboard API. See [Recurring missions](recurring-missions.md#creating-
 `test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
 creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
+**Reclaim orphaned task worktrees** (`orphaned-worktree-reclaim`) lets automatic worktree
+retention return two classes it otherwise holds for ever: disposable task checkouts Git no
+longer recognizes, and tasks whose terminal home can be proved absent. It is its own flag rather
+than an extension of `seven-day-worktree-cleanup`, because that flag only chooses the retention
+window and turning it off still enforces cleanup; a new class of unattended deletion needs an
+off switch of its own. Its session policy is protected: a session can read it but not change it.
+`MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` evaluates both classes from read-only evidence
+whatever the flag says. See [Orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
+
 **Local Inspector** (`local-inspector`) exposes the pre-PR workflow stage, its Command tuning
 and the Local review setting in GitHub Inspector. It uses the repository workload independently
 of the Persona repository access preview. Turning the flag off hides its authoring controls
@@ -191,10 +200,18 @@ operator must turn on **Allow sessions to access Mission Control settings** in *
 in the desktop app. Trust starts off when there is no saved choice and remains independent of the
 rollout flag, including after the flag retires.
 
+A permitted session can change individual flags whose registry entries allow session writes.
+For example, setting `featureFlags.idle-rail-section-counts` to `true` updates every open
+dashboard. Enable all, override resets, workstation capture flags and flags that confer
+authority require an operator. Each new feature flag declares its session policy in the
+[flag registry](../src/shared/feature-flag-registry.ts).
+
 ## Shipped flags
 
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
+| `seven-day-worktree-cleanup` | preview | Seven-day task worktree retention. Off uses the configured window | [Worktrees and checks](worktrees-and-checks.md#task-worktree-retention) |
+| `orphaned-worktree-reclaim` | preview | Automatic retention of disposable task checkouts Git no longer recognizes, after archiving their local-only files, and of tasks whose terminal home is proved absent. Off holds both classes as before | [Worktrees and checks](worktrees-and-checks.md#orphaned-task-checkouts) |
 | `background-reasoning-effort` | preview | Per-call effort settings for background jobs, Foreman and GitHub Inspector. Turning it off suspends the saved overrides for new calls | [Models](models.md#reasoning-effort-for-background-work) |
 | `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
@@ -202,7 +219,7 @@ rollout flag, including after the flag retires.
 | `session-settings-mcp` | preview | Let registered sessions find, read and change supported settings | [Discover and edit typed settings](skills-and-settings.md#discover-and-edit-typed-settings) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
-| `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until the sign-in arrives in later releases. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |
+| `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called, the sign-in routes (`/api/shaping/sign-in`, its callback and `/api/shaping/sign-out`), `signIns` in `GET /api/shaping`, and the `shaping_sign_ins` event and snapshot field. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until calls use the sign-in in a later release. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |
 | `resident-card-names` | preview | The Resident name with call sign checkboxes in Settings > Display and the profile name they add to a resident's Board card beside its call sign. Off, the card shows the call sign alone and the stored styles are kept | [Residents](residents.md#finding-a-resident) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the inbox Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |

@@ -4,13 +4,14 @@ import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { beSpeaker, enableVoice, say, sendHello, voiceToken } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 test.use({ daemonEnv: fixtureSupervisorEnv });
 
 test("Ask aloud follows the player, and Stop and the time limit wait for silence", async ({ dashboard: page, daemon }) => {
   test.setTimeout(120_000);
   await setupCards(page, daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const ask = page.getByRole("radio", { name: "Ask aloud" });
   await expect(page.getByRole("radiogroup", { name: "When routing is unsure" }).getByRole("radio").first()).toHaveAccessibleName("Ask aloud");
   await expect(ask).toBeDisabled();
@@ -22,6 +23,8 @@ test("Ask aloud follows the player, and Stop and the time limit wait for silence
   try {
     await ask.check();
     await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config.whenUnsure).toBe("ask");
+    // The cards float over any page; the rows below are read from Recently heard.
+    await openVoiceTab(page, "Recently heard");
     const asking = page.getByRole("status").filter({ hasText: "Asking aloud" });
     const unsure = page.getByRole("status").filter({ hasText: "Who is this for?" });
     const heldHint = "Pick a row now, or speak once playback ends.";
@@ -69,23 +72,32 @@ test("Push-to-talk preserves Ask aloud on a round trip and allows saving Show on
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon);
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    // Listening mode is on the Listening tab and Ask aloud on Names & routing, so the test
+    // moves between them the way an operator would.
+    await openVoiceTab(page, "Listening", daemon.baseURL);
     const mode = page.getByRole("combobox", { name: "Listening mode" });
     const ask = page.getByRole("radio", { name: "Ask aloud" });
     const row = page.getByRole("radiogroup", { name: "When routing is unsure" });
+    const routing = () => openVoiceTab(page, "Names & routing");
+    const listening = () => openVoiceTab(page, "Listening");
     await expect(mode).toHaveValue("always-on");
+    await routing();
     await ask.check();
     const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config;
     await expect.poll(saved).toMatchObject({ whenUnsure: "ask", listeningMode: "always-on" });
+    await listening();
     await mode.selectOption("push-to-talk");
     await expect.poll(saved).toMatchObject({ whenUnsure: "ask", listeningMode: "push-to-talk" });
     await page.reload();
+    await routing();
     await expect(ask).toBeChecked();
     await expect(ask).toBeDisabled();
     await expect(ask).toHaveAccessibleDescription("Ask aloud requires Always-on listening.");
     await captureCard(row, "saved-ask-push-to-talk");
+    await listening();
     await mode.selectOption("always-on");
     await expect.poll(saved).toMatchObject({ whenUnsure: "ask", listeningMode: "always-on" });
+    await routing();
     await expect(ask).toBeChecked();
     await expect(ask).toBeEnabled();
     await captureCard(row, "saved-ask-always-on");
@@ -96,7 +108,9 @@ test("Push-to-talk preserves Ask aloud on a round trip and allows saving Show on
     await expect.poll(saved).toMatchObject({ whenUnsure: "ask" });
     await expect(ask).toBeChecked();
 
+    await listening();
     await mode.selectOption("push-to-talk");
+    await routing();
     await expect(ask).toBeChecked();
     await expect(ask).toBeDisabled();
     await expect(show).toBeEnabled();
@@ -104,6 +118,7 @@ test("Push-to-talk preserves Ask aloud on a round trip and allows saving Show on
     await expect.poll(saved).toMatchObject({ whenUnsure: "show", listeningMode: "push-to-talk" });
     await page.reload();
     await expect(mode).toHaveValue("push-to-talk");
+    await routing();
     await expect(show).toBeChecked();
     await expect(show).toBeEnabled();
     await expect(ask).toBeDisabled();
@@ -116,7 +131,7 @@ test("a saved Ask aloud choice with a capture-only listener shows the usual cand
   for (const name of ["Steve", "Will"]) await runningAgent(page, daemon, name);
   await page.request.put(daemon.baseURL + "/api/voice/config", { data: { whenUnsure: "ask" } });
   await say(daemon, "Steven ask Will about the deployment");
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const ask = page.getByRole("radio", { name: "Ask aloud" });
   await expect(ask).toBeChecked();
   await expect(ask).toBeDisabled();

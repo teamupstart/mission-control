@@ -7,7 +7,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 test("countdown sends once, click and spoken cancel stop delivery, and disabling the window sends immediately", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 10);
   const steve = await runningAgent(page, daemon, "Steve");
-  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.task!.callSign! }).first().click();
   const pending = page.getByRole("status").filter({ hasText: "To Steve" }).filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
   await say(daemon, "Steve, check the build");
   await expect(pending).toContainText("check the build");

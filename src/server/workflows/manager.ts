@@ -15,6 +15,7 @@ import { checkBlockedReason, workflowCapturedLocalInspector, workflowRequiresRep
 import type { WorkflowRepositoryArtifactCandidate } from "./repository-artifact/service.ts";
 import type { WorkflowRawCaptureRead, RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
+import { checkoutDigest, continuationDigest, evidenceContract, packetDigest } from "./continuation-evidence.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
@@ -23,7 +24,7 @@ import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
 import { samePlanPublicationContext, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
-import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { continuationSource, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import { agentActive, hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
@@ -209,6 +210,8 @@ import {
   type SessionActionCaptureFacts,
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
+import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { acceptedInspectorRepair, inspectorRepairTriggerKey, type AcceptedInspectorRepair } from "./inspector-repair-proof.ts";
 import {
   externalSourceKey,
   type EnsureExternalBindingInput,
@@ -264,6 +267,8 @@ import {
   inheritSubmissionEvidence,
   reconcileWorkflowEvidenceFiles,
   stageAgentWorkflowEvidence,
+  continuationFileBytesMatch,
+  continuationFileStatus,
   stageUploadedWorkflowEvidenceSync,
   stageRetainedWorkflowEvidence,
   WorkflowImageEvidenceError,
@@ -415,6 +420,12 @@ export interface WorkflowManagerOptions {
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   resolveCommitTree?: (repoRoot: string, commitOid: string) => Promise<string>;
   /**
+   * The checkout's HEAD and published tree with retained local artifacts set aside, for a
+   * completed run whose terminal content is an Inspector-only repair with no snapshot of its
+   * own. A seam for the same reason as `resolveCommitTree`: it shells out to git.
+   */
+  readPublishedCheckout?: typeof captureWorktreeTree;
+  /**
    * Read one adopted pull request from GitHub now and signal what it said, the way a sweep
    * observation is signalled. The daemon wires `reobserveInspectorPr`; a seam rather than an
    * import because it shells out to `gh` and lives with the Inspector worker.
@@ -497,6 +508,11 @@ export interface WorkflowManagerOptions {
    */
   resumptionSettleMs?: number;
   /**
+   * How long a delivered session action tolerates its bound session being missing or `exited`
+   * before it blocks as `session_lost`. Injectable so a test need not wait out the real window.
+   */
+  sessionActionSessionGraceMs?: number;
+  /**
    * How long a parked round with a delivered packet and an untouched repository may sit
    * before the session is reminded once. Injectable so a test need not wait it out.
    */
@@ -513,6 +529,33 @@ export interface WorkflowManagerOptions {
  */
 const WORKFLOW_RESUMPTION_INTERVAL_MS = 15_000;
 const WORKFLOW_RESUMPTION_SETTLE_MS = 10_000;
+
+/**
+ * How long a delivered session action waits for its bound session to come back before it
+ * blocks as `session_lost`.
+ *
+ * A daemon restart or an update leaves the session `exited` or not yet restored for a while:
+ * SDK sessions are restored one after another, and an operator resumes a stopped one by hand.
+ * The report that set this saw the session back about two minutes after the restart, by which
+ * point the action had already blocked on its first sample. Ten minutes covers a restart and a
+ * prompt resume, and is short enough that a session that really is gone still says so while
+ * someone is watching.
+ */
+const WORKFLOW_SESSION_ACTION_SESSION_GRACE_MS = 10 * 60_000;
+
+/**
+ * The recovery half of a recoverable `session_lost` block's stored detail.
+ *
+ * Stored, so it outlives the state it was written in: the attempt, its error and the
+ * `session_action_blocked` event keep it after the binding is orphaned, when neither the
+ * automatic re-check nor Retry applies any more. So the promise is conditioned on the binding
+ * and names the detached path, which keeps the sentence true in both states rather than
+ * rewriting history when the binding goes.
+ */
+const SESSION_LOST_RECOVERY = "No repair round was spent. While the workflow is still bound to "
+  + "this session, the action is checked again automatically when the session is running, and "
+  + "Retry checks it again by hand. If the workflow has been detached from the session, reattach "
+  + "it or cancel the run.";
 
 /**
  * How long a repair round may sit parked, packet delivered and repository untouched, before
@@ -602,6 +645,29 @@ function inspectorPrSeenOpen(
   signalState: InspectionUpdated["observedState"],
 ): boolean {
   return ledger.state === "open" && (signalState ?? ledger.observedState) === "OPEN";
+}
+
+/**
+ * Whether the gate's own pinned pull request is retired on positive evidence that it finished.
+ *
+ * Retirement is the end of polling: the sweep reads only open rows, so a row it retired on a
+ * GitHub read that said closed or merged - or that Shipping retired after merging it itself - is
+ * never read again and no ordinary observation of it will ever arrive. A gate that entered after
+ * that retirement, or lost the signal of it to a restart, would otherwise wait for a fresh
+ * observation with no source for one.
+ *
+ * Only that exact row counts: same key and URL as the gate pinned, retired, and retired because
+ * GitHub or a Mission Control merge said it finished. A retired row whose last recorded read did
+ * not say so proves nothing and leaves the gate where it was.
+ */
+function inspectorPrRetiredClosed(
+  ledger: Pick<InspectorPr, "key" | "url" | "state" | "observedState" | "mergedAt"> | null,
+  state: Pick<WorkflowInspectorGateState, "prKey" | "prUrl">,
+): boolean {
+  return ledger !== null && state.prKey !== null && ledger.key === state.prKey
+    && (state.prUrl === null || ledger.url === state.prUrl)
+    && ledger.state === "closed"
+    && (inspectorStateSaysClosed(ledger.observedState) || ledger.mergedAt !== null);
 }
 
 /**
@@ -896,6 +962,10 @@ export class WorkflowManager {
         // Pickup is recorded HERE rather than on the sweep: a turn can start and finish
         // between two fifteen-second samples, and the proof would be gone by the time the
         // observer looked. See `noteSessionActionActivity`.
+        // Re-check FIRST. An action blocked because its session was away is back to `waiting`
+        // only after this, and the update that brings the session back may be the only proof
+        // that the turn was picked up - recorded below, which reads waiting attempts alone.
+        this.recheckLostSessionActions(event.session.id);
         this.noteSessionActionActivity(event.session);
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
@@ -1808,7 +1878,11 @@ export class WorkflowManager {
       baseSha: null,
       extraRepos: [],
     };
+    const goal = this.registry.getGoal(session.id);
+    const root = activeTask?.worktreePath ?? session.cwd;
     return stageAgentWorkflowEvidence({
+      continuationContract: this.store.latestRunForBinding(binding.id) ? null
+        : evidenceContract(activeTask, binding, goal, root && canonicalWorktreePath(root)),
       store: this.store,
       noteKey: binding.noteKey,
       task,
@@ -1894,6 +1968,46 @@ export class WorkflowManager {
         registrationEligible: this.agentEvidenceBinding(sessionId) !== null,
       }
       : null;
+  }
+
+  /** Synchronous identity checks also run at the claim's transaction boundary. */
+  private continuationCandidate(sessionId: string, registered: WorkflowSessionEvidenceList | null) {
+    if (!registered?.registrationEligible) return null;
+    const goal = this.registry.getGoal(sessionId);
+    const source = continuationSource(goal);
+    if (!source || !goal) return null;
+    const items = [...registered.images, ...registered.artifacts];
+    if (!items.length || items.some(item => item.episodeKey !== source)) return null;
+    const binding = this.agentEvidenceBinding(sessionId);
+    const session = this.registry.getSession(sessionId);
+    if (!session || !binding || this.store.latestRunForBinding(binding.id)) return null;
+    const task = this.registry.taskForSession(sessionId, session.cwd);
+    const checkout = task?.worktreePath ?? session.cwd;
+    if (!checkout) return null;
+    const root = canonicalWorktreePath(checkout);
+    const contract = evidenceContract(task, binding, goal, root);
+    const receipt = this.store.continuationReceipt(binding.noteKey, source, root);
+    if (!contract || !receipt || packetDigest(contract, root, registered) !== receipt.packet) return null;
+    const note = this.registry.getGoalSteering(sessionId, goal.promptRevision).at(-1);
+    if (note?.revision !== goal.promptRevision || note.instruction !== "continue" || note.rationale !== goal.rationale) return null;
+    const episodeKey = resolvedSessionIntent(goal)!.episodeKey;
+    return { sourceEpisode: source, episodeKey, root, checkout: receipt.checkout,
+      packet: continuationDigest([receipt.packet, receipt.checkout, episodeKey]) };
+  }
+
+  async completionEvidence(sessionId: string): Promise<WorkflowSessionEvidenceList | null> {
+    const registered = this.stagedEvidenceForSession(sessionId, "registered");
+    const candidate = this.continuationCandidate(sessionId, registered);
+    if (!candidate || !registered) return registered;
+    const { root, sourceEpisode, episodeKey, packet } = candidate;
+    const checkout = await checkoutDigest(root);
+    const status = checkout === null ? "unavailable" : checkout !== candidate.checkout ? "stale"
+      : await continuationFileStatus(root, registered);
+    const fresh = this.stagedEvidenceForSession(sessionId, "registered");
+    if (fresh && this.continuationCandidate(sessionId, fresh)?.packet === packet) {
+      fresh.continuation = { sourceEpisode, episodeKey, packet, status };
+    }
+    return fresh;
   }
 
   removeStagedEvidence(
@@ -2781,7 +2895,8 @@ export class WorkflowManager {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
     const existingEvent = this.store.listEvents(run.id).find((event) =>
-      (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry") &&
+      (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry"
+        || event.kind === "session_action_rechecked") &&
       event.payload &&
       !Array.isArray(event.payload) &&
       typeof event.payload === "object" &&
@@ -2790,6 +2905,29 @@ export class WorkflowManager {
     if (!submission) return { ok: false, reason: "not_found", message: "The run has no submission" };
     if (existingEvent) {
       return { ok: true, value: { run, submission }, idempotent: true };
+    }
+    // A session action blocked only because its session was away is re-checked in place, not
+    // retried as a new attempt: nothing failed, so there is nothing to run again and no round
+    // to spend. See `recheckLostSessionActions` for the automatic half.
+    const lost = this.store.recoverableLostSessionAction(run);
+    if (lost && (!input.nodeAttemptId || input.nodeAttemptId === lost.id)) {
+      const binding = this.store.getBinding(run.bindingId);
+      if (!binding || !this.lostSessionReturned(binding)) {
+        return {
+          ok: false,
+          reason: "session_unavailable",
+          message: "The bound session is not running yet. Resume it, then retry; the action is "
+            + "also checked again automatically when the session returns.",
+        };
+      }
+      if (!this.reopenLostSessionAction(run.id, lost.id, "operator", input.requestId, now)) {
+        return {
+          ok: false,
+          reason: "not_infrastructure_failure",
+          message: "This action is no longer blocked on its session",
+        };
+      }
+      return { ok: true, value: { run: this.store.getRun(run.id) ?? run, submission } };
     }
     const attempts = this.store.listAttempts(submission.id);
     const latestAttempts = new Map<string, WorkflowNodeAttempt>();
@@ -3180,6 +3318,12 @@ export class WorkflowManager {
     });
     if (entered) {
       this.publishRun(run.id);
+      // A pull request that finished before the gate opened is a retired row the sweep never
+      // reads again, so no Inspector signal will ever wake this wait. Evaluate it now; the
+      // gate decides from the row what an observation would have told it.
+      if (waitReason === "awaiting_fresh_observation" && adopted?.state === "closed") {
+        this.scheduleGateEvaluation(run.id, null);
+      }
       if (
         waitReason === "missing_pr"
         && version.completionPolicy.missingPrAction === "prepare_pr"
@@ -3701,7 +3845,13 @@ export class WorkflowManager {
     this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback });
     const gate = this.gateState(run);
     const grant = gate?.grantObservation;
+    // A wait on a retired row is the same dead end as the closed block: only a read of GitHub
+    // can say whether the pull request is open again. The evaluation scheduled above holds it
+    // as closed first, so the read's answer reaches the block like any other.
+    const retiredWait = (run.status === "waiting_for_inspector" || run.status === "waiting_for_new_head") && !grant
+      && gate?.prKey != null && getInspectorPr(gate.prKey)?.state === "closed";
     if (gate?.prKey && ((run.status === "blocked" && run.currentPhase === "inspector_pr_closed")
+        || retiredWait
         || (run.status === "waiting_for_new_head" && grant && !grant.verifiedHeadSha))) {
       void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt);
     }
@@ -4115,6 +4265,30 @@ export class WorkflowManager {
     return session;
   }
 
+  private async validatedContinuation(sessionId: string, claim: WorkflowCompletionClaim, deadline: number) {
+    const registered = this.stagedEvidenceForSession(sessionId, "registered");
+    const candidate = this.continuationCandidate(sessionId, registered);
+    if (!candidate || candidate.packet !== claim.expectedContinuationPacket) return null;
+    // Bracket the exact asynchronous checkout digest with the bounded revision reader.
+    // Starting the revision read after the digest would let an edit between them through.
+    const checkoutRevision = publicationCheckoutRevision(candidate.root, [], deadline);
+    if (checkoutRevision === null) return null;
+    const remainingMs = Math.max(0, deadline - performance.now());
+    const assessment = (await this.completionEvidence(sessionId))?.continuation;
+    return assessment?.status === "revalidated" && assessment.packet === candidate.packet &&
+      assessment.episodeKey === claim.expectedIntent?.episodeKey
+      ? { packet: assessment.packet, checkoutRevision, remainingMs } : null;
+  }
+
+  private continuationStillMatches(sessionId: string, packet: string, checkoutRevision: string, deadline: number): boolean {
+    if (performance.now() >= deadline) return false;
+    const registered = this.stagedEvidenceForSession(sessionId, "registered");
+    const current = this.continuationCandidate(sessionId, registered);
+    return registered !== null && current?.packet === packet &&
+      continuationFileBytesMatch(current.root, registered, deadline) &&
+      publicationCheckoutRevision(current.root, [], deadline) === checkoutRevision;
+  }
+
   async claimCompletion(
     sessionId: string,
     claim: WorkflowCompletionClaim,
@@ -4129,6 +4303,7 @@ export class WorkflowManager {
     // conversation answers `no_binding` so that completion has exactly one owner and two
     // PR-producing paths can never race on the same branch.
     const anchor = this.store.activeBindingForNote(noteKeyFor(session));
+    if (claim.expectedContinuationPacket && !anchor) throw new Error("Continuation evidence binding changed");
     if (!anchor) {
       // Foreman judged the work complete on a task with no workflow (D16). The after-work prompt
       // is held until Foreman's wrap-up is answered, so the wrap-up reaches the session first.
@@ -4136,6 +4311,14 @@ export class WorkflowManager {
       return { claimed: false, reason: "no_binding" };
     }
     if (anchor.triggerMode !== "foreman_complete") {
+      if (claim.expectedContinuationPacket) {
+        const validated = await this.validatedContinuation(sessionId, claim, performance.now() + PUBLICATION_REVISION_BUDGET_MS);
+        this.currentCompletionSession(sessionId, claim);
+        if (!validated || !this.continuationStillMatches(sessionId, validated.packet, validated.checkoutRevision,
+          performance.now() + validated.remainingMs)) {
+          throw new Error("Continuation evidence changed before handoff");
+        }
+      }
       return { claimed: false, reason: "manual_trigger" };
     }
     // One settled turn, one run per repository it changed. `repoRunTargets` returns
@@ -4152,7 +4335,9 @@ export class WorkflowManager {
     // evidence capture can legitimately take seconds on an unchanged repository.
     const remainingVerificationMs = Math.max(0, deadline - performance.now());
     const comparisons = probes.length ? await Promise.all(probes) : [];
-    if (probes.length) {
+    const validated = claim.expectedContinuationPacket
+      ? await this.validatedContinuation(sessionId, claim, performance.now() + remainingVerificationMs) : null;
+    if (probes.length || claim.expectedContinuationPacket) {
       session = this.currentCompletionSession(sessionId, claim);
       if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
         throw new Error("Foreman completion session is no longer idle for handoff");
@@ -4172,6 +4357,9 @@ export class WorkflowManager {
     const inputs: ForemanCompletionStoreInput[] = targets.map((binding, index) => ({
       binding,
       ...(probes.length ? { expectedLatestRunId: latestRuns[index]?.id ?? null } : {}),
+      ...(claim.expectedContinuationPacket ? { continuationStillMatches: (deadline: number) =>
+        validated !== null && this.continuationStillMatches(sessionId, validated.packet, validated.checkoutRevision, deadline),
+      } : {}),
       publicationComparison: comparisons.find(comparison => comparison.bindingId === binding.id),
       completionKind: claim.completionKind,
       marker: claim.marker,
@@ -4188,7 +4376,7 @@ export class WorkflowManager {
       intent,
       now,
     }));
-    const reservations = this.store.claimForemanCompletions(inputs, remainingVerificationMs);
+    const reservations = this.store.claimForemanCompletions(inputs, validated?.remainingMs ?? remainingVerificationMs);
     const answer = reservations[0]?.result;
     if (!answer) throw new Error("Claimed Foreman completion produced no run");
     if (!answer.claimed) return answer;
@@ -4270,10 +4458,26 @@ export class WorkflowManager {
       || source.promptRevision !== claim.expectedIntent.promptRevision
       || source.resolvedPromptRevision !== source.promptRevision) return null;
 
-    const acceptedTree = this.store.publicationHandoffTree(run.id, claim.expectedWorkCycle.generation);
-    if (!acceptedTree) return null;
-    const submission = this.store.latestSubmission(run.id);
-    if (submission?.status !== "completed") return null;
+    const handoff = this.store.publicationHandoff(run.id, claim.expectedWorkCycle.generation);
+    if (!handoff) return null;
+    const acceptedTree = handoff.treeOid;
+    const terminal = this.store.latestSubmission(run.id);
+    if (terminal?.status !== "completed") return null;
+    // A run that finished through Inspector-only repair rounds has no full snapshot of its
+    // final content. Prove the accepted repair from durable rows, then compare the checkout to
+    // that exact commit below. The reviewed publication still supplies the checkout identity
+    // and the retained artifacts the repair rounds did not re-capture.
+    const repair = terminal.mode === "inspector_only"
+      ? acceptedInspectorRepair({
+          run,
+          gate: this.gateState(run),
+          policy: this.store.getWorkflowVersionById(run.workflowVersionId)?.completionPolicy,
+          submissions: this.store.listSubmissions(run.id),
+          publishedSubmissionId: handoff.submissionId,
+        })
+      : null;
+    if (terminal.mode !== "full_workflow" && !repair) return null;
+    const submission = repair?.published ?? terminal;
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success || context.data.session.cwd !== workflowCheckoutPath(binding, session)) return null;
     const evidence = context.data.evidence;
@@ -4290,6 +4494,14 @@ export class WorkflowManager {
     const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
     const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
     const owner = { bindingId: binding.id, runId: run.id };
+    if (repair) {
+      // Without a first revision the handoff can never be reused, so skip the Git reads.
+      if (before === null) return Promise.resolve({ ...owner, stillMatches: () => false });
+      return this.inspectorRepairMatches(checkout, evidence.headSha, repair, retained).then(
+        matches => ({ ...owner, stillMatches: (until: number) => matches && revision(checkout, retained, until) === before }),
+        () => ({ ...owner, stillMatches: () => false }),
+      );
+    }
     return this.probeRepository(binding, submission).then(
       probe => {
         const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
@@ -4297,6 +4509,33 @@ export class WorkflowManager {
       },
       () => ({ ...owner, stillMatches: () => false }),
     );
+  }
+
+  /**
+   * Whether the checkout is exactly the commit Inspector accepted as the terminal repair.
+   *
+   * The repair rounds captured no snapshot, so equality is to Git's own object: HEAD is the
+   * reviewed commit, and the worktree publishes nothing beyond that commit's tree once the
+   * reviewed publication's retained local artifacts, at their recorded bytes, are set aside.
+   * The first round must also have replaced the reviewed publication's own head. Any read that
+   * cannot answer is a fresh review.
+   */
+  private async inspectorRepairMatches(
+    checkout: string,
+    publishedHead: string,
+    repair: AcceptedInspectorRepair,
+    retained: readonly { path: string; sha256: string }[],
+  ): Promise<boolean> {
+    const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+    const [base, tree, current] = await Promise.all([
+      resolve(checkout, publishedHead),
+      (this.options.resolveCommitTree ?? resolveCommitTree)(checkout, repair.headSha),
+      (this.options.readPublishedCheckout ?? captureWorktreeTree)(checkout, { localArtifacts: retained }),
+    ]);
+    return base === repair.failedBaseHeadSha
+      && current.headOid === repair.headSha
+      && current.publicationTreeOid === tree
+      && current.unpublishedPaths.length === 0;
   }
 
   /**
@@ -4677,6 +4916,27 @@ export class WorkflowManager {
         now: Date.now(),
       });
       if (updated) this.publishRun(run.id);
+    }
+  }
+
+  /**
+   * Re-evaluate, once at startup, every gate waiting on a pull request whose row is retired.
+   *
+   * Those waits have no wakeup of their own: the sweep reads only open rows, and the signal that
+   * retired the row - if the gate was open to hear it at all - did not survive the restart that
+   * reset the gate's observation. This covers runs an earlier build left waiting that way, too.
+   * Each evaluation decides from the row exactly as `evaluateInspectorGate` would on any other
+   * wakeup, so it is safe to repeat. A granted round is left out: it must see a read made after
+   * its grant, and its own Recheck already asks GitHub for one.
+   */
+  private evaluateRetiredGateWaits(): void {
+    for (const run of this.store.listRuns()) {
+      if (run.status !== "waiting_for_inspector" && run.status !== "waiting_for_new_head") continue;
+      if (!workflowRunPhaseRecognized(run.currentPhase)) continue;
+      const state = this.gateState(run);
+      if (!state?.prKey || state.grantObservation) continue;
+      if (getInspectorPr(state.prKey)?.state !== "closed") continue;
+      this.scheduleGateEvaluation(run.id, null);
     }
   }
 
@@ -5201,6 +5461,35 @@ export class WorkflowManager {
       state = observed;
     }
     if (state.lastObservedAt === null || state.lastObservedAt < state.enteredAt || !state.observedHeadSha) {
+      // No fresh observation can come from a row the sweep retired as finished, so waiting for
+      // one would wait forever. Hold the run in the same conservative closed-PR block a fresh
+      // closed or merged read produces: it never passes the gate, waives a review or clears a
+      // finding, and it lifts only when the pull request is seen open again - which a Recheck
+      // asks GitHub about directly. The current row is read here rather than a queued signal's
+      // snapshot, so a row a re-read has since un-retired is never treated as closed.
+      const retired = getInspectorPr(state.prKey!);
+      if (retired && inspectorPrRetiredClosed(retired, state)) {
+        // When the finish was recorded: GitHub's closed or merged read, else Shipping's merge.
+        const closedAt = inspectorStateSaysClosed(retired.observedState) ? retired.observedAt : retired.mergedAt;
+        this.transitionInspectorGate(
+          run,
+          state,
+          { ...state, waitReason: "pr_closed" },
+          "blocked",
+          "inspector_pr_closed",
+          "inspector_pr_closed",
+          {
+            prKey: state.prKey,
+            source: "retired_ledger",
+            observedState: retired.observedState,
+            observedHeadSha: retired.observedHeadSha,
+            closedAt,
+            closedBeforeGateEntry: closedAt !== null && closedAt < state.enteredAt,
+          },
+          now,
+        );
+        return;
+      }
       // A run waiting on the session's repair push keeps waiting for it in its own status.
       // Restart recovery deliberately leaves it in `waiting_for_new_head` with no observation;
       // demoting it here on a signal that observed nothing would route the repair push it is
@@ -5319,7 +5608,7 @@ export class WorkflowManager {
         const created = this.store.createInspectorOnlySubmission({
           id: randomUUID(),
           runId: run.id,
-          triggerKey: `inspector-head:${run.id}:${newHead}`,
+          triggerKey: inspectorRepairTriggerKey(run.id, newHead),
           newHeadSha: newHead,
           failedHeadSha: state.failedHeadSha,
           priorFindingFingerprints: state.findingFingerprints,
@@ -6360,7 +6649,7 @@ export class WorkflowManager {
     const session = this.registry.getSession(binding.sessionId);
     if (!session || session.state === "exited") {
       this.blockSessionAction(attempt.id, "session_lost",
-        "The bound session is not available to run this action.", now);
+        `The bound session is not available to run this action. ${SESSION_LOST_RECOVERY}`, now);
       return;
     }
     // Preparation's half of the required-skill promise. `deliveryBlock` re-resolves it
@@ -6619,11 +6908,25 @@ export class WorkflowManager {
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
     if (!session || session.state === "exited") {
       // Deliberately NOT read as durable removal: `state === "exited"` is a linger window,
-      // and `session_remove` is what the registry uses for gone. Blocking is the honest
-      // answer either way - nothing can prove a turn finished in a pane nobody can read.
+      // and `session_remove` is what the registry uses for gone. Nothing can prove a turn
+      // finished in a pane nobody can read, so the action never advances here - but a restart
+      // or an update makes the session unavailable for a while and then brings it back, and
+      // blocking on the first sample turned that into a dead run. The action waits out a grace
+      // window first, and blocks only if the session is still away at the end of it.
+      const since = state.sessionMissingSince ?? now;
+      if (state.sessionMissingSince == null) {
+        this.store.updateSessionActionState(attempt.id, { ...state, sessionMissingSince: since }, now);
+      }
+      const grace = this.options.sessionActionSessionGraceMs ?? WORKFLOW_SESSION_ACTION_SESSION_GRACE_MS;
+      if (now - since < grace) return;
       this.blockSessionAction(attempt.id, "session_lost",
-        "The bound session exited before this action's turn could be observed.", now);
+        "The bound session stayed unavailable after this action was sent, so its turn could not "
+        + `be observed. ${SESSION_LOST_RECOVERY}`, now);
       return;
+    }
+    if (state.sessionMissingSince != null) {
+      state = { ...state, sessionMissingSince: null };
+      this.store.updateSessionActionState(attempt.id, state, now);
     }
     if (noteKeyFor(session) !== anchor.noteKey) {
       this.blockSessionAction(attempt.id, "conversation_changed",
@@ -8658,6 +8961,74 @@ export class WorkflowManager {
   }
 
   /**
+   * Observe again every action blocked only because its bound session was away, once that
+   * session is running - and end the absence clock of any action still waiting on it.
+   *
+   * Driven by the registry's session stream, so the re-check happens when the session returns
+   * rather than on the next sweep, and once on startup for blocks a previous daemon left.
+   * `session_lost` says nothing about the work: the delivery, anchor and pickup the attempt
+   * had already recorded all still hold, so the attempt resumes from them and spends no repair
+   * round. Every completion proof is still required afterwards; this only lets the observer
+   * look again. An attempt that never got its packet out is re-prepared through the ordinary
+   * recovery path, which re-asks every consent gate before typing anything.
+   */
+  private recheckLostSessionActions(sessionId?: string, now = Date.now()): void {
+    for (const binding of this.store.listBindings()) {
+      if (binding.state !== "active" || !binding.sessionId) continue;
+      if (sessionId !== undefined && binding.sessionId !== sessionId) continue;
+      const run = this.store.activeRunForBinding(binding.id);
+      if (!run || !this.lostSessionReturned(binding)) continue;
+      const attempt = this.store.recoverableLostSessionAction(run);
+      if (attempt) {
+        this.reopenLostSessionAction(run.id, attempt.id, "session_returned", null, now);
+        continue;
+      }
+      if (run.status === "waiting_for_action") this.clearSessionActionAbsence(run.id, now);
+    }
+  }
+
+  /**
+   * End the absence clock of every action still waiting on this run, because its session is
+   * live again.
+   *
+   * The observer clears the clock too, but only when one of its samples happens to land while
+   * the session is up. A session that is missed, found and missed again between two samples
+   * would otherwise carry the FIRST miss's start time into the second, so brief misses would
+   * add up to the grace window and block an action whose session kept coming back. The return
+   * is the boundary, so the return is what resets it.
+   */
+  private clearSessionActionAbsence(runId: string, now: number): void {
+    for (const attempt of this.store.listWaitingActionAttempts(runId)) {
+      const state = this.store.sessionActionState(attempt);
+      if (state?.sessionMissingSince == null) continue;
+      this.store.updateSessionActionState(attempt.id, { ...state, sessionMissingSince: null }, now);
+    }
+  }
+
+  /** The binding's session is running again, in the conversation the binding was armed for. */
+  private lostSessionReturned(binding: WorkflowBinding): boolean {
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    return Boolean(session && session.state !== "exited" && noteKeyFor(session) === binding.noteKey);
+  }
+
+  private reopenLostSessionAction(
+    runId: string,
+    attemptId: string,
+    source: "session_returned" | "operator",
+    requestId: string | null,
+    now: number,
+  ): WorkflowNodeAttempt | null {
+    const reopened = this.store.reopenLostSessionActionAttempt({ runId, attemptId, source, requestId, now });
+    if (!reopened) return null;
+    workflowLog("info", { event: "session_action_rechecked", call: attemptId });
+    this.publishRun(runId);
+    const binding = this.store.getBinding(this.store.getRun(runId)?.bindingId ?? "");
+    if (binding) this.recoverSessionActions(binding.noteKey);
+    this.scheduleSessionActionProofCheck();
+    return reopened;
+  }
+
+  /**
    * Pick one interrupted continuation back up, in the order its three durable states require.
    *
    * Seal first: a child whose evidence is durable and whose receipt is not needs its receipt,
@@ -8727,6 +9098,11 @@ export class WorkflowManager {
     this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
     this.engine.start();
     this.recoverSessionActions();
+    // A run blocked as `session_lost` before this daemon started - by the restart that brought
+    // it here, or by a build that blocked on the first sample - is re-checked now that
+    // discovery knows which sessions are back.
+    this.recheckLostSessionActions();
+    this.evaluateRetiredGateWaits();
     this.lastRecoveryAt = Date.now();
     workflowLog("info", { event: "recovery_complete", at: this.lastRecoveryAt });
     void this.sweepRetention();

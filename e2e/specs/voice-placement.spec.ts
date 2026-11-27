@@ -4,6 +4,7 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { beSpeaker, say, startSpokenCancel, voiceToken } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 test.beforeEach(async ({ daemon, dashboard: page }) => {
   await setupCards(page, daemon);
@@ -24,6 +25,7 @@ async function desktopWith(page: Page, daemon: DaemonHandle, capability: "floati
   }, capability);
   await page.goto(daemon.baseURL + "/#/settings/voice");
   await page.reload();
+  await openVoiceTab(page, "On screen");
   expect((await page.request.post(daemon.baseURL + "/voice/shell-report", {
     headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: capability === "both"
       ? { tray: { available: true }, "floating-windows": { available: true } } : { [capability]: { available: true } } },
@@ -38,7 +40,9 @@ test.describe("floating Ask aloud", () => {
     await runningAgent(page, daemon, "Will");
     const speaker = await beSpeaker(daemon, { holdPlayback: true, ignoreStop: true });
     try {
+      await openVoiceTab(page, "Names & routing");
       await page.getByRole("radio", { name: "Ask aloud" }).check();
+      await openVoiceTab(page, "On screen");
       const opening = page.waitForEvent("popup");
       await page.getByRole("radio", { name: /Floating pill/ }).check();
       const pill = await opening;
@@ -103,9 +107,12 @@ test("moving a selected confirmation keeps its pending Cancel and the other mess
   const pill = await opening;
   for (const id of ["older", "newer"]) {
     await say(daemon, "Steve, inspect the " + id + " build", { id });
-    await expect(pill.getByRole("status")).toContainText(id);
+    await expect(pill.getByRole("status").filter({ hasText: id })).toBeVisible();
   }
-  await pill.getByRole("combobox", { name: "Voice message" }).selectOption("older");
+  // Both countdowns are on screen; acting on the older pill selects it for the move.
+  const older = pill.getByRole("status").filter({ hasText: "inspect the older build" });
+  await expect(pill.getByRole("status").first()).toContainText("inspect the older build");
+  await expect(pill.getByRole("combobox", { name: "Voice message" })).toHaveCount(0);
   const response = Promise.withResolvers<void>();
   await page.route("**/cards/older/cancel", async route => {
     await response.promise;
@@ -114,8 +121,9 @@ test("moving a selected confirmation keeps its pending Cancel and the other mess
   const move = page.waitForEvent("popup");
   let popover: Page;
   try {
-    await pill.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(pill.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+    await older.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(older.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+    await expect(pill.getByRole("status").filter({ hasText: "inspect the newer build" }).getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
     await page.getByRole("radio", { name: /Tray popover/ }).check();
     popover = await move;
     await expect(popover.getByRole("combobox", { name: "Voice message" })).toHaveValue("older", { timeout: 3000 });

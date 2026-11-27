@@ -238,6 +238,17 @@ the generation current at completion or its immediate successor. Later independe
 changed work, and new instructions can
 start a fresh review, and the operator can choose **Run again** on the same work.
 
+A run can also reach End through Inspector-only repair rounds under a published Inspector-only
+findings policy, after GitHub Inspector reviews the final pushed head clean. Those rounds capture
+no snapshot of their own, so the same handoff instead needs durable proof of the accepted repair:
+the run completed through the clean Inspector gate with no outstanding finding, and every
+submission after the reviewed publication is an Inspector-only round for its own head that
+replaced the previous one. The checkout must then be exactly that clean-reviewed commit, with
+nothing to publish beyond its tree apart from the reviewed publication's retained local
+artifacts at their recorded bytes. If any part of that proof is missing or contradicts the run,
+Foreman starts an ordinary review. Runs that already started a fresh review keep it. Nothing
+cancels or rewrites them.
+
 The manual **Run No-Mistakes Review** button on the **Ship it?** card follows the same
 workflow path. It reuses the active built-in binding when one exists, creates a manual
 built-in binding for an unbound conversation, and refuses to replace a different workflow.

@@ -3,7 +3,9 @@ import { join } from "node:path";
 import type { Route } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { enableVoice, say } from "../fixtures/voice.ts";
+import { runningAgent } from "../fixtures/voice-cards.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 test("Recently heard explains routed, unaddressed and cancelled speech and clears the history", async ({ dashboard: page, daemon }) => {
   let capture: string | undefined;
@@ -13,12 +15,15 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
     capture = mkdtempSync(join(root, "heard-"));
   }
   await enableVoice(daemon);
-  const task = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
-    repoRoot: daemon.repo, intent: "Report the build state", title: "Voice fixture", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null, callSign: "Will",
-  } });
-  expect(task.ok(), await task.text()).toBe(true);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  // Hold Will's turn open, so each addressed phrase below is deterministically queued behind it
+  // rather than racing the end of the session's first turn.
+  const will = await runningAgent(page, daemon, "Will");
+  const held = await page.request.post(daemon.baseURL + "/api/sessions/" + encodeURIComponent(will.id) + "/send",
+    { data: { text: "E2E_HOLD_TURN_UNTIL_RELEASED", submit: true, origin: "human" } });
+  expect(held.ok(), await held.text()).toBe(true);
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   await expect(page.getByRole("table", { name: "Agents that answer to a spoken name" }).getByRole("row").filter({ hasText: "Will" })).toContainText("Running");
+  await openVoiceTab(page, "Recently heard");
   const table = page.getByRole("region", { name: "Recently heard" });
   const row = (text: string) => table.getByRole("row").filter({ has: page.getByRole("cell", { name: text, exact: true }) });
   const config = (enabled: boolean) => page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled, seconds: 30 } } });
@@ -74,9 +79,10 @@ test("a spoken split selection shows each recipient without highlighting the ope
     } });
     expect(task.ok(), await task.text()).toBe(true);
   }
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Names & routing", daemon.baseURL);
   const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
   for (const callSign of ["Steve", "Will"]) await expect(roster.getByRole("row").filter({ hasText: callSign })).toContainText("Running");
+  await openVoiceTab(page, "Recently heard");
   const phrase = "Steven ask Will about the deployment";
   expect((await say(daemon, phrase)).ok).toBe(true);
   expect((await say(daemon, "Will")).ok).toBe(true);
@@ -97,7 +103,7 @@ test("a spoken split selection shows each recipient without highlighting the ope
 test("a failed history read shows an alert and retains entries until a successful poll refreshes them", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   expect((await say(daemon, "Before the read failure")).ok).toBe(true);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Recently heard", daemon.baseURL);
   const history = page.getByRole("region", { name: "Recently heard" });
   const original = history.getByRole("cell", { name: "Before the read failure", exact: true });
   await expect(original).toBeVisible();
@@ -125,7 +131,7 @@ for (const previouslyEmpty of [false, true]) {
     const history = page.getByRole("region", { name: "Recently heard" });
     const clear = history.getByRole("button", { name: "Clear" });
     if (previouslyEmpty) {
-      await page.goto(daemon.baseURL + "/#/settings/voice");
+      await openVoiceTab(page, "Recently heard", daemon.baseURL);
       await expect(history).toContainText("Nothing heard yet.");
       await expect(clear).toBeEnabled();
     }
@@ -133,7 +139,7 @@ for (const previouslyEmpty of [false, true]) {
       ? route.fulfill({ status: 503 })
       : route.continue());
     expect((await say(daemon, "Speech retained during the outage")).ok).toBe(true);
-    if (!previouslyEmpty) await page.goto(daemon.baseURL + "/#/settings/voice");
+    if (!previouslyEmpty) await openVoiceTab(page, "Recently heard", daemon.baseURL);
 
     await expect(history.getByRole("alert")).toHaveText("Could not read recent utterances.");
     await expect(history.getByRole("cell", { name: "History unavailable." })).toBeVisible();
@@ -164,7 +170,7 @@ test("Clear deletes retained speech while the next history poll is stalled after
   const endpoint = daemon.baseURL + "/api/voice/heard";
   const history = page.getByRole("region", { name: "Recently heard" });
   const clear = history.getByRole("button", { name: "Clear" });
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Recently heard", daemon.baseURL);
   await expect(history).toContainText("Nothing heard yet.");
 
   const stalled = Promise.withResolvers<Route>();
@@ -196,7 +202,7 @@ test("Clear deletes retained speech while the next history poll is stalled after
 test("a stalled history read reports a failure and retries without losing the last known rows", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   expect((await say(daemon, "Last confirmed row")).ok).toBe(true);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Recently heard", daemon.baseURL);
   const history = page.getByRole("region", { name: "Recently heard" });
   const original = history.getByRole("cell", { name: "Last confirmed row" });
   await expect(original).toBeVisible();
@@ -224,7 +230,7 @@ for (const deleted of [false, true]) {
   test(`a stalled Clear reports an unconfirmed deletion, polls and permits retry when ${outcome}`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
     expect((await say(daemon, "Original row")).ok).toBe(true);
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Recently heard", daemon.baseURL);
     const history = page.getByRole("region", { name: "Recently heard" });
     const original = history.getByRole("cell", { name: "Original row" });
     const clear = history.getByRole("button", { name: "Clear" });

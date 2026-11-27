@@ -35,6 +35,17 @@ export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as 
 
 export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 
+export const SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID = "seven-day-worktree-cleanup" as const;
+
+/**
+ * Lets automatic worktree retention also return disposable task checkouts Git no longer
+ * recognizes, and finish tasks whose terminal home is positively proved absent. Its own flag
+ * rather than part of `seven-day-worktree-cleanup`: that flag only chooses the window, and
+ * turning it off still enforces cleanup, so it cannot be the off switch for a new class of
+ * unattended deletion. See `docs/worktrees-and-checks.md#orphaned-task-checkouts`.
+ */
+export const ORPHANED_WORKTREE_RECLAIM_FLAG_ID = "orphaned-worktree-reclaim" as const;
+
 export const LOCAL_INSPECTOR_FLAG_ID = "local-inspector" as const;
 export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 
@@ -52,6 +63,7 @@ export const FEATURE_FLAGS = [
     label: "Session settings through MCP",
     description: "Let registered sessions read and change supported Mission Control settings on your request.",
     stage: "preview",
+    sessionSetting: "Desktop Trust consent and the rollout switch govern access to this tool.",
     keywords: ["settings", "access", "mcp", "mission_settings"],
   },
   {
@@ -59,6 +71,7 @@ export const FEATURE_FLAGS = [
     label: "Local Inspector",
     description: "Review the submitted checkout in a workflow before opening a pull request.",
     stage: "preview",
+    sessionSetting: "Controls whether the workflow can review the submitted checkout before publication.",
     keywords: ["workflow", "inspector", "review", "repository"],
   },
   {
@@ -66,6 +79,7 @@ export const FEATURE_FLAGS = [
     label: "Bug Fix Inspector",
     description: "Offer an optional resident that investigates Mission Control bugs and prepares GitHub issues for approval.",
     stage: "preview",
+    sessionSetting: "Offers a resident with log access and a GitHub issue workflow.",
     keywords: ["resident", "bugs", "inspector", "logs", "github"],
   },
   {
@@ -73,6 +87,7 @@ export const FEATURE_FLAGS = [
     label: "Persona repository access",
     description: "Give selected workflow reviewers read-only access to the submitted checkout.",
     stage: "preview",
+    sessionSetting: "Grants workflow reviewers access to a repository.",
     keywords: ["workflows", "review", "repository", "persona"],
   },
   {
@@ -80,6 +95,7 @@ export const FEATURE_FLAGS = [
     label: "Change pinned plan revision",
     description: "Preview and update a backlog task’s exact plan input and originating dependency together.",
     stage: "preview",
+    sessionSetting: "Allows revisions and dependencies of reviewed plans to be changed.",
     keywords: ["backlog", "plan", "revision", "dependency"],
   },
   {
@@ -87,6 +103,7 @@ export const FEATURE_FLAGS = [
     label: "Resident active hours",
     description: "Choose the days and hours a resident's loop may wake it. Outside them the resident keeps running but sleeps: no loop prompt and no tokens until the next window opens.",
     stage: "preview",
+    sessionSetting: "Changes when residents run automatically.",
     keywords: ["residents", "schedule", "sleep", "working hours", "weekdays"],
   },
   {
@@ -94,6 +111,7 @@ export const FEATURE_FLAGS = [
     label: "Resident names on cards",
     description: "Offer a Display setting that shows a resident's profile name on its board card beside the call sign it answers to.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["residents", "reference name", "call sign", "board card", "display"],
   },
   {
@@ -101,6 +119,7 @@ export const FEATURE_FLAGS = [
     label: "Automatic PR branch updates",
     description: "Update otherwise ready PR branches when GitHub requires them to catch up. Never authorizes a merge.",
     stage: "preview",
+    sessionSetting: "Authorizes automated writes to GitHub branches.",
     keywords: ["github", "pull request", "branch", "checks"],
   },
   {
@@ -108,6 +127,7 @@ export const FEATURE_FLAGS = [
     label: "Headless mode",
     description: "Dispatch work to Mission Control from a Claude Code terminal session.",
     stage: "preview",
+    sessionSetting: "Enables terminal dispatch authority.",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   },
   {
@@ -116,6 +136,7 @@ export const FEATURE_FLAGS = [
     description:
       "Adds Hibernate to a task session's pause menu: the agent stops and frees its memory, and the task waits in the Backlog until you resume its conversation.",
     stage: "preview",
+    sessionSetting: "Changes session lifecycle controls.",
     keywords: ["hibernate", "resume", "memory", "pause", "sleep", "backlog"],
   },
   {
@@ -123,6 +144,7 @@ export const FEATURE_FLAGS = [
     label: "Task shaping",
     description: "Call registered shapers at dispatch and add the context they return to a worker's first prompt. Register and dry-run them in Settings > Task shaping.",
     stage: "preview",
+    sessionSetting: "Allows configured executables and remote shapers to run at dispatch.",
     keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
   },
   {
@@ -130,6 +152,7 @@ export const FEATURE_FLAGS = [
     label: "Shaper sign-in",
     description: "Sign a remote shaper in to an OAuth-protected server from Settings > Task shaping.",
     stage: "preview",
+    sessionSetting: "Enables credential enrollment for remote shapers.",
     keywords: ["shaping", "shaper", "oauth", "sign-in", "login", "token"],
   },
   {
@@ -137,6 +160,7 @@ export const FEATURE_FLAGS = [
     label: "Fold the drawer's Profiles",
     description: "Adds a chevron to the Residents drawer's Profiles heading that folds the launch list away, so the live residents above get the room.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["residents", "drawer", "profiles", "launch", "collapse"],
   },
   {
@@ -145,6 +169,7 @@ export const FEATURE_FLAGS = [
     description: "Let a session ask, through Mission Control's MCP tools, for permission to control other sessions. "
       + "The request appears in the attention inbox, and only your own click on Accept in the desktop app grants it.",
     stage: "preview",
+    sessionSetting: "Controls the surface for requesting cross-session authority.",
     keywords: ["control other sessions", "permission", "request_session_control", "delegation"],
   },
   {
@@ -155,6 +180,7 @@ export const FEATURE_FLAGS = [
       "working; your answer reaches it later as a message. A session that stops with a question open shows " +
       "as waiting on your answer.",
     stage: "preview",
+    sessionSetting: "A prerequisite of workstation microphone capture.",
     keywords: ["request_input", "question", "inbox", "asynchronous", "non-blocking", "ask"],
   },
   {
@@ -165,6 +191,7 @@ export const FEATURE_FLAGS = [
       "The agent still stops and waits on it, and your answer reaches it later as a message. Takes effect only " +
       "while Ask without stopping is on.",
     stage: "preview",
+    sessionSetting: "A prerequisite of workstation microphone capture.",
     keywords: ["request_plan_decisions", "plan", "decisions", "inbox", "asynchronous", "approval"],
   },
   {
@@ -177,6 +204,7 @@ export const FEATURE_FLAGS = [
       "calls can be found together in your own tools. The id is tracked, never shown here. A switch " +
       "takes effect at each agent's next start.",
     stage: "preview",
+    sessionSetting: "Adds attribution to downstream MCP requests.",
     keywords: ["work unit", "WORK_UNIT_ID", "x-work-unit-id", "mcp", "trace", "telemetry"],
   },
   {
@@ -186,6 +214,7 @@ export const FEATURE_FLAGS = [
       + "such as CI checks finishes. Its card shows what it waits for and when it is due, and idle automation leaves it "
       + "alone until that deadline.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["awaiting", "report_awaiting", "background", "ci", "idle", "deadline", "overdue"],
   },
   {
@@ -200,6 +229,7 @@ export const FEATURE_FLAGS = [
       "still working. Settings > Reports edits when agents post reports and lists muted agents, and the " +
       "Reports section has Mark all read.",
     stage: "preview",
+    sessionSetting: "A prerequisite of workstation microphone capture.",
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
   },
   {
@@ -207,6 +237,7 @@ export const FEATURE_FLAGS = [
     label: "Counts on Idle rail sections",
     description: "Show a session total in the conversation’s Idle rail and put status counts on expandable section headings.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["idle", "rail", "conversation", "sections", "counts"],
   },
   {
@@ -217,6 +248,7 @@ export const FEATURE_FLAGS = [
       "the Idle column. Each card says what is open, what it last did and the step that moves it, " +
       "with the fix in place.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["stalled", "stuck", "stall", "idle", "inbox", "unfinished", "parked", "board"],
   },
   {
@@ -224,6 +256,7 @@ export const FEATURE_FLAGS = [
     label: "Recurring missions through MCP",
     description: "Let sessions preview and create recurring missions through MCP, and read the saved mission catalog.",
     stage: "preview",
+    sessionSetting: "Grants sessions the ability to create recurring missions.",
     keywords: ["schedule", "recurring", "mission", "mcp", "create_schedule"],
   },
   {
@@ -235,6 +268,7 @@ export const FEATURE_FLAGS = [
       "them on. Settings > Voice shows whether voice is listening and why not, and who can be addressed: " +
       "residents by name or reference name, and sessions given a call sign under Dispatch > Advanced.",
     stage: "preview",
+    sessionSetting: "Controls availability of workstation microphone capture.",
     keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "reference name", "mute"],
   },
   {
@@ -242,6 +276,7 @@ export const FEATURE_FLAGS = [
     label: "macOS Terminal",
     description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["terminal", "apple", "macos", "dispatch"],
   },
   {
@@ -249,6 +284,7 @@ export const FEATURE_FLAGS = [
     label: "Background reasoning effort",
     description: "Choose the reasoning effort for each background model call in Settings > Models.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["background jobs", "models", "thinking", "reasoning", "foreman", "inspector"],
   },
   {
@@ -258,9 +294,26 @@ export const FEATURE_FLAGS = [
       "Render the context an agent sends with request_input as Markdown, so its lists, headings and code " +
       "read as they were written: on the question card, in the attention inbox and in the conversation.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["request_input", "question", "context", "markdown", "bullets", "inbox"],
   },
-] as const satisfies readonly FeatureFlagDefinition[];
+  {
+    id: SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID,
+    label: "Seven-day worktree cleanup",
+    description: "Use seven days for automatic task worktree cleanup when the checkout is safe to return. Turning this off uses the configured retention window.",
+    stage: "preview",
+    sessionSetting: "Controls when unattended worktree deletion can occur.",
+    keywords: ["worktrees", "cleanup", "retention", "disk space"],
+  },
+  {
+    id: ORPHANED_WORKTREE_RECLAIM_FLAG_ID,
+    label: "Reclaim orphaned task worktrees",
+    description: "Let automatic cleanup return task checkouts Git no longer recognizes after archiving their local-only files, and finish tasks whose terminal home is proved gone.",
+    stage: "preview",
+    sessionSetting: "Controls whether unattended deletion can remove checkouts that Git no longer recognizes.",
+    keywords: ["worktrees", "cleanup", "orphaned", "retention", "disk space", "terminal home"],
+  },
+] as const satisfies readonly (FeatureFlagDefinition & { sessionSetting: string })[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */
 export const RETIRED_FEATURE_FLAG_IDS = ["codex-resident-native-mcp"] as const;

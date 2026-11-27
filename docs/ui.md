@@ -1468,6 +1468,15 @@ card is described under [Finding a resident](residents.md#finding-a-resident). T
 preview card answers to the call sign "Scout" while the preview is on, so it redraws as you check
 a style; it draws Expanding chip already expanded, because a preview cannot be pointed at.
 
+## Call sign on Always-on cards
+
+**Settings → Display → Board card → Call sign** chooses how a session card shows the name voice
+answers to while Always-on is listening: **Subtitle line** (the default), **Trailing badge**,
+**Leading chip**, **Edge tab** or **Off**. The card keeps the session's title in every style. It is
+offered while the Voice addressing preview is on, and a second preview card redraws as you pick.
+Push-to-talk titles a card by its call sign whatever this says. See
+[Call signs on Always-on cards](voice.md#call-signs-on-always-on-cards).
+
 ## Chip and popover
 
 **Settings → Display → Board card → Background sub-agents** chooses how a session shows the
@@ -2282,7 +2291,7 @@ instead.
 
 ## Voice in the dashboard
 
-With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice lets you record a system-wide mute hotkey and enable Auto-mute on calls. If macOS refuses a shortcut, the warning names the previous shortcut that still works. If no shortcut was registered, the warning reads “No hotkey is in force.” Hold the shortcut during call auto-mute to talk. The panel also offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
+With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice lets you record a system-wide mute hotkey and enable Auto-mute on calls. If macOS refuses a shortcut, the warning names the previous shortcut that still works. If no shortcut was registered, the warning reads “No hotkey is in force.” Hold the shortcut during call auto-mute to talk. Under **Spoken replies**, the Voice picker names the voice that will speak or explains how to enable playback. Play sample auditions that voice. Selecting a Mission Control voice or pressing Download fetches the shared voice model. The panel also offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
 
 ### Voice confirmation cards
 

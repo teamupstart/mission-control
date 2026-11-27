@@ -18,6 +18,7 @@ import {
 } from "@shared/repository-access.ts";
 import type {
   PersonaWorkloadExecutor,
+  PersonaWorkloadSinks,
   RepositoryArtifactMaterializer,
   RepositoryViewLease,
 } from "./contracts.ts";
@@ -25,6 +26,8 @@ import { REPOSITORY_PROVIDERS, RepositoryCapabilityError, type RepositoryProvide
 
 interface Job {
   request: PersonaWorkloadRequest;
+  /** The owning dispatch's sinks. A replay observer cannot replace them. */
+  sinks: PersonaWorkloadSinks | undefined;
   controller: AbortController;
   generation: number;
   events: PersonaWorkloadEvent[];
@@ -54,6 +57,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   async *dispatch(
     raw: PersonaWorkloadRequest,
     signal: AbortSignal,
+    sinks?: PersonaWorkloadSinks,
   ): AsyncIterable<PersonaWorkloadEvent> {
     const request = PersonaWorkloadRequestSchema.parse(raw);
     let job = this.jobs.get(request.workloadId);
@@ -63,6 +67,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     if (!job) {
       job = {
         request,
+        sinks,
         controller: new AbortController(),
         generation: request.cancellationGeneration,
         events: [],
@@ -135,15 +140,15 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     let root: string | undefined;
     let registeredHome = false;
     let lease: RepositoryViewLease | undefined;
-    const emit = (payload: Record<string, unknown>) =>
-      job.events.push({
-        ...payload,
-        eventId: randomUUID(),
-        workloadId: request.workloadId,
-        attemptId: request.attemptId,
-        sequence: job.events.length + 1,
-        timestamp: Date.now(),
-      } as PersonaWorkloadEvent);
+    const stamp = (payload: Record<string, unknown>) => ({
+      ...payload,
+      eventId: randomUUID(),
+      workloadId: request.workloadId,
+      attemptId: request.attemptId,
+      sequence: job.events.length + 1,
+      timestamp: Date.now(),
+    } as PersonaWorkloadEvent);
+    const emit = (payload: Record<string, unknown>) => job.events.push(stamp(payload));
     const remaining = Math.min(
       request.deadline - Date.now(),
       request.budgets.attemptMs,
@@ -275,6 +280,16 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         },
         signal: job.controller.signal,
       });
+      // Before anything judges the reply: a returned response has spent its execution even if
+      // its usage, audit seal or verdict is rejected below. The supervisor's sink records it
+      // durably in this same tick, before the stream can carry it, so it survives the daemon.
+      const returned = stamp({ type: "persona_returned" }) as Extract<PersonaWorkloadEvent, { type: "persona_returned" }>;
+      try {
+        job.sinks?.returned?.(structuredClone(returned), structuredClone(job.events));
+      } catch {
+        // The supervisor still records the queued event in order, or recovers it from replay.
+      }
+      job.events.push(returned);
       usage = PersonaWorkloadResultSchema.options[0].shape.usage.parse(
         output.usage,
       );

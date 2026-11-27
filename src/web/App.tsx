@@ -15,7 +15,7 @@ import { useVoiceSurface, VoiceCardOutlet, voicePortal } from "./components/Voic
 import { VoiceCardHost } from "./components/VoiceCardHost.tsx";
 import { launchResident } from "./residents/launch.ts";
 import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
-import { VOICE_FLAG, voiceCapable } from "@shared/voice.ts";
+import { VOICE_FLAG, voiceCapable, voiceCardCallSignMode, voiceCardsShowSpokenNames } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
@@ -23,7 +23,7 @@ import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { useVoiceOpenCards, VoiceAnswersContext } from "./lib/voice-open-cards.ts";
 import { VoiceHintsContext } from "./lib/agent-names.ts";
 import { NO_SPOKEN_NAMES, VoiceRosterContext } from "./lib/voice-roster.ts";
-import { withCurrentReferenceNames } from "@shared/display-name.ts";
+import { sessionCallSign, withCurrentReferenceNames } from "@shared/display-name.ts";
 
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -415,10 +415,12 @@ export function App(): React.JSX.Element {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    shapingSignIns,
     voice,
     voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
+    dismissVoiceCard,
     acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
@@ -1513,18 +1515,33 @@ export function App(): React.JSX.Element {
    * The live residents in the order the drawer, the dock and `⌥1`…`⌥9` share. One derivation
    * for the drawer's cards, the jump keys and the palette's resident rows.
    */
-  const listening = voice?.mode === "listening";
+  const spokenCardNames = voiceCardsShowSpokenNames(voice);
   // Which sessions are residents, joined through their task to the live run that launched
   // them: the marker and pin from that run's pinned revision. One join, handed to every
   // layout, and its pins reach `orderSessions` here and in both views from the same map.
   const residentBySession = useMemo(
-    () => residentMarksBySession(sessions, residentRuns, residentProfiles, listening),
-    [sessions, residentRuns, residentProfiles, listening],
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles, spokenCardNames),
+    [sessions, residentRuns, residentProfiles, spokenCardNames],
   );
   const residentEntries = useMemo(
-    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, listening, residentBySession),
-    [residentRuns, residentProfiles, sessions, listening, residentBySession],
+    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession),
+    [residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession],
   );
+  // Push-to-talk titles a session's card by its call sign; Always-on keeps the title and draws
+  // the call sign beside it. One map or the other, from the same rule (`voiceCardCallSignMode`).
+  const callSignMode = voiceCardCallSignMode(voice);
+  const allCallSigns = useMemo(() => {
+    const out = new Map<string, string>();
+    if (!callSignMode) return out;
+    for (const session of sessions) {
+      const callSign = sessionCallSign(session);
+      if (callSign) out.set(session.id, callSign);
+    }
+    return out;
+  }, [sessions, callSignMode]);
+  const noCallSigns = useMemo(() => new Map<string, string>(), []);
+  const cardCallSigns = callSignMode === "title" ? allCallSigns : noCallSigns;
+  const cardCallSignElements = callSignMode === "element" ? allCallSigns : noCallSigns;
   // The filter and both card surfaces share each run's feedback across menu and card unmounts.
   const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
   const updateResidentLoopFeedback = useCallback((runId: string, feedback: ResidentLoopFeedback) => {
@@ -2829,6 +2846,26 @@ export function App(): React.JSX.Element {
     }
   }, [files.ensure, files.select, layout, requestFilesTab]);
 
+  /**
+   * Open one of a session's checkout files from the inbox, from wherever the operator was.
+   *
+   * `focusSession`'s reason, for a file: the inbox opens over any page, and `openSessionPath`
+   * only selects - so from Settings it closed the inbox and left Settings on screen, and a Fleet
+   * filter that excluded the session hid the detail the file opens in. The file opens only once
+   * the move to Fleet is accepted, so a dirty draft's "leave anyway?" still gets its say.
+   *
+   * A stable callback, not a plain function: it reaches every inbox question's `Markdown`,
+   * whose memo compares the link handler by identity, so a new one per App render re-parsed
+   * every open question on every SSE frame.
+   */
+  const openSessionPathOnFleet = useCallback((sessionId: string, path: string): void => {
+    navigate({ page: "fleet" }, (allowed) => {
+      if (!allowed) return;
+      setFilter("");
+      openSessionPath(sessionId, path);
+    });
+  }, [navigate, openSessionPath]);
+
   const commentOnSessionPath = useCallback((sessionId: string, path: string): void => {
     openSessionPath(sessionId, path);
     setFileCommentRequest((request) => ({
@@ -3055,7 +3092,7 @@ export function App(): React.JSX.Element {
       : sessions;
     const matched = !fleetQuery ? placed : placed.filter((session) => {
       const mark = residentBySession.get(session.id);
-      if (!mark) return matchesSessionFilter(session, fleetQuery);
+      if (!mark) return matchesSessionFilter(session, fleetQuery, [allCallSigns.get(session.id)]);
       const residentFields = [mark.listeningTitle ?? "", mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
       if (placement.visitors.has(session.id)) {
         residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
@@ -3078,7 +3115,7 @@ export function App(): React.JSX.Element {
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
       awaitingIds, stalledById,
     );
-  }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
+  }, [sessions, placement, fleetQuery, allCallSigns, residentBySession, residentSearchNow, residentActiveHours,
     residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
     pinnedResidents, blockedPlacement, awaitingIds, stalledById]);
   const visible = fleet.sessions;
@@ -4043,6 +4080,8 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    cardCallSignBySession: cardCallSigns,
+    cardCallSignElementBySession: cardCallSignElements,
     residentBySession,
     residentLoopFeedbackFor: (runId) => ({
       value: residentLoopFeedback.get(runId),
@@ -5152,7 +5191,7 @@ export function App(): React.JSX.Element {
   const voiceCardHost = <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : surfaceRoot && voicePlacement !== "toast" ? voicePlacement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
-    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
+    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention, dismiss: dismissVoiceCard,
       openRecentlyHeard: () => trayHistory ? openTrayHistory() : openSettingsAnchor("voice", "voice/heard"),
       openQuestion: (sessionId, questionId) => { if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.(); navigate({ page: "fleet" }, allowed => {
         if (allowed) setReviewRequest({ sessionId, questionId });
@@ -5506,6 +5545,7 @@ export function App(): React.JSX.Element {
               voiceConfig={voiceConfig}
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
+              shapingSignIns={shapingSignIns}
               reportMutes={reportMutes}
               voice={voice}
               sessions={sessions}
@@ -5901,6 +5941,9 @@ export function App(): React.JSX.Element {
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
                   pinned={pinnedBand}
+                  files={files}
+                  // The question stays pending; "to answer" brings the operator back to decide.
+                  onOpenPath={openSessionPathOnFleet}
                 />
               )}
               {/* Open report: an agent report's attached document, from its stored copy. Opened from

@@ -826,6 +826,13 @@ export interface WorkflowStagedEvidenceList {
 export interface WorkflowSessionEvidenceList extends WorkflowStagedEvidenceList {
   /** Resolved from the current active binding's pinned Persona graph, never task selection. */
   registrationEligible: boolean;
+  /** Read-only Foreman assessment of the entire staged packet, bound to both intent revisions. */
+  continuation?: {
+    episodeKey: string;
+    sourceEpisode: string;
+    status: "revalidated" | "stale" | "unavailable";
+    packet: string;
+  };
 }
 
 export interface WorkflowAgentEvidenceLocator {
@@ -1931,6 +1938,11 @@ export interface SessionActionAttemptState {
   blocked: { code: SessionActionBlockCode; detail: string } | null;
   /** Advisories collected before the action advances. Missing on rows from older builds. */
   warnings?: SessionActionWarning[];
+  /**
+   * When the observer first found the bound session unavailable; null or missing while it is
+   * live. Missing on rows from older builds. See `SessionActionAttemptStateSchema`.
+   */
+  sessionMissingSince?: number | null;
 }
 
 /**
@@ -3530,6 +3542,12 @@ export interface WorkflowRetentionConfig {
   maxCompletedRuns: number;
 }
 
+/** A decrease can remove content during the next retention sweep. */
+export function retentionShortens(next: Partial<WorkflowRetentionConfig>, current: WorkflowRetentionConfig): boolean {
+  return (Object.keys(current) as (keyof WorkflowRetentionConfig)[])
+    .some(key => (next[key] ?? current[key]) < current[key]);
+}
+
 export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
   skipPassedJudges: true,
   // Authorised, and gated on `repoAllowlist` being non-empty. See the field's docstring: an
@@ -4035,6 +4053,7 @@ export interface WorkflowCompletionClaim {
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;
+  expectedContinuationPacket?: string;
   /** Comparison guard for verified plan ownership; never selects or creates a binding. */
   expectedPlanPublication?: PlanPublicationContext;
 }

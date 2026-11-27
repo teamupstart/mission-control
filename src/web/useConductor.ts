@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   pipelineRepoKey,
@@ -23,11 +24,17 @@ import { readIsCurrent } from "./harnesses-reconcile.ts";
 const POLL_MS = 4000;
 
 /** Flatten a rejection to one clamped sentence. Mirrors `useTaskSources`'s twin. */
-function whyItFailed(error: string | undefined): string {
+function whyItFailed(error: string | undefined, message = "That change didn't stick."): string {
   const flat = (error ?? "").replace(/\s+/g, " ").trim();
-  if (!flat) return "That change didn't stick.";
-  return `That change didn't stick: ${flat.length > 120 ? `${flat.slice(0, 119)}…` : flat}`;
+  if (!flat) return message;
+  return `${message} ${flat.length > 120 ? `${flat.slice(0, 119)}…` : flat}`;
 }
+
+function pipelineConsent({ enabled, foremanMechanicalTriage, repos }: PipelinesConfig) {
+  return { enabled, foremanMechanicalTriage, repos };
+}
+
+type ConductorConfigEdit = PipelinesConfig | Pick<PipelinesConfig, "launchRuntime">;
 
 /** Compose observation consent without disturbing any other provider or repository choice. */
 export function configWithObservation(
@@ -61,8 +68,8 @@ export interface ConductorState {
   view: PipelinesView | null;
   /** Canonical repository roots from Mission Control's existing workspace catalog. */
   workspaceRepos: string[];
-  /** Write the whole consent config. Applied optimistically, reverted if refused. */
-  save: (config: PipelinesConfig) => Promise<boolean>;
+  /** Write a consent snapshot or a runtime preference. Applied optimistically, reverted if refused. */
+  save: (config: ConductorConfigEdit) => Promise<boolean>;
   /** Register with the provider, then enable Mission Control observation after confirmation. */
   registerAndObserve: (provider: PipelineProviderId, repoRoot: string) => Promise<boolean>;
   /** Recovery after provider registration succeeded but the observation write did not. */
@@ -91,9 +98,11 @@ export interface ConductorState {
 
 /** @param active Whether the permanent Conductor category is the one on screen. */
 export function useConductor(active: boolean): ConductorState {
+  const settingsRevision = useSettingsConfigRevision("pipelines");
   const [view, setViewState] = useState<PipelinesView | null>(null);
   const [workspaceRepos, setWorkspaceRepos] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [setup, setSetup] = useState<ConductorState["setup"]>(null);
   const [setupNotice, setSetupNotice] = useState<ConductorSetupNotice | null>(null);
@@ -104,7 +113,10 @@ export function useConductor(active: boolean): ConductorState {
   const [installerNotice, setInstallerNotice] = useState<ConductorInstallerNotice | null>(null);
   const viewRef = useRef<PipelinesView | null>(null);
   const editSeq = useRef(0);
+  const consentEditSeq = useRef(0);
+  const runtimeEditSeq = useRef(0);
   const writeGen = useRef(0);
+  const readSeq = useRef(0);
   /** Non-null while the two-step setup flow owns the view. Ordinary polls stand down. */
   const setupToken = useRef<number | null>(null);
   const nextSetupToken = useRef(0);
@@ -124,9 +136,10 @@ export function useConductor(active: boolean): ConductorState {
       { force = false }: { force?: boolean } = {},
     ): Promise<void> => {
       if (!force && setupToken.current !== null) return;
+      const readAtRequest = ++readSeq.current;
       const genAtRequest = writeGen.current;
       const v = await fetchPipelines(force);
-      if (!v) return;
+      if (!v || !readIsCurrent(readAtRequest, readSeq.current)) return;
       if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
       if (!readIsCurrent(genAtRequest, writeGen.current)) return;
       if (!force && setupToken.current !== null) return;
@@ -145,9 +158,10 @@ export function useConductor(active: boolean): ConductorState {
     const id = setInterval(() => void tick(), POLL_MS);
     return () => {
       alive = false;
+      readSeq.current += 1;
       clearInterval(id);
     };
-  }, [active, refresh]);
+  }, [active, refresh, settingsRevision]);
 
   // The existing workspace catalog is fetched only while this destination is active. It is
   // the candidate source; Conductor's probe remains the authority for registration.
@@ -199,28 +213,35 @@ export function useConductor(active: boolean): ConductorState {
   }, [active, missingProbeCheckedAt]);
 
   const save = useCallback(
-    async (config: PipelinesConfig): Promise<boolean> => {
+    async (config: ConductorConfigEdit): Promise<boolean> => {
       const before = viewRef.current;
       if (!before) return false;
+      const consent = "enabled" in config ? pipelineConsent(config) : null;
+      const update = consent ?? { launchRuntime: config.launchRuntime };
+      const latestEdit = consent ? consentEditSeq : runtimeEditSeq;
       const seq = ++editSeq.current;
-      setView({ ...before, config });
+      latestEdit.current = seq;
+      setView({ ...before, config: { ...before.config, ...update } });
 
       const queued = writing.current;
       const attempt = (async (): Promise<boolean> => {
         await queued;
-        if (!readIsCurrent(seq, editSeq.current)) return true;
-        const res = await api.setPipelines(config);
+        // Each request supersedes only older queued edits to the same part of the config.
+        if (!readIsCurrent(seq, latestEdit.current)) return true;
+        const res = await (consent ? api.setPipelines(consent) : api.setPipelineRuntime(config.launchRuntime));
         // The request may have been current when it left and become stale while it was on the
         // wire. A later optimistic edit owns the screen now, so this response may invalidate
         // old polls but must never replace or roll back that newer state.
         if (res.ok) writeGen.current += 1;
+        if (readIsCurrent(seq, latestEdit.current)) {
+          if (consent) setError(res.ok ? null : whyItFailed(res.error));
+          else setRuntimeError(res.ok ? null : whyItFailed(res.error, "The Engineer runtime choice wasn't saved."));
+        }
         if (!readIsCurrent(seq, editSeq.current)) return res.ok;
         if (!res.ok) {
-          setError(whyItFailed(res.error));
           setView(before);
           return false;
         }
-        setError(null);
         setView(res.view);
         return true;
       })();
@@ -233,6 +254,7 @@ export function useConductor(active: boolean): ConductorState {
   const enableObservation = useCallback(
     async (provider: PipelineProviderId, repoRoot: string): Promise<boolean> => {
       const seq = ++editSeq.current;
+      consentEditSeq.current = seq;
       const token = ++nextSetupToken.current;
       setupToken.current = token;
       setSetup({ repoRoot, phase: "observing" });
@@ -245,7 +267,7 @@ export function useConductor(active: boolean): ConductorState {
         if (!readIsCurrent(seq, editSeq.current)) return true;
         const current = viewRef.current;
         if (!current) return false;
-        const res = await api.setPipelines(configWithObservation(current.config, provider, repoRoot));
+        const res = await api.setPipelines(pipelineConsent(configWithObservation(current.config, provider, repoRoot)));
         if (!res.ok) {
           setSetupNotice({
             repoRoot,
@@ -279,6 +301,7 @@ export function useConductor(active: boolean): ConductorState {
   const registerAndObserve = useCallback(
     async (provider: PipelineProviderId, requestedRoot: string): Promise<boolean> => {
       const seq = ++editSeq.current;
+      consentEditSeq.current = seq;
       const token = ++nextSetupToken.current;
       setupToken.current = token;
       setSetup({ repoRoot: requestedRoot, phase: "registering" });
@@ -314,7 +337,7 @@ export function useConductor(active: boolean): ConductorState {
 
         setSetup({ repoRoot: registration.repoRoot, phase: "observing" });
         const consent = await api.setPipelines(
-          configWithObservation(res.view.config, registration.provider, registration.repoRoot),
+          pipelineConsent(configWithObservation(res.view.config, registration.provider, registration.repoRoot)),
         );
         if (!consent.ok) {
           setSetupNotice({
@@ -415,6 +438,6 @@ export function useConductor(active: boolean): ConductorState {
     openingInstaller,
     installerNotice,
     openInstaller,
-    error,
+    error: [runtimeError, error].filter(Boolean).join(" ") || null,
   };
 }

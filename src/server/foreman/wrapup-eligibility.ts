@@ -1,6 +1,6 @@
 import type { TaskKind } from "@shared/types.ts";
 import { hasOperatorHandoffHold } from "@shared/goal.ts";
-import { explicitHandoffRestriction } from "../goal/handoff-restrictions.ts";
+import { explicitHandoffRestriction, withoutHandoffRestrictions } from "../goal/handoff-restrictions.ts";
 
 /**
  * Why Foreman must withhold the automatic handoff to a review Workflow or PR prompt.
@@ -194,12 +194,28 @@ function classifiesAsReviewArtifact(kind: TaskKind | null): boolean {
  * A block means neither an existing Foreman-complete binding nor the built-in No-Mistakes
  * fallback may be submitted, and the direct Straight-to-PR instruction may not be typed. Manual
  * operator actions stay outside this predicate.
+ *
+ * An operator hold is answered LAST, and only for a completion that would otherwise be
+ * eligible. The hold reserves the automatic handoff; a completion that is ineligible for one
+ * (a scout, a review artifact, a human-ended kind) has no handoff to reserve, so it retires
+ * exactly as it would without the hold. Checking the hold first turned "Write the report. Do
+ * not open a PR." into a permanent, silent skip: the callers leave a held generation armed and
+ * record nothing, so the completion was never consumed and a recurring mission's run never
+ * concluded (#1807). The classifier reads the objective without its restriction lines, which
+ * are an annotation about publication rather than part of the deliverable.
  */
 export function automaticWrapupBlock(input: AutomaticWrapupInput): AutomaticWrapupBlock | null {
-  if (hasOperatorHandoffHold(input.objective) || explicitHandoffRestriction(input.objective)) {
-    return { kind: "operator_hold", reason: "the operator reserved the completion handoff" };
-  }
+  const held = hasOperatorHandoffHold(input.objective)
+    || Boolean(explicitHandoffRestriction(input.objective));
+  const ineligible = completionIneligibility(held && input.objective
+    ? { ...input, objective: withoutHandoffRestrictions(input.objective) || null }
+    : input);
+  if (ineligible) return ineligible;
+  return held ? { kind: "operator_hold", reason: "the operator reserved the completion handoff" } : null;
+}
 
+/** The completions no automatic handoff may claim, whatever the operator reserved. */
+function completionIneligibility(input: AutomaticWrapupInput): AutomaticWrapupBlock | null {
   if (
     input.taskKind !== null &&
     KIND_REQUIRES_EXPLICIT_WORKFLOW[input.taskKind] &&

@@ -96,6 +96,13 @@ For the recognizer test, generate clips with `python3 scripts/voice-spike/corpus
 `VOICE_TEST_CORPUS` to the absolute path of `.tmp/voice-spike/audio`, and set
 `MISSION_VOICE_MODEL_DIR` to the downloaded model revision directory.
 
+To exercise long messages with the installed macOS models, build the dashboard and daemon
+and set `MISSION_LONG_VOICE_MODELS` to the downloaded FluidAudio revision directory.
+Run `npm run test:e2e -- --workers=1 voice-long-capture.spec.ts`. The spec synthesizes a
+known message, feeds one minute of PCM into the release listener at microphone callback
+speed, and compares the receiving SDK session's delivery receipt word for word. It runs
+once with automatic silence detection and once with a dated push-to-talk release.
+
 For dashboard and daemon development, `npm run dev` skips the Swift voice listener build and
 the FluidAudio download. Leave the `voice` preview off when working without voice.
 
@@ -110,6 +117,7 @@ the FluidAudio download. Leave the `voice` preview off when working without voic
 | `npm run build` | Production web, server, Electron, MCP, and hook bundles. |
 | `npm run typecheck` | TypeScript validation. |
 | `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations, plus repository policy rules. React/hooks and accessibility findings are warnings. |
+| `npm run konsistent` | Structural conventions from [konsistent.json](konsistent.json). Component export names are advisory. |
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
@@ -127,6 +135,9 @@ allowed: CLI output, daemon diagnostics, and fixture logging are intentional, so
 
 Repository lint rules are named in [AGENTS.md](AGENTS.md). Scoped legacy exceptions are
 annotated at their use sites.
+The CI gates job also runs the structural checks. Update `konsistent.json` when a
+required file, export name, or directory convention changes. Use
+`npm run konsistent -- validate` to validate config edits.
 CI also runs `node scripts/check-doc-links.mjs` and checks pull requests for agent co-author
 trailers, changelog changes outside Release Please, and new image paths outside documentation
 and product asset locations. The image check permits `docs/images/`, top-level files in `build/`,
@@ -189,7 +200,7 @@ label, or placeholder.
 1. Reuse the control's entry in `src/shared/settings-controls.ts` for its label, keywords
    and category. Reuse its generator for repeated controls. Keep runtime toggle bindings
    in the web layer.
-2. In the owner's section of `src/server/session-settings-owners.ts`, declare a stable
+2. In the owner's session settings adapter, declare a stable
    public key and the exact field it reads and edits. For an ordinary field, bind it to the
    dashboard patch schema and synchronous owner getter and writer. Reserve a custom leaf
    projection for cases such as a single member of a preferences list. A storage or UI
@@ -201,7 +212,8 @@ label, or placeholder.
    require an owner revision that advances on dashboard writes and restores. Prefer a
    narrower edit when a parent also contains protected leaves.
 4. Update the [coverage inventory](docs/session-settings-inventory.md) and run
-   `test/typed-settings-owners.test.ts` and `test/mcp-settings.test.ts`. A setting
+   `test/session-settings-inventory.test.ts`, `test/typed-settings-owners.test.ts` and
+   `test/mcp-settings.test.ts`. A setting
    declaration never adds a tool, request field, enum of setting names, or prompt content.
 
 ## Submitting a change as a repository collaborator

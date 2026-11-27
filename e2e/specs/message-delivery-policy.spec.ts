@@ -41,6 +41,7 @@ test("a busy agent's spoken row waits for idle and only the typed row offers del
   }
   expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: false } } })).ok()).toBe(true);
   const { card, composer, rail } = await openSession(dashboard, daemon, "codex", "Steve");
+  await rail.focus();
   const words = "inspect the build";
   expect(await (await say(daemon, `Steve, ${words}`)).json()).toEqual({ accepted: true });
   const spoken = card.locator(".pending-turn").filter({ hasText: words });

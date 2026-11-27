@@ -13,6 +13,7 @@ import { ASYNC_INPUT_FLAG, FILED_PLAN_DECISIONS_FLAG } from "./async-input.ts";
 import { INBOX_FLAG } from "./inbox.ts";
 import type { SpokenName } from "./voice-names.ts";
 import { boundedRecord } from "./zod-shapes.ts";
+import { SeparatorWordSchema, VOICE_SEPARATOR_DEFAULT } from "./voice-separator.ts";
 
 /** The preview flag for voice addressing. */
 export const VOICE_FLAG = "voice" as const;
@@ -107,6 +108,8 @@ export const VoiceConfigSchema = z.object({
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
   endOfSpeechMs: EndOfSpeechMsSchema.default(2000),
+  /** The standalone word that splits one Always-on capture into separate messages. */
+  separatorWord: SeparatorWordSchema.default(VOICE_SEPARATOR_DEFAULT).catch(VOICE_SEPARATOR_DEFAULT),
   speech: z.object({ voice: SpeechVoiceSchema.nullable().default(null) }).prefault({}),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE).default("show"),
   /** Whether speech may fill a plan-decision form. Voice stays on elsewhere when this is off. */
@@ -135,6 +138,7 @@ export const VoiceConfigPatchSchema = z.object({
   transcriptStyle: TranscriptStyle,
   transcriptCorner: TranscriptCorner,
   endOfSpeechMs: EndOfSpeechMsSchema,
+  separatorWord: SeparatorWordSchema,
   cancelWindow: z.object({
     enabled: z.boolean(),
     seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max),
@@ -235,12 +239,43 @@ export function voiceCaptures(mode: VoiceMode): boolean {
   return mode === "listening" || mode === "push-to-talk";
 }
 
+/**
+ * Whether cards title agents by the names a person says to them: while Always-on listens, and in
+ * Push-to-talk between holds as well as during one, since the next hold may address any of them.
+ * A hold during an Always-on call auto-mute also reads `push-to-talk`, but only the dedicated mode
+ * carries a `pushToTalkSession`: muted, auto-muted (even while that hold is down), unavailable and
+ * off keep the ordinary names.
+ */
+export function voiceCardsShowSpokenNames(state: Pick<VoiceState, "mode" | "pushToTalkSession"> | null | undefined): boolean {
+  return state?.mode === "listening" || state?.mode === "waiting-for-key" ||
+    (state?.mode === "push-to-talk" && !!state.pushToTalkSession);
+}
+
+/**
+ * How a session card shows its call sign while voice can hear it (`voiceCardsShowSpokenNames`):
+ * `title` in the dedicated Push-to-talk mode, waiting for the shortcut or held, where the call
+ * sign replaces the title because the next hold may address any card; `element` while
+ * Always-on listens, where the card keeps the session's title and draws the call sign beside it
+ * in the operator's `callSignCardStyle`; null otherwise. Resident cards are not affected.
+ */
+export type VoiceCardCallSignMode = "title" | "element";
+
+export function voiceCardCallSignMode(state: Pick<VoiceState, "mode" | "pushToTalkSession"> | null | undefined): VoiceCardCallSignMode | null {
+  if (!voiceCardsShowSpokenNames(state)) return null;
+  return state?.mode === "listening" ? "element" : "title";
+}
+
 export const VoiceListenerDirectiveSchema = z.object({
   speak: SpeakDirectiveSchema.nullable().default(null),
   capture: z.boolean(),
   roster: z.array(z.string()),
   inputDevice: z.string(),
   endOfSpeechMs: EndOfSpeechMsSchema.optional(),
+  /**
+   * The Always-on separator word, present only for automatic capture. The daemon splits at it;
+   * a listener must not rewrite it into a spoken name when it opens a capture.
+   */
+  separator: z.string().min(1).optional(),
   pauseMs: z.number().nullable().optional(),
   captureRevision: z.string().min(1).optional(),
   revision: z.string().min(1),
@@ -276,8 +311,8 @@ export interface VoiceCapability {
   available: boolean;
   /** Why it is not available, when it is not; null when it is. */
   reason: string | null;
-  /** Set by the daemon when the listener misses a speech stop confirmation. */
-  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED;
+  /** Daemon-owned reason for a specific recovery action. The reason text is for display. */
+  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED | "speech_playback_unsupported" | "speech_voice_unavailable";
 }
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
@@ -540,8 +575,8 @@ export function voiceStateOff(): VoiceState {
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
-// Starting with 4.1, listeners apply timing-only directives to an open capture in place.
-export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.1`;
+// 4.1 adds in-place timing edits. At 4.2 both peers support long FluidAudio captures.
+export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.2`;
 export const VOICE_RECORDING_ID_HEADER = "x-voice-recording-id";
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** A capture-only listener's process and the byte it must lock before opening the microphone. */
@@ -553,6 +588,7 @@ export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";
 export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-end-host-ms";
 export const VOICE_CAPTURE_START_HEADER = "x-voice-capture-start-host-us";
 export const VOICE_SPEECH_START_HEADER = "x-voice-speech-start-host-us";
+export const VOICE_FOCUS_UNCONFIRMED_HEADER = "x-voice-focus-unconfirmed";
 export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
 export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
 export const VoiceListenerIdSchema = z.uuid();

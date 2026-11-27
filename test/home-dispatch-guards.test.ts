@@ -89,10 +89,16 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // Typed settings adds PATCH /api/workflows/config for field-scoped policy saves.
   // POST /voice/listener/transcript also returns 404 with the voice preview off.
   // GET /api/ui/config's default body gains `residentCardNameStyles: []` (no new route).
+  // Repository Index and Task Sources views carry config revisions for conditional writes.
+  // A Task Sources replacement without a revision now answers 400.
+  // PATCH /api/pipelines/config accepts only the Engineer runtime.
+  // Shaper sign-in adds POST /api/shaping/sign-in, POST /api/shaping/sign-out and
+  // GET /api/shaping/sign-in/callback, which answer 404 with task-shaping off.
+  // GET /api/ui/config's default body gains `callSignCardStyle: "subtitle"` (no new route).
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 497);
+  assert.equal(others.length, 501);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "65f92fe796c4780d7397d7d4bc39e565091e42d2ba3c2d5d12cf10d6773b7b2c");
+    "afe94f0f5bda6570edb115cc65483bd50e5959c2c8e314c9f374a0779d6016b9");
 });
 
 function sourceFiles(dir: string): string[] {

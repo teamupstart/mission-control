@@ -223,7 +223,7 @@ test("the startup sweep removes leftover temp files and sidecars and nothing els
   const published = await service.captureScheduled();
 
   const nonce = "0123456789abcdef0123456789abcdef";
-  const leftovers = ["", "-wal", "-shm", "-journal"].map(
+  const leftovers = ["", "-wal", "-shm", "-journal", ".vacuum", ".vacuum-journal", ".vacuum-wal", ".vacuum-shm"].map(
     (suffix) => `.database-backup-${nonce}.tmp${suffix}`,
   );
   for (const name of leftovers) writeFileSync(join(backups, name), "partial");

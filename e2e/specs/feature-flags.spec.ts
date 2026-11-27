@@ -347,3 +347,27 @@ test("opting in to alpha with Enable all already on sends no flag write", async 
   await expect(peerMaster).not.toBeChecked();
   expect(intents).toEqual([{ kind: "master", enabled: false }]);
 });
+
+test("the seven-day cleanup flag controls daemon retention without a restart", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const toggle = page.getByRole("button", { name: /^Seven-day worktree cleanup:/ });
+  const mode = async () => {
+    const response = await page.request.get(`${daemon.baseURL}/api/worktrees`);
+    expect(response.ok()).toBe(true);
+    return (await response.json()).retention.mode;
+  };
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(await mode()).toBe("configured");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(mode).toBe("enforce");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(artifactsDir("feature-flags"), { recursive: true });
+    await toggle.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    await toggle.locator("..").screenshot({ path: `${artifactsDir("feature-flags")}seven-day-cleanup.png`, animations: "disabled" });
+  }
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(mode).toBe("configured");
+});

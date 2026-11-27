@@ -1,7 +1,7 @@
 import { bodyLimit } from "hono/body-limit";
 import type { Context, Hono } from "hono";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { SESSION_SETTINGS_FLAG_ID, FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { SESSION_SETTINGS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import {
   SETTINGS_BODY_MAX_BYTES, SettingsRequestSchema, settingsFailure,
@@ -16,6 +16,8 @@ import type { Registry } from "./registry.ts";
 import { sessionControlCaller, sessionControlCallerRefusal } from "./session-control.ts";
 import { sessionSettingsAuthorization, type AuthorizeSessionSettings } from "./session-control-authorization.ts";
 import { dispatchSetting, type SettingDescriptor } from "./settings-dispatcher.ts";
+import { protectedSettings } from "./session-settings-protected.ts";
+import { flagSettings } from "./session-settings-specialized.ts";
 import { uiSkinSetting } from "./ui-config.ts";
 
 const accessEntry = APP_CONFIG_ENTRIES.sessionSettingsAccess;
@@ -25,15 +27,11 @@ function sessionSettingsAccess(): boolean {
   return getAppConfig(accessEntry) === true;
 }
 
-const rollout = FEATURE_FLAGS.find(flag => flag.id === SESSION_SETTINGS_FLAG_ID);
-if (!rollout) throw new Error(`Session settings requires a registered ${SESSION_SETTINGS_FLAG_ID} feature flag.`);
-const catalog: readonly SettingDescriptor[] = [
+export const baseSessionSettings: readonly SettingDescriptor[] = [
   uiSkinSetting,
-  { ...SESSION_SETTINGS_ACCESS, access: "protected", destination: "Settings > Trust" },
-  {
-    key: `featureFlags.${rollout.id}`, label: rollout.label, keywords: rollout.keywords,
-    access: "protected", destination: "Settings > Feature flags",
-  },
+  { ...SESSION_SETTINGS_ACCESS, control: "session-settings-access", access: "protected",
+    destination: "Settings > Trust", reason: "Requires explicit desktop operator consent." },
+  ...flagSettings(), ...protectedSettings,
 ];
 
 export function registerSessionSettingsRoutes(
@@ -68,7 +66,13 @@ export function registerSessionSettingsRoutes(
     // Recheck past body intake. Owner preparation and mutation then run synchronously.
     const refusal = authorize(c);
     if (refusal) return c.json(refusal, refusal.error === "unavailable" ? 503 : 403);
-    const result = dispatchSetting(parsed.data, [...catalog, ...typedSettings()], () => authorize(c));
+    let result;
+    try {
+      result = dispatchSetting(parsed.data, [...baseSessionSettings, ...typedSettings()], () => authorize(c));
+    } catch {
+      // Dynamic owners may fail to enumerate their settings. Their diagnostics are private.
+      result = settingsFailure("unavailable");
+    }
     if (result.ok) return c.json(result);
     if (result.error === "unauthorized" || result.error === "access_disabled") return c.json(result, 403);
     if (result.error === "unavailable") return c.json(result, 503);

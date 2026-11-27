@@ -54,7 +54,7 @@ const RENAME = "rename it everywhere; README.md and the CLI help change too";
 const CONTEXT = `Two ways to ship the rename:\n\n- ${OLD_NAME}\n- ${RENAME}\n\n## Found\n\nCI runs \`npm test\` only.`;
 
 /** File the question the way the MCP `request_input` tool does: the question, then its context. */
-async function ask(daemon: DaemonHandle, cwd: string, asyncCapable = false): Promise<{ wait: string }> {
+async function ask(daemon: DaemonHandle, cwd: string, asyncCapable = false, question = QUESTION): Promise<{ wait: string }> {
   const res = await fetch(`${daemon.baseURL}/mcp/reviews`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
@@ -63,11 +63,11 @@ async function ask(daemon: DaemonHandle, cwd: string, asyncCapable = false): Pro
       cwd,
       ...(asyncCapable ? { asyncCapable: true, snoozable: true } : {}),
       kind: "input",
-      title: QUESTION,
-      body: `${QUESTION}\n\n${CONTEXT}`,
+      title: question,
+      body: `${question}\n\n${CONTEXT}`,
       decisions: [{
         id: "q",
-        question: QUESTION,
+        question,
         options: [{ id: "o0", label: "Keep it" }, { id: "o1", label: "Rename it" }],
       }],
     }),
@@ -87,7 +87,9 @@ async function openReview(page: Page): Promise<Locator> {
 
 async function openInbox(page: Page): Promise<Locator> {
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
-  const button = page.locator("button.pulse-seg", { hasText: "to answer" });
+  // By role: Settings > Display draws a preview of this same pulse, and only the title bar's is
+  // a button by that name.
+  const button = page.getByRole("button", { name: "to answer" });
   await expect(async () => {
     if (!(await inbox.isVisible())) await button.click({ timeout: 3000 });
     await expect(inbox).toBeVisible({ timeout: 3000 });
@@ -173,4 +175,180 @@ test("with the markdown-questions flag on, the conversation's entry for a filed 
   await setFlag(daemon, "markdown-questions", false);
   await expect(asked.locator("p.review-asked-question")).toContainText(`- ${OLD_NAME}`);
   await expect(asked.getByRole("listitem")).toHaveCount(0);
+});
+
+/*
+ * The inbox draws the same `ReviewCard` the session's own modal does, and it must link the
+ * same paths. It used to draw it without the checkout listing or a way to open a file, so a
+ * question opened from "to answer" printed its paths as plain text while the very same question
+ * opened from the conversation's "to review" badge linked them. Opened straight from the title
+ * bar on a fresh page, with no session selected first, so nothing else has warmed the listing.
+ */
+for (const markdown of [false, true]) {
+  test(`with the markdown-questions flag ${markdown ? "on" : "off"}, a question opened from the inbox links its checkout paths exactly as the session's review modal does`, async ({ dashboard: page, daemon }) => {
+    test.setTimeout(120_000);
+    if (markdown) await setFlag(daemon, "markdown-questions", true);
+    const session = await dispatch(daemon);
+    await ask(daemon, session.cwd!);
+    await page.reload();
+    await expect(page.locator("button.pulse-seg", { hasText: "to answer" }).locator(".pulse-n")).toHaveText("1");
+
+    const inbox = await openInbox(page);
+    const link = body(inbox).getByRole("link", { name: "README.md" });
+    await expect(link).toBeVisible();
+    await capture(inbox, `05-inbox-path-link-flag-${markdown ? "on" : "off"}`, page);
+    await link.click();
+    await expect(inbox).toBeHidden();
+    await expect(
+      page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }),
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(
+      page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: "README.md" }),
+    ).toHaveAttribute("aria-selected", "true");
+
+    // The question is still owed, and the modal links the same path.
+    const modal = await openReview(page);
+    await expect(body(modal).getByRole("link", { name: "README.md" })).toBeVisible();
+  });
+}
+
+/*
+ * The inbox opens over any page, so a path clicked in it has to bring the session into view
+ * first: from Settings it used to close the inbox and leave Settings on screen, and a Fleet
+ * filter that excluded the session hid the detail the file opens in.
+ */
+test("a path clicked in the inbox over Settings, with a Fleet filter hiding the session, opens the file on Fleet", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  const session = await dispatch(daemon);
+  await ask(daemon, session.cwd!);
+  await page.reload();
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await page.locator(".filter-box").click();
+  await filter.fill("no-session-matches-this");
+  await page.evaluate(() => { window.location.hash = "#/settings"; });
+  await expect(page).toHaveURL(/#\/settings/);
+
+  const inbox = await openInbox(page);
+  await body(inbox).getByRole("link", { name: "README.md" }).click();
+  await expect(inbox).toBeHidden();
+  await expect(page).toHaveURL(/#\/fleet/);
+  await expect(filter).toHaveValue("");
+  await expect(
+    page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: "README.md" }),
+  ).toHaveAttribute("aria-selected", "true");
+});
+
+/*
+ * The inbox stays open while the app keeps updating under it - another question arriving, a
+ * session changing - and its path links have to survive that. The link handler reaches each
+ * question's memoized `Markdown`, so it is built once rather than per render; this holds the
+ * user-visible half of that: the same link, still a link, still opening Files, after an update
+ * lands with the inbox open.
+ */
+test("a path link in the open inbox survives an update arriving under it and still opens the file", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await setFlag(daemon, "markdown-questions", true);
+  const session = await dispatch(daemon);
+  await ask(daemon, session.cwd!);
+  await page.reload();
+  const inbox = await openInbox(page);
+  const link = body(inbox).getByRole("link", { name: "README.md" });
+  await expect(link).toBeVisible();
+  const before = await link.elementHandle();
+  /*
+   * Whether the update re-parsed this question, read off a list item the Markdown renderer drew.
+   * React keeps an element's current props on its DOM node and replaces that object whenever it
+   * re-renders the element with new props - which a re-parse always does, since it builds every
+   * element afresh even when the output is identical. A memo that holds keeps the same object.
+   * It is a React-internal key, read here only as a probe; nothing in the app depends on it.
+   */
+  const item = await body(inbox).getByRole("listitem").filter({ hasText: RENAME }).elementHandle();
+  type Probe = { __questionItemProps?: unknown };
+  await item!.evaluate((el) => {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"));
+    if (!key) throw new Error("no React props on the list item");
+    (window as unknown as Probe).__questionItemProps = (el as unknown as Record<string, unknown>)[key];
+  });
+
+  // An update with the inbox open: a second question from the same session, drawn live.
+  const SECOND = "Should the CLI help change as well?";
+  await ask(daemon, session.cwd!, false, SECOND);
+  await expect(inbox.locator("section.review")).toHaveCount(2);
+  await expect(inbox).toContainText(SECOND);
+
+  // The first question's link is the same element it was, and every question links the path.
+  expect(await before!.evaluate((el) => el.isConnected)).toBe(true);
+  // And the update did not re-parse the question that did not change.
+  expect(await item!.evaluate((el) => {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactProps$"));
+    return Boolean(key) && (el as unknown as Record<string, unknown>)[key!] ===
+      (window as unknown as Probe).__questionItemProps;
+  }), "the update re-rendered the question that did not change").toBe(true);
+  await expect(body(inbox).getByRole("link", { name: "README.md" })).toHaveCount(2);
+  await capture(inbox, "06-inbox-link-after-update", page);
+  await link.first().click();
+  await expect(inbox).toBeHidden();
+  await expect(
+    page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: "README.md" }),
+  ).toHaveAttribute("aria-selected", "true");
+});
+
+/*
+ * Opening a file from the inbox moves to Fleet, and that move goes through the same
+ * unsaved-draft gate as every other page change. Cancelling it has to leave everything as it
+ * was: the page, the draft, and the question - and no file opened behind the dialog. Leaving
+ * anyway then opens the file the click asked for.
+ */
+test("a path clicked in the inbox over an unsaved draft asks first: Cancel keeps the page, the draft and the question, and leaving opens the file", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  const session = await dispatch(daemon);
+  await ask(daemon, session.cwd!);
+  await page.reload();
+  // A title-bar filter typed before the click: a refused move must not clear it, as an accepted one does.
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await page.locator(".filter-box").click();
+  await filter.fill("keep-this-filter");
+  await page.evaluate(() => { window.location.hash = "#/residents"; });
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const editor = page.getByRole("region", { name: "New resident profile" });
+  const name = editor.getByLabel("Name");
+  await name.fill("A draft I am not done with");
+
+  let inbox = await openInbox(page);
+  await body(inbox).getByRole("link", { name: "README.md" }).click();
+  const gate = page.getByRole("dialog", { name: "Leave with unsaved changes" });
+  await expect(gate).toBeVisible();
+  await capture(gate, "07-leave-gate-from-inbox-path", page);
+  await gate.getByRole("button", { name: "Cancel" }).click();
+  await expect(gate).toHaveCount(0);
+
+  await expect(page).toHaveURL(/#\/residents\/new$/);
+  await expect(name).toHaveValue("A draft I am not done with");
+  await expect(filter).toHaveValue("keep-this-filter");
+  await expect(page.getByRole("button", { name: "to answer" }).locator(".pulse-n")).toHaveText("1");
+
+  // Nothing was opened behind the dialog: reaching Fleet another way shows no file selected.
+  await filter.fill("");
+  await page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Fleet" }).click();
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(page).toHaveURL(/#\/fleet/);
+  await expect(page.getByRole("listbox", { name: "Session files" })).toHaveCount(0);
+
+  // With a draft again, leaving anyway opens the file the click asked for.
+  await page.evaluate(() => { window.location.hash = "#/residents"; });
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  await name.fill("Another draft");
+  inbox = await openInbox(page);
+  await body(inbox).getByRole("link", { name: "README.md" }).click();
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(page).toHaveURL(/#\/fleet/);
+  await expect(
+    page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: "README.md" }),
+  ).toHaveAttribute("aria-selected", "true");
 });

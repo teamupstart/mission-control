@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
@@ -55,6 +56,7 @@ test("the editor shows the parent of a swept sub-issue beside its upstream link"
   );
   const config = await dashboard.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
+      revision: await taskSourcesRevision(dashboard, daemon),
       sources: [
         { id: "gh-e2e", kind: "github-issues", label: "demo issues", repoRoot: daemon.repo, config: { labelsAny: ["mission"] } },
       ],

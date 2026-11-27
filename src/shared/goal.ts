@@ -132,3 +132,14 @@ export function sessionIntentMatches(
     current.episodeKey === expected.episodeKey
   );
 }
+
+/** One adjacent literal continuation of a resolved, model-reconciled task contract.
+ * The receipt also binds the original objective, binding, task, checkout and tray.
+ */
+export function continuationSource(goal: SessionGoal | null): string | null {
+  if (!goal || !resolvedSessionIntent(goal) || goal.pendingPrompts.length ||
+      goal.promptRevision < 2 || goal.relationship !== "steer" || goal.source !== "model" ||
+      goal.prompt !== "continue" || goal.rationale?.startsWith(GOAL_ACCEPTED_RATIONALE) ||
+      hasOperatorHandoffHold(goal.objective)) return null;
+  return `intent:${goal.objectiveVersion}:${goal.promptRevision - 1}`;
+}

@@ -32,13 +32,16 @@ import {
   UNREADABLE_ORDER_REFUSAL,
 } from "./write-order.ts";
 import { referenceStatus } from "./references.ts";
+import { noteShaperFolderScan, shaperSignInEnabled, shaperSignIns } from "./sign-in/index.ts";
+import { registerShaperSignInRoutes, type ShaperSignInRouteDeps } from "./sign-in/routes.ts";
 
 /**
  * Task shaping's API, all behind the `task-shaping` flag: with it off every route answers 404
  * before its handler runs, so nothing reads the stored config.
  *
- * - `GET /api/shaping` returns `{ config, discovered, folder, references }`, reading the shapers
- *   folder afresh: `folder` names where it looked and how many entries past the bound it left.
+ * - `GET /api/shaping` returns `{ config, discovered, folder, references, signIns }`, reading the
+ *   shapers folder afresh: `folder` names where it looked and how many entries past the bound it
+ *   left. `signIns` is the sign-in list while `shaper-sign-in` is on, and empty while it is off.
  * - `PUT /api/shaping` applies one intent and returns `{ config }`.
  * - `POST /api/shaping/test` dry-runs one shaper against a repository and returns what dispatch
  *   would have recorded and injected. A failing shaper is an outcome in a 200, never an error.
@@ -46,6 +49,7 @@ import { referenceStatus } from "./references.ts";
  *   the delivered text (`text` null when nothing was kept) and the launch's after-work prompt
  *   (`afterWork` null until one was written). 404 when `currentShaping` shows nothing,
  *   including a record that names an earlier session.
+ * - The sign-in routes, behind `shaper-sign-in` as well (`./sign-in/routes.ts`).
  */
 /**
  * Ceilings, not allocations: `bodyLimit` refuses past them while streaming, after the flag's
@@ -100,8 +104,9 @@ export async function checkoutFor(
 
 export function registerShapingRoutes(
   app: Hono,
-  options: { checkoutProbes?: CheckoutProbes; taskById?: (id: string) => Task | undefined } = {},
+  options: { checkoutProbes?: CheckoutProbes; taskById?: (id: string) => Task | undefined; signIns?: ShaperSignInRouteDeps } = {},
 ): void {
+  const signIns: ShaperSignInRouteDeps = options.signIns ?? { service: shaperSignIns, noteScan: noteShaperFolderScan };
   const gate = requireFeature("task-shaping");
   // Both writes are refused unless they come from the dashboard, as a dry run executes a shaper.
   // Before the body limit, so a forged request is refused as forbidden whatever its size.
@@ -127,8 +132,14 @@ export function registerShapingRoutes(
     const config = getShapingConfig();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
     const { shapers: discovered, folder } = await scanShaperFolder({ config });
+    // The scan just read tells the sign-in service which connections the folder's shapers name.
+    signIns.noteScan(discovered);
     // `references` says whether each environment name a shaper uses is set, never a value.
-    return c.json({ config: daemonShapingView(config), discovered, folder, references: referenceStatus(config, discovered) });
+    // `signIns` never holds a token, the OAuth `state` parameter or an authorization URL.
+    return c.json({
+      config: daemonShapingView(config), discovered, folder, references: referenceStatus(config, discovered),
+      signIns: shaperSignInEnabled() ? signIns.service.view() : [],
+    });
   });
 
   app.put("/api/shaping", gate, loopbackWrite, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
@@ -216,4 +227,6 @@ export function registerShapingRoutes(
     if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unknown_shaper" ? 404 : 400);
     return c.json(result.run);
   });
+
+  registerShaperSignInRoutes(app, { shapingGate: gate, loopbackWrite, deps: signIns });
 }

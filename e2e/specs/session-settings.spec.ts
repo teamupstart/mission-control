@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +9,10 @@ import { SESSION_SETTINGS_ACCESS } from "../../src/shared/session-settings-metad
 import { api, connect, dispatch } from "../fixtures/session-control.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { openRepositorySetup } from "../fixtures/setup-panel.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { enableVoice } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 const ACCESS_ENDPOINT = "/api/session-settings-access";
 const ACCESS_LABEL = "Allow sessions to access Mission Control settings";
@@ -45,6 +49,12 @@ async function callSettings(client: Awaited<ReturnType<typeof connect>>, args: R
 
 async function enableSettingsPreview(daemon: Parameters<typeof api>[0]) {
   await api(daemon, "/api/feature-flags", { kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: true }, "PUT");
+}
+
+async function pauseDashboardTimers(page: Page) {
+  const time = new Date();
+  await page.clock.install({ time });
+  await page.clock.pauseAt(new Date(time.getTime() + 500));
 }
 
 test("a registered session changes the theme in two open windows and the peer retries a failed refresh", async ({ page, browser, daemon }) => {
@@ -444,4 +454,215 @@ test("saving Workflow retention from a stale panel preserves a session's judge p
     releaseRefresh();
     await client.close();
   }
+});
+
+test("an individual flag intent updates open dashboards and a human edit reads back through the tool", async ({ page, browser, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Show Idle rail section counts"));
+  const peer = await browser.newPage();
+  try {
+    const key = "featureFlags.idle-rail-section-counts";
+    for (const window of [page, peer]) await window.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+    const filter = (window: Page) => window.getByRole("textbox", { name: "Filter feature flags" });
+    for (const window of [page, peer]) await filter(window).fill("Counts on Idle rail sections");
+    const flag = (window: Page) => window.getByRole("button", { name: /^Counts on Idle rail sections:/ });
+    for (const window of [page, peer]) await expect(flag(window)).toHaveAttribute("aria-pressed", "false");
+    expect(await callSettings(client, { operation: "find", query: "counts on idle rail sections" })).toMatchObject({
+      matches: [{ key, access: "read-write" }],
+    });
+    expect(await callSettings(client, { operation: "set", key, value: true })).toMatchObject({ value: true });
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: true });
+    for (const window of [page, peer]) await expect(flag(window)).toHaveAttribute("aria-pressed", "true");
+    await evidence(peer, "specialized-flag-live");
+    await flag(page).click();
+    await expect(flag(peer)).toHaveAttribute("aria-pressed", "false");
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: false });
+  } finally {
+    await Promise.all([client.close(), peer.close()]);
+  }
+});
+
+test("a stale retention confirmation is refused and the operator can confirm again", async ({ dashboard: page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Keep more Workflow history"));
+  try {
+    await page.goto(`${daemon.baseURL}/#/settings/workflows`);
+    const limit = page.getByRole("spinbutton", { name: "Newest completed runs kept" });
+    await expect(limit).toHaveValue("1000");
+    await limit.fill("900");
+    const apply = page.getByRole("button", { name: "Apply", exact: true });
+    const confirm = page.getByRole("button", { name: "Shorten retention", exact: true });
+    await apply.click();
+    await expect(confirm).toBeVisible();
+    const key = "workflows.retention.maxCompletedRuns";
+    const refreshed = page.waitForResponse(async response => response.url().endsWith("/api/workflows/config")
+      && response.request().method() === "GET" && response.ok()
+      && (await response.json()).retention.maxCompletedRuns === 1200);
+    await callSettings(client, { operation: "set", key, value: 1200 });
+    await refreshed;
+    const write = (status: number) => page.waitForResponse(response => response.url().endsWith("/api/workflows/config")
+      && response.request().method() === "PATCH" && response.status() === status);
+    await Promise.all([write(409), confirm.click()]);
+    await expect(page.getByText(/Workflow retention would shorten/)).toBeVisible();
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: 1200 });
+    await evidence(page, "inspector-retention-stale-confirmation");
+    await apply.click();
+    await Promise.all([write(200), confirm.click()]);
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: 900 });
+  } finally {
+    await client.close();
+  }
+});
+
+test("Voice refreshes from a session and a reaffirmation refuses an older dashboard placement write", async ({ dashboard: page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  await enableVoice(daemon);
+  await api(daemon, "/api/voice/confirmation", { confirmation: "toast" }, "PUT");
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Adjust Voice settings"));
+  try {
+    await pauseDashboardTimers(page);
+    await page.goto(`${daemon.baseURL}/#/settings/voice`);
+    const delay = page.getByRole("combobox", { name: "End-of-speech delay" });
+    await expect(delay).toBeEnabled();
+    const value = await delay.inputValue() === "2000" ? 1500 : 2000;
+    await callSettings(client, { operation: "set", key: "voice.endOfSpeechMs", value });
+    await expect(delay).toHaveValue(String(value));
+
+    await openVoiceTab(page, "On screen");
+    const placement = page.getByRole("group", { name: "Confirmation card" });
+    const toast = placement.getByRole("radio", { name: /Corner toast/ });
+    await expect(toast).toBeChecked();
+    const url = `${daemon.baseURL}/api/voice/confirmation`;
+    const pending = page.waitForRequest(request => request.url() === url && request.method() === "PUT");
+    await page.route(url, route => route.abort(), { times: 1 });
+    await placement.getByRole("radio", { name: /Floating pill/ }).click();
+    const older = (await pending).postDataJSON();
+    expect(older.expectedVersion).toBeDefined();
+    const key = "ui.voice.confirmation";
+    await callSettings(client, { operation: "set", key, value: "toast" });
+    const late = await page.request.put(url, { data: older });
+    expect(late.status()).toBe(409);
+    expect(await late.json()).toMatchObject({ confirmation: "toast" });
+    await expect(toast).toBeChecked();
+    await evidence(page, "inspector-voice-live");
+  } finally {
+    await client.close();
+  }
+});
+
+test("the open Task Sources editor shows a Jira filter changed through mission_settings", async ({ dashboard: page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const path = "/api/task-sources/config";
+  const { revision } = await api(daemon, path);
+  const id = "settings-fixture-jira";
+  await api(daemon, path, { revision, sources: [{
+    id, kind: "jira", label: "Example issue queue", repoRoot: daemon.repo, config: { jql: "project = ONE" },
+  }] }, "PUT");
+  const client = await connect(daemon, await dispatch(daemon, "Change the Jira filter"));
+  try {
+    await pauseDashboardTimers(page);
+    await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+    const query = page.getByLabel("JQL filter");
+    await expect(query).toHaveValue("project = ONE");
+
+    let releaseOldRead!: () => void;
+    let captureOldRead!: () => void;
+    const release = new Promise<void>(resolve => { releaseOldRead = resolve; });
+    const captured = new Promise<void>(resolve => { captureOldRead = resolve; });
+    await page.route(`**${path}`, async route => {
+      const old = await route.fetch();
+      captureOldRead();
+      await release;
+      await route.fulfill({ response: old, headers: { ...old.headers(), "x-fixture-stale": "1" } });
+    }, { times: 1 });
+    await page.clock.runFor(4000);
+    await captured;
+    const key = `taskSources.${createHash("sha256").update(id).digest("base64url")}.config.jql`;
+    await callSettings(client, { operation: "set", key, value: "project = TWO" });
+    await expect(query).toHaveValue("project = TWO");
+    const delivered = page.waitForResponse(response => response.headers()["x-fixture-stale"] === "1");
+    releaseOldRead();
+    await (await delivered).finished();
+    await page.clock.runFor(50);
+    await expect(query).toHaveValue("project = TWO");
+    await evidence(page, "coderabbit-task-sources-read-order");
+  } finally {
+    await client.close();
+  }
+});
+
+test("Task Sources can save again after a confirming read fails", async ({ dashboard: page, daemon }) => {
+  const path = "/api/task-sources/config";
+  const { revision } = await api(daemon, path);
+  await api(daemon, path, { revision, sources: [{
+    id: "settings-save-fixture-jira", kind: "jira", label: "Example issue queue",
+    repoRoot: daemon.repo, config: { jql: "project = ONE" },
+  }] }, "PUT");
+  await pauseDashboardTimers(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  const query = page.getByLabel("JQL filter");
+  await expect(query).toHaveValue("project = ONE");
+
+  await page.route(`**${path}`, route => route.request().method() === "GET"
+    ? route.fulfill({ status: 503, json: { error: "fixture read unavailable" } }) : route.continue());
+  const nextSave = () => page.waitForResponse(response =>
+    response.url().endsWith(path) && response.request().method() === "PUT");
+  const firstSave = nextSave();
+  const refusedRead = page.waitForResponse(response => response.url().endsWith(path) && response.status() === 503);
+  await query.fill("project = TWO");
+  await query.blur();
+  const first = await firstSave;
+  expect(first.ok()).toBe(true);
+  const saved = await first.json();
+  await refusedRead;
+  await page.clock.runFor(50);
+
+  const secondSave = nextSave();
+  await query.fill("project = THREE");
+  await query.blur();
+  const second = await secondSave;
+  expect(second.request().postDataJSON()).toMatchObject({ revision: saved.revision });
+  expect(second.ok()).toBe(true);
+  await expect(query).toHaveValue("project = THREE");
+  expect((await api(daemon, path)).sources[0].config.jql).toBe("project = THREE");
+  await evidence(page, "coderabbit-task-sources-save-revision");
+});
+
+test.describe("saved Repository Index", () => {
+  test.use({ daemonEnv: { MC_E2E_USE_REPO_INDEX_DEFAULTS: "1" } });
+
+  test("the open Repository Index drops a directory changed through mission_settings", async ({ dashboard: page, daemon }) => {
+    await enableSettingsPreview(daemon);
+    withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+      SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+    ));
+    const client = await connect(daemon, await dispatch(daemon, "Stop indexing the dev folder"));
+    try {
+      await pauseDashboardTimers(page);
+      await openRepositorySetup(page, daemon.baseURL);
+      const directory = page.getByText("~/dev", { exact: true });
+      await expect(directory).toBeVisible();
+      const key = "repoIndex.directories";
+      const { value, version } = await callSettings(client, { operation: "get", key });
+      await callSettings(client, { operation: "set", key, expectedVersion: version,
+        value: value.filter((row: { path: string }) => row.path !== "~/dev") });
+      await expect(directory).toHaveCount(0);
+      await expect(page.getByText("~/workspace", { exact: true })).toBeVisible();
+      await evidence(page, "inspector-repository-index-live");
+    } finally {
+      await client.close();
+    }
+  });
 });

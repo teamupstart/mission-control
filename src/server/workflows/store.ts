@@ -5,6 +5,7 @@ import type { PersonaWorkloadRequest, PersonaWorkloadEvent } from "@shared/repos
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import { workflowCapturedLocalInspector, workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
 import { RepositoryEvidenceHandleSchema, RepositoryQueryAuditMetadataSchema } from "@shared/repository-access.ts";
+import { packetDigest } from "./continuation-evidence.ts";
 import { workflowGraphFingerprint } from "./graph-fingerprint.ts";
 import type { InspectorBranchActivity } from "../inspector/github.ts";
 import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
@@ -244,14 +245,23 @@ const repositoryCleanupForRun = `SELECT 1 FROM workflow_llm_calls l
   LEFT JOIN workflow_repository_local_owners o ON o.workload_id=w.id
   WHERE l.run_id=r.id AND (o.workload_id IS NOT NULL OR w.state IN ('running','cancellation_pending','interrupted'))`;
 
-// An Inspector review that returned a verified result spends its claim even if processing
-// that result fails. The durable model-call record distinguishes it from an interrupted launch.
+// A Local Inspector attempt whose provider returned a response. The repository workload's
+// `persona_returned` event is recorded before the reply is judged, so a malformed verdict, a
+// verdict without a verified repository query, an audit failure or an interruption after the
+// return all still read as an execution. A succeeded model call is the older witness of the
+// same fact. A launch that failed or was interrupted before the provider returned has neither.
+const inspectorReviewReturned = `EXISTS (
+  SELECT 1 FROM workflow_llm_calls l WHERE l.submission_id = a.submission_id
+    AND l.node_attempt_id = a.id AND l.purpose = 'inspector_review'
+    AND (l.state = 'succeeded' OR EXISTS (
+      SELECT 1 FROM workflow_repository_events e WHERE e.workload_id = l.id AND e.kind = 'persona_returned'
+    ))
+)`;
+
+// An Inspector review that returned spends its claim even if processing that result fails.
 const countedCheckRun = `(
   a.state NOT IN ('error', 'cancelled') OR a.check_run_slot = 'coderabbit'
-  OR (a.check_run_slot = 'inspector' AND EXISTS (
-    SELECT 1 FROM workflow_llm_calls l WHERE l.submission_id = a.submission_id
-      AND l.node_attempt_id = a.id AND l.purpose = 'inspector_review' AND l.state = 'succeeded'
-  ))
+  OR (a.check_run_slot = 'inspector' AND ${inspectorReviewReturned})
 )`;
 
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
@@ -2925,6 +2935,7 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
+  continuationStillMatches?: (deadline: number) => boolean;
   /** Includes targets without a publication of their own when a sibling's probe yielded. */
   expectedLatestRunId?: string | null;
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
@@ -5405,8 +5416,18 @@ export class WorkflowStore {
 
   /** The action and its accepted continuation are durable even when the author finishes later. */
   publicationHandoffTree(runId: string, generation: number): string | null {
+    return this.publicationHandoff(runId, generation)?.treeOid ?? null;
+  }
+
+  /**
+   * The accepted tree together with the continuation submission that captured it. A run that
+   * then finished through Inspector-only repair rounds proves its terminal content from this
+   * submission forward, so the caller needs the row, not only its tree.
+   */
+  publicationHandoff(runId: string, generation: number): { treeOid: string; submissionId: string } | null {
     const row = this.db.prepare(
-      `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree
+      `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree,
+              child.id AS submission_id
          FROM workflow_submissions child
         JOIN workflow_node_attempts action ON action.id = child.continuation_node_attempt_id
         JOIN workflow_runs r ON r.id = child.run_id
@@ -5417,7 +5438,8 @@ export class WorkflowStore {
           AND json_extract(action.output_json, '$.continuationSubmissionId') = child.id
         ORDER BY child.round DESC, child.segment DESC LIMIT 1`,
     ).get(runId, generation);
-    return typeof row?.tree === "string" ? row.tree : null;
+    return typeof row?.tree === "string" && typeof row.submission_id === "string"
+      ? { treeOid: row.tree, submissionId: row.submission_id } : null;
   }
 
   latestRunForBinding(bindingId: string): WorkflowRun | null {
@@ -5674,6 +5696,7 @@ export class WorkflowStore {
           completionPolicy: recoveryPolicy,
           bindingHasOtherRun: Boolean(row.binding_has_other_run),
           recoverableInspectorFeedback: this.recoverableInspectorFeedback(run) !== null,
+          recoverableSessionAction: this.recoverableLostSessionAction(run) !== null,
         }),
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold
         // several evidence segments, so counting rows would inflate the number the repair
@@ -5756,6 +5779,7 @@ export class WorkflowStore {
     episodeKey: string | null = null,
     coverage: readonly WorkflowStagedEvidenceCoverageWrite[] = [],
     withdrawClientCriterionIds: readonly string[] = [],
+    witness?: { contract: string; root: string; checkout: string },
   ): WorkflowStagedEvidenceList {
     const validatedItems = items.map((item) => ({
       ...item,
@@ -5763,6 +5787,19 @@ export class WorkflowStore {
         ? WorkflowCommandExitCodeSchema.parse(item.commandExitCode)
         : null,
     }));
+    const finishRegistration = (): WorkflowStagedEvidenceList => {
+      const tray = this.listWorkflowEvidence(noteKey);
+      if (witness) {
+        const supplied = new Set(items.map(item => item.clientItemId));
+        const claims = new Set(coverage.map(claim => claim.clientCriterionId));
+        if ([...tray.images, ...tray.artifacts].every(item => supplied.has(item.clientItemId)) &&
+            tray.coverage?.every(claim => claims.has(claim.clientCriterionId))) {
+          this.db.prepare(`UPDATE workflow_evidence_owners SET continuation_packet = ?, continuation_checkout = ?
+            WHERE note_key = ?`).run(packetDigest(witness.contract, witness.root, tray), witness.checkout, noteKey);
+        }
+      }
+      return tray;
+    };
     return transaction(this.db, () => {
       this.db.prepare(
         `INSERT OR IGNORE INTO workflow_evidence_owners (
@@ -6015,7 +6052,7 @@ export class WorkflowStore {
         row.episode_key = episodeKey ?? row.episode_key;
       }
       if (changedItems.length === 0 && changedCoverage.length === 0 && changedRetirements.size === 0) {
-        return this.listWorkflowEvidence(noteKey);
+        return finishRegistration();
       }
 
       const currentStaged = existingRows.filter((row) => row.state === "staged");
@@ -6288,7 +6325,7 @@ export class WorkflowStore {
           now,
         );
       }
-      return this.listWorkflowEvidence(noteKey);
+      return finishRegistration();
     });
   }
 
@@ -6365,6 +6402,21 @@ export class WorkflowStore {
         updatedAt: row.updated_at,
       })),
     };
+  }
+
+  /** Inspect the original staging ownership, including claims. Reservation alone does not
+   * advance the generation and public tray metadata does not expose the issue-time roots.
+   */
+  continuationReceipt(noteKey: string, source: string, root: string): { packet: string; checkout: string } | null {
+    const receipt = this.db.prepare(`SELECT continuation_packet AS packet, continuation_checkout AS checkout
+      FROM workflow_evidence_owners WHERE note_key = ? AND continuation_packet IS NOT NULL
+      AND continuation_checkout IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM workflow_evidence_staging WHERE note_key = ?
+        AND (state != 'staged' OR episode_key IS NOT ? OR source_root != ? OR repository_scope != 'repo-01'))
+      AND NOT EXISTS (SELECT 1 FROM workflow_evidence_coverage_staging WHERE note_key = ?
+        AND (state != 'staged' OR is_current != 1 OR episode_key IS NOT ? OR source_root != ? OR repository_scope != 'repo-01'))`
+    ).get(noteKey, noteKey, source, root, noteKey, source, root);
+    return receipt as { packet: string; checkout: string } | undefined ?? null;
   }
 
   /** Latest material staged-set change that applies to this one repository checkout. */
@@ -7390,7 +7442,7 @@ export class WorkflowStore {
         }
       }
       for (const input of inputs) {
-        const stored = this.claimForemanCompletion(input, eligible.has(input));
+        const stored = this.claimForemanCompletion(input, eligible.has(input), deadline);
         if (!stored.result.claimed) {
           if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
           return [stored];
@@ -7406,7 +7458,11 @@ export class WorkflowStore {
    * The manager selects the already-bound workflow; this transaction never creates a binding.
    * A worker's expected plan ownership can only reject that selection, never replace it.
    */
-  claimForemanCompletion(input: ForemanCompletionStoreInput, reusePublication?: boolean): ForemanCompletionStoreResult {
+  claimForemanCompletion(
+    input: ForemanCompletionStoreInput,
+    reusePublication?: boolean,
+    deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS,
+  ): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
       const binding = input.binding;
       const noteKey = binding.noteKey;
@@ -7463,6 +7519,9 @@ export class WorkflowStore {
         };
       }
 
+      if (input.continuationStillMatches && !input.continuationStillMatches(deadline)) {
+        throw new Error("Continuation evidence changed before handoff");
+      }
       if (input.completionKind === "prompted" && !expectedIntent) {
         throw new Error("Foreman prompted completion has no intent guard");
       }
@@ -8519,6 +8578,11 @@ export class WorkflowStore {
     const id = request.workloadId;
     this.transact(db => {
       if (!authorized()) throw new Error("Repository workload ownership expired");
+      // A provider-return witness may already hold this sequence. The same event is recorded.
+      const prior = db.prepare("SELECT hash FROM workflow_repository_events WHERE workload_id=? AND sequence=?")
+        .get(id, event.sequence)?.hash;
+      if (prior === hash) return;
+      if (prior !== undefined) throw new Error("Conflicting repository event");
       db.prepare(`INSERT INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
         VALUES(?,?,?,?,?,?)`).run(id, event.sequence, event.eventId, hash, event.type, Date.now());
       if (event.type === "terminal" && event.result.usage) {
@@ -8535,6 +8599,29 @@ export class WorkflowStore {
         const insert = db.prepare("INSERT INTO workflow_repository_handles(id,operation_id,audit_index) VALUES(?,?,?)");
         for (const [index, handle] of audit.handles.entries()) insert.run(handle.evidenceHandleId, audit.operationId, index);
       }
+    });
+  }
+
+  /**
+   * Keep the provider-return witness of a workload: written by an in-process executor's sink in
+   * the tick its provider returns, or recovered from replay when the supervisor stopped reading
+   * before recording that return in order (a shutdown, a rejected event or an expired grant).
+   *
+   * Unlike `recordRepositoryEvent` it skips the live-ownership check, because the witness only
+   * spends the attempt's execution and grants nothing. The event's workload and attempt must be
+   * the request's, it binds to the workload row the supervisor started for that attempt, and an
+   * already recorded sequence is left as it is.
+   */
+  recordRepositoryReturn(request: PersonaWorkloadRequest, event: Extract<PersonaWorkloadEvent, { type: "persona_returned" }>, hash: string) {
+    // The event must name this request's workload and attempt, exactly as a streamed event must:
+    // a witness can never charge a different attempt than the one that dispatched it.
+    if (event.type !== "persona_returned" || event.workloadId !== request.workloadId || event.attemptId !== request.attemptId)
+      throw new Error("Repository return identity mismatch");
+    this.transact(db => {
+      db.prepare(`INSERT OR IGNORE INTO workflow_repository_events(workload_id,sequence,event_id,hash,kind,received_at)
+        SELECT ?,?,?,?,'persona_returned',? WHERE EXISTS (
+          SELECT 1 FROM workflow_repository_workloads WHERE id=? AND attempt_id=?
+        )`).run(request.workloadId, event.sequence, event.eventId, hash, Date.now(), request.workloadId, request.attemptId);
     });
   }
 
@@ -9081,6 +9168,92 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * The action attempt a `session_lost` block can be re-checked from, or null.
+   *
+   * Only the attempt the run is CURRENTLY blocked on, only when it is the newest attempt of its
+   * node, and only while the binding is still active and names a session. A lost session is a
+   * fact about the pane, not about the work: once the same conversation is back, observing the
+   * action again is the honest next step, and it spends no repair round. Shared by the run's
+   * recovery projection and by the runtime that performs the re-check, so the button and the
+   * route cannot disagree.
+   */
+  recoverableLostSessionAction(run: WorkflowRun): WorkflowNodeAttempt | null {
+    if (run.status !== "blocked" || run.currentPhase !== "session_action_blocked") return null;
+    const detail = run.gateState;
+    if (!detail || Array.isArray(detail) || typeof detail !== "object") return null;
+    if (detail.code !== "session_lost" || typeof detail.attemptId !== "string") return null;
+    const attempt = this.getAttempt(detail.attemptId);
+    if (!attempt || attempt.state !== "error" || !attempt.sessionAction) return null;
+    const submission = this.getSubmission(attempt.submissionId);
+    if (!submission || submission.runId !== run.id) return null;
+    if (this.latestAttemptForNode(submission.id, attempt.nodeId)?.id !== attempt.id) return null;
+    const parsed = SessionActionAttemptStateSchema.safeParse(attempt.output);
+    if (!parsed.success || parsed.data.blocked?.code !== "session_lost") return null;
+    const binding = this.getBinding(run.bindingId);
+    if (binding?.state !== "active" || !binding.sessionId) return null;
+    // A delivered packet was typed into one session. Re-checking it is only honest while the
+    // binding still reaches that session - itself, or a successor through a committed runtime
+    // transfer, which is how a binding legitimately moves with its action. A binding moved to
+    // another session any other way would reopen an attempt the observer must block again.
+    const anchor = parsed.data.anchor;
+    if (anchor && !runtimeTransferConnects(anchor.sessionId, binding.sessionId, anchor.noteKey, this.db)) {
+      return null;
+    }
+    return attempt;
+  }
+
+  /**
+   * Return a `session_lost` action attempt to `waiting`, and its run to the action wait.
+   *
+   * The second backwards transition this runtime allows, beside `reopenSessionActionAttempt`.
+   * It keeps every observation the attempt had already made - its delivery, anchor and pickup -
+   * because none of them was wrong: the session was only unavailable when the observer looked.
+   * Nothing is typed here and no round is spent; the action observer picks the attempt up
+   * again from its durable anchor on its next pass.
+   */
+  reopenLostSessionActionAttempt(input: {
+    runId: string;
+    attemptId: string;
+    source: "session_returned" | "operator";
+    requestId: string | null;
+    now: number;
+  }): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(input.runId);
+      if (!run || this.recoverableLostSessionAction(run)?.id !== input.attemptId) return null;
+      const attempt = this.mustAttempt(input.attemptId);
+      const state = SessionActionAttemptStateSchema.parse(attempt.output);
+      const changed = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET state = 'waiting', error = NULL, finished_at = NULL, output_json = ?,
+                updated_at = ?
+          WHERE id = ? AND state = 'error'`,
+      ).run(
+        JSON.stringify({
+          ...state,
+          blocked: null,
+          sessionMissingSince: null,
+        } satisfies SessionActionAttemptState),
+        input.now,
+        input.attemptId,
+      );
+      if (Number(changed.changes) !== 1) return null;
+      this.setRunState(run.id, "waiting_for_action", "session_action", {
+        nodeId: attempt.nodeId,
+        attemptId: attempt.id,
+        ...(state.deliveryId ? { deliveryId: state.deliveryId } : {}),
+      }, input.now);
+      this.appendEvent(run.id, "session_action_rechecked", {
+        attemptId: attempt.id,
+        nodeId: attempt.nodeId,
+        source: input.source,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+      }, input.now);
+      return this.mustAttempt(input.attemptId);
+    });
+  }
+
   private mustAttempt(id: string): WorkflowNodeAttempt {
     const attempt = this.getAttempt(id);
     if (!attempt) throw new Error(`Workflow attempt ${id} is missing`);
@@ -9164,8 +9337,8 @@ export class WorkflowStore {
    * `cancelled` is excluded because a submission that stopped discards the answer it bought.
    * CodeRabbit keeps charged claims even on error or cancellation. Its runner explicitly
    * releases claims for infrastructure failures, while vendor failures can still spend a slot.
-   * Local Inspector keeps claims after a verified provider result, even if post-review
-   * processing fails.
+   * Local Inspector keeps claims once its provider returned, even if the returned verdict,
+   * its repository evidence, its audit or post-review processing is rejected.
    *
    * `round >= epoch` implements the two operator escape hatches. A null epoch counts the whole
    * run, which is both the pre-column behaviour and the behaviour of a run nobody intervened in.
@@ -9199,12 +9372,18 @@ export class WorkflowStore {
     });
   }
 
-  /** Return a claim the check runner determined did not consume an execution slot. */
+  /**
+   * Return a claim the check runner determined did not consume an execution slot.
+   *
+   * Refused for a Local Inspector attempt whose provider returned: the runner sees only that
+   * its review threw, and the durable return record is what says an execution was bought.
+   */
   releaseCheckRun(attemptId: string, slot: string): boolean {
     return this.db.prepare(
-      `UPDATE workflow_node_attempts
+      `UPDATE workflow_node_attempts AS a
           SET check_run_slot = NULL
-        WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
+        WHERE a.id = ? AND a.state = 'running' AND a.check_run_slot = ?
+          AND NOT (a.check_run_slot = 'inspector' AND ${inspectorReviewReturned})`,
     ).run(attemptId, slot).changes === 1;
   }
 

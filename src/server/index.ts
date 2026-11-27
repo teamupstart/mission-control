@@ -12,8 +12,11 @@ import { BUG_FIX_INSPECTOR_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/fea
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
+import { startShaperSignIns } from "./shaping/sign-in/index.ts";
+import { wireShapingSignInEvents } from "./shaping/sign-in/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
+import { allocateCallSign } from "./voice/call-sign-allocation.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { onUiSkinChanged, onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
@@ -261,6 +264,8 @@ const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
 const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// And shaper sign-in's list, behind both its flags. It never carries a token or a link.
+const stopShapingSignIns = wireShapingSignInEvents((signIns) => registry.emitShapingSignIns(signIns));
 // Who can be addressed by voice, read from the Registry's own catalogs and frames. Wired before
 // the voice state, which reads its roster from it on its first publish.
 const voiceNames = new VoiceNameRegistry(registry, {
@@ -378,6 +383,10 @@ tasks.useMergeQuestions({
   },
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
+// A task dispatched without a call sign takes a distinctive one as it launches, whatever the
+// `voice` flag says, so the name is already stable when voice is turned on: chosen against the
+// roster (computed with the flag off too) and every unfinished task's name, inside the claim.
+tasks.useCallSignAllocation((task) => allocateCallSign(task, voiceNames.roster(), registry.listTasks()));
 const queues = new QueueManager(registry);
 // Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
 // or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,
@@ -563,6 +572,9 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// Shaper sign-in: held tokens and their background refresh. It starts once this process wins
+// the port, because a refresh spends a single-use refresh token.
+let stopShaperSignIns = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
 // and the backup loop's startup prune seeds it.
 // The state directory's measured size and its volume's free space. `storageHealth` is assigned
@@ -991,6 +1003,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
   }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
+  // After the shaping events are wired at module load. With either flag off it reads nothing.
+  stopShaperSignIns = startShaperSignIns();
   // The first walk waits out startup's own disk work; then one every six hours, and the free
   // space every minute, which is cheap and is what a low-space warning needs to be timely.
   stopStorageUsage = storageUsage.start({
@@ -1159,6 +1173,7 @@ async function shutdown(): Promise<void> {
   stopAutomatedDeliveries();
   stopPersonDeliveries();
   stopShapingConfig();
+  stopShapingSignIns();
   registry.voiceRouter?.reset();
   stopDesktopVoice();
   stopVoiceState();
@@ -1168,6 +1183,7 @@ async function shutdown(): Promise<void> {
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();
+  await stopShaperSignIns();
   stopStorageUsage();
   stopSettingsBackups();
   stopPoller();

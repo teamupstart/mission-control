@@ -148,6 +148,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/mcp/pipelines/adopt", "pipeline.adopt", "pipelines"],
   ["POST", "/mcp/pipelines/workspace", "pipeline.workspace", "pipelines"],
   ["PUT", "/api/pipelines/config", "pipeline.configure", "pipelines"],
+  ["PATCH", "/api/pipelines/config", "pipeline.configure", "pipelines"],
   ["POST", "/api/pipelines/action", "pipeline.action", "pipelines"],
   ["POST", "/api/pipelines/console", "pipeline.console", "pipelines"],
   ["POST", "/api/tasks/:id/pipeline/readiness", "pipeline.readiness", "pipelines"],
@@ -215,6 +216,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PUT", "/api/feature-flags", "settings.feature_flags", "settings"],
   ["PUT", "/api/shaping", "settings.shaping", "settings"],
   ["POST", "/api/shaping/test", "settings.shaping_test", "settings"],
+  ["POST", "/api/shaping/sign-in", "settings.shaper_sign_in", "settings"],
+  ["POST", "/api/shaping/sign-out", "settings.shaper_sign_out", "settings"],
 ] as const;
 export type PrimaryAction = typeof PRIMARY_ACTION_ROUTES[number][2] | typeof ensembleActions[number] | typeof pipelineActions[number];
 export type PrimaryFeature = typeof PRIMARY_ACTION_ROUTES[number][3];

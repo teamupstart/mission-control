@@ -219,3 +219,30 @@ test("an accepted inbox claim whose dashboard never confirms invocation expires 
   assert.equal(cards.at(-1)?.state, "failed");
   assert.equal(cards.at(-1)?.detail, "The dashboard did not confirm the inbox action.");
 });
+
+test("with the Cancel window Off, a reply-box send in a separated capture waits for a Cancel spoken after it", async t => {
+  mockCaptureClock(t);
+  const windowId = "separated-reply";
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect(windowId));
+  const claims: Array<[string, string, string]> = [];
+  t.after(registry.subscribe(event => {
+    if (event.type !== "voice_inbox_action") return;
+    claims.push([event.cardId, event.action, event.text]);
+    assert.ok(router.claimInbox(event.requestId));
+    assert.ok(router.completeInbox(event.requestId, true));
+  }));
+  await put("/api/voice/config", { cancelWindow: { enabled: false } });
+  await put("/api/voice/open-cards", { windowId, focused: true,
+    cards: [{ kind: "report", id: "report", sessionId: "sdk:Steve", focused: true, actions: ["open-report", "reply"] }] });
+  const speak = async (words: string) => {
+    await say(words);
+    t.mock.timers.tick(1000);
+    await new Promise(resolve => setImmediate(resolve));
+    return claims.splice(0);
+  };
+  // The reply was transcribed with its Cancel, so it never reaches the agent.
+  assert.deepEqual(await speak("reply, publish as scout, bagel, cancel"), []);
+  // Without a Cancel, the held reply goes out once the capture has routed.
+  assert.deepEqual(await speak("reply, publish as scout, bagel, Will, check the build"), [["report", "reply", "publish as scout"]]);
+});

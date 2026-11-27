@@ -1,5 +1,5 @@
 import type { FeatureFlagsConfig } from "./feature-flags.ts";
-import type { ShapingConfigView } from "./shaping.ts";
+import type { ShapingConfigView, ShapingSignInView } from "./shaping.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -4095,6 +4095,14 @@ export type ServerEvent =
        */
       shaping?: ShapingConfigView;
       /**
+       * Shaper sign-in's list at connect time. Present only while `task-shaping` and
+       * `shaper-sign-in` are both on; absent reads as an empty list. It never holds a token, a
+       * code, the OAuth `state` parameter (its own `state` is the connection's status), a verifier or
+       * an authorization URL. One entry per connection the known
+       * shapers name or the store holds, so it is bounded by the shapers and the store.
+       */
+      shapingSignIns?: ShapingSignInView[];
+      /**
        * The voice state at connect time (contract B of the voice plan). Present only while the
        * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
        * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
@@ -4287,6 +4295,16 @@ export type ServerEvent =
    */
   | { type: "shaping_config"; config: ShapingConfigView | null }
   /**
+   * Shaper sign-in's list (`ShapingSignInView[]`), sent only while `task-shaping` and
+   * `shaper-sign-in` are both on: on every change to the list, and on a flag change only when it
+   * differs from the last list sent, the empty list counting as already sent. So when either
+   * turns off it sends an empty list, which clears it in every window, unless the last list sent
+   * was already empty and every window holds one. It never holds a token, a
+   * code, the OAuth `state` parameter (its own `state` is each connection's status), a verifier
+   * or an authorization URL, so a pending sign-in in it has no link.
+   */
+  | { type: "shaping_sign_ins"; signIns: ShapingSignInView[] }
+  /**
    * The voice state moved: a flag or the voice config changed, a listener's hello arrived or
    * lapsed, or a shell report arrived or lapsed. Carries the whole state, so every follower - each
    * dashboard and the desktop shell - converges without a fetch. Sent only while the `voice` flag
@@ -4296,6 +4314,8 @@ export type ServerEvent =
   | import("./voice-answers.ts").VoiceInboxEvent
   | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
+  | { type: "voice_dictation"; windowId: string; target: string; text: string; capture: string; interim: boolean }
+  | { type: "voice_dictation_probe"; windowId: string; sequence: number }
   | { type: "voice_confirm_focus"; windowId: string; sequence: number }
   | { type: "voice_card_remove"; id: string }
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }

@@ -11,9 +11,10 @@ import { voiceStateStore } from "./voice/state.ts";
 import { storedVoiceUi, voiceIndicatorVersion } from "./ui-config.ts";
 import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
-import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
+import { canonicalJson, type ShapingConfigView, type ShapingSignInView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
 import { daemonShapingView } from "./shaping/revisions.ts";
+import { shaperSignInEnabled, shaperSignIns } from "./shaping/sign-in/index.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { judgeLatePrompt, judgeTurn, recordAutomatedDelivery, recordPersonDelivery } from "./awaiting-attribution.ts";
@@ -688,6 +689,7 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  */
 // feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
 // shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
+// Nor is shaping_sign_ins: whether a shaper is signed in is no stage figure.
 // voice_state is not one: whether voice is listening is no stage figure. Nor is voice_roster:
 // who answers to a name is folded from the task and session frames above, never on its own.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
@@ -1321,6 +1323,13 @@ export class Registry extends EventEmitter {
    */
   private lastShaping: string | null | undefined = undefined;
   /**
+   * The last `shaping_sign_ins` frame, as canonical JSON. Starts as the empty list, which is what
+   * a window holds before any frame and while a flag is off, so a daemon that starts with a flag
+   * off sends nothing, and switching one off sends one clearing frame only when a non-empty list
+   * was sent last.
+   */
+  private lastShapingSignIns: string = canonicalJson([]);
+  /**
    * The last `voice_state` frame, canonical. Starts as the `off` state, so a daemon that starts
    * with the `voice` flag off sends nothing, and switching it off sends exactly one frame.
    */
@@ -1483,6 +1492,7 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     featureFlags: FeatureFlagsConfig;
     shaping?: ShapingConfigView;
+    shapingSignIns?: ShapingSignInView[];
     voice?: VoiceState;
     voiceConfirmation?: import("@shared/voice.ts").VoiceConfirmationPlacement;
     voiceIndicators?: string[];
@@ -1539,6 +1549,8 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: with it off nothing reads the stored shapers, and no
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
+      // Behind both flags, like the sign-in routes. The list never holds a token or a link.
+      ...(shaperSignInEnabled() ? { shapingSignIns: shaperSignIns.view() } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
       ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
@@ -1678,6 +1690,18 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "shaping_config", config });
   }
 
+  /**
+   * Publish shaper sign-in's list, suppressing a frame that restates the last one. Only the caller
+   * knows whether both flags are on, so it decides when to send the empty list;
+   * `wireShapingSignInEvents` is that caller.
+   */
+  emitShapingSignIns(signIns: ShapingSignInView[]): void {
+    const key = canonicalJson(signIns);
+    if (this.lastShapingSignIns === key) return;
+    this.lastShapingSignIns = key;
+    this.emitEvent({ type: "shaping_sign_ins", signIns });
+  }
+
   voiceRouter?: VoiceRouter;
 
   voiceHold(sessionId: string): boolean {
@@ -1707,7 +1731,7 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
   }
 
-  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_form_fill" | "voice_form_submit" | "voice_inbox_action" | "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_dictation_probe" | "voice_dictation" | "voice_form_fill" | "voice_form_submit" | "voice_inbox_action" | "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 

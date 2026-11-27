@@ -391,7 +391,12 @@ test("the inbox is a registered overlay and draws the shared review card", () =>
   // The session's note has to ride along with the review. Without it this copy of the shared
   // card is the one surface where Foreman's recommendation silently never appears - the
   // control simply would not render, which looks like the note was never written.
-  assert.match(inbox, /<ReviewCard[^/]*note=\{item\.session\.note\}/);
+  assert.match(inbox, /<ReviewCard[^/]*note=\{session\.note\}/);
+  // So do the checkout listing and the way to open a file. Without them a question opened from
+  // the inbox printed its paths as plain text while the same question in the session's own
+  // review modal linked them.
+  assert.match(inbox, /<ReviewCard[^/]*checkoutPaths=\{checkoutPaths\}\s+onOpenPath=\{openPath\}/);
+  assert.match(inbox, /useWorkspacePaths\(files, session\.id, Boolean\(session\.cwd && onOpenPath\)\)/);
   // And the progress rendering is Phase 3's one leaf, not a second row of squares.
   assert.match(inbox, /<EnsembleProgressDots summary=\{item\.summary\} \/>/);
 });

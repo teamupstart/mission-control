@@ -5,6 +5,11 @@ export const TASK_RETENTION_MAX_DAYS = 90;
 export const RETENTION_DAY_MS = 24 * 60 * 60 * 1000;
 export const RETENTION_OBSERVE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+/** Base cleanup deadline before the ledger applies policy-change grace. */
+export function worktreeRetentionCutoff(lastChangedAt: number, unownedSince: number | null, retentionMs: number): number {
+  return Math.max(lastChangedAt, unownedSince ?? 0) + retentionMs;
+}
+
 /** Tolerate old or damaged stored configuration without disabling destructive-boundary safety. */
 export function normalizeTaskRetentionDays(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return TASK_RETENTION_DEFAULT_DAYS;

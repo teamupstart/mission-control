@@ -319,6 +319,13 @@ export type MuxSpawnResult = TerminalResult & { session?: string };
 export interface MuxSessions {
   /** Override list-based liveness when a captured address needs a server-scoped probe. */
   alive: ((session: string) => Promise<boolean | null>) | null;
+  /**
+   * `true` only when this backend positively answered that its server is not running AND no
+   * process of it runs for this user, so no session or pane of any name can carry a home.
+   * `false` when a server answers, `null` when nobody could tell. Absent on a backend that
+   * cannot say. Read only to prove a terminal home absent; never a liveness probe.
+   */
+  serverStopped?: (() => Promise<boolean | null>) | null;
   spawnDetached(spec: DetachedSessionSpec): Promise<MuxSpawnResult>;
   /**
    * The argv that attaches a terminal to `session`. Not a command we run: it is handed to

@@ -261,13 +261,13 @@ A registered shaper is stored switched off. Dry-run it before you switch it on.
 
 ## The shaping API
 
-All three routes are behind the flag and answer 404 while it is off. `PUT /api/shaping` and
+All of these routes are behind the flag and answer 404 while it is off. `PUT /api/shaping` and
 `POST /api/shaping/test` also answer 403 `forbidden` unless the body is declared
 `application/json` and any `Origin` is a loopback `http:` origin, the check other browser-write
 routes use, so a page on another site cannot store an intent or run a shaper. The check runs
 before the body limit, so such a request is refused as forbidden whatever its size.
 
-- **`GET /api/shaping`** returns `{ config, discovered, folder, references }`. `config` is the config
+- **`GET /api/shaping`** returns `{ config, discovered, folder, references, signIns }`. `config` is the config
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
   `{ id, label, unsupported }`, plus `replaceable: true` when an import under its id replaces
@@ -304,6 +304,10 @@ before the body limit, so such a request is refused as forbidden whatever its si
   Control's own token and state directory, an empty value and a value carrying the daemon's
   token read `unset`. A variable named only in a header the transport replaces, such as
   `Accept`, or in a trace or work unit header, is never needed by a call and is not listed.
+  `signIns` is [the sign-in list](#signing-in-over-the-api) while `shaper-sign-in` is on, and
+  an empty list while it is off. Reading it also tells the sign-in service which connections the
+  registered shapers and the folder's valid manifests name, so a connection no shaper names any
+  more is listed as unused.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
@@ -648,6 +652,9 @@ never cleared by the earlier save's late answer.
   dialog stops the run. A shaper just imported here can be dry-run once the daemon has answered
   for it, never on the drawing shown before that. If another window replaces or removes the shaper while the dialog is
   open, the dialog says so and will not run.
+- **Sign in.** A shaper that carries the `auth` marker shows its sign-in under its **Signs in**
+  line, with **Sign in** and **Sign out**, while `shaper-sign-in` is on.
+  [Signing in from Settings](#signing-in-from-settings) has every state.
 - **Remove** asks once more, then deletes the shaper's stored definition and its on or off
   choice. The confirmation closes if another window replaces the shaper first. When a shaper in
   the folder has the same id, the confirmation says it stays switched off.
@@ -1052,16 +1059,172 @@ shaper calls: the import review and the shaper's row show **Signs in** with the 
 authorization server's origin, and "What it is sent" names the access token and that it goes
 only to the server's origin.
 
-The sign-in itself arrives in later releases. Until then a marked shaper is a known shaper
-that is listed but never called: it is `unavailable` before any header is resolved or any
-request is made. While the **Shaper sign-in** preview (`shaper-sign-in`, see
-[Feature flags](feature-flags.md#shipped-flags)) is off its reason says the flag is off, and
-while it is on its reason says the shaper is not signed in. Both point to Settings > Task
-shaping. The schema accepts the marker whatever the flag says. A shaper with no marker sends
-exactly the requests it sent before, with the flag on or off.
+A sign-in is made [from Settings](#signing-in-from-settings) or through
+[the API](#signing-in-over-the-api), and a marked shaper asks
+Mission Control's sign-in service for its token on every call. The answer is read from the
+daemon's memory, so a call never waits on the network or the Keychain for it, and the call
+never starts a sign-in. What the call does, for every state of
+its connection. Dispatch continues in every row:
+
+| The shaper's connection | Requests made | Outcome |
+| --- | --- | --- |
+| No marker | Today's, with today's headers | As before, a `401` included |
+| Marker, `task-shaping` or `shaper-sign-in` off | None | `unavailable`: the flag is off |
+| Marker, signed out, or a sign-in pending | None | `unavailable`: not signed in |
+| Marker, the sign-in being renewed | None | `unavailable`: being renewed |
+| Marker, signed in | The call's, each with `Authorization: Bearer <token>`, to the server's origin only | By the reply |
+| Marker, signed in, the server answers `401` | The ones made before the `401` | `unavailable`: the server refused the sign-in |
+
+- Each reason is a fixed sentence that points to Settings > Task shaping, and the flag-off
+  reason names the flag.
+- The token rides every request of the call, for an `mcp` shaper the handshake and the
+  `tools/call` included. It is sent only to the server's origin: a redirect to another origin
+  is refused, as it is for a configured header, and that origin receives nothing.
+- The token joins the call's redaction set under the name `sign-in token`. A reply, a tool
+  error or an HTTP error body that repeats it reads `[sign-in token redacted]` and is marked
+  redacted, as an echoed header value is.
+- A `401` to any request of a signed-in call, during an `mcp` handshake or the call itself,
+  ends that call. The service is told which token was refused, once, when the `401` arrives,
+  and runs at most one background refresh, at the time its own rules allow. The call is not
+  retried. While that refresh is pending, later calls answer "being renewed". A sign-in with
+  no refresh token ends instead, so later calls answer "not signed in". A refusal of a token
+  the service has already replaced changes nothing, and later calls use the sign-in it holds.
+- An `mcp` connection's shared event stream can be refused between calls. The service is told
+  then too, and the connection is closed, so no later call of the run sends the refused token.
+- The trace context and work unit id are sent as they are for any shaper: `traceparent`,
+  `tracestate` and `x-work-unit-id` on every request, and `params._meta` on `tools/call`.
+- One `mcp` connection is shared per run by the calls that send the same headers, so a token
+  that changes during a run opens a second connection for later calls. Both close when the run
+  ends.
+
+A dry run takes the same path, so a dry run of a marked shaper that is not signed in is
+`unavailable` and sends nothing, and a dry run of a signed-in one returns the server's
+guidance with the token scrubbed from the entries, the section and the summary. The schema
+accepts the marker whatever the flag says.
 
 An older build that reads a marked shaper does not know `auth`, so it lists the shaper as
 unsupported, keeps it on every write and never calls it.
+
+#### Signing in from Settings
+
+While `shaper-sign-in` is on, each row in **Settings > Task shaping** whose shaper carries the
+marker shows its sign-in under the **Signs in** line, a registered shaper's and a folder
+shaper's alike. A folder shaper shadowed by a registered one of the same id has none: a sign-in
+started for that id is the registered shaper's. A row's sign-in is the connection whose
+`shapers` names it, and a marked shaper with none yet reads as signed out. Each state follows
+the [sign-in list](#signing-in-over-the-api) live, so a sign-in finished in another tab, a
+refresh that fails and an expiry show with no reload.
+
+| State | The row says | Controls |
+| --- | --- | --- |
+| Signed out | "Not signed in.", and the reason when there is one | **Sign in** |
+| Pending, started in this window | "Waiting for the browser." | **Open the sign-in page**, **Copy link**, **Cancel sign-in** |
+| Pending, started elsewhere | "Waiting for the browser. Started in another window, or before this page was reloaded." | **Sign in**, **Cancel sign-in** |
+| Signed in, kept in the Keychain | "Signed in. Kept in the macOS Keychain." | **Sign out** |
+| Signed in, kept in memory | "Signed in until Mission Control restarts. Kept in memory.", and the reason when there is one | **Sign out** |
+| Being renewed | "Renewing the sign-in.", and the reason | **Sign in**, **Sign out** |
+
+- **Sign in** asks the daemon to start a sign-in, then the dashboard opens the authorization
+  URL from the reply: in the desktop app in your default browser, in a browser in a new tab.
+  The daemon never starts a browser. The dashboard opens the URL only when it is `https:`, or
+  plain `http:` to this machine's loopback; any other is refused in the row. A refusal of the
+  start, such as the 409 when every client registration is in use, is shown in the row with
+  the daemon's reason. The authorization server sends the browser to the
+  [callback page](#signing-in-over-the-api), which says the sign-in is done, and the row turns
+  to signed in.
+- **Open the sign-in page** and **Copy link** use that same URL, to open it again or in another
+  browser. Only the window that started the sign-in has it: the sign-in list never carries the
+  authorization URL, and a reload drops it. A sign-in already open in a browser tab still
+  finishes there, and the row shows the result when it arrives.
+- **Sign in** on a pending row starts a new sign-in, which replaces the pending one, so the
+  link the earlier one opened stops working: the daemon's callback refuses the replaced
+  `state`. The sign-in list names which attempt is pending, so a window whose sign-in another
+  window replaced drops its link as the list arrives, with no reload. Its row reads as pending
+  elsewhere and offers **Sign in** and **Cancel sign-in** again, and the window whose sign-in
+  is pending now offers the link.
+  One rare case is a known limit. If Mission Control restarts in the moment between a window
+  receiving its sign-in reply and the list showing that sign-in, that window may not keep the
+  link of its next **Sign in** until the row leaves pending: the row reads as pending elsewhere and
+  offers **Sign in** and **Cancel sign-in**, with no **Open the sign-in page** or **Copy link**
+  for it. No dead link appears, and no token is affected. To get the link, reload the window
+  or select **Cancel sign-in**, then select **Sign in** again.
+- **Cancel sign-in** and **Sign out** end the connection's sign-in: a pending one is dropped,
+  and a held one's tokens are removed from where they are kept and revoked at the server.
+  Every shaper that shares the connection is signed out with it.
+- **Sign-ins no shaper uses**, under the shapers, lists each sign-in no known shaper names,
+  such as one whose shaper was removed or whose scope changed, with its URL and scope and a
+  **Sign out**. Such a sign-in is not renewed. The list is not drawn when there is none.
+- While `shaper-sign-in` is off a marked row has no control and says instead that sign-in is
+  switched off, naming the flag. The row follows the flag live. Switching it off deletes no
+  sign-in.
+
+What a restart costs depends on where the sign-in is kept. A sign-in **kept in the macOS
+Keychain** outlives a daemon restart, a desktop app restart and a reboot: the daemon reads it
+back when the two flags are on and refreshes it when its access token has expired. A sign-in
+**kept in memory**, which is every sign-in off macOS, every one while
+[`MISSION_SHAPER_SIGN_IN_STORE`](configuration.md#shaper-sign-in-storage) is `memory`, and one
+the Keychain refused, ends when the daemon stops, and the row reads "Not signed in." after the
+restart. [Where a shaper sign-in is kept](security.md#where-a-shaper-sign-in-is-kept) says what
+is stored and how to remove it.
+
+The redirect URI names the daemon's port, `http://127.0.0.1:PORT/api/shaping/sign-in/callback`.
+A dashboard reached through a port forward, such as `ssh -L`, signs in only when the forward
+keeps the daemon's port number on the machine with the browser, so the authorization server's
+redirect reaches the daemon. A forward to another local port leaves the browser on a callback
+that nothing answers.
+
+#### Signing in over the API
+
+Three routes start, finish and end a sign-in. Each is behind `task-shaping` and then
+`shaper-sign-in`, and answers 404 while either is off. Like every `/api` route they answer 403
+to a `Host` that is not loopback. The two `POST` routes also answer 403 unless the body is
+declared `application/json` and any `Origin` is a loopback `http:` origin, and 413 past 4 KiB.
+A body that is not exactly the one field each takes is 400 `invalid_request`, with a fixed
+reason that repeats no key or value it was sent.
+
+- **`POST /api/shaping/sign-in`** takes `{ shaper }`, the id of a registered shaper this build
+  can run or of a valid manifest in the shapers folder, a registered one first. It starts a
+  sign-in for the shaper's connection and answers `{ authorizationUrl, expiresAt, connection, attempt }`:
+  the link to open in a browser, when the pending sign-in lapses (10 minutes), the
+  connection id, and a number that names this attempt. No two attempts of one daemon share
+  one: it counts up by one from where it started. Across a restart the separation is only
+  probabilistic. Each daemon starts counting at a random point below 2^48, so a restarted
+  daemon is very unlikely, though not certain, to repeat a number an earlier one gave. The link carries the client id, the OAuth `state` parameter and the PKCE
+  challenge, which the browser must present, and this reply is the only place it appears. An unknown id is 404
+  `unknown_shaper`, and a shaper with no `auth` marker is 400 `no_sign_in`. A refusal that is
+  Mission Control's own is 409: `registration_limit` when all 16 client registrations are
+  named by a sign-in, `store_unread` when the stored sign-ins could not be read, and
+  `flag_off` when the flag went off meanwhile. A start that took more than 20 seconds is 504
+  `timeout`. Any other failure is 502, with the code `refused`, `client_rejected`,
+  `sign_in_again`, `retry` or `failed`: the server or its authorization server could not be
+  reached at all, or was reached and refused or answered something unusable. Every failure's
+  `reason` is a fixed sentence for its code, never text a server sent; the daemon's log keeps
+  the detail.
+- **`GET /api/shaping/sign-in/callback`** is the redirect URI every registration names,
+  `http://127.0.0.1:PORT/api/shaping/sign-in/callback` with the daemon's port. It reads
+  `state`, `code`, `error` and `iss` from the query, each at most 2 KiB, and nothing else. It
+  hands them to the sign-in service, which holds them in memory for the one exchange; nothing
+  persists them. A `state` works once, and a daemon that restarted since the sign-in began has
+  none waiting. It answers a static page with no script that loads nothing: 200 "Signed in. You
+  can close this tab and go back to Mission Control.", or 400 "The sign-in did not finish." with
+  one fixed sentence chosen by the kind of failure, ending "Start again from Settings > Task
+  shaping." The page never shows the code, the OAuth `state` parameter, a token or text the
+  authorization server sent. It carries `cache-control: no-store`, `referrer-policy: no-referrer`,
+  `x-content-type-options: nosniff` and
+  `content-security-policy: default-src 'none'; style-src 'unsafe-inline'`.
+- **`POST /api/shaping/sign-out`** takes `{ connection }` and ends that connection's sign-in,
+  pending or held: it drops the pending one, removes the stored tokens and revokes them. It
+  answers `{ signIns }`. An id with nothing to end is 404 `unknown_connection`.
+
+The sign-in list, in `GET /api/shaping`, the sign-out reply and
+[the `shaping_sign_ins` event](event-stream.md#task-shaping), has one entry per connection:
+`{ id, url, scope, issuer, state, storage, expiresAt, attempt, reason, shapers }`, where `state` is the
+connection's status, `signed_out`, `pending`, `signed_in` or `renewing`, `storage` is `keychain`
+or `memory`, `attempt` is the pending attempt's number from its sign-in reply, null unless
+`state` is `pending`, and `shapers` lists the ids of the known shapers that name it, empty for an unused
+one. It never holds a token, a code, the OAuth `state` parameter, a verifier or an authorization
+URL, so a pending entry has no link: a window without one starts the sign-in again. A sign-in whose shaper is removed before
+the callback still completes and is then listed as unused.
 
 ## The built-in gatherer
 

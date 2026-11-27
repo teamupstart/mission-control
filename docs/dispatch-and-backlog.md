@@ -208,11 +208,17 @@ word, a name that sounds like another agent's, one short syllable, or a voice co
 warnings explain and never block; **Dispatch** stays enabled whatever they say. Closed, the fold's
 summary names the call sign beside the Persona.
 
+Left blank, the task is given a call sign as it launches when a safe one is free: a distinctive
+name no other agent is heard as, from a short built-in list. If every safe name is taken, it
+launches without one. Your own call sign is always kept. See
+[Automatic call signs](voice.md#automatic-call-signs).
+
 A call sign is not the title and changes nothing the launch provisions. It is annotation, like
 priority: an update may set or clear it while the agent runs (a resident's task takes none; see
 [Call signs](voice.md#call-signs)), and with the
 [inbox](attention-and-alerts.md) naming rule and voice both on it is the name the inbox, the review
-modal, question cards and alerts print for the session.
+modal, question cards and alerts print for the session. [Call signs](voice.md#call-signs) covers
+when it also titles the session's card.
 
 A task in the backlog answers to its call sign only once it launches. From then on it is listed
 while it runs and while it is hibernated, however long it sleeps. Once it stops it stays listed

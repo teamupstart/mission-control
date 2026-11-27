@@ -903,6 +903,18 @@ test("5. a drained implementation with an explicit no-PR restriction neither cla
   }
 });
 
+test("5. a drained report the operator kept off a PR still retires instead of waiting forever", () => {
+  // #1807: the hold reserves an automatic handoff, and a review artifact has none to reserve.
+  for (const objective of [
+    "Write the weekly dependency report. Do not open a PR.",
+    "Write the weekly dependency report.\nAutomatic handoff: operator only",
+  ]) {
+    const action = tick({ items: DRAINED(), intent: { objective }, cfg: { wrapup: "pr" } });
+    assert.equal(action.kind, "skip-wrapup", objective);
+    assert.match(action.kind === "skip-wrapup" ? action.reason : "", /review artifact/);
+  }
+});
+
 test("5. the PR payload is not harness-scoped", () => {
   // Both harnesses get identical bytes because this is ordinary prose.
   const claude = tick({ items: DRAINED(), cfg: { wrapup: "pr" } });

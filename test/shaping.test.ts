@@ -1210,7 +1210,7 @@ test("shaperSignInTarget names a marked shaper's connection, and null for one wi
 });
 
 test("the sign-in reasons are fixed sentences that point to Settings > Task shaping", () => {
-  assert.deepEqual(Object.keys(SIGN_IN_REASONS), ["flagOff", "signedOut", "renewing", "refused"]);
+  assert.deepEqual(Object.keys(SIGN_IN_REASONS), ["flagOff", "signedOut", "renewing", "refused", "memoryOnly", "signInAgain"]);
   for (const reason of Object.values(SIGN_IN_REASONS)) assert.match(reason, /Settings > Task shaping\.$/);
   assert.match(SIGN_IN_REASONS.flagOff, /shaper-sign-in/);
   assert.equal(Object.isFrozen(SIGN_IN_REASONS), true);

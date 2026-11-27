@@ -21,6 +21,7 @@ import {
   voiceMode,
   voiceStateOff,
   voiceUnavailableReasons,
+  type TranscriptSample,
   type VoiceConfig,
   type VoiceListenerHello,
   type VoiceModeInputs,
@@ -78,6 +79,7 @@ test("the config schema holds every contract A field with its default", () => {
     hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
     endOfSpeechMs: 2000,
+    separatorWord: "bagel",
     showTranscript: true, transcriptWords: 20, transcriptStyle: "card", transcriptCorner: "bottom-right",
     cancelWindow: { enabled: true, seconds: 4 },
     whenUnsure: "show", speech: { voice: null },
@@ -368,7 +370,10 @@ test("a hello with an unknown major version is refused, and the state says why",
   h.store.acceptHello(listenerId, HELLO);
   const refused = h.store.acceptHello(listenerId, { ...HELLO, version: "1.0" });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.1/);
+  if (!refused.ok) {
+    assert.match(refused.reason, /protocol 1\.0/);
+    assert.ok(refused.reason.includes(`Mission Control speaks ${VOICE_LISTENER_PROTOCOL_VERSION}`));
+  }
   const state = h.store.state();
   assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
   assert.deepEqual(state.reasons, ["listener"]);
@@ -421,7 +426,8 @@ test("a dated key-down can authorize capture only for the lease remaining since 
 test("a shell report's capabilities and hotkey error are copied, and lapse with it", () => {
   const h = harness();
   h.store.acceptHello(listenerId, HELLO);
-  assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null }, "speech-output": { available: false, reason: "This listener cannot play speech." } });
+  assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null },
+    "speech-output": { available: false, code: "speech_playback_unsupported", reason: "This listener cannot play speech." } });
   assert.equal(h.store.state().registeredHotkey, null);
   assert.equal(h.store.state().hotkeyError, null);
   h.store.acceptShellReport({
@@ -590,12 +596,16 @@ test("speech output belongs to the daemon and needs a supervised, capable listen
   assert.match(capability()?.reason ?? "", /No listener/);
   h.store.acceptHello(listenerId, HELLO);
   assert.match(capability()?.reason ?? "", /cannot play/);
+  assert.equal(capability()?.code, "speech_playback_unsupported");
   h.store.acceptHello(listenerId, { ...HELLO, speech }, instance);
   assert.match(capability()?.reason ?? "", /not started by a supervisor/);
   h.store.speech.supervised(instance, "started", proof("started"));
   assert.deepEqual(capability(), { available: true, reason: null });
   h.store.acceptHello(listenerId, { ...HELLO, speech: { ...speech, systemVoices: [] } }, instance);
   assert.match(capability()?.reason ?? "", /No voice is ready/);
+  assert.equal(capability()?.code, "speech_voice_unavailable");
+  h.store.acceptHello(listenerId, { ...HELLO, speech: { audio: false, systemVoices: [] } }, instance);
+  assert.equal(capability()?.code, "speech_playback_unsupported");
   assert.equal(JSON.stringify(h.published).includes(instance), false);
 });
 
@@ -618,7 +628,7 @@ test("live transcript is ephemeral, grant-bound and replaces partial hypotheses 
   for (let i = 0; i < 2; i++) {
     h.store.reportTranscript(listenerId, revision, { phase: "ready" });
     assert.equal(h.store.state().transcript?.phase, "ready");
-    assert.equal(h.store.state().transcript?.text, "the final words");
+    assert.equal(h.store.state().transcript?.text, "words from another phrase");
     h.advance(800);
   }
   h.advance(6100);
@@ -634,4 +644,255 @@ test("live transcript is ephemeral, grant-bound and replaces partial hypotheses 
   h.setConfig({ muted: false });
   assert.equal(h.store.reportTranscript(listenerId, revision, sample), false);
   h.store.reset();
+});
+
+test("in Push-to-talk each hold's live transcript is its own, survives a pause and clears at key-up", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-hold-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory, config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const report = (patch: Partial<VoiceShellReport> = {}) => {
+    h.advance(1);
+    h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } },
+      pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: h.hostNowUs(), ...patch });
+  };
+  const press = () => report({ pushToTalk: true, pushToTalkPressedAtHostUs: h.hostNowUs() + 1 });
+  const words = (revision: string, onset: number, text: string) =>
+    h.store.reportTranscript(listenerId, revision, { phase: "words", onset, text });
+  report();
+  press();
+  const first = h.store.directive();
+  assert.ok(first.capture);
+  // The listener names a whole hold by its first onset, so words after a pause extend the same text.
+  assert.equal(words(first.revision, 1, "Steve, check the build."), true);
+  h.advance(3500);
+  assert.equal(words(first.revision, 1, "Steve, check the build. Then, bagel, run the tests"), true);
+  assert.equal(h.store.state().transcript?.text, "Steve, check the build. Then, bagel, run the tests");
+  report({ pushToTalkReleasedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  assert.equal(h.store.state().transcript, undefined, "key-up clears the hold's words");
+  assert.equal(words(first.revision, 1, "late words"), false, "a released hold cannot write to the overlay");
+  press();
+  const second = h.store.directive();
+  assert.notEqual(second.revision, first.revision);
+  assert.equal(h.store.state().transcript, undefined, "a new hold starts with nothing on screen");
+  assert.equal(words(first.revision, 1, "late words"), false, "nor can the previous hold write into the new one");
+  assert.equal(words(second.revision, 2, "Carol, give me a report"), true);
+  assert.equal(h.store.state().transcript?.text, "Carol, give me a report");
+});
+
+test("only new recognized words move the live transcript's five-second deadline", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-deadline-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (sample: TranscriptSample) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, sample), true);
+  const first = { phase: "words" as const, onset: 1, text: "start here" };
+  const extended = { ...first, text: "start here now" };
+  send({ phase: "ready" });
+  send({ phase: "audio", onset: 1 });
+  assert.equal(h.store.state().transcript?.text, "");
+  send(first);
+  h.advance(4999);
+  assert.equal(h.store.state().transcript?.text, first.text);
+  send(extended);
+  h.advance(4999);
+  send(extended);
+  send({ phase: "ready" });
+  send({ phase: "audio", onset: 1 });
+  send({ ...extended, text: "..." });
+  assert.equal(h.store.state().transcript?.text, extended.text);
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "listening");
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send({ ...extended, text: "start" });
+  send({ ...extended, text: "..." });
+  send(extended);
+  assert.equal(h.store.state().transcript, undefined);
+  send({ phase: "audio", onset: 2 });
+  send({ ...extended, text: "Start here now please.", final: true });
+  assert.equal(h.store.state().transcript?.text, "");
+  send({ ...extended, onset: 2 });
+  assert.equal(h.store.state().transcript?.text, extended.text, "the same words in a new utterance count");
+  h.advance(4999);
+  send({ ...extended, onset: 2, final: true });
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+});
+
+test("alternating live transcript hypotheses cannot extend or reopen the same onset", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-revisions-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (text: string, final?: true) => {
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset: 1, text, final }), true);
+  };
+  send("turn on");
+  h.advance(4000);
+  send("turn off");
+  h.advance(4999);
+  send("turn on");
+  assert.equal(h.store.state().transcript?.text, "turn on");
+  h.advance(1);
+  assert.equal(h.store.state().transcript, undefined);
+  for (const revision of ["turn off", "turn on", "Off."]) {
+    send(revision);
+    assert.equal(h.store.state().transcript, undefined);
+  }
+  send("turn on the light");
+  assert.equal(h.store.state().transcript?.text, "turn on the light");
+  h.advance(5000);
+  send("turn off", true);
+  assert.equal(h.store.state().transcript, undefined);
+});
+
+test("reordering live transcript words preserves the deadline, but another occurrence counts", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-reorder-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (text: string) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset: 1, text }), true);
+
+  send("turn on");
+  h.advance(4999);
+  send("on turn");
+  assert.equal(h.store.state().transcript?.text, "on turn");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send("on turn on");
+  assert.equal(h.store.state().transcript?.text, "on turn on");
+});
+
+test("inline punctuation revisions cannot extend or reopen a live transcript", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-punctuation-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (text: string) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset: 1, text }), true);
+
+  send("U.S.");
+  h.advance(4999);
+  send("US");
+  assert.equal(h.store.state().transcript?.text, "US");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send("U.S.");
+  assert.equal(h.store.state().transcript, undefined);
+  send("US policy");
+  assert.equal(h.store.state().transcript?.text, "US policy");
+});
+
+test("delayed finals from expired onsets cannot reopen or extend the live transcript", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-delayed-final-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (sample: TranscriptSample) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, sample), true);
+
+  send({ phase: "audio", onset: 1 }); // Its first word result will be a late final.
+  send({ phase: "words", onset: 2, text: "turn on" });
+  h.advance(5000);
+  send({ phase: "audio", onset: 3 });
+  send({ phase: "words", onset: 1, text: "earlier speech", final: true });
+  assert.equal(h.store.state().transcript?.text, "");
+  send({ phase: "words", onset: 3, text: "new speech" });
+  h.advance(4999);
+  send({ phase: "words", onset: 2, text: "turn on the light", final: true });
+  assert.equal(h.store.state().transcript?.text, "new speech");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send({ phase: "audio", onset: 4 });
+  h.advance(4999);
+  send({ phase: "audio", onset: 4 }); // Audio heartbeats cannot renew this onset.
+  h.advance(1);
+  send({ phase: "audio", onset: 5 });
+  send({ phase: "words", onset: 4, text: "another delayed final", final: true });
+  assert.equal(h.store.state().transcript?.text, "");
+  send({ phase: "words", onset: 5, text: "current words" });
+  h.advance(5000);
+  send({ phase: "words", onset: 5, text: "...", final: true });
+  send({ phase: "words", onset: 5, text: "delayed partial" });
+  assert.equal(h.store.state().transcript, undefined);
+});
+
+test("a recent final-only onset shows the live transcript after the next audio onset", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-final-only-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (sample: TranscriptSample) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, sample), true);
+
+  send({ phase: "audio", onset: 1 });
+  h.advance(4999);
+  send({ phase: "audio", onset: 2 });
+  send({ phase: "words", onset: 1, text: "short phrase", final: true });
+  assert.equal(h.store.state().transcript?.text, "short phrase");
+  h.advance(4999);
+  assert.equal(h.store.state().transcript?.text, "short phrase");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+});
+
+test("a newer wordless final preserves earlier live transcript text until its deadline", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-wordless-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (onset: number, text: string, final?: true) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset, text, final }), true);
+  send(1, "hello");
+  h.advance(4999);
+  send(2, "...", true);
+  send(2, "late partial");
+  assert.equal(h.store.state().transcript?.text, "hello");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send(3, "hello");
+  send(4, "goodbye", true);
+  assert.equal(h.store.state().transcript?.text, "goodbye");
+});
+
+test("an expired latest onset's final cannot revive the live transcript", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-latest-final-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (onset: number, text: string, final?: true) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset, text, final }), true);
+  send(1, "hello");
+  h.advance(5000);
+  send(1, "hello there", true);
+  assert.equal(h.store.state().transcript, undefined);
+  assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "audio", onset: 2 }), true);
+  h.advance(6000); // A long utterance can finish before its first words are recognized.
+  send(2, "new phrase", true);
+  assert.equal(h.store.state().transcript?.text, "new phrase");
+  h.advance(4999);
+  assert.equal(h.store.state().transcript?.text, "new phrase");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
 });

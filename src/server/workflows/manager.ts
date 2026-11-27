@@ -3413,17 +3413,22 @@ export class WorkflowManager {
    * The one answer to "does this pull request head match a passed local review".
    *
    * The completion gate and the Inspector worker both ask here, and nothing else decides it.
-   * A head matches when a workflow run that owns the pull request has a passed - not skipped -
+   * A head matches when the workflow run that owns the pull request has a passed - not skipped -
    * Local Inspector attempt on its latest submission, and the head's Git tree and the pull
    * request's base branch equal the tree and base that review read. The match is by tree, not
-   * by commit, so a re-created commit with the same tree still matches. Owners are asked newest
-   * first; a newer run still mid-review does not hide a head an earlier run already passed.
-   * The gate asks only about its own run.
+   * by commit, so a re-created commit with the same tree still matches. The gate asks only about
+   * its own run.
+   *
+   * The worker asks about the owning runs newest first, and the newest decides: a newer run
+   * whose version has no Local Inspector stage, or whose stage skipped, failed or blocked, is no
+   * match even if an older run passed the same tree, because that newer run's gate is waiting
+   * for the GitHub review. Only while the newer run's Local Inspector review is still pending
+   * does an older run's pass keep vouching for a head it already reviewed.
    *
    * Every other case answers null, which keeps today's GitHub review: Local review off, a
-   * version without the stage, a skipped or failed stage, a different tree or base, a head git
-   * cannot resolve, and - until Shipping accepts local reviews - a repository holding the merge
-   * grant, so no head there is left without merge provenance.
+   * different tree or base, a head git cannot resolve, and - until Shipping accepts local
+   * reviews - a repository holding the merge grant, so no head there is left without merge
+   * provenance.
    */
   async localReviewMatch(
     prKey: string,
@@ -3431,33 +3436,32 @@ export class WorkflowManager {
   ): Promise<WorkflowLocalReviewMatch | null> {
     const adopted = getInspectorPr(prKey);
     if (!adopted || !getInspectorConfig().localReview) return null;
-    for (const run of this.localReviewOwners(adopted)) {
+    for (const run of this.localReviewOwners(adopted.key)) {
       if (run.status === "cancelled" || run.status === "failed") continue;
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
-      if (version?.completionPolicy.kind !== "inspector") continue;
-      const match = await this.matchLocalReview(run, version, adopted, head,
+      if (version?.completionPolicy.kind !== "inspector") return null;
+      const review = this.localReviewState(run.id, version);
+      if (review.kind === "pending") continue;
+      if (review.kind === "none") return null;
+      return this.matchLocalReview(run, version, adopted, head,
         this.store.getBinding(run.bindingId)?.sessionRepoRoot || adopted.repoRoot);
-      if (match) return match;
     }
     return null;
   }
 
   /**
-   * The runs that reviewed this pull request, newest first: each one's gate pinned the key, or -
-   * in the moment between the Pull Request action opening it and the gate pinning it - its
-   * session and repository adopted it after the run started, the rule `matchesUnpinnedGate`
-   * applies.
+   * The runs that own this pull request, newest first, and only on direct evidence: the run's
+   * gate pinned the key, or the run's own Pull Request action recorded it as the pull request it
+   * opened (the action's expectation, written before the gate can pin it). A run that merely
+   * shares the session and repository proves nothing about a pull request it did not open.
    */
-  private localReviewOwners(adopted: InspectorPr): WorkflowRun[] {
-    const owners: WorkflowRun[] = this.store.listRunsNamingGatePr(adopted.key)
-      .filter((run) => this.gateState(run)?.prKey === adopted.key);
-    for (const binding of this.store.listBindings()) {
-      if (binding.state !== "active" || !binding.sessionId || !binding.sessionRepoRoot) continue;
-      if (adopted.sessionId !== binding.sessionId || adopted.repoRoot !== binding.sessionRepoRoot) continue;
-      const run = this.store.activeRunForBinding(binding.id);
-      if (run && !this.gateState(run)?.prKey && adopted.adoptedAt >= run.startedAt) owners.push(run);
+  private localReviewOwners(prKey: string): WorkflowRun[] {
+    const owners = new Map<string, WorkflowRun>();
+    for (const run of this.store.listRunsNamingGatePr(prKey)) {
+      if (this.gateState(run)?.prKey === prKey) owners.set(run.id, run);
     }
-    return owners.sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id));
+    for (const run of this.store.listRunsWithPullRequestAction(prKey)) owners.set(run.id, run);
+    return [...owners.values()].sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id));
   }
 
   private async matchLocalReview(
@@ -3469,50 +3473,62 @@ export class WorkflowManager {
   ): Promise<WorkflowLocalReviewMatch | null> {
     if (!getInspectorConfig().localReview || !repositoryRoot || !head.baseRefName) return null;
     if (repositoryHoldsMergeGrant(pr.cwd, pr.repoRoot)) return null;
-    const passed = this.passedLocalReview(run.id, version);
-    if (!passed || localReviewBaseBranch(passed.baseRef) !== head.baseRefName) return null;
+    const review = this.localReviewState(run.id, version);
+    if (review.kind !== "passed" || localReviewBaseBranch(review.match.baseRef) !== head.baseRefName) return null;
     const tree = await (this.options.resolveCommitTree ?? resolveCommitTree)(repositoryRoot, head.headSha)
       .catch(() => null);
-    if (!tree || tree !== passed.treeOid) return null;
-    return { ...passed, headSha: head.headSha };
+    if (!tree || tree !== review.match.treeOid) return null;
+    return { ...review.match, headSha: head.headSha };
   }
 
   /**
-   * The passed Local Inspector review of the run's latest submission, or null.
+   * Where the run's latest submission stands on its Local Inspector review.
    *
-   * A continuation segment (the Pull Request action's) runs nothing before its action, so the
-   * review it carries is the one its parent segment recorded. Every Local Inspector node in the
-   * version must have passed on the same tree; one that skipped, failed or blocked is no match.
+   * `passed` when every Local Inspector node in the version has a latest attempt that completed
+   * with a passed review, all on one tree and base. `pending` while that review has not been
+   * decided yet: a node still queued, running or waiting, or a round that has not reached the
+   * stage. `none` for everything else - no stage in the version, a skipped, failed or blocked
+   * attempt, or an Inspector-only round. A continuation segment (the Pull Request action's) runs
+   * nothing before its action, so the review it carries is the one its parent segment recorded.
    */
-  private passedLocalReview(runId: string, version: WorkflowVersion): Omit<WorkflowLocalReviewMatch, "headSha"> | null {
+  private localReviewState(runId: string, version: WorkflowVersion):
+    | { kind: "passed"; match: Omit<WorkflowLocalReviewMatch, "headSha"> }
+    | { kind: "pending" }
+    | { kind: "none" } {
     const nodes = new Set(version.graph.nodes
       .filter((node) => node.kind === "check" && node.slot === "inspector")
       .map((node) => node.id));
-    if (nodes.size === 0) return null;
+    if (nodes.size === 0) return { kind: "none" };
     let submission = this.store.latestSubmission(runId);
     while (submission?.mode === "full_workflow") {
       const attempts = this.store.listAttempts(submission.id).filter((attempt) => nodes.has(attempt.nodeId));
       if (attempts.length === 0) {
-        if (submission.segment === 0 || !submission.parentSubmissionId) return null;
+        if (submission.segment === 0 || !submission.parentSubmissionId) return { kind: "pending" };
         submission = this.store.getSubmission(submission.parentSubmissionId);
         continue;
       }
       let match: Omit<WorkflowLocalReviewMatch, "headSha"> | null = null;
+      let pending = false;
       for (const nodeId of nodes) {
         // Ordered oldest first, so the last one is the node's current answer.
         const attempt = attempts.filter((row) => row.nodeId === nodeId).at(-1);
-        if (attempt?.state !== "completed") return null;
+        if (!attempt || ["queued", "running", "retry_wait", "waiting"].includes(attempt.state)) {
+          pending = true;
+          continue;
+        }
+        if (attempt.state !== "completed") return { kind: "none" };
         const outcome = WorkflowCheckOutcomeSchema.safeParse(attempt.output);
         const review = outcome.success ? outcome.data.localInspector : undefined;
         if (outcome.data?.status !== "passed" || review?.status !== "passed"
-          || !review.publicationTree || !review.baseRef) return null;
-        if (match && (match.treeOid !== review.publicationTree || match.baseRef !== review.baseRef)) return null;
+          || !review.publicationTree || !review.baseRef) return { kind: "none" };
+        if (match && (match.treeOid !== review.publicationTree || match.baseRef !== review.baseRef)) return { kind: "none" };
         match ??= { submissionId: submission.id, attemptId: attempt.id,
           treeOid: review.publicationTree, baseRef: review.baseRef };
       }
-      return match;
+      if (pending) return { kind: "pending" };
+      return match ? { kind: "passed", match } : { kind: "none" };
     }
-    return null;
+    return { kind: "none" };
   }
 
   /**

@@ -4945,3 +4945,94 @@ test("a pushed head whose Git tree cannot be resolved keeps the GitHub review pa
   assert.equal(seeded.store.listEvents(seeded.ids.run).some((event) => event.kind === "inspector_adapter_error"), false,
     "the resolution failure did not surface as a gate error");
 });
+
+/** Copy a row of `table` under new values, for building a second run on the same pull request. */
+function cloneRow(table: string, id: string, patch: Record<string, unknown>): void {
+  const row = { ...(db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<string, unknown>), ...patch };
+  db.prepare(`INSERT INTO ${table} (${Object.keys(row).join(",")}) VALUES (${Object.keys(row).map(() => "?").join(",")})`)
+    .run(...(Object.values(row) as Array<string | number | null>));
+}
+
+/**
+ * A newer run on the same pull request, after the seeded run completed locally. `stage: false`
+ * pins it to a version whose graph has no Local Inspector node; `attempt` records that node's
+ * latest outcome on the newer run's submission.
+ */
+async function newerRunOnSamePullRequest(
+  seeded: Awaited<ReturnType<typeof seed>>,
+  options: { stage: boolean; attempt?: "failed" | "skipped" },
+): Promise<string> {
+  const later = `${seeded.ids.run}-newer`;
+  const first = db.prepare(`SELECT started_at FROM workflow_runs WHERE id = ?`).get(seeded.ids.run) as { started_at: number };
+  let versionId = seeded.ids.version;
+  if (!options.stage) {
+    versionId = `${seeded.ids.version}-no-stage`;
+    const graph = JSON.parse((db.prepare(`SELECT graph_json FROM workflow_versions WHERE id = ?`)
+      .get(seeded.ids.version) as { graph_json: string }).graph_json) as { nodes: Array<{ kind: string }> };
+    graph.nodes = graph.nodes.filter((node) => node.kind !== "check");
+    cloneRow("workflow_versions", seeded.ids.version, { id: versionId, version: 2, graph_json: JSON.stringify(graph) });
+  }
+  cloneRow("workflow_runs", seeded.ids.run, { id: later, trigger_key: `${later}-trigger`, workflow_version_id: versionId,
+    status: "waiting_for_inspector", current_phase: "inspector_awaiting_fresh_observation",
+    started_at: first.started_at + 1000, completed_at: null });
+  cloneRow("workflow_submissions", seeded.ids.submission, { id: `${later}-submission`, run_id: later,
+    trigger_key: `${later}-submission-trigger` });
+  if (options.attempt) {
+    const at = Date.now();
+    seeded.store.insertAttempt({ id: `${later}-local`, submissionId: `${later}-submission`, nodeId: "local-inspector",
+      attempt: 1, state: "running", persona: null, inputFingerprint: `${later}-local`, now: at });
+    seeded.store.finishAttempt(`${later}-local`, { state: "completed", output: workflowJson({
+      slot: "inspector", status: options.attempt, command: null, exitCode: null, output: "", truncatedBytes: 0,
+      artifacts: [], timeoutMs: null, note: `Local Inspector ${options.attempt}.`,
+      localInspector: { status: options.attempt, publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main",
+        mergeBase: "m".repeat(40), blockingSeverity: "major", findingCount: 0 },
+    }) }, at);
+  }
+  return later;
+}
+
+for (const newer of [
+  { name: "uses a version without the Local Inspector stage", stage: false },
+  { name: "failed its own Local Inspector review", stage: true, attempt: "failed" as const },
+  { name: "skipped its own Local Inspector review", stage: true, attempt: "skipped" as const },
+]) {
+  test(`a newer run on the pull request that ${newer.name} gets the GitHub review even though an older run passed the tree`, async (t) => {
+    const seeded = await seedLocal();
+    t.after(localTeardown(seeded));
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+    const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+    assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the older run alone vouches for the head");
+
+    const later = await newerRunOnSamePullRequest(seeded, newer);
+    assert.equal(seeded.store.listRunsNamingGatePr(seeded.key)[0]?.id, later, "the newer run owns the pull request now");
+    // The newer run decides. Its gate waits for the GitHub review, so the worker must not skip it.
+    assert.equal(await ask(), null);
+  });
+}
+
+test("only direct evidence makes a run the pull request's owner: its Pull Request action's record counts, the session does not", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  // Unpin the gate, as in the moment before it pins: a run that merely shares the session and
+  // repository with the adopted pull request proves nothing about it.
+  const gate = gateOf(seeded);
+  db.prepare(`UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?`)
+    .run(JSON.stringify({ ...gate, prKey: null, prUrl: null }), seeded.ids.run);
+  assert.equal(seeded.store.listRunsNamingGatePr(seeded.key).length, 0);
+  assert.equal(await ask(), null, "no ownership without evidence");
+
+  // The run's own Pull Request action records the pull request it opened.
+  const at = Date.now();
+  seeded.store.insertAttempt({ id: `pr-action-${serial}`, submissionId: seeded.ids.submission, nodeId: "pull-request",
+    attempt: 1, state: "running", persona: null, inputFingerprint: `pr-action-${serial}`, now: at });
+  seeded.store.finishAttempt(`pr-action-${serial}`, { state: "completed", output: workflowJson({
+    outcome: "complete", continuationSubmissionId: null,
+    expectation: { kind: "pull_request", pullRequestKey: seeded.key, pullRequestUrl: seeded.url,
+      pullRequestNumber: Number(seeded.key.split("#")[1]), repositoryRoot: "/repo", branch: "feature",
+      expectedHeadOid: null, acceptedContentTreeOid: null, observedAt: at },
+  }) }, at);
+  assert.deepEqual(seeded.store.listRunsWithPullRequestAction(seeded.key).map((run) => run.id), [seeded.ids.run]);
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "the action's record is ownership");
+});

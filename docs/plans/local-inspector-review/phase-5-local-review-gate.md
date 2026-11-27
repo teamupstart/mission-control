@@ -153,11 +153,16 @@ passed local review". The completion gate and the Inspector worker both reach th
 - `git rev-parse <head>^{tree}` equals the recorded publication tree. The match is by tree, so a
   re-created commit with the same tree still matches. A head git cannot resolve does not match.
 
-The worker asks about every run that owns the pull request, newest first: a run whose gate pinned
-the key (completed runs included, so a matched head stays matched after the workflow finishes),
-or an active run in the same session and repository that adopted the pull request after it
-started, the window before the gate pins it. A newer run still mid-review therefore does not send
-an already reviewed head to GitHub. The gate asks only about its own run.
+The worker asks about the runs that own the pull request, newest first, and the newest decides.
+A run owns the pull request only on direct evidence: its gate pinned the key, or its own Pull
+Request action recorded the key as the pull request it opened (completed runs included, so a
+matched head stays matched after the workflow finishes). A run that merely shares the session and
+repository is not an owner. A newer owner whose version has no Local Inspector stage, or whose
+latest attempt skipped, failed or blocked, is no match even when an older run passed the same
+tree, because that newer run's gate waits for the GitHub review. Only while the newer run's
+Local Inspector review is still pending (a node queued, running or waiting, or a round that has
+not reached the stage) does an older run's pass keep vouching for a head it already reviewed.
+The gate asks only about its own run.
 
 ### Gate and worker behavior
 
@@ -173,7 +178,9 @@ an already reviewed head to GitHub. The gate asks only about its own run.
   check still run. It records the head with `localReviewHeadSha` (new nullable
   `inspector_prs.local_review_head_sha` column) and review posture `local` under a Live Inspector,
   or the current posture (`dry-run`, `not-allowlisted`) otherwise. A matcher failure counts as no
-  match.
+  match. A head recorded from a local match is never reused as a completed review: once it stops
+  matching it is reviewed on GitHub in every posture, Dry run included, and that review clears
+  the local record.
 - `local` is appended to `INSPECTOR_POSTURES`, and the gate state schema now reads its posture
   from that list. The merge predicate is unchanged and refuses `local` as an unpublished review.
 
@@ -206,8 +213,9 @@ updated. Step 7: local findings are not mirrored into the Inspections table; the
 
 - `reviewNeedsLiveRerun` keeps its signature. The worker records a still-matching head and returns
   before that question, so a `local` head reaching it no longer matches and is reviewed on GitHub.
-- The worker considers every owning run, newest first, rather than only the newest, for the reason
-  above.
+- The worker reads ownership from the gate pin and the Pull Request action's record rather than
+  from `matchesUnpinnedGate`'s session and repository rule, and lets an older owner's pass stand
+  only while the newest owner's review is pending, for the reasons above.
 - The ledger gained one column so the chip can show the local state in Dry run, where the recorded
   posture is not `local`.
 - The version 23 round-limit case is covered by the catalog test of the stage's fail route and the

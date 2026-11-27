@@ -291,3 +291,29 @@ test("a matcher that rejects is no match: the GitHub review starts and nothing i
   assert.ok(logged.mock.calls.some((call) => String(call.arguments[0]).includes("local review match failed")),
     "the failure was reported");
 });
+
+test("in Dry run, a head recorded from a local match that stops matching gets its GitHub review, once", async () => {
+  dryRun();
+  const key = adopt(907);
+  writeGithubState();
+  matching = new Set(["head-1"]);
+  await runOneSweep();
+  assert.equal(modelCalls(), 0);
+  assert.equal(getInspectorPr(key)?.reviewPosture, "dry-run");
+  assert.equal(getInspectorPr(key)?.localReviewHeadSha, "head-1");
+
+  // Local review switched off (or the merge grant given) while the Inspector stays in Dry run.
+  // The local record is not a review, so the same head is reviewed - recorded, never posted.
+  matching = new Set();
+  await runOneSweep();
+  assert.equal(modelCalls(), 1, "the GitHub review ran");
+  const row = getInspectorPr(key)!;
+  assert.equal(row.reviewPosture, "dry-run");
+  assert.equal(row.headSha, "head-1");
+  assert.equal(row.localReviewHeadSha ?? null, null, "the review replaced the local record");
+  assert.deepEqual(github().posts, [], "Dry run posts nothing");
+
+  // Reviewed now, so the next sweep reuses that review instead of reviewing again.
+  await runOneSweep();
+  assert.equal(modelCalls(), 1);
+});

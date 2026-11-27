@@ -5467,6 +5467,28 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * Runs whose own Pull Request action recorded this pull request as the one it opened, newest
+   * first. The expectation is written to the action attempt's output while it waits to capture
+   * its continuation and kept after it completes, so it names the pull request before any gate
+   * can pin it.
+   */
+  listRunsWithPullRequestAction(prKey: string): WorkflowRun[] {
+    const rows = this.db.prepare(
+      `SELECT DISTINCT r.* FROM workflow_runs r
+         JOIN workflow_submissions s ON s.run_id = r.id
+         JOIN workflow_node_attempts a ON a.submission_id = s.id
+        WHERE a.output_json IS NOT NULL
+          AND json_valid(a.output_json)
+          AND json_extract(a.output_json, '$.expectation.kind') = 'pull_request'
+          AND json_extract(a.output_json, '$.expectation.pullRequestKey') = ?
+        ORDER BY r.started_at DESC, r.id DESC`,
+    ).all(prKey) as unknown[];
+    return rows.flatMap((row) => {
+      try { return [parseWorkflowRunRow(row)]; } catch (error) { diagnose(error); return []; }
+    });
+  }
+
   listRuns(): WorkflowRun[] {
     const rows = this.db.prepare(`SELECT * FROM workflow_runs ORDER BY updated_at DESC`).all() as unknown[];
     return rows.flatMap((row) => {

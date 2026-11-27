@@ -929,8 +929,11 @@ async function processPr(
     !reviewBaseChanged(pr.reviewedBaseRef ?? null, s.baseRefName || null, s.defaultBranch || null) &&
     // ...and the same base name over a moved merge base is a different diff too.
     baseReview === "current" &&
-    // A matched head returned above, so a `local` head here no longer matches and is
-    // reviewed on GitHub once the posture is live.
+    // A head recorded from a local match is not a GitHub review. A matched head returned above,
+    // so one that reaches here no longer matches - Local review switched off, the repository
+    // given the merge grant, a newer run without the stage - and is reviewed on GitHub in every
+    // posture, Dry run included, rather than reused as if it had been reviewed.
+    pr.localReviewHeadSha !== pr.headSha &&
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
     // A legacy or incomplete review cannot certify safety. Once its retained findings
     // are resolved, review again on this head; only complete provenance can be reused.
@@ -1184,6 +1187,8 @@ async function reviewRound(
       pr.key,
       {
         headSha: s.headSha,
+        // A GitHub review replaces any local record of this head.
+        localReviewHeadSha: null,
         reviewedBaseRef: s.baseRefName || null,
         reviewedBaseSha: s.baseSha || null,
         reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
@@ -1327,6 +1332,8 @@ async function reviewRound(
     pr.key,
     {
       headSha: s.headSha,
+      // A GitHub review replaces any local record of this head.
+      localReviewHeadSha: null,
       // The base this diff was taken against. A later base change under the same head is
       // a different diff, so it is reviewed again rather than trusted (`reviewBaseChanged`).
       reviewedBaseRef: s.baseRefName || null,

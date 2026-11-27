@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
 import { agentDisplayName, sessionDisplayNameInput, withCurrentReferenceNames } from "@shared/display-name.ts";
@@ -34,6 +34,7 @@ import type { PendingTurn, ServerEvent, Session, Task } from "@shared/types.ts";
 import { STATE_DIR } from "./config.ts";
 import { getTask as getDurableTask, inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { resolveCheckoutFile } from "./archives/checkout.ts";
 import type { ReportPagePublication, ReportPagePublicationResult } from "./archives/manager.ts";
 import type { Registry } from "./registry.ts";
 import {
@@ -284,10 +285,16 @@ export interface ReportManagerOptions {
   stateDir?: string;
   now?: () => number;
   timers?: ReportTimers;
+  /**
+   * Called with each linked companion's resolved path after its containment check and before it
+   * is opened. A test seam for the window a symlink swap would race; the daemon passes none.
+   */
+  beforeCompanionOpen?: (path: string) => Promise<void> | void;
 }
 
 export class ReportManager {
   private readonly stateDir: string;
+  private readonly beforeCompanionOpen?: (path: string) => Promise<void> | void;
   private readonly now: () => number;
   private readonly timers: ReportTimers;
   private readonly stopFlags: () => void;
@@ -318,6 +325,7 @@ export class ReportManager {
 
   constructor(private readonly registry: Registry, options: ReportManagerOptions = {}) {
     this.stateDir = options.stateDir ?? STATE_DIR;
+    this.beforeCompanionOpen = options.beforeCompanionOpen;
     this.now = options.now ?? Date.now;
     this.timers = options.timers ?? REAL_TIMERS;
     this.stopEvents = registry.subscribe((event) => this.observe(event));
@@ -745,23 +753,28 @@ export class ReportManager {
    * out, and the published page lists it as missing instead.
    */
   private async stageCompanions(root: string, file: string, kind: ReportDocumentKind, bytes: Buffer): Promise<ReportCompanion[]> {
+    const realRoot = await realpath(root).catch(() => null);
+    if (!realRoot) return [];
     const directory = posix.dirname(file);
     const companions: ReportCompanion[] = [];
     let total = 0;
-    for (const path of linkedCompanionPaths(kind, bytes)) {
+    for (const path of linkedCompanionPaths(kind, bytes).slice(0, REPORT_LIMITS.companionLookups)) {
       if (companions.length >= REPORT_LIMITS.companionFiles) break;
-      let target: string;
-      try {
-        target = await resolveSessionFilePath(root, posix.join(directory, path));
-      } catch (error) {
-        if (error instanceof SessionFileError) continue;
-        throw error;
-      }
-      const handle = await open(target, constants.O_RDONLY).catch(() => null);
+      // The scout capture's containment rule: every component is checked with `lstat` and none
+      // may be a symlink, and the file's identity is recorded here, before the open.
+      const resolved = await resolveCheckoutFile(realRoot, posix.join(directory, path));
+      if (!resolved.ok) continue;
+      await this.beforeCompanionOpen?.(resolved.path);
+      // `O_NOFOLLOW` refuses a symlink swapped into the final component after that check. A
+      // directory on the way swapped for a symlink is still followed by `open`, so the handle's
+      // identity must be the one resolved above: a file reached through a swapped parent is a
+      // different file, and is left out rather than read.
+      const handle = await open(resolved.path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
       if (!handle) continue;
       try {
         const info = await handle.stat();
-        if (!info.isFile() || info.size > REPORT_LIMITS.companionBytes - total) continue;
+        if (!info.isFile() || info.dev !== resolved.dev || info.ino !== resolved.ino) continue;
+        if (info.size > REPORT_LIMITS.companionBytes - total) continue;
         const read = await readFileWithinCap(handle, info.size);
         if (read.exceeded) continue;
         total += read.bytes.byteLength;

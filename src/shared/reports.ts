@@ -34,6 +34,12 @@ export const REPORT_LIMITS = {
    */
   companionFiles: 128,
   companionBytes: 16 * 1024 * 1024,
+  /**
+   * How many linked paths posting looks up in the checkout, in sorted order. Each lookup walks
+   * the path, so a page of thousands of links to files that do not exist would otherwise stall
+   * the post without storing anything. A link past this bound is not stored either.
+   */
+  companionLookups: 512,
 } as const;
 
 /** How a report left to read. Null while it is unread. */

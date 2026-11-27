@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -25,7 +25,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ReportManager, reportDocumentDir } = await import("../src/server/reports.ts");
-const { renderMarkdownPage } = await import("../src/server/report-document.ts");
+const { renderMarkdownPage, readStoredReportCompanions } = await import("../src/server/report-document.ts");
 const { ArchiveManager, reportArchiveId } = await import("../src/server/archives/manager.ts");
 const { ArchiveStore } = await import("../src/server/archives/store.ts");
 const { verifyArchiveBundle } = await import("../src/server/archives/bundle.ts");
@@ -50,10 +50,11 @@ let serial = 0;
 function setup(options: {
   onPruned?: (keys: readonly string[]) => void;
   rename?: (from: string, to: string) => Promise<void>;
+  beforeCompanionOpen?: (path: string) => Promise<void> | void;
 } = {}) {
   serial += 1;
   const registry = new Registry();
-  const reports = new ReportManager(registry, { stateDir: home });
+  const reports = new ReportManager(registry, { stateDir: home, beforeCompanionOpen: options.beforeCompanionOpen });
   const root = join(home, `library-${serial}`);
   const archives = new ArchiveManager({
     root,
@@ -770,6 +771,25 @@ test("a report stores at most the companion file limit: the file past it is unli
   assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
 });
 
+test("posting looks up at most the companion lookup bound of linked paths, so thousands of missing links cannot stall it", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  // Sorted, the 512th linked path exists and is within the bound; the 513th exists and is past it.
+  const missing = Array.from({ length: REPORT_LIMITS.companionLookups - 1 }, (_, index) => `m${String(index).padStart(4, "0")}.csv`);
+  writeFileSync(join(checkout, "n-at-bound.csv"), "at\n");
+  writeFileSync(join(checkout, "o-past-bound.csv"), "past\n");
+  const names = [...missing, "n-at-bound.csv", "o-past-bound.csv"];
+  const html = `<html><body>${names.map((name) => `<a href="${name}">${name}</a>`).join(" ")}</body></html>`;
+  const report = await post("many-missing.html", html, "Many missing links");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["n-at-bound.csv"],
+    "the last path within the bound is looked up and stored; the one past it is not looked up");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const { stored, missing: listed } = companionsOf(manifest(reportArchiveId(PRODUCER, report.id, report.createdAt)));
+  assert.deepEqual(stored, ["report/n-at-bound.csv"]);
+  assert.equal(listed.length, 64, "the manifest's missing list is capped, with its last entry counting the rest");
+});
+
 test("a report stores companions up to exactly the byte limit: a file that would pass it is unlinked and listed as missing", async () => {
   const { post, publish, manifest, archivedPage, root, checkout } = setup();
   const small = 10;
@@ -852,6 +872,55 @@ test("one stored companion that cannot be opened answers 500, and is never unlin
   assert.deepEqual(companionsOf(written), { stored: ["report/data.csv", "report/notes.txt"], missing: [] });
 });
 
+test("a linked file or its folder swapped for a symlink after the containment check, before the open, is never read", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "mission-companion-race-outside-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "companion-swapped-between-check-and-open-secret";
+  writeFileSync(join(outside, "data.csv"), `${SECRET}\n`);
+  mkdirSync(join(outside, "sub"), { recursive: true });
+  writeFileSync(join(outside, "sub", "nested.csv"), `${SECRET}\n`);
+
+  // The hook runs after each linked file passed its containment check and before it is opened:
+  // the window a session would race. It swaps data.csv for a symlink out (final component), and
+  // the sub folder for a symlink to an outside folder holding a file of the same name (parent).
+  let checkout = "";
+  const swapped: string[] = [];
+  const { post, publish, manifest, archivedPage, root, checkout: dir } = setup({
+    beforeCompanionOpen: (path) => {
+      const real = realpathSync(checkout);
+      if (path === join(real, "data.csv")) {
+        unlinkSync(path);
+        symlinkSync(join(outside, "data.csv"), path);
+        swapped.push("data.csv");
+      } else if (path === join(real, "sub", "nested.csv")) {
+        renameSync(join(checkout, "sub"), join(checkout, "sub-moved"));
+        symlinkSync(join(outside, "sub"), join(checkout, "sub"));
+        swapped.push("sub/nested.csv");
+      }
+    },
+  });
+  checkout = dir;
+  mkdirSync(join(checkout, "sub"), { recursive: true });
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "sub", "nested.csv"), "c,d\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><a href=\"data.csv\">data</a> <a href=\"sub/nested.csv\">nested</a> <a href=\"kept.csv\">kept</a></body></html>";
+  const report = await post("race.html", html, "Swapped before open");
+  assert.deepEqual(swapped.sort(), ["data.csv", "sub/nested.csv"], "both swaps happened inside the window");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "neither swapped file was stored");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["data.csv", "sub/nested.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a> <a>nested<\/a> <a href="kept\.csv">kept<\/a>/);
+  const contents = readdirSync(join(root, PRODUCER, archiveId), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
 test("a stored companion replaced by a symlink to an outside file is never followed: unlinked as missing, its bytes absent", async () => {
   const { post, publish, manifest, archivedPage, root, checkout } = setup();
   const outside = mkdtempSync(join(tmpdir(), "mission-stored-companion-outside-"));
@@ -885,6 +954,183 @@ test("a stored companion replaced by a symlink to an outside file is never follo
     .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
   assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
   assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a companions store replaced by a symlink to an outside directory is never listed or read at publish", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = mkdtempSync(join(tmpdir(), "mission-companion-store-outside-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "companions-store-swapped-for-a-symlink-secret";
+  writeFileSync(join(outside, "data.csv"), `${SECRET}\n`);
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("store-swap.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Store swapped");
+  const store = join(reportDocumentDir(report.id, home), "companions");
+  rmSync(store, { recursive: true, force: true });
+  symlinkSync(outside, store);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: [], missing: ["data.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a>/);
+  const contents = readdirSync(join(root, PRODUCER, archiveId), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a companions store swapped for a symlink to a large outside tree opens only the linked paths, and reads none of it", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  const outside = mkdtempSync(join(tmpdir(), "mission-companion-store-tree-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  // A large tree with a file at the linked name: publishing must neither walk it nor read it.
+  for (let d = 0; d < 40; d += 1) {
+    mkdirSync(join(outside, `d${d}`));
+    for (let f = 0; f < 125; f += 1) writeFileSync(join(outside, `d${d}`, `f${f}.txt`), "x");
+  }
+  writeFileSync(join(outside, "data.csv"), "outside-tree-secret\n");
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("tree-swap.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Store swapped for a tree");
+  const store = join(reportDocumentDir(report.id, home), "companions");
+  let opened = 0;
+  const read = await readStoredReportCompanions(report, home, {
+    beforeOpen: () => {
+      opened += 1;
+      if (opened === 1) {
+        renameSync(store, `${store}-moved`);
+        symlinkSync(outside, store);
+      }
+    },
+  });
+  assert.deepEqual(read, [], "the file reached through the swapped store is not read");
+  assert.equal(opened, 1, "only the one linked path is opened: the store is never listed");
+
+  // Through the route, with the swap left in place: the store is a symlink, so nothing is read.
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  assert.deepEqual(companionsOf(manifest(reportArchiveId(PRODUCER, report.id, report.createdAt))), { stored: [], missing: ["data.csv"] });
+});
+
+test("a store of 128 files in separate branches eight directories deep is read in full and publishes with nothing missing", async () => {
+  const { post, publish, manifest, root, checkout } = setup();
+  // Each file sits at the end of its own chain of eight directories: 128 files and 1,024
+  // directories, more entries than any fixed walk bound tied to the file count would allow.
+  const names = Array.from({ length: REPORT_LIMITS.companionFiles }, (_, index) =>
+    `b${index}/${Array.from({ length: 7 }, (_, depth) => `l${depth}`).join("/")}/f.txt`);
+  for (const name of names) {
+    mkdirSync(join(checkout, dirname(name)), { recursive: true });
+    writeFileSync(join(checkout, name), name);
+  }
+  const report = await post("deep-store.html", `<html><body>${names.map((name) => `<a href="${name}">x</a>`).join("")}</body></html>`, "Deep store");
+  const read = await readStoredReportCompanions(report, home);
+  assert.deepEqual(read.map((companion) => companion.path), [...names].sort(), "every stored file is read");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.equal(stored.length, REPORT_LIMITS.companionFiles);
+  assert.deepEqual(stored, [...names].sort().map((name) => `report/${name}`));
+  assert.deepEqual(missing, [], "no stored file's link is removed");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report directory replaced by a symlink to an outside directory never supplies companions at publish", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = mkdtempSync(join(tmpdir(), "mission-report-dir-outside-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "report-directory-swapped-for-a-symlink-secret";
+  const html = "<html><body><a href=\"data.csv\">data</a></body></html>";
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("dir-swap.html", html, "Report directory swapped");
+  const reportDir = reportDocumentDir(report.id, home);
+  // The outside directory looks exactly like a report's: the same document, and a companions
+  // store whose data.csv holds bytes from outside.
+  mkdirSync(join(outside, "companions"), { recursive: true });
+  writeFileSync(join(outside, "dir-swap.html"), html);
+  writeFileSync(join(outside, "companions", "data.csv"), `${SECRET}\n`);
+  rmSync(reportDir, { recursive: true, force: true });
+  symlinkSync(outside, reportDir);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: [], missing: ["data.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a>/);
+  const contents = readdirSync(join(root, PRODUCER, archiveId), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report directory swapped for a symlink between listing and reading is never read, even when the swap is undone after the open", async () => {
+  const { post, checkout } = setup();
+  const outside = mkdtempSync(join(tmpdir(), "mission-report-dir-race-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "report-directory-race-secret";
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("dir-race.html", "<html><body><a href=\"data.csv\">d</a></body></html>", "Report directory race");
+  const reportDir = reportDocumentDir(report.id, home);
+  mkdirSync(join(outside, "companions"), { recursive: true });
+  writeFileSync(join(outside, "companions", "data.csv"), `${SECRET}\n`);
+  const swapIn = () => {
+    renameSync(reportDir, `${reportDir}-moved`);
+    symlinkSync(outside, reportDir);
+  };
+  const swapBack = () => {
+    unlinkSync(reportDir);
+    renameSync(`${reportDir}-moved`, reportDir);
+  };
+
+  const left = await readStoredReportCompanions(report, home, { beforeOpen: swapIn });
+  assert.deepEqual(left, [], "left in place, the path resolves outside the reports store");
+  swapBack();
+  const undone = await readStoredReportCompanions(report, home, { beforeOpen: swapIn, afterOpen: swapBack });
+  assert.deepEqual(undone, [], "undone after the open, the file at the path is not the one the handle holds");
+  assert.deepEqual((await readStoredReportCompanions(report, home)).map((companion) => companion.path), ["data.csv"]);
+});
+
+test("a stored directory swapped for a symlink between listing and reading is never read, even when the swap is undone after the open", async () => {
+  const { post, checkout } = setup();
+  const outside = mkdtempSync(join(tmpdir(), "mission-companion-parent-outside-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "stored-parent-directory-swapped-secret";
+  mkdirSync(join(outside, "data"), { recursive: true });
+  writeFileSync(join(outside, "data", "nested.json"), `{"secret":"${SECRET}"}\n`);
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  writeFileSync(join(checkout, "data", "nested.json"), "{}\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("parent-swap.html", "<html><body><a href=\"data/nested.json\">n</a> <a href=\"kept.csv\">k</a></body></html>", "Parent swapped");
+  const store = join(reportDocumentDir(report.id, home), "companions");
+  const swapIn = () => {
+    renameSync(join(store, "data"), join(store, "data-moved"));
+    symlinkSync(join(outside, "data"), join(store, "data"));
+  };
+  const swapBack = () => {
+    unlinkSync(join(store, "data"));
+    renameSync(join(store, "data-moved"), join(store, "data"));
+  };
+  const isNested = (path: string) => path.endsWith(join("data", "nested.json"));
+
+  // Swapped in just before the open and left in place: the path now resolves outside the store.
+  const left = await readStoredReportCompanions(report, home, { beforeOpen: (path) => { if (isNested(path)) swapIn(); } });
+  assert.deepEqual(left.map((companion) => companion.path), ["kept.csv"]);
+  assert.ok(left.every((companion) => !companion.bytes.toString("utf8").includes(SECRET)));
+  swapBack();
+
+  // Swapped in before the open and undone right after it: the path resolves inside again, but the
+  // file there is not the one the handle holds.
+  const undone = await readStoredReportCompanions(report, home, {
+    beforeOpen: (path) => { if (isNested(path)) swapIn(); },
+    afterOpen: (path) => { if (isNested(path)) swapBack(); },
+  });
+  assert.deepEqual(undone.map((companion) => companion.path), ["kept.csv"]);
+  assert.ok(undone.every((companion) => !companion.bytes.toString("utf8").includes(SECRET)));
+
+  // Untouched, the same store reads both files.
+  assert.deepEqual((await readStoredReportCompanions(report, home)).map((companion) => companion.path), ["data/nested.json", "kept.csv"]);
 });
 
 test("a stored companion that is gone by publish time is unlinked as missing, as before", async () => {

@@ -342,13 +342,19 @@ export function unlinkMissingCompanions(
     }
     return true;
   });
-  let out = html;
-  for (const span of spans.sort((a, b) => b.start - a.start)) {
+  // One pass over the document: the retained text between removed attributes is collected in
+  // order and joined once, so the work stays linear however many links a page drops. Each cut
+  // also takes the whitespace before the attribute, back to the end of the previous cut.
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const span of spans.sort((a, b) => a.start - b.start)) {
     let start = span.start;
-    while (start > 0 && /\s/.test(out[start - 1]!)) start -= 1;
-    out = out.slice(0, start) + out.slice(span.end);
+    while (start > cursor && /\s/.test(html[start - 1]!)) start -= 1;
+    parts.push(html.slice(cursor, start));
+    cursor = span.end;
   }
-  return { html: out, unlinked: [...unlinked].sort() };
+  parts.push(html.slice(cursor));
+  return { html: parts.join(""), unlinked: [...unlinked].sort() };
 }
 
 // ---------------------------------------------------------------------------

@@ -92,6 +92,17 @@ test("an attribute that mixes a missing file with an escaping or fetching refere
   assert.ok(codes.includes("external_url"), JSON.stringify(codes));
 });
 
+test("unlinking thousands of missing links in one pass keeps every other byte, and adjacent removed attributes collapse cleanly", () => {
+  const count = 20_000;
+  const links = Array.from({ length: count }, (_, index) => `<a href="m${index}.csv">m${index}</a>`).join("\n");
+  const html = page(`${links}\n<a href="kept.csv" style="background:url(gone.png)">both</a>`);
+  const result = unlinkMissingCompanions(html, new Set(["kept.csv"]));
+  assert.equal(result.unlinked.length, count + 1);
+  const expected = html.replace(/ href="m\d+\.csv"/g, "").replace(' style="background:url(gone.png)"', "");
+  assert.equal(result.html, expected, "every missing link removed, every other byte kept");
+  assert.match(result.html, /<a href="kept\.csv">both<\/a>/);
+});
+
 test("a <style> element that names an unstored file is not rewritten, and the checker still refuses it", () => {
   const html = page("<p>x</p>", "<style>.x{background:url(gone.png)}</style>");
   const result = unlinkMissingCompanions(html, new Set());

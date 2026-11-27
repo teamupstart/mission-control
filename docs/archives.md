@@ -418,9 +418,20 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
 - **Companions are stored when the report is posted.** The files the document links to inside
   its own directory (for example `variants.csv` or `data/recording.json` beside
   `docs/reports/<slug>/report.html`) are copied with it into
-  `<state home>/reports/<id>/companions/`, up to 128 files and 16 MiB in all. A Markdown
+  `<state home>/reports/<id>/companions/`, up to 128 files and 16 MiB in all, looked up from at most the first 512 linked paths in sorted order. A Markdown
   document's links are read from its rendered page. A linked file that is missing, outside the
   checkout, not a regular file or past those bounds is left out; it never refuses the report.
+  Companions follow the scout capture's containment rule: no path component may be a symbolic
+  link, and the file opened must be the file that was checked (opened without following a final
+  symlink, and its device and inode compared), so a file or folder swapped for a symlink while
+  the report is being posted is left out rather than read. Publishing reads the store under the
+  same rule: only the `reports` store is canonicalized, the report's own directory and its
+  `companions` store beneath it must each be a real directory, and each opened file must still
+  resolve inside that store to the same device and inode, so a stored directory swapped for a symlink is
+  never followed, even if the swap is undone straight after the open. The store is never
+  listed: publishing opens only the paths the stored page links to, capped at the same 512
+  lookups as posting, so every stored companion is read however deep its directories, and a
+  store swapped for a symlink to a large tree cannot stall a publish.
   A link that climbs out of the document's directory is not a companion. Neither is a sibling
   named `report.html`, the name the page itself takes in the archive, nor any path beneath it
   (`report.html/data.csv`): from a document with any

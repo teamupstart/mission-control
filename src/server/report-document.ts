@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import { open, readdir } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { lstat, open, realpath, stat } from "node:fs/promises";
+import { basename, dirname, join, sep } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
@@ -66,48 +66,69 @@ export function isUnderPrimaryReport(path: string): boolean {
 }
 
 /**
- * The companions stored with `report`, sorted by path, so a page published twice lists them in
- * the same order. A report posted before companions were stored has none. Entries that are not
- * regular files, or whose path an archive could not hold, are skipped, and reads stop at the
- * bounds the post enforced. A stored file that cannot be opened or read throws: it was stored, so
- * publishing without it would lose it.
+ * The companions stored with `report`, in sorted path order, so a page published twice lists them
+ * in the same order. A report posted before companions were stored has none.
+ *
+ * The store is never listed. The candidates are exactly the paths posting looked up: the stored
+ * document's linked paths, capped at `REPORT_LIMITS.companionLookups`. Every stored companion is
+ * one of them, so a valid store is always read in full however deep its directories, and the work
+ * is bounded by that cap whatever is put in the store. A candidate that is not there is skipped,
+ * and its link is unlinked as missing. A stored file that cannot be opened or read throws: it was
+ * stored, so publishing without it would lose it.
  */
 export async function readStoredReportCompanions(
-  report: Pick<ReportItem, "id">,
+  report: Pick<ReportItem, "id" | "document">,
   stateDir?: string,
+  hooks: StoredCompanionReadHooks = {},
 ): Promise<ReportCompanion[]> {
-  if (!REPORT_ID_PATTERN.test(report.id)) return [];
-  const root = join(reportDocumentDir(report.id, stateDir), REPORT_COMPANIONS_DIR);
-  const paths: string[] = [];
-  const visit = async (relative: string): Promise<void> => {
-    const entries = await readdir(relative ? join(root, relative) : root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT" || error.code === "ENOTDIR") return [];
-      throw error;
-    });
-    for (const entry of entries) {
-      const path = relative ? `${relative}/${entry.name}` : entry.name;
-      if (validateArchivePath(`${ARCHIVE_REPORT_DIR}/${path}`) === null) continue;
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile()) paths.push(path);
-    }
+  if (!REPORT_ID_PATTERN.test(report.id) || !report.document) return [];
+  const absent = (error: NodeJS.ErrnoException): null => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw error;
   };
-  await visit("");
+  // Only the reports store is canonicalized. Below it, the report's own directory and its
+  // `companions` store must each be a real directory: a symlink at either would hand every read
+  // beneath it to wherever it points. Every file read is then held to this root, which no later
+  // swap can move.
+  const reportsStore = await realpath(dirname(reportDocumentDir(report.id, stateDir))).catch(absent);
+  if (!reportsStore) return [];
+  const reportDir = join(reportsStore, report.id);
+  const reportInfo = await lstat(reportDir).catch(absent);
+  if (!reportInfo?.isDirectory()) return [];
+  const root = join(reportDir, REPORT_COMPANIONS_DIR);
+  const rootInfo = await lstat(root).catch(absent);
+  if (!rootInfo?.isDirectory()) return [];
+  const document = await readStoredReportDocument(report, stateDir);
+  const candidates = linkedCompanionPaths(document.kind, document.bytes).slice(0, REPORT_LIMITS.companionLookups);
   const companions: ReportCompanion[] = [];
   let total = 0;
-  for (const path of paths.sort()) {
+  for (const path of candidates) {
     if (companions.length >= REPORT_LIMITS.companionFiles) break;
-    const handle = await open(join(root, ...path.split("/")), constants.O_RDONLY | constants.O_NOFOLLOW)
+    const filePath = join(root, ...path.split("/"));
+    await hooks.beforeOpen?.(filePath);
+    const handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW)
       .catch((error: NodeJS.ErrnoException) => {
-        // Gone since it was listed, or a symlink put in its place: it is not a stored companion,
-        // so its link is unlinked as missing. Any other failure (permissions, I/O) is thrown, so
-        // Publish answers 500 rather than archiving, for ever, a page without a file it holds.
-        if (error.code === "ENOENT" || error.code === "ELOOP") return null;
+        // Not stored (never, or gone since), a symlink put in its place, or a path through a
+        // file: it is not a stored companion, so its link is unlinked as missing. Any other
+        // failure (permissions, I/O) is thrown, so Publish answers 500 rather than archiving, for
+        // ever, a page without a file it holds.
+        if (error.code === "ENOENT" || error.code === "ELOOP" || error.code === "ENOTDIR") return null;
         throw error;
       });
     if (!handle) continue;
     try {
+      await hooks.afterOpen?.(filePath);
       const info = await handle.stat();
       if (!info.isFile() || info.size > REPORT_LIMITS.companionBytes - total) continue;
+      // `O_NOFOLLOW` guards only the last component: a directory on the way swapped for a
+      // symlink is followed by `open`. So the handle is checked after the fact. The path must
+      // still resolve inside the store, and the file there must be the one that was opened. A
+      // handle reached through a swapped directory fails one or the other, whether or not the
+      // swap was undone in between, and is left out rather than read.
+      const real = await realpath(filePath).catch(() => null);
+      if (!real || !real.startsWith(`${root}${sep}`)) continue;
+      const atPath = await stat(real).catch(() => null);
+      if (!atPath || atPath.dev !== info.dev || atPath.ino !== info.ino) continue;
       const { bytes, exceeded } = await readFileWithinCap(handle, info.size);
       if (exceeded) continue;
       total += bytes.byteLength;
@@ -117,6 +138,15 @@ export async function readStoredReportCompanions(
     }
   }
   return companions;
+}
+
+/**
+ * Test seams around each stored companion's open, for the window a directory swap would race.
+ * The daemon passes none.
+ */
+export interface StoredCompanionReadHooks {
+  beforeOpen?: (path: string) => void | Promise<void>;
+  afterOpen?: (path: string) => void | Promise<void>;
 }
 
 /** Why a stored document could not be read, with the status a route answers. */

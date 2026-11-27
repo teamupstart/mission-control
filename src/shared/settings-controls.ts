@@ -239,7 +239,7 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "board-card",
     label: "Board card",
-    description: "Choose which items a session card draws in every Board column, how a session shows its background sub-agents, and how a resident's card shows its name.",
+    description: "Choose which items a session card draws in every Board column, how a session shows its background sub-agents, how a card shows its call sign while Always-on listens, and how a resident's card shows its name.",
     category: "display",
     anchor: "display/board-card",
     // "hide"/"show"/"customize" are what an operator types who wants the panel and has not
@@ -250,6 +250,8 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "card",
       "tile",
       "hide",
+      "call sign",
+      "always-on",
       "show",
       "customize",
       "items",

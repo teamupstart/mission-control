@@ -15,7 +15,7 @@ import { FOREMAN_MODEL_ROLES } from "@shared/foreman-models.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { PAUSE_CARD_CONTROLS, PAUSE_CONSOLE_CONTROLS } from "@shared/pause.ts";
 import {
-  BackgroundAgentsStyleSchema, BlockedPlacementSchema, ConversationViewSchema, CostConfigPatchSchema,
+  BackgroundAgentsStyleSchema, BlockedPlacementSchema, CallSignCardStyleSchema, ConversationViewSchema, CostConfigPatchSchema,
   ForemanConfigPatchSchema, ForemanConfigSchema, HarnessesConfigPatchSchema, InspectorConfigPatchSchema, LayoutModeSchema,
   LineDensitySchema, LlmConfigPatchSchema, RESIDENT_CARD_NAME_STYLES, ResidentPlacementSchema,
   ShippingConfigPatchSchema, ShippingConfigSchema, SkillsConfigPatchSchema, TaskKindCardStyleSchema, TaskKindHeaderStyleSchema,
@@ -31,6 +31,7 @@ import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO } from "@shared/task.ts";
 import { appConfigRevision } from "./db.ts";
 import { BACKGROUND_REASONING_EFFORT_FLAG_ID, RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { getCostConfig } from "./cost.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { getHarnessesConfig } from "./harnesses.ts";
@@ -52,6 +53,7 @@ import { bindTypedSettings, choices, field } from "./typed-settings.ts";
 const inspectorIsPrivate = () => getInspectorConfig().mode !== "live";
 const effortEnabled = () => featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID);
 const residentCardNamesEnabled = () => featureEnabled(RESIDENT_CARD_NAMES_FLAG_ID);
+const voiceEnabled = () => featureEnabled(VOICE_FLAG);
 
 type Apply<Schema extends z.ZodType, Read extends () => unknown> = (patch: z.output<Schema>) => ReturnType<Read>;
 
@@ -114,6 +116,10 @@ const uiFields = [
   uiField("taskKindCard", "board-card", { label: "Task kind on cards", choices: choices(TaskKindCardStyleSchema.options) }),
   uiField("taskKindHeader", "conversation-header", { label: "Task kind in conversation header", choices: choices(TaskKindHeaderStyleSchema.options) }),
   uiField("backgroundAgentsStyle", "board-card", { label: "Background agents style", choices: choices(BackgroundAgentsStyleSchema.options) }),
+  // Offered while voice is on, the only time an Always-on card can draw a call sign.
+  uiField("callSignCardStyle", "board-card", {
+    label: "Call sign on Always-on cards", choices: choices(CallSignCardStyleSchema.options), available: voiceEnabled,
+  }),
   ...DISPLAY_ITEMS.map(item => membership("hiddenDisplayItems", item.id,
     item.group === "card" ? "board-card" : item.group === "conversation" ? "conversation-header" : "working-indicator",
     `Hide ${item.label}`)),

@@ -16,6 +16,7 @@ import { startShaperSignIns } from "./shaping/sign-in/index.ts";
 import { wireShapingSignInEvents } from "./shaping/sign-in/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
+import { allocateCallSign } from "./voice/call-sign-allocation.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { onUiSkinChanged, onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
@@ -382,6 +383,10 @@ tasks.useMergeQuestions({
   },
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
+// A task dispatched without a call sign takes a distinctive one as it launches, whatever the
+// `voice` flag says, so the name is already stable when voice is turned on: chosen against the
+// roster (computed with the flag off too) and every unfinished task's name, inside the claim.
+tasks.useCallSignAllocation((task) => allocateCallSign(task, voiceNames.roster(), registry.listTasks()));
 const queues = new QueueManager(registry);
 // Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
 // or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,

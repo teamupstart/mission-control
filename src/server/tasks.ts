@@ -1247,6 +1247,7 @@ export class TaskManager {
   private residentLaunch?: NonNullable<TaskDispatcherDeps["residentLaunch"]>;
   /** The Library's Persona reader, installed by the daemon once `PersonaManager` exists. */
   private personaLookup?: PersonaLookup;
+  private callSignAllocation?: (task: Task) => string | null;
   private residentMcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>;
   /**
    * Where a completion is announced to the task-source write-back ledger, when the daemon
@@ -1325,6 +1326,8 @@ export class TaskManager {
       residentProfileId: (task) => residentRunForTask(task.id)?.run.profileId ?? null,
       // Late-bound for the same reason: a task naming a Persona is refused without a reader.
       persona: (id) => this.personaLookup?.(id) ?? null,
+      // Late-bound: the voice name registry the choice reads is the daemon's, wired at start.
+      assignCallSign: (task) => this.callSignAllocation?.(task) ?? null,
     });
     // Only unchanged inherited rows are evidence of a lost binding. A task created,
     // assigned, or displaced during restore belongs to this daemon's live lifecycle.
@@ -1797,6 +1800,14 @@ export class TaskManager {
   /** Install the Library's Persona reader, which task creation, editing and launch all ask. */
   registerPersonaLookup(lookup: PersonaLookup): void {
     this.personaLookup = lookup;
+  }
+
+  /**
+   * Install the automatic call sign choice a launch asks for a task dispatched without one
+   * (`allocateCallSign`). Absent, as in a focused test's bare manager, no task is named.
+   */
+  useCallSignAllocation(allocate: ((task: Task) => string | null) | undefined): void {
+    this.callSignAllocation = allocate;
   }
 
   /** Why a task of this kind cannot launch with this Persona, or null when it can. */
@@ -5876,8 +5887,11 @@ export class TaskManager {
       const delivered = r.submitVerified || !shaping.section ? shaping : launchUnconfirmed(shaping);
       const cur = this.registry.getTask(t.id) ?? t;
       const now = Date.now();
+      // Handed to an agent without a call sign, it takes one in this claim, as a launch does.
+      const callSign = this.callSignAllocation?.(cur) ?? null;
       this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section, {
         ...cur,
+        ...(callSign ? { callSign } : {}),
         status: "running",
         sessionId: s.id,
         dispatchedAt: now,

@@ -1,7 +1,10 @@
 import { useCallback } from "react";
 import { RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import {
   BACKGROUND_AGENTS_STYLES,
+  CALL_SIGN_CARD_STYLES,
   RESIDENT_CARD_NAME_STYLES,
   residentCardNameStylesOf,
   TASK_KIND_CARD_STYLES,
@@ -9,6 +12,7 @@ import {
 } from "@shared/protocol.ts";
 import type {
   BackgroundAgentsStyle,
+  CallSignCardStyle,
   ResidentCardNameStyle,
   TaskKindCardStyle,
   TaskKindHeaderStyle,
@@ -155,10 +159,37 @@ const BACKGROUND_AGENTS_COPY: Record<BackgroundAgentsStyle, Omit<DisplayChoiceOp
 };
 
 /**
+ * Where an Always-on card draws its call sign beside the session's title. Each says what it
+ * costs the card, since that is what the operator weighs on a dense board.
+ */
+const CALL_SIGN_CARD_COPY: Record<CallSignCardStyle, Omit<DisplayChoiceOption<CallSignCardStyle>, "id">> = {
+  subtitle: {
+    label: "Subtitle line",
+    description: "A muted line under the title says the name to use: \"Say Marlin\". The title keeps its whole width; each card grows by one short line.",
+  },
+  badge: {
+    label: "Trailing badge",
+    description: "A pill after the title, before the jump key. No extra height; a long title is cut a little sooner.",
+  },
+  chip: {
+    label: "Leading chip",
+    description: "A chip before the title, so the name is the first thing you read. No extra height; the title starts further right.",
+  },
+  tab: {
+    label: "Edge tab",
+    description: "A tab on the card's top border, beside the task type tab. Takes no room inside the card.",
+  },
+  off: {
+    label: "Off",
+    description: "Cards show the title alone. The call sign stays saved and voice still routes to it.",
+  },
+};
+
+/**
  * Each choice's `UiConfig` key with the values that key stores, so a key and its styles travel
  * together: the board card's key accepts only card styles, and the header's only header styles.
  */
-export type DisplayChoiceValues = Pick<UiConfig, "taskKindHeader" | "taskKindCard" | "backgroundAgentsStyle">;
+export type DisplayChoiceValues = Pick<UiConfig, "taskKindHeader" | "taskKindCard" | "backgroundAgentsStyle" | "callSignCardStyle">;
 export type DisplayChoiceKey = keyof DisplayChoiceValues;
 
 export interface DisplayChoice<K extends DisplayChoiceKey = DisplayChoiceKey> {
@@ -167,6 +198,8 @@ export interface DisplayChoice<K extends DisplayChoiceKey = DisplayChoiceKey> {
   label: string;
   description: string;
   options: readonly DisplayChoiceOption<DisplayChoiceValues[K]>[];
+  /** A preview flag the choice is offered behind: hidden, the picker draws nothing. */
+  flag?: FeatureFlagId;
 }
 
 /**
@@ -193,6 +226,15 @@ export const DISPLAY_CHOICES: readonly AnyDisplayChoice[] = [
     label: "Background sub-agents",
     description: "How a session shows the sub-agents it launched in the background, on its card and in its conversation.",
     options: BACKGROUND_AGENTS_STYLES.map((id) => ({ id, ...BACKGROUND_AGENTS_COPY[id] })),
+  },
+  {
+    key: "callSignCardStyle",
+    group: "card",
+    label: "Call sign",
+    description:
+      "How a card shows the name voice answers to while Always-on is listening. The card keeps the session's title either way. In Push-to-talk the call sign is the card's title whatever this says.",
+    options: CALL_SIGN_CARD_STYLES.map((id) => ({ id, ...CALL_SIGN_CARD_COPY[id] })),
+    flag: VOICE_FLAG,
   },
   {
     key: "taskKindHeader",

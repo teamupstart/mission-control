@@ -7,6 +7,7 @@ import {
   seedHiddenDisplayItems,
   TASK_KIND_CARD_STYLES,
   BACKGROUND_AGENTS_STYLES,
+  CALL_SIGN_CARD_STYLES,
   residentCardNameStylesOf,
   TASK_KIND_HEADER_STYLES,
   UI_CONFIG_DEFAULTS,
@@ -21,6 +22,7 @@ import type {
   BlockedPlacement,
   TaskKindCardStyle,
   BackgroundAgentsStyle,
+  CallSignCardStyle,
   TaskKindHeaderStyle,
   UiConfig,
 } from "@shared/protocol.ts";
@@ -151,6 +153,13 @@ function parseBackgroundAgentsStyle(raw: string | undefined): BackgroundAgentsSt
     : UI_CONFIG_DEFAULTS.backgroundAgentsStyle;
 }
 
+/** An unknown or missing call sign style is Subtitle line, exactly as `UiConfigSchema` reads it. */
+function parseCallSignCardStyle(raw: string | undefined): CallSignCardStyle {
+  return (CALL_SIGN_CARD_STYLES as readonly string[]).includes(raw ?? "")
+    ? (raw as CallSignCardStyle)
+    : UI_CONFIG_DEFAULTS.callSignCardStyle;
+}
+
 function parseResidentCardNameStyles(raw: unknown): UiConfig["residentCardNameStyles"] {
   return Array.isArray(raw) ? residentCardNameStylesOf(raw) : [...UI_CONFIG_DEFAULTS.residentCardNameStyles];
 }
@@ -192,6 +201,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),
     backgroundAgentsStyle: parseBackgroundAgentsStyle(raw?.backgroundAgentsStyle),
+    callSignCardStyle: parseCallSignCardStyle(raw?.callSignCardStyle),
     residentCardNameStyles: parseResidentCardNameStyles(raw?.residentCardNameStyles),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,
     alerts: {

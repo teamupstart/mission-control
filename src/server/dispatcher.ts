@@ -408,6 +408,12 @@ export class Dispatcher {
        */
       persona?: PersonaLookup;
       /**
+       * The call sign a task launching without one takes (`allocateCallSign`), or null to leave
+       * it unnamed. Asked inside the synchronous claim below, so simultaneous launches each read
+       * the names the ones before them took. Absent, no task is named.
+       */
+      assignCallSign?: (task: Task) => string | null;
+      /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
        * A seam only so a focused test can prove the ORDERING - that a base failure happens
@@ -498,8 +504,13 @@ export class Dispatcher {
     let expectedWorkUnit: TerminalLaunchWorkUnit | null = null;
     let launchSucceeded = false;
     noteDispatchStarted(taskId);
+    // A task dispatched without a call sign takes one now, in the same write that claims it, so
+    // nothing can launch between the choice and the row that holds it. Kept by every later
+    // attempt: the row already has it.
+    const assignedCallSign = this.deps.assignCallSign?.(this.registry.getTask(taskId) ?? task) ?? null;
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
+      ...(assignedCallSign ? { callSign: assignedCallSign } : {}),
       status: "dispatching",
       error: null,
       // A new attempt: whatever the last one failed of is no longer this task's state, and a

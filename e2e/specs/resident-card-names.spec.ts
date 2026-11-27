@@ -105,7 +105,9 @@ test("a resident's card keeps its call sign as the title and adds its profile na
     for (const label of ["Subtitle", "Expanding chip"]) {
       await expect(picker(page).getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
     }
-    const preview = displayPanel(page).locator(".board-card-preview-stage").first();
+    // The resident's preview card: with Voice on the stage also draws an ordinary session's card
+    // for the Call sign choice, after this one.
+    const preview = displayPanel(page).locator(".board-card-preview-stage").first().locator(".tile").first();
     await expect(preview.locator(".tile-name")).toHaveText('"Scout"');
     await expect(preview.getByText("Triage Bot", { exact: true })).toHaveCount(0);
 

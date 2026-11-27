@@ -29,7 +29,8 @@ import { Tooltip } from "../Tooltip.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
-import { useDisplayItems } from "../../lib/board-card.ts";
+import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
+import { CallSignMark } from "./CallSignMark.tsx";
 import { ResidentChip } from "../../residents/ResidentChip.tsx";
 import { residentAccentStyle, residentActionName, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
 
@@ -62,11 +63,18 @@ export function RailRow({
   pipelineCommissionRun = null,
   onOpenPipelineCommission,
   callSign,
+  callSignElement,
   resident = null,
   stall = null,
 }: {
   session: Session;
   callSign?: string;
+  /**
+   * The call sign drawn beside the row's title while Always-on listens, as the card draws it
+   * (`SessionTile`'s `callSignElement`). The rail has room for one compact form only, so every
+   * Call sign style but Off draws it.
+   */
+  callSignElement?: string;
   /**
    * The ⌘-number jump chord this rail POSITION answers to, or null when it holds no slot -
    * a thirteenth row, or an operator with the display item switched off.
@@ -169,7 +177,8 @@ export function RailRow({
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
   const ordinaryName = session.name || resident?.name || "(unnamed)";
   const cardName = residentActionName(resident, ordinaryName, callSign);
-  const description = `${cardName} - ${st.label}${priority ? ". Priority session" : ""}${
+  const callSignShown = useDisplayChoice("callSignCardStyle") !== "off" ? callSignElement : undefined;
+  const description = `${cardName}${callSignShown ? `. Call sign ${callSignShown}` : ""} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;
   const keyshortcuts = [shortcutChord && ariaKeyshortcuts(shortcutChord), sectionNavigation && "Home"]
@@ -200,9 +209,10 @@ export function RailRow({
       >
         <AgentDot agent={session.agent} />
         <Tooltip label={description}>
-          <span className={resident?.sharedListeningTitle ? "rail-name rail-name-shared" : "rail-name"}>
+          <span className={`rail-name${resident?.sharedListeningTitle ? " rail-name-shared" : ""}${callSignShown ? " has-call-sign" : ""}`}>
             {residentMark && <ResidentChip mark={residentMark} tooltip={false} />}
-            {cardName}
+            {callSignShown ? <span className="rail-name-text">{cardName}</span> : cardName}
+            {callSignShown && <CallSignMark name={callSignShown} style="rail" />}
           </span>
         </Tooltip>
         <span className="rail-sub">{firstFact ? `${firstFact.label}: ${firstFact.value}` : session.goal?.text ?? session.activity ?? ""}</span>

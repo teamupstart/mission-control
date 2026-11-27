@@ -242,6 +242,11 @@ async function reviewLocallyAndPublish(page: Page, daemon: DaemonHandle, options
   // attempts"), a race that predates this phase. Holding the read back keeps every observation
   // after the capture, so no case here depends on when the poll happens to tick.
   writeGhPullRequests(daemon.home, []);
+  // The same capture also refuses when the session's transcript moves between its two samples,
+  // and the agent is still answering the delivered Pull Request action. Announce only once its
+  // turn has ended, as the real Stop hook does, so a slow runner cannot overlap the two.
+  await expect.poll(async () => (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
+    .find((item) => item.id === session!.id)?.state, { timeout: 60_000 }).toBe("idle");
   await announcePullRequest(daemon, session!.id);
   await expect.poll(async () => (await detail()).run.status, { timeout: 120_000 }).toBe("waiting_for_inspector");
   writeGhPullRequests(daemon.home, [{

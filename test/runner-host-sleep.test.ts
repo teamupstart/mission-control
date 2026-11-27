@@ -11,21 +11,48 @@ import type {
 
 // Every model runner whose timeout became awake-time (issue #1734), driven through a sleep it
 // cannot cause: the host-suspend clock is scripted, everything else is the real runner. The
-// subprocess runners get fake CLIs that never answer; the SDK runners get fake SDKs that never
-// answer. Both binaries are resolved from the environment, so they are in place before the
-// imports below.
+// subprocess runners get fake CLIs and the SDK runners get fake SDKs. By default none of them
+// answers; `answerAfterMs` makes each answer once that long has passed. Both binaries are
+// resolved from the environment, so they are in place before the imports below.
 const home = mkdtempSync(join(tmpdir(), "runner-host-sleep-"));
 after(() => rmSync(home, { recursive: true, force: true }));
 
-function hangingCli(name: string): { bin: string; pidFile: string } {
+/** When set, every fake answers this long after its call starts; otherwise it never answers. */
+let answerAfterMs: number | null = null;
+const ANSWER = "answered after the sleep";
+const answerAfterFile = join(home, "answer-after-seconds");
+
+function setAnswerAfter(ms: number | null): void {
+  answerAfterMs = ms;
+  if (ms === null) rmSync(answerAfterFile, { force: true });
+  else writeFileSync(answerAfterFile, String(ms / 1_000));
+}
+
+/** A fake CLI that hangs, or prints `answer` and exits 0 once the answer delay has passed. */
+function fakeCli(name: string, answer: string): { bin: string; pidFile: string } {
   const bin = join(home, name);
   const pidFile = join(home, `${name}.pid`);
-  writeFileSync(bin, `#!/bin/sh\nprintf '%s' "$$" > "${pidFile}"\nexec sleep 30\n`);
+  writeFileSync(bin, `#!/bin/sh
+printf '%s' "$$" > "${pidFile}"
+cat > /dev/null
+if [ -f "${answerAfterFile}" ]; then
+  sleep "$(cat "${answerAfterFile}")"
+  cat <<'ANSWER'
+${answer}
+ANSWER
+  exit 0
+fi
+exec sleep 30
+`);
   chmodSync(bin, 0o755);
   return { bin, pidFile };
 }
-const codexCli = hangingCli("codex");
-const claudeCli = hangingCli("claude");
+const codexCli = fakeCli("codex", [
+  '{"type":"thread.started","thread_id":"thread-sleep"}',
+  `{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"${ANSWER}"}}`,
+  '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}',
+].join("\n"));
+const claudeCli = fakeCli("claude", `{"type":"result","subtype":"success","is_error":false,"result":"${ANSWER}"}`);
 process.env.MISSION_CODEX_BIN = codexCli.bin;
 process.env.MISSION_CLAUDE_BIN = claudeCli.bin;
 
@@ -72,6 +99,8 @@ interface RunnerCase {
   start(): Promise<unknown>;
   /** The call's work is still running: its process lives, or its cancellation has not fired. */
   live(): boolean;
+  /** Its work was cancelled: the SDK abort fired. Subprocess runners report false here. */
+  cancelled(): boolean;
 }
 
 function subprocessCase(name: string, cli: { pidFile: string }, timedOut: RegExp, run: () => Promise<unknown>): RunnerCase {
@@ -82,24 +111,48 @@ function subprocessCase(name: string, cli: { pidFile: string }, timedOut: RegExp
       return run();
     },
     live: () => pidAlive(cli.pidFile),
+    // A subprocess call resolves only on a clean exit 0, which a killed process never makes.
+    cancelled: () => false,
   };
 }
 
 let codexSdkSignal: AbortSignal | undefined;
 let claudeSdkController: AbortController | undefined;
 
-/** An SDK stream that never yields a frame: the turn hangs until it is aborted. */
-const hangingClaudeQuery: ClaudeSdkOneShotQuery = {
-  [Symbol.asyncIterator](): AsyncIterator<ClaudeSdkMessage> {
-    return { next: () => new Promise<never>(() => {}) };
-  },
-};
+/** Resolves after the answer delay, or never when there is none. */
+function afterAnswerDelay(): Promise<void> {
+  const delay = answerAfterMs;
+  return delay === null ? new Promise<never>(() => {}) : new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+/** An SDK stream that yields one result frame after the answer delay, or hangs until aborted. */
+function claudeQuery(): ClaudeSdkOneShotQuery {
+  let sent = false;
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<ClaudeSdkMessage> {
+      return {
+        next: async () => {
+          if (sent) return { done: true, value: undefined };
+          await afterAnswerDelay();
+          sent = true;
+          return {
+            done: false,
+            value: {
+              type: "result", subtype: "success", is_error: false, result: ANSWER,
+              session_id: "19de2f1f-c04d-4cfd-a218-719095efe008",
+            } as ClaudeSdkMessage,
+          };
+        },
+      };
+    },
+  };
+}
 const claudeSdkDeps: ClaudeSdkOneShotDeps = {
   executable: async () => "/fake/bin/claude",
   env: () => ({ PATH: "/usr/bin" }),
   query: async ({ options }) => {
     claudeSdkController = options.abortController;
-    return hangingClaudeQuery;
+    return claudeQuery();
   },
 };
 
@@ -119,8 +172,9 @@ const RUNNERS: RunnerCase[] = [
             id: "thread-sleep",
             run: (_prompt, turnOptions) => {
               codexSdkSignal = turnOptions?.signal;
-              return new Promise((_resolve, reject) => {
+              return new Promise((resolve, reject) => {
                 turnOptions?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+                void afterAnswerDelay().then(() => resolve({ finalResponse: ANSWER, usage: null }));
               });
             },
           }),
@@ -128,6 +182,7 @@ const RUNNERS: RunnerCase[] = [
       });
     },
     live: () => codexSdkSignal !== undefined && !codexSdkSignal.aborted,
+    cancelled: () => codexSdkSignal?.aborted ?? false,
   },
   {
     name: "Claude Agent SDK",
@@ -137,6 +192,7 @@ const RUNNERS: RunnerCase[] = [
       return runClaudeSdkOneShot("review this", { timeoutMs: TIMEOUT_MS }, claudeSdkDeps);
     },
     live: () => claudeSdkController !== undefined && !claudeSdkController.signal.aborted,
+    cancelled: () => claudeSdkController?.signal.aborted ?? false,
   },
 ];
 
@@ -149,9 +205,12 @@ interface Outcome {
   liveAtWallDeadline: boolean;
 }
 
-async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome> {
-  // The host slept for `sleptMs` while the call ran, and the timer kept counting (macOS). The
-  // timeout marks this clock when it arms, so its first mark is when the deadline started.
+/**
+ * Script a host that slept for `sleptMs` while the call ran, with a timer that kept counting
+ * (macOS). The timeout marks this clock when it arms, so its first mark is when the deadline
+ * started; `armedAt` reads it back.
+ */
+function scriptSleep(sleptMs: number): { restore: () => void; armedAt: () => number | null } {
   let armedAt: number | null = null;
   const restore = configureHostSuspendClock({
     mark: () => {
@@ -161,6 +220,12 @@ async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome>
     },
     suspendedMsSince: (since) => Math.min(sleptMs, Date.now() - since.at),
   });
+  return { restore, armedAt: () => armedAt };
+}
+
+async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome> {
+  const sleep = scriptSleep(sleptMs);
+  const restore = sleep.restore;
   try {
     let settled = false;
     let settledAt = 0;
@@ -172,7 +237,8 @@ async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome>
         return error;
       },
     );
-    await eventually(() => armedAt !== null || settled, `${runner.name} armed its timeout`);
+    await eventually(() => sleep.armedAt() !== null || settled, `${runner.name} armed its timeout`);
+    const armedAt = sleep.armedAt();
     // Just past the deadline a wall-clock timer would have used.
     const wallDeadline = armedAt! + TIMEOUT_MS + 60;
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, wallDeadline - Date.now())));
@@ -206,5 +272,32 @@ for (const runner of RUNNERS) {
     assert.ok(outcome.elapsed < TIMEOUT_MS + SLEPT_MS + 3_000, `timed out after ${outcome.elapsed} ms, far past its awake budget`);
     // Cleanup is the timeout's other half: the process is killed, or the SDK turn aborted.
     await eventually(() => !runner.live(), `${runner.name} work stopped after the timeout`);
+  });
+
+  test(`${runner.name}: a call the host slept through can still answer after the wall-clock deadline`, async (t) => {
+    // The answer lands past where a wall-clock timeout would already have fired (TIMEOUT_MS),
+    // and well inside the awake budget the sleep left the call (TIMEOUT_MS + SLEPT_MS).
+    setAnswerAfter(TIMEOUT_MS + 500);
+    t.after(() => setAnswerAfter(null));
+    const sleep = scriptSleep(SLEPT_MS);
+    try {
+      const started = Date.now();
+      const value = await runner.start();
+      const answeredAt = Date.now();
+      const armedAt = sleep.armedAt();
+      assert.ok(armedAt !== null, `${runner.name} never armed its timeout`);
+      assert.ok(
+        answeredAt - armedAt > TIMEOUT_MS + 60,
+        `answered ${answeredAt - armedAt} ms after arming, before the wall-clock deadline it must outlast`,
+      );
+      assert.ok(answeredAt - started < TIMEOUT_MS + SLEPT_MS, "answered after the awake budget too");
+      assert.match(JSON.stringify(value), new RegExp(ANSWER));
+      assert.equal(runner.cancelled(), false, "a call that answered must not have been cancelled");
+      // Nothing fires later: the timeout was cleared when the call settled.
+      await new Promise((resolve) => setTimeout(resolve, TIMEOUT_MS + SLEPT_MS - (Date.now() - armedAt) + 100));
+      assert.equal(runner.cancelled(), false, "the cleared timeout must not cancel the work afterwards");
+    } finally {
+      sleep.restore();
+    }
   });
 }

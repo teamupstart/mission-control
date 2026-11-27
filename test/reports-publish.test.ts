@@ -852,6 +852,41 @@ test("one stored companion that cannot be opened answers 500, and is never unlin
   assert.deepEqual(companionsOf(written), { stored: ["report/data.csv", "report/notes.txt"], missing: [] });
 });
 
+test("a stored companion replaced by a symlink to an outside file is never followed: unlinked as missing, its bytes absent", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = mkdtempSync(join(tmpdir(), "mission-stored-companion-outside-"));
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "stored-companion-swapped-for-a-symlink-secret";
+  writeFileSync(join(outside, "secret.csv"), `${SECRET}\n`);
+  mkdirSync(join(outside, "dir"), { recursive: true });
+  writeFileSync(join(outside, "dir", "nested.json"), `{"secret":"${SECRET}"}\n`);
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "data", "nested.json"), "{}\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><a href=\"data.csv\">data</a> <a href=\"data/nested.json\">nested</a> <a href=\"kept.csv\">kept</a></body></html>";
+  const report = await post("swapped.html", html, "Stored companion swapped");
+  const stored = join(reportDocumentDir(report.id, home), "companions");
+  assert.deepEqual(readdirSync(stored).sort(), ["data", "data.csv", "kept.csv"]);
+  // After posting, the stored file and the stored directory are each replaced by a symlink out.
+  unlinkSync(join(stored, "data.csv"));
+  symlinkSync(join(outside, "secret.csv"), join(stored, "data.csv"));
+  rmSync(join(stored, "data"), { recursive: true, force: true });
+  symlinkSync(join(outside, "dir"), join(stored, "data"));
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["data.csv", "data/nested.json"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a> <a>nested<\/a> <a href="kept\.csv">kept<\/a>/);
+  const bundleDir = join(root, PRODUCER, archiveId);
+  const contents = readdirSync(bundleDir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
 test("a stored companion that is gone by publish time is unlinked as missing, as before", async () => {
   const { post, publish, manifest, checkout } = setup();
   writeFileSync(join(checkout, "data.csv"), "a,b\n");

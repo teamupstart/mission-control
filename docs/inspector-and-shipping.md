@@ -443,8 +443,11 @@ Inspector must be on. Both Dry run and Live support local review. Findings go to
 session, and enabled reviews require a verified read-only workload on the submitted checkout.
 Tune the blocking severity, timeout and allowance in **Library > Commands > Local Inspector**.
 
-With Local review on, a workflow that ran the Local Inspector last before its Pull Request
-action (No-Mistakes Review version 23) does not get a GitHub review round:
+With Local review on, a workflow that runs the Local Inspector last before its Pull Request
+action (No-Mistakes Review version 23) skips the GitHub review round only for a pushed head that
+matches a passed Local Inspector attempt, and only in a repository that does not hold the merge
+grant. A skipped or failed attempt, a head whose content or base differs, and every head in a
+merge-grant repository still get the GitHub review:
 
 | Setting | Before the pull request | After the pull request |
 | --- | --- | --- |

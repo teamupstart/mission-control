@@ -17407,12 +17407,12 @@ export function reorderQueueItems(noteKey: string, ids: string[], now: number): 
 
 // ---- generic app config (Foreman config, future singletons) ----
 
-/** Read a registered JSON-encoded config blob, or undefined when unset/corrupt JSON. */
 /** Whether a value is stored for this entry, readable or not. */
 export function hasAppConfig(entry: AppConfigEntry): boolean {
   return openDb().prepare(`SELECT 1 FROM app_config WHERE key = ?`).get(entry.key) !== undefined;
 }
 
+/** Read a registered JSON-encoded config blob, or undefined when unset/corrupt JSON. */
 export function getAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
 ): AppConfigValue<Entry> | undefined {

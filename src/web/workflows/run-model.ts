@@ -1430,7 +1430,6 @@ export function inspectorGateHeadLabel(detail: WorkflowRunDetail): string | null
   return head ? `head ${shortSha(head)}` : null;
 }
 
-/** The current-truth sentence for a spent gate, with live-gate wording left unchanged. */
 /**
  * The Local Inspector review a gate completed on, with the attempt's recorded outcome, or
  * null when the gate took - or is still on - the GitHub path.
@@ -1446,6 +1445,7 @@ export function localReviewGate(detail: WorkflowRunDetail): {
   return { headSha: local.headSha, treeOid: local.treeOid, outcome: attempt ? checkOutcomeOf(attempt) : null };
 }
 
+/** The current-truth sentence for a spent gate, with live-gate wording left unchanged. */
 export function inspectorGateSentence(detail: WorkflowRunDetail): string {
   const local = localReviewGate(detail);
   if (local) {

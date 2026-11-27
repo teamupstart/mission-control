@@ -21,6 +21,8 @@ export interface VoiceCardActions {
   openQuestion(sessionId: string, questionId: string): void;
   followUp(taskId: string): Promise<ActionResult> | ActionResult;
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
+  /** Remove a settled receipt before its reading interval ends. */
+  dismiss?(id: string): void;
 }
 
 function RosterRow({ target, title, detail, transcript, state, pick, disabled }: {
@@ -36,6 +38,9 @@ function RosterRow({ target, title, detail, transcript, state, pick, disabled }:
   </Tag>;
   return pick ? <Tooltip label={`Choose ${title} for this message`}>{row}</Tooltip> : row;
 }
+
+/** These outcomes show the daemon's own sentence instead of per-recipient rows. */
+const DETAIL_REASONS = ["capture-limit", "question-notice", "form-not-open", "form-incomplete", "inbox-action", "voice-answer"];
 
 const icons = {
   warn: "M8 2.2l6.3 11H1.7z M8 6.5v3.2M8 11.7v.1",
@@ -179,6 +184,12 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
     }
   }
 
+  const detailOnly = !!card.detail && DETAIL_REASONS.includes(card.reason);
+  // A delivered receipt has no controls of its own, so its whole body dismisses it. Every
+  // other state keeps its countdown, recipient choice or recovery actions until they settle.
+  const dismiss = card.state === "sent" && !detailOnly && actions.dismiss;
+  const receipt = card.parts.map(part => (part.command === "stop" || part.immediateStop ? "Stop sent to " : "Sent to ")
+    + (part.target ? spokenNameLabel(part.target) : part.restoredSession?.name ?? "agent")).join(", ");
   const simple = !split && !card.mentions?.length && !["voice-answer", "question-notice", "inbox-action"].includes(card.reason);
   const pill = surface === "pill" && simple;
   const seconds = voiceCountdownSeconds(remaining, card.windowMs);
@@ -250,7 +261,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
       break;
     }
     default:
-      body = card.detail && ["capture-limit", "question-notice", "form-not-open", "form-incomplete", "inbox-action", "voice-answer"].includes(card.reason) ? <b>{card.detail}</b> : <>{card.parts.map((part, index) => <div className="vc-outcome" key={index}>{outcome(part)}</div>)}
+      body = detailOnly ? <b>{card.detail}</b> : <>{card.parts.map((part, index) => <div className="vc-outcome" key={index}>{outcome(part)}</div>)}
         {(card.state === "sent" || card.state === "queued") && card.openQuestions > 0 && <>
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target ?? ""} command="{name}, answer" instruction="to reply to one." /></>}</>;
@@ -261,5 +272,8 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>
     {body}{feedback && <span className="vc-meta">{feedback}</span>}
+    {dismiss && <Tooltip label="Dismiss this confirmation">
+      <button type="button" className="vc-dismiss" aria-label={"Dismiss: " + receipt} onClick={() => dismiss(card.id)} />
+    </Tooltip>}
   </article>;
 }

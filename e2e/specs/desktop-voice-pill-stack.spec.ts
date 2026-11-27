@@ -6,6 +6,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { beListener, enableVoice, say } from "../fixtures/voice.ts";
+import { runningAgent } from "../fixtures/voice-cards.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
 
 test.skip(process.platform !== "darwin", "the floating pill is a macOS desktop window");
@@ -160,6 +161,35 @@ test("pills leave the stack when their own countdown ends, and the rest move up 
     expect(await outcomeOf(daemon, /give me a report/)).toBe("pending");
     await expect(pills(pill)).toHaveCount(0, { timeout: 10_000 });
     await expect.poll(() => outcomeOf(daemon, /give me a report/)).not.toBe("pending");
+  } finally { listener.stop(); await app.close(); }
+});
+
+test("clicking the native Sent pill dismisses it, and the focus shortcut reaches Dismiss", async ({ daemon }) => {
+  const { app, dashboard } = await launch(daemon);
+  const listener = await beListener(daemon);
+  try {
+    await runningAgent(dashboard, daemon, "Dana");
+    await say(daemon, "Dana, check the build");
+    const { page: pill, win } = await pillWindow(app);
+    await pills(pill).first().getByRole("button", { name: "Send now" }).click();
+    const sent = pill.getByRole("status").filter({ hasText: "Sent to Dana" });
+    await expect(sent).toBeVisible();
+    await expect(sent.getByRole("button", { name: "Dismiss: Sent to Dana" })).toBeInViewport({ ratio: 1 });
+    await captureWindow(win, "sent-before-dismiss");
+    // A pointer reaches the receipt through the transparent window, and the window hides.
+    await sent.click();
+    await expect(pill.getByRole("status")).toHaveCount(0);
+    await expect.poll(() => win.evaluate(win => win.isVisible())).toBe(false);
+
+    // The View menu's focus command lands on Dismiss when the receipt has no other control.
+    await say(daemon, "Dana, run the release checklist");
+    await pills(pill).first().getByRole("button", { name: "Send now" }).click();
+    await expect(sent).toBeVisible();
+    await expect.poll(() => app.evaluate(({ Menu }) => !!Menu.getApplicationMenu()?.getMenuItemById("focus-voice-confirmation"))).toBe(true);
+    await app.evaluate(({ Menu }) => Menu.getApplicationMenu()!.getMenuItemById("focus-voice-confirmation")!.click());
+    await expect(sent.getByRole("button", { name: "Dismiss: Sent to Dana" })).toBeFocused();
+    await pill.keyboard.press("Enter");
+    await expect(pill.getByRole("status")).toHaveCount(0);
   } finally { listener.stop(); await app.close(); }
 });
 

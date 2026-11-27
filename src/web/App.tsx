@@ -420,6 +420,7 @@ export function App(): React.JSX.Element {
     voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
+    dismissVoiceCard,
     acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
@@ -5163,7 +5164,7 @@ export function App(): React.JSX.Element {
   const voiceCardHost = <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : surfaceRoot && voicePlacement !== "toast" ? voicePlacement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
-    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
+    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention, dismiss: dismissVoiceCard,
       openRecentlyHeard: () => trayHistory ? openTrayHistory() : openSettingsAnchor("voice", "voice/heard"),
       openQuestion: (sessionId, questionId) => { if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.(); navigate({ page: "fleet" }, allowed => {
         if (allowed) setReviewRequest({ sessionId, questionId });

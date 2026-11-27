@@ -61,6 +61,12 @@ A settled card stays visible while one of its controls has focus or its action i
 progress, including when the dashboard reconnects to the daemon. Once both end, the card
 gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
+Click anywhere on a **Sent to** receipt, on the dashboard, the pill or the tray popover, to
+dismiss it at once. The receipt is also one **Dismiss** button that Tab reaches, as does
+**⌘⌥V** (**View > Focus Voice Confirmation**) on a floating card; press Return or Space.
+Only that receipt closes: the cards around it close the gap and keep their own countdowns and
+reading intervals. Cards still counting down, choosing a recipient, held or offering a recovery
+action do not dismiss on click.
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
 If you remove the task’s call sign, its held turn remains recallable after a daemon restart or after you switch Voice off and back on.

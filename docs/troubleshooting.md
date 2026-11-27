@@ -125,6 +125,11 @@ an already-running session will not begin reporting until it is restarted. In th
 session, run an action and confirm the card changes to **working**; the session endpoint
 also exposes the `instrumented` field.
 
+If `~/.claude/settings.json` runs the hook shim and `~/.mission-control/bin/harness-hook` is
+missing or not executable on this machine, every hook exits without reporting and nothing
+prints an error. The **Claude Code hooks** row in Settings -> Setup says so; re-run
+`npm run install-hooks` to write the shim again.
+
 Codex differs: its hooks are launch-scoped, so only a Mission Control-dispatched Codex
 session receives them. See [precise session status](sessions.md#precise-status-claude-hooks) and
 [the Codex hook behavior](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch).
@@ -137,8 +142,10 @@ Error: Cannot find module '/Users/you/workspace/ai-harness/hooks/harness-hook.mj
 code: 'MODULE_NOT_FOUND'
 ```
 
-`npm run install-hooks` and the desktop app's **Install Claude integrations** both bake an
-absolute path into `~/.claude/settings.json`. The path does not follow a checkout that is
+The desktop app's **Install Claude integrations** bakes an absolute path into
+`~/.claude/settings.json`, and `npm run install-hooks` bakes one into the shim
+`~/.mission-control/bin/harness-hook` that the settings file runs (older versions wrote it
+into the settings file directly). The path does not follow a checkout that is
 later renamed, moved, or deleted, so Claude Code goes on running it for every event, in
 every session on the machine, and every one of them fails. Nothing in the stack names
 Mission Control or the settings file, and the sessions report no state while it lasts.

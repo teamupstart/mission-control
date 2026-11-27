@@ -1,4 +1,4 @@
-import { readdir, open } from "node:fs/promises";
+import { access, constants, readdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 
 import {
@@ -106,6 +106,16 @@ async function subdirectories(path: string): Promise<string[]> {
   }
 }
 
+/** `EnvironmentDeps.isExecutable` in production. */
+async function isExecutable(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * What the daemon lends a check on this machine.
  *
@@ -114,7 +124,7 @@ async function subdirectories(path: string): Promise<string[]> {
  * `environmentCheckViews` for why that matters.
  */
 export function defaultEnvironmentDeps(): EnvironmentDeps {
-  return { homeDir: homedir(), readText, subdirectories };
+  return { homeDir: homedir(), readText, subdirectories, isExecutable };
 }
 
 /**

@@ -49,6 +49,7 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
       homeDir: "/home/operator",
       readText: async () => ({ ok: false, missing: true, reason: "missing" }),
       subdirectories: async () => [],
+      isExecutable: async () => true,
     },
     agentBin: (agent) => `/tools/${agent}`,
     installedBackend: async (id) => `/tools/${id}`,

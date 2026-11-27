@@ -704,7 +704,8 @@ test("uninstall-hooks tears down extension even when no Claude hooks remain, wit
   const settings = join(home, "settings.json"); writeFileSync(settings, "{}\n");
   reconcileExtensionLink(true);
   const args = ["--import", "tsx", "hooks/install.mjs", "--uninstall"];
-  const env = { ...process.env, CLAUDE_SETTINGS_PATH: settings };
+  // The installer writes and removes its hook shim under HOME, so the real one must never be reached.
+  const env = { ...process.env, CLAUDE_SETTINGS_PATH: settings, HOME: home };
   const output = execFileSync(process.execPath, args, { env, encoding: "utf8" });
   assert.match(output, /removed extension link/);
   assert.equal(existsSync(link), false);

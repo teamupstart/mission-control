@@ -234,6 +234,7 @@ const SETUP_PROBES = {
     homeDir: home,
     readText: async () => ({ ok: false, missing: true, reason: "missing" }),
     subdirectories: async () => [],
+    isExecutable: async () => true,
   },
   agentBin: (agent: string) => `/fixture/${agent}`,
   installedBackend: async (id: string) => `/fixture/${id}`,

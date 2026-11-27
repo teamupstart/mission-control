@@ -52,6 +52,11 @@ export interface EnvironmentDeps {
    * turn into a warning.
    */
   subdirectories(path: string): Promise<string[]>;
+  /**
+   * Whether this process could execute `path`. `false` for a file that is missing or
+   * unreadable as well: a probe made after `readText` already found the file.
+   */
+  isExecutable(path: string): Promise<boolean>;
 }
 
 /** What a check found. `warning: null` is the silent answer, and the common one. */

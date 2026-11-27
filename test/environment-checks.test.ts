@@ -54,6 +54,7 @@ function deps(arrange: {
       arrange.onList?.(path);
       return arrange.dirs?.[path] ?? [];
     },
+    isExecutable: async () => true,
   };
 }
 
@@ -397,6 +398,7 @@ test("a check that throws becomes its own warning, and blames itself", async () 
       throw new Error("the disk went away");
     },
     subdirectories: async () => [],
+    isExecutable: async () => true,
   };
   const views = await environmentCheckViews(exploding);
   assert.equal(views.length, ENVIRONMENT_CHECK_IDS.length);

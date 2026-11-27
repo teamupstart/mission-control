@@ -197,6 +197,42 @@ final class FirstPreviewHoldTests: XCTestCase {
         XCTAssertEqual(spoken, [], "an overlay that accepts no words is never sent any")
     }
 
+    @MainActor func testAWordsReportTheOverlayRejectsLeavesTheUtteranceHeldWhenTheHoldTurnsOn() async {
+        // The overlay accepts the audio heartbeat but rejects the first words report, and no editor is focused,
+        // with the hold off. The rejected words were not shown, so once the hold turns on the same utterance waits
+        // for 300 ms of voiced audio, and its words are shown once it has them.
+        let passes = [phrase(onset: 1, voicedMs: 100), phrase(onset: 1, voicedMs: 120), phrase(onset: 1, voicedMs: 300)]
+        var tick = 0
+        var settled = 0
+        var on = false
+        var attempted: [String] = []
+        var accepted: [String] = []
+        var focusChecks = 0
+        await runTranscriptPreview(isRunning: { tick < passes.count }, snapshot: { tick < passes.count ? passes[tick] : nil },
+            pendingOnset: { nil }, decode: { "\($0.onset):\($0.voicedSamples)" },
+            report: { phase, _, text in
+                guard phase == "words", let text else { return true }
+                defer { settled += 1 }
+                attempted.append(text)
+                guard attempted.count > 1 else { return false }
+                accepted.append(text)
+                return true
+            }, editorFocused: { _ in focusChecks += 1; return false },
+            updateEditor: { _, _ in XCTFail("no editor is focused") },
+            firstPreviewReady: { phrase in
+                defer { on = true }
+                let ready = !on || phrase.voicedSamples >= 300 * 16
+                if !ready { settled += 1 }
+                return ready
+            }, pause: {
+                while settled <= tick { await Task.yield() }
+                tick += 1
+            })
+        XCTAssertEqual(attempted, ["1:1600", "1:4800"], "no words are offered to the overlay below 300 ms after the rejection")
+        XCTAssertEqual(accepted, ["1:4800"], "the words are shown at 300 ms")
+        XCTAssertEqual(focusChecks, passes.count)
+    }
+
     @MainActor func testCaptureHoldFollowsLiveDirectiveEditsWithoutReopeningTheMicrophone() throws {
         let token = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("test".utf8).write(to: token)

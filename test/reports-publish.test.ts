@@ -864,7 +864,7 @@ test("links whose paths differ only in case keep one spelling, so the bundle is 
   writeFileSync(join(checkout, "data.csv"), "a,b\n");
   writeFileSync(join(checkout, "Data.csv"), "a,b\n");
   const html = "<html><body><a href=\"Data.csv\">upper</a> <a href=\"data.csv\">lower</a></body></html>";
-  assert.deepEqual(linkedCompanionPaths("html", Buffer.from(html)), ["Data.csv"], "one candidate per case-folded path");
+  assert.deepEqual(linkedCompanionPaths("html", Buffer.from(html)), ["Data.csv", "data.csv"], "both are candidates; the first one stored wins");
   const report = await post("aliases.html", html, "Case aliases");
   assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["Data.csv"]);
   const published = await publish(report.id);
@@ -992,7 +992,7 @@ test("the companions read are chosen from the page being published, not from a s
 test("a file and a directory path that collide case-insensitively keep one, so the archive is written on a case-insensitive volume", async () => {
   const { manifest, archivedPage, root, archives } = setup();
   const html = "<html><body><a href=\"Data\">file</a> <a href=\"data/x.csv\">nested</a></body></html>";
-  assert.deepEqual(linkedCompanionPaths("html", Buffer.from(html)), ["Data"], "one capture candidate: the other link is left out");
+  assert.deepEqual(linkedCompanionPaths("html", Buffer.from(html)), ["Data", "data/x.csv"], "both are candidates; collisions are settled among stored files");
   // The publisher, handed both (as a case-sensitive checkout could store them), writes one. Without
   // the check, writing report/Data then report/data/x.csv fails on a case-insensitive volume.
   const published = await archives.publishReportPage({
@@ -1032,7 +1032,7 @@ test("Unicode-equivalent companion spellings keep one, so the archive is written
   const nfc = "caf\u00e9.csv";
   const nfd = "cafe\u0301.csv";
   const html = `<html><body><a href="${nfc}">composed</a> <a href="${nfd}">decomposed</a></body></html>`;
-  assert.equal(linkedCompanionPaths("html", Buffer.from(html)).length, 1, "one capture candidate");
+  assert.equal(linkedCompanionPaths("html", Buffer.from(html)).length, 2, "both are candidates; collisions are settled among stored files");
   const published = await archives.publishReportPage({
     reportId: "r-90004", reportCreatedAt: 90004, title: "Unicode aliases", documentName: "page.html",
     page: Buffer.from(html),
@@ -1076,6 +1076,37 @@ test("a checkout replaced at the same path after the document is read refuses th
   writeFileSync(join(checkout, "doc.html"), "<html><body><a href=\"data.csv\">d</a></body></html>");
   const posted = await reports.post(session, { title: "Settled checkout", body: "b", file: "doc.html" });
   assert.equal(readFileSync(join(reportDocumentDir(posted.id, home), "companions", "data.csv"), "utf8"), "replacement\n");
+});
+
+test("a case-colliding spelling that names nothing never shuts out the file that exists", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  // Data sorts first but names no regular file (on a case-insensitive checkout it is the
+  // directory data/, on a sensitive one nothing at all); data/x.csv is the real file.
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  writeFileSync(join(checkout, "data", "x.csv"), "real\n");
+  const html = "<html><body><a href=\"Data\">missing</a> <a href=\"data/x.csv\">real</a></body></html>";
+  const report = await post("collide-missing.html", html, "Missing spelling first");
+  assert.equal(readFileSync(join(reportDocumentDir(report.id, home), "companions", "data", "x.csv"), "utf8"), "real\n",
+    "the existing file is stored even though the missing spelling sorts first");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/data/x.csv"], missing: ["Data"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>missing<\/a> <a href="data\/x\.csv">real<\/a>/, "the working link stays");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report whose <style> element names an unstored file publishes with that reference rewritten", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  writeFileSync(join(checkout, "kept.png"), "png");
+  const html = "<html><head><style>.a{background:url(kept.png)} .b{background:url(gone.png)}</style></head><body><p>x</p></body></html>";
+  const report = await post("styled.html", html, "Style element");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.png"], missing: ["gone.png"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /\.a\{background:url\(kept\.png\)\} \.b\{background:none\}/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
 });
 
 test("a link that climbs out of the document's directory is neither stored nor unlinked, and still refuses the page", async () => {

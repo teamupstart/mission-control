@@ -35,6 +35,7 @@ import { STATE_DIR } from "./config.ts";
 import { getTask as getDurableTask, inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import { resolveCheckoutFile } from "./archives/checkout.ts";
+import { CaseCollisionGuard } from "./archives/paths.ts";
 import type { ReportPagePublication, ReportPagePublicationResult } from "./archives/manager.ts";
 import type { Registry } from "./registry.ts";
 import {
@@ -823,6 +824,7 @@ export class ReportManager {
     const realRoot = checkout.real;
     const directory = posix.dirname(file);
     const companions: ReportCompanion[] = [];
+    const collisions = new CaseCollisionGuard();
     let total = 0;
     for (const path of linkedCompanionPaths(kind, bytes).slice(0, REPORT_LIMITS.companionLookups)) {
       if (companions.length >= REPORT_LIMITS.companionFiles) break;
@@ -877,6 +879,9 @@ export class ReportManager {
         if (info.size > REPORT_LIMITS.companionBytes - total) continue;
         const read = await readFileWithinCap(handle, info.size);
         if (read.exceeded) continue;
+        // Collisions are settled among files actually stored: a spelling that names nothing (or
+        // nothing storable) never shuts out one that does.
+        if (!collisions.admit(path)) continue;
         total += read.bytes.byteLength;
         companions.push({ path, bytes: Buffer.from(read.bytes) });
       } finally {

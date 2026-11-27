@@ -428,8 +428,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   path between reading the document and collecting its linked files, which are only ever taken
   from the checkout the document was read from. Paths that collide on a case-insensitive volume
   (the same path in another letter case or another Unicode normalization form, or a file where another linked path needs a directory,
-  such as `Data` and `data/x.csv`) cannot all be stored or archived, so one is kept, decided in
-  sorted order, and a link to any other is unlinked as missing. Directories that differ only in
+  such as `Data` and `data/x.csv`) cannot all be stored or archived, so one is kept: the first, in
+  sorted order, that names a file actually stored, so a spelling that names nothing never shuts
+  out one that does. A link to any other is unlinked as missing. Directories that differ only in
   case merge harmlessly and keep all their files.
   Companions follow the scout capture's containment rule: no path component may be a symbolic
   link, and the file opened must be the file that was checked (opened without following a final
@@ -471,7 +472,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   a stored file loses that reference too; the stored file stays in the bundle and is listed with
   its evidence. An attribute that also carries a reference the checker refuses for another
   reason (a path that climbs out, a fetching scheme) is never removed, so it still refuses the
-  page. A link in a `<style>` element is not rewritten. Anything else the checker
+  page. In a `<style>` element, a reference to a file that was not stored is
+  rewritten in place: a `url(...)` becomes `none` and an `@import` target becomes `""`, and the
+  rest of the stylesheet keeps its bytes. Anything else the checker
   refuses (a link that leaves the report directory, anything that runs or fetches) still refuses
   the page: it is answered with every problem named, shown on the card, and nothing is written.
 - **One archive per report.** The archive id is derived from this machine's producer id, the

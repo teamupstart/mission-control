@@ -113,11 +113,25 @@ test("only HTML whitespace before a removed attribute goes: a non-breaking space
   assert.ok(result.html.includes("<span class=quiet\u00a0>t</span>"), "the class value keeps its non-breaking space");
 });
 
-test("a <style> element that names an unstored file is not rewritten, and the checker still refuses it", () => {
-  const html = page("<p>x</p>", "<style>.x{background:url(gone.png)}</style>");
-  const result = unlinkMissingCompanions(html, new Set());
+test("a <style> element's references to unstored files are rewritten in place, and the page validates", () => {
+  const css = ".x{background:url(gone.png)} .y{background:url('kept.png')} /* url(commented.png) */ @import \"gone.css\"; @import url(gone2.css);";
+  const html = page("<p>x</p>", `<style>${css}</style>`);
+  const targets = new Set(["report.html", "kept.png"]);
+  assert.equal(validateStaticReportHtml(html, targets).ok, false);
+  const result = unlinkMissingCompanions(html, targets);
+  assert.deepEqual(result.unlinked, ["gone.css", "gone.png", "gone2.css"]);
+  const rewritten = ".x{background:none} .y{background:url('kept.png')} /* url(commented.png) */ @import \"\"; @import \"\";";
+  assert.equal(result.html, html.replace(css, rewritten), "only the missing tokens change; the stored link and the comment keep their bytes");
+  assert.deepEqual(validateStaticReportHtml(result.html, targets), { ok: true });
+});
+
+test("a <style> reference refused for another reason is never rewritten", () => {
+  const html = page("<p>x</p>", "<style>.x{background:url(https://tracker.example/p.png)} .y{background:url(../out.png)}</style>");
+  const result = unlinkMissingCompanions(html, new Set(["report.html"]));
   assert.deepEqual(result, { html, unlinked: [] });
-  assert.equal(validateStaticReportHtml(result.html, new Set()).ok, false);
+  const checked = validateStaticReportHtml(result.html, new Set(["report.html"]));
+  assert.equal(checked.ok, false);
+  assert.deepEqual(!checked.ok && checked.problems.map((problem) => problem.code).sort(), ["escaping_link", "external_url"]);
 });
 
 test("paths that collide on a case-insensitive volume keep one, decided in sorted order whatever the input order", () => {

@@ -8,7 +8,7 @@ import { ARCHIVE_PRIMARY_REPORT_PATH, ARCHIVE_REPORT_DIR, validateArchivePath } 
 import { MARKDOWN_REMARK_PLUGINS } from "@shared/markdown-config.ts";
 import { REPORT_ID_PATTERN, REPORT_LIMITS, type ReportDocumentKind, type ReportItem } from "@shared/reports.ts";
 import { reportRelativeReferences } from "./archives/html.ts";
-import { caseDistinctPaths } from "./archives/paths.ts";
+import { CaseCollisionGuard } from "./archives/paths.ts";
 import { STATE_DIR } from "./config.ts";
 import { readFileWithinCap } from "./session-files.ts";
 
@@ -54,11 +54,10 @@ export function linkedCompanionPaths(kind: ReportDocumentKind, bytes: Buffer): s
     .filter((path) => !isUnderPrimaryReport(path)
       && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${path}`) !== null)
     .sort();
-  // Paths that collide on a case-insensitive volume (the same path in another case, or a file
-  // where another path needs a directory) cannot all be stored or archived. One is kept, chosen
-  // the same way every time; a link to any other is unlinked as missing.
-  const distinct = caseDistinctPaths(paths);
-  return paths.filter((path) => distinct.has(path));
+  // Paths that collide on a case-insensitive volume are all kept here: which of them is used is
+  // decided among the files that actually exist, where each is stored or read
+  // (`CaseCollisionGuard`), so a spelling that names nothing never shuts out one that does.
+  return paths;
 }
 
 /**
@@ -111,6 +110,7 @@ export async function readStoredReportCompanions(
   // the links the archive keeps and the files it carries come from one snapshot.
   const candidates = linkedCompanionPaths("html", page).slice(0, REPORT_LIMITS.companionLookups);
   const companions: ReportCompanion[] = [];
+  const collisions = new CaseCollisionGuard();
   let total = 0;
   for (const path of candidates) {
     if (companions.length >= REPORT_LIMITS.companionFiles) break;
@@ -157,6 +157,8 @@ export async function readStoredReportCompanions(
       if (!contained) continue;
       const { bytes, exceeded } = await readFileWithinCap(handle, info.size);
       if (exceeded) continue;
+      // Of paths that name one file on a case-insensitive volume, the first actually read wins.
+      if (!collisions.admit(path)) continue;
       total += bytes.byteLength;
       companions.push({ path, bytes: Buffer.from(bytes) });
     } finally {

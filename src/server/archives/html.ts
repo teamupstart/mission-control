@@ -296,8 +296,9 @@ export function reportRelativeReferences(html: string): string[] {
  * text, and the archive lists each path as missing.
  *
  * The rest of the document keeps its bytes: each attribute is cut out by its source location,
- * never by re-serializing the tree. Only attributes are rewritten. A `<style>` element that
- * names an unstored file is left alone, and the checker that runs after this still refuses it.
+ * never by re-serializing the tree. In a `<style>` element, a reference to an unstored file is
+ * rewritten token by token instead (a `url(...)` becomes `none`, an `@import` target `""`), and
+ * the rest of the stylesheet keeps its bytes.
  *
  * The unit is the attribute, never one value inside it. A `srcset` or `style` attribute that
  * names one unstored file and one stored file loses both references. That is deliberate: rewriting
@@ -315,12 +316,36 @@ export function unlinkMissingCompanions(
   } catch {
     return { html, unlinked: [] };
   }
-  const spans: Array<{ start: number; end: number }> = [];
+  // An attribute span is removed with the whitespace before it; a stylesheet span is replaced.
+  const spans: Array<{ start: number; end: number; replacement?: string }> = [];
   const unlinked = new Set<string>();
   walk(document, (node) => {
     if (!isElement(node)) return true;
     const locations = node.sourceCodeLocation?.attrs;
     const tag = node.tagName.toLowerCase();
+    if (tag === "style") {
+      // A `<style>` element's reference to a file that was not stored is rewritten in place: a
+      // `url(...)` becomes `none` and an `@import` target becomes `""`, so the declaration or
+      // rule stays well formed and fetches nothing. Every other byte of the stylesheet stays.
+      for (const child of childrenOf(node)) {
+        if (!isText(child)) continue;
+        const location = child.sourceCodeLocation;
+        // Located by offset into the source, so only text the parser kept byte for byte (no
+        // newline normalization) is rewritten; anything else is left for the checker to refuse.
+        if (!location || html.slice(location.startOffset, location.endOffset) !== child.value) continue;
+        for (const token of cssReferenceTokens(child.value)) {
+          if (token.kind === "literal" || token.start < 0) continue;
+          const path = inReportReference(token.value);
+          if (!path || targets.has(path)) continue;
+          spans.push({
+            start: location.startOffset + token.start,
+            end: location.startOffset + token.end,
+            replacement: token.kind === "url" ? "none" : '""',
+          });
+          unlinked.add(path);
+        }
+      }
+    }
     for (const attr of node.attrs) {
       const name = attributeName(attr);
       const values = referenceValues(name, attr.value);
@@ -351,6 +376,11 @@ export function unlinkMissingCompanions(
   const parts: string[] = [];
   let cursor = 0;
   for (const span of spans.sort((a, b) => a.start - b.start)) {
+    if (span.replacement !== undefined) {
+      parts.push(html.slice(cursor, span.start), span.replacement);
+      cursor = span.end;
+      continue;
+    }
     let start = span.start;
     // HTML whitespace only (tab, LF, FF, CR, space): a non-breaking space is part of a preceding
     // unquoted attribute value, never a separator, and stays. And a removed attribute followed by
@@ -653,10 +683,26 @@ function cssProblems(css: string, relativeTargets: ReadonlySet<string> | null, s
 
 /** Every reference value `cssProblems` checks, in order, as written. */
 function cssReferences(css: string): string[] {
-  const values: string[] = [];
-  const check = (value: string): void => {
-    values.push(value);
-  };
+  return cssReferenceTokens(css).map((token) => token.value);
+}
+
+/**
+ * One reference a stylesheet makes, with where it sits in the stylesheet's own text.
+ *
+ * `url` is a `url(...)` token, `import` an `@import` target (a `url(...)` or a quoted string), and
+ * `literal` a scheme-bearing string. A bare `@import` target the scanner can only read with a
+ * pattern has no span (`start` and `end` are -1): it is checked, but never rewritten.
+ */
+interface CssReferenceToken {
+  value: string;
+  kind: "url" | "import" | "literal";
+  start: number;
+  end: number;
+}
+
+/** Every reference value `cssProblems` checks, in order, with its span in `css`. */
+function cssReferenceTokens(css: string): CssReferenceToken[] {
+  const tokens: CssReferenceToken[] = [];
 
   let i = 0;
   while (i < css.length) {
@@ -670,26 +716,41 @@ function cssReferences(css: string): string[] {
       const literal = readCssString(css, i, char);
       // Only scheme-bearing literals: an ordinary `font-family: "Inter"` or a `content: "→"`
       // is not a reference, and refusing every string would refuse every stylesheet.
-      if (SCHEME_RE.test(literal.value) || literal.value.startsWith("//")) check(literal.value);
+      if (SCHEME_RE.test(literal.value) || literal.value.startsWith("//")) {
+        tokens.push({ value: literal.value, kind: "literal", start: i, end: literal.end });
+      }
       i = literal.end;
       continue;
     }
     if (startsWithAt(css, i, "url(")) {
       const value = readCssFunctionArgument(css, i + 4);
-      check(value.value);
+      tokens.push({ value: value.value, kind: "url", start: i, end: value.end });
       i = value.end;
       continue;
     }
     if (startsWithAt(css, i, "@import")) {
-      const rest = css.slice(i + 7);
-      const target = /^\s*(?:url\(\s*)?(['"]?)([^'")\s;]*)\1/.exec(rest);
-      if (target?.[2]) check(target[2]);
+      let j = i + 7;
+      while (j < css.length && /\s/.test(css[j]!)) j += 1;
+      if (startsWithAt(css, j, "url(")) {
+        const value = readCssFunctionArgument(css, j + 4);
+        tokens.push({ value: value.value, kind: "import", start: j, end: value.end });
+        i = value.end;
+        continue;
+      }
+      if (css[j] === '"' || css[j] === "'") {
+        const literal = readCssString(css, j, css[j]!);
+        tokens.push({ value: literal.value, kind: "import", start: j, end: literal.end });
+        i = literal.end;
+        continue;
+      }
+      const target = /^\s*(['"]?)([^'")\s;]*)\1/.exec(css.slice(i + 7));
+      if (target?.[2]) tokens.push({ value: target[2], kind: "import", start: -1, end: -1 });
       i += 7;
       continue;
     }
     i += 1;
   }
-  return values;
+  return tokens;
 }
 
 function startsWithAt(text: string, index: number, token: string): boolean {

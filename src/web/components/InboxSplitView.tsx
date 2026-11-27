@@ -171,17 +171,18 @@ export function InboxSplitView({
     <>
       <div className="modal-bleed inbox-split-tabs" role="tablist" aria-label="Inbox filter">
         {INBOX_SPLIT_TABS.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            className={`inbox-split-tab${tab === id ? " is-on" : ""}`}
-            onClick={() => chooseTab(id)}
-          >
-            {INBOX_SPLIT_TAB_LABELS[id]}
-            <span className="inbox-split-count">{counts[id]}</span>
-          </button>
+          <Tooltip key={id} label={TAB_TIPS[id]}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              className={`inbox-split-tab${tab === id ? " is-on" : ""}`}
+              onClick={() => chooseTab(id)}
+            >
+              {INBOX_SPLIT_TAB_LABELS[id]}
+              <span className="inbox-split-count">{counts[id]}</span>
+            </button>
+          </Tooltip>
         ))}
       </div>
       <div ref={root} className={`modal-bleed inbox-split${detail && current ? " is-detail" : ""}`}>
@@ -209,9 +210,11 @@ export function InboxSplitView({
         </div>
         <section ref={pane} className="inbox-split-pane" aria-label="Selected item" tabIndex={-1}>
           <div className="inbox-split-toolbar">
-            <button type="button" className="btn btn-ghost inbox-split-back" onClick={() => setDetail(false)}>
-              ‹ Inbox
-            </button>
+            <Tooltip label="Back to the list of everything in the inbox">
+              <button type="button" className="btn btn-ghost inbox-split-back" onClick={() => setDetail(false)}>
+                ‹ Inbox
+              </button>
+            </Tooltip>
             {current && (
               <span className="inbox-split-kind">
                 {INBOX_SPLIT_KIND_LABELS[current.type === "item" ? current.item.kind : current.type]}
@@ -242,10 +245,12 @@ export function InboxSplitView({
             <div className="inbox-split-upnext">
               <h5>Up next</h5>
               {upNext.map((entry) => (
-                <button key={entry.key} type="button" className="inbox-split-upnext-row" onClick={() => select(entry.key)}>
-                  <span className="inbox-split-kind">{INBOX_SPLIT_KIND_LABELS[entry.type === "item" ? entry.item.kind : entry.type]}</span>
-                  <span className="inbox-split-upnext-title">{entry.title}</span>
-                </button>
+                <Tooltip key={entry.key} label="Open this item in the pane">
+                  <button type="button" className="inbox-split-upnext-row" onClick={() => select(entry.key)}>
+                    <span className="inbox-split-kind">{INBOX_SPLIT_KIND_LABELS[entry.type === "item" ? entry.item.kind : entry.type]}</span>
+                    <span className="inbox-split-upnext-title">{entry.title}</span>
+                  </button>
+                </Tooltip>
               ))}
             </div>
           )}
@@ -254,6 +259,13 @@ export function InboxSplitView({
     </>
   );
 }
+
+const TAB_TIPS: Record<InboxSplitTab, string> = {
+  all: "List everything in the inbox",
+  answer: "List what is waiting on an answer, including rows settled on another page",
+  read: "List the reports to read",
+  snoozed: "List the questions you chose Remind me later on",
+};
 
 /** J steps down the list and K up, unless the key is typed into a field or carries a modifier. */
 function onKeyDown(event: KeyboardEvent, step: (delta: number) => void): void {
@@ -283,6 +295,7 @@ function SplitRow({
   const unread = entry.type === "pinned" ? entry.report.readAt === null : entry.type === "item" && entry.unread;
   const quiet = entry.group === "elsewhere" || entry.group === "snoozed";
   return (
+    <Tooltip label={entry.group === "elsewhere" ? "Show this in the pane, with the button that opens where it is settled" : "Show this in the pane"}>
     <div
       role="option"
       aria-selected={selected}
@@ -309,5 +322,6 @@ function SplitRow({
         {entry.group === "elsewhere" && <span className="dim"> ↗</span>}
       </span>
     </div>
+    </Tooltip>
   );
 }

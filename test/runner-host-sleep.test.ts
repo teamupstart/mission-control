@@ -157,9 +157,9 @@ async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome>
     mark: () => {
       const now = Date.now();
       armedAt ??= now;
-      return now;
+      return { at: now, suspendedMs: 0 };
     },
-    suspendedMsSince: (since) => Math.min(sleptMs, Date.now() - since),
+    suspendedMsSince: (since) => Math.min(sleptMs, Date.now() - since.at),
   });
   try {
     let settled = false;

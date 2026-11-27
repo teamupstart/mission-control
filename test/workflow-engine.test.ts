@@ -20,6 +20,7 @@ import type {
 } from "../src/shared/workflow.ts";
 import { DEFAULT_WORKFLOW_POLICY, emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import type { HostSuspendClock } from "../src/server/host-suspend.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
 process.env.MISSION_HOME = home;
@@ -1012,10 +1013,13 @@ test("provider token exhaustion blocks immediately without scheduling a retry", 
 });
 
 /** A host-suspend clock a test flips: every call that fails while `asleep` overlapped a sleep. */
-function scriptedSuspend(): { clock: { mark(): number; suspendedMsSince(since: number): number }; asleep: boolean } {
-  const state = {
+function scriptedSuspend(): { clock: HostSuspendClock; asleep: boolean } {
+  const state: { clock: HostSuspendClock; asleep: boolean } = {
     asleep: false,
-    clock: { mark: () => 0, suspendedMsSince: () => (state.asleep ? 17 * 60_000 : 0) },
+    clock: {
+      mark: () => ({ at: 0, suspendedMs: 0 }),
+      suspendedMsSince: () => (state.asleep ? 17 * 60_000 : 0),
+    },
   };
   return state;
 }

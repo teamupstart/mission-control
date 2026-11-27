@@ -82,7 +82,7 @@ import {
 import { killLiveCheckGroups } from "./check-group.ts";
 import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
-import { hostSuspendMonitor, type HostSuspendClock } from "../host-suspend.ts";
+import { hostSuspendMonitor, type HostSuspendClock, type HostSuspendMark } from "../host-suspend.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 /**
@@ -1237,7 +1237,7 @@ export class WorkflowEngine {
       return;
     }
     const callIds = new Map<number, string>();
-    const callMarks = new Map<number, number>();
+    const callMarks = new Map<number, HostSuspendMark>();
     // Set when the call that just failed overlapped a host suspension. Read once per
     // execution, right after `runStructured` returns.
     let hostSuspended = false;

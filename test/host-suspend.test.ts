@@ -5,6 +5,7 @@ import {
   HOST_SUSPEND_INTERVAL_MS,
   HostSuspendMonitor,
   setAwakeTimeout,
+  type HostSuspendClock,
 } from "../src/server/host-suspend.ts";
 
 function monitorAt(start: number) {
@@ -61,6 +62,28 @@ test("a sleep the heartbeat has not caught up with yet is already visible", () =
   assert.equal(host.monitor.suspendedMsSince(since), 17 * 60_000 - HOST_SUSPEND_INTERVAL_MS);
 });
 
+test("a mark taken before many long sleeps keeps all of them, however long ago they ended", () => {
+  // The case a pruned history got wrong: an hour asleep, five seconds awake, then a day and an
+  // hour asleep. A window list trimmed to 24 hours dropped the first hour and counted it awake.
+  const host = monitorAt(1_000_000);
+  const since = host.monitor.mark();
+  host.awakeFor(HOST_SUSPEND_INTERVAL_MS);
+  host.advance(60 * 60_000);
+  host.awakeFor(HOST_SUSPEND_INTERVAL_MS);
+  host.advance(25 * 60 * 60_000);
+  const expected = 60 * 60_000 + 25 * 60 * 60_000 - 2 * HOST_SUSPEND_INTERVAL_MS;
+  assert.equal(host.monitor.suspendedMsSince(since), expected);
+  // A week of maintenance wakes on top changes nothing about the arithmetic.
+  for (let i = 0; i < 600; i++) {
+    host.awakeFor(HOST_SUSPEND_INTERVAL_MS);
+    host.advance(17 * 60_000);
+  }
+  assert.equal(
+    host.monitor.suspendedMsSince(since),
+    expected + 600 * (17 * 60_000 - HOST_SUSPEND_INTERVAL_MS),
+  );
+});
+
 test("only the part of a sleep after the mark counts", () => {
   const host = monitorAt(1_000_000);
   host.advance(10 * 60_000);
@@ -72,7 +95,7 @@ test("only the part of a sleep after the mark counts", () => {
 });
 
 /** Fake timers on two clocks: wall time (Date.now) and the clock Node's timers run on. */
-function fakeTimers(clock: { mark(): number; suspendedMsSince(since: number): number }) {
+function fakeTimers(clock: HostSuspendClock) {
   let timerNow = 0;
   const pending: { at: number; fn: () => void }[] = [];
   const armed: number[] = [];

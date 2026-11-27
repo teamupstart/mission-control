@@ -24,14 +24,26 @@ import { performance } from "node:perf_hooks";
  * the time it was given. The windows are conservative: each starts one interval after the last
  * heartbeat, so a suspension is never credited with more time than the host was gone.
  *
- * Process-local and in memory. A restart forgets earlier windows, which costs nothing: work in
- * flight across a restart is already interrupted and re-run by its owner.
+ * Process-local and in memory, and kept as one running total rather than a list of windows, so
+ * a call that spans many sleeps, or days of them, is measured as exactly as a short one. A restart
+ * starts the total again, which costs nothing: work in flight across a restart is already
+ * interrupted and re-run by its owner.
  */
+/**
+ * A point on the clock: when it was taken, and how much suspension had been observed by then.
+ * Carrying the running total is what lets `suspendedMsSince` answer from two numbers, with no
+ * history to keep or prune however long the work runs or however often the host sleeps.
+ */
+export interface HostSuspendMark {
+  readonly at: number;
+  readonly suspendedMs: number;
+}
+
 export interface HostSuspendClock {
-  /** A timestamp on this clock, to pass back to `suspendedMsSince`. */
-  mark(): number;
-  /** Milliseconds of observed suspension between `since` and now. Zero when none was seen. */
-  suspendedMsSince(since: number): number;
+  /** Now, to pass back to `suspendedMsSince`. */
+  mark(): HostSuspendMark;
+  /** Milliseconds of observed suspension since `mark` was taken. Zero when none was seen. */
+  suspendedMsSince(mark: HostSuspendMark): number;
 }
 
 export interface HostSuspendMonitorDeps {
@@ -42,23 +54,10 @@ export interface HostSuspendMonitorDeps {
   intervalMs?: number;
   /** A heartbeat later than this is a suspension. */
   gapMs?: number;
-  /** How long a recorded window is kept, bounding memory on a host that sleeps often. */
-  retainMs?: number;
 }
 
 export const HOST_SUSPEND_INTERVAL_MS = 5_000;
 export const HOST_SUSPEND_GAP_MS = 30_000;
-const HOST_SUSPEND_RETAIN_MS = 24 * 60 * 60_000;
-const MAX_WINDOWS = 512;
-
-interface SuspendWindow {
-  start: number;
-  end: number;
-}
-
-function overlap(window: SuspendWindow, since: number, now: number): number {
-  return Math.max(0, Math.min(window.end, now) - Math.max(window.start, since));
-}
 
 export class HostSuspendMonitor implements HostSuspendClock {
   private readonly now: () => number;
@@ -66,8 +65,8 @@ export class HostSuspendMonitor implements HostSuspendClock {
   private readonly clearIntervalFn: NonNullable<HostSuspendMonitorDeps["clearIntervalFn"]>;
   private readonly intervalMs: number;
   private readonly gapMs: number;
-  private readonly retainMs: number;
-  private readonly windows: SuspendWindow[] = [];
+  /** Every suspension the heartbeat has caught up with, summed. Only ever grows. */
+  private recordedMs = 0;
   private lastTick: number;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -77,7 +76,6 @@ export class HostSuspendMonitor implements HostSuspendClock {
     this.clearIntervalFn = deps.clearIntervalFn ?? ((timer) => clearInterval(timer));
     this.intervalMs = deps.intervalMs ?? HOST_SUSPEND_INTERVAL_MS;
     this.gapMs = deps.gapMs ?? HOST_SUSPEND_GAP_MS;
-    this.retainMs = deps.retainMs ?? HOST_SUSPEND_RETAIN_MS;
     this.lastTick = this.now();
   }
 
@@ -98,33 +96,30 @@ export class HostSuspendMonitor implements HostSuspendClock {
   /** One heartbeat. Public so a test can drive the clock without real timers. */
   tick(): void {
     const now = this.now();
-    const pending = this.pendingWindow(now);
-    if (pending) {
-      this.windows.push(pending);
-      if (this.windows.length > MAX_WINDOWS) this.windows.shift();
-    }
+    this.recordedMs += this.pendingMs(now);
     this.lastTick = now;
-    const horizon = now - this.retainMs;
-    while (this.windows.length && this.windows[0]!.end < horizon) this.windows.shift();
   }
 
-  mark(): number {
-    return this.now();
-  }
-
-  suspendedMsSince(since: number): number {
+  mark(): HostSuspendMark {
     const now = this.now();
-    let total = 0;
-    for (const window of this.windows) total += overlap(window, since, now);
-    // A gap the heartbeat has not caught up with yet. A timer due across the same sleep can run
-    // before the heartbeat does on wake, and it must still see the sleep it slept through.
-    const pending = this.pendingWindow(now);
-    if (pending) total += overlap(pending, since, now);
-    return total;
+    return { at: now, suspendedMs: this.totalMs(now) };
   }
 
-  private pendingWindow(now: number): SuspendWindow | null {
-    return now - this.lastTick > this.gapMs ? { start: this.lastTick + this.intervalMs, end: now } : null;
+  suspendedMsSince(mark: HostSuspendMark): number {
+    return Math.max(0, this.totalMs(this.now()) - mark.suspendedMs);
+  }
+
+  /**
+   * Everything observed up to `now`, including a gap the heartbeat has not caught up with yet: a
+   * timer due across the same sleep can run before the heartbeat does on wake, and it must still
+   * see the sleep it slept through.
+   */
+  private totalMs(now: number): number {
+    return this.recordedMs + this.pendingMs(now);
+  }
+
+  private pendingMs(now: number): number {
+    return now - this.lastTick > this.gapMs ? now - (this.lastTick + this.intervalMs) : 0;
   }
 }
 
@@ -177,7 +172,7 @@ export function setAwakeTimeout(fn: () => void, ms: number, deps: AwakeTimeoutDe
   const timerNow = deps.timerNow ?? (() => performance.now());
   const setTimeoutFn = deps.setTimeoutFn ?? ((callback, delay) => setTimeout(callback, delay));
   const clearTimeoutFn = deps.clearTimeoutFn ?? ((timer) => clearTimeout(timer));
-  const wallStart = clock.mark();
+  const start = clock.mark();
   const timerStart = timerNow();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let done = false;
@@ -187,9 +182,9 @@ export function setAwakeTimeout(fn: () => void, ms: number, deps: AwakeTimeoutDe
   };
   const check = (): void => {
     if (done) return;
-    const suspended = clock.suspendedMsSince(wallStart);
+    const suspended = clock.suspendedMsSince(start);
     if (suspended > 0) {
-      const wallElapsed = clock.mark() - wallStart;
+      const wallElapsed = clock.mark().at - start.at;
       const awake = Math.min(timerNow() - timerStart, wallElapsed - suspended);
       if (awake < ms) {
         arm(ms - awake);

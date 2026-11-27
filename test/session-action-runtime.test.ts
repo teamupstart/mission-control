@@ -2101,7 +2101,7 @@ async function observeCleanInspectorReview(h: Harness, number: number, head: str
   h.registry.inspectionUpdated(key, head, "OPEN", now);
 }
 
-for (const next of ["unchanged", "edited tree", "tree edited during PR action", "human instruction", "changed sibling", "proof only", "author idle before End", "probe rejection", "missed handoff", "Inspector completion"] as const) {
+for (const next of ["unchanged", "edited tree", "tree edited during PR action", "human instruction", "changed sibling", "proof only", "author idle before End", "probe rejection", "missed handoff", "Inspector completion", "different commit with the published tree"] as const) {
   test(`final idle handoff after a completed publication: ${next}`, async (t) => {
     const inspector = next === "Inspector completion";
     if (inspector) {
@@ -2170,6 +2170,10 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
       }
       if (next === "changed sibling") h.registry.recordWorktreeHeads(new Map([[sibling, h.full("changed")]]));
       if (next === "edited tree") h.contentTree.oid = h.full("edited");
+      if (next === "different commit with the published tree") {
+        h.captureHead.sha = h.head.sha;
+        h.head.sha += "-other";
+      }
       if (next === "proof only") {
         const { noteKey } = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
         const before = h.store.workflowEvidenceGeneration(noteKey, "/repo");
@@ -2521,7 +2525,8 @@ const ciScenarios = ["unchanged", "changed checkout", "new intent", "failing CI"
   "legacy recovery with a gap in claim generations", "legacy recovery with overridden duplicate evidence readiness",
   "legacy recovery after explicit Run again", "legacy recovery with a disabled node on the accepted review",
   "legacy recovery after an accepted full repair round", "legacy recovery with task reassignment during the probe",
-  "pending first observed during the checkout probe"] as const;
+  "pending first observed during the checkout probe", "same tree on a different commit before the first CI handoff",
+  "legacy recovery at both inclusive CI boundaries"] as const;
 for (const [index, scenario] of ciScenarios.entries()) {
   test(`Foreman publication CI across restart: ${scenario}`, async t => {
     const legacy = scenario.startsWith("legacy");
@@ -2679,6 +2684,16 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
           assert.equal(h.registry.prObservationFor(h.sessionId)?.checks, "pending");
           h.registry.reconcilePrs(new Map(), new Set([h.sessionId]));
         }
+        const changedBeforeFirstHandoff = scenario === "same tree on a different commit before the first CI handoff";
+        if (changedBeforeFirstHandoff) {
+          // The pending poll still names the accepted head. Keep the content probe's
+          // abbreviated capture unchanged so only the full checkout OID distinguishes it.
+          assert.equal(claims.length, 0);
+          assert.equal(h.registry.prObservationFor(h.sessionId)?.headSha, h.full(h.head.sha));
+          h.captureHead.sha = h.head.sha;
+          h.head.sha += "-other";
+          assert.notEqual(h.full(h.head.sha), h.registry.prObservationFor(h.sessionId)?.headSha);
+        }
         const ciFinished = Date.now();
         if (checks === "passing" && scenario === "new intent") {
           const objective = "Document the new API before publication.";
@@ -2702,6 +2717,13 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
         if (checks === "passing" && scenario === "new intent") {
           assert.equal(h.registry.getQueue(h.sessionId)?.promptedDecision?.outcome, "held");
           assert.equal(claims.at(-1)?.expectedIntent.promptRevision, 1, "excluded evidence could not authorize a new claim");
+          return;
+        }
+        if (changedBeforeFirstHandoff) {
+          const latest = h.store.latestRunForBinding(h.store.getRun(runId)!.bindingId)!;
+          assert.notEqual(latest.id, runId, "a different commit must start a fresh review on the first pending turn");
+          assert.ok(h.store.publicationHandoff(runId, claims[0]!.expectedWorkCycle.generation), "the accepted handoff was spent");
+          await waitFor(() => h.store.latestSubmission(latest.id)?.status === "waiting_for_evidence_readiness", "new review needs evidence");
           return;
         }
         if (observedChecks === "pending" && !stale && !pendingCannotRenew) {
@@ -2762,6 +2784,21 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
           const ci = mergedCiWitness(githubRecord);
           assert.ok(ci);
           writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+          if (scenario === "legacy recovery at both inclusive CI boundaries") {
+            const handoff = h.store.listEvents(runId).findLast(event => event.kind === "workflow_completion_claimed");
+            assert.ok(handoff && handoff.timestamp < latest.startedAt);
+            const check = githubRecord.commits.nodes[0]!.commit.statusCheckRollup.contexts.nodes[0]!;
+            check.startedAt = new Date(handoff.timestamp).toISOString();
+            check.completedAt = new Date(latest.startedAt).toISOString();
+            writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+            await recheck("inclusive-ci-interval");
+            assert.equal(h.store.getRun(latest.id)?.status, "completed");
+            const audit = h.store.listEvents(latest.id).find(event => event.kind === "duplicate_publication_recovered");
+            assert.partialDeepStrictEqual(audit?.payload, { handoffAt: handoff.timestamp,
+              startedAt: handoff.timestamp, finishedAt: latest.startedAt });
+            await waitFor(() => h.registry.getTask(taskId)?.status === "done", "recovered merged task did not settle");
+            return;
+          }
           if (noPriorConsent) {
             assert.ok(packet.payload.includes("## Workflow pull request CI follow-through"));
             assert.equal(latest.intent?.fingerprint, h.store.getRun(runId)?.intent?.fingerprint);

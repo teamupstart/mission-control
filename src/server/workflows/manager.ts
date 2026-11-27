@@ -4660,8 +4660,16 @@ export class WorkflowManager {
     if (!checkout) return null;
     const retained = publication?.localArtifacts ?? [];
     const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
-    const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
     const gate = this.gateState(run);
+    const owner = { bindingId: binding.id, runId: run.id };
+    const noMatch = () => ({ ...owner, stillMatches: () => false });
+    // An Inspector repair can supersede the original publication. Without an Inspector
+    // head, use the full commit recorded by the completed PR action.
+    const reviewedHead = repair?.headSha ?? gate?.targetHeadSha ?? handoff.publishedHead;
+    if (!reviewedHead) return Promise.resolve(noMatch());
+    const before = performance.now() < deadline ? revision(checkout, retained, deadline, reviewedHead) : null;
+    const ciAuthorized = !!gate?.targetHeadSha && !!deliveredCiAction(this.store, handoff.actionId);
+    if (!before || (handoff.ciOnly && !ciAuthorized)) return Promise.resolve(noMatch());
     const checks = () => {
       if (!gate?.prKey || gate.prKey !== handoff.prKey) return null;
       const observation = this.publicationCiChecks(binding, run, handoff.actionId);
@@ -4671,16 +4679,16 @@ export class WorkflowManager {
     };
     // A pending check can arrive while the checkout probe is in flight. Identify the head
     // independently so the store can use its current observation when consuming the claim.
-    const ciHead = before && handoff.repoId && gate?.targetHeadSha && deliveredCiAction(this.store, handoff.actionId)
+    const ciHead = ciAuthorized && handoff.repoId
       ? (this.options.readRepositoryHead ?? readWorkflowRepositoryHead)(checkout).then(head =>
           !!head && head.repositoryId === handoff.repoId && head.branch === context.data.session.branch
-          && head.headOid === gate?.targetHeadSha, () => false)
+          && head.headOid === reviewedHead, () => false)
       : Promise.resolve(false);
-    const owner = { bindingId: binding.id, runId: run.id };
     const comparison = (matches: boolean, identified: boolean) => ({
       ...owner,
-      stillMatches: (until: number) => matches && (!handoff.ciOnly || (identified && ["passing", "pending"].includes(checks()?.checks ?? "")))
-        && revision(checkout, retained, until, identified ? gate?.targetHeadSha ?? undefined : undefined) === before,
+      stillMatches: (until: number) => matches && (!ciAuthorized || identified)
+        && (!handoff.ciOnly || ["passing", "pending"].includes(checks()?.checks ?? ""))
+        && revision(checkout, retained, until, reviewedHead) === before,
       pendingCi: () => {
         const observed = identified ? checks() : null;
         return observed?.checks === "pending" && handoff.prKey && observed.headSha
@@ -4688,19 +4696,17 @@ export class WorkflowManager {
       },
     });
     if (repair) {
-      // Without a first revision the handoff can never be reused, so skip the Git reads.
-      if (before === null) return Promise.resolve({ ...owner, stillMatches: () => false });
       return Promise.all([this.inspectorRepairMatches(checkout, evidence.headSha, repair, retained), ciHead]).then(
         ([matches, identified]) => comparison(matches, identified),
-        () => ({ ...owner, stillMatches: () => false }),
+        noMatch,
       );
     }
     return Promise.all([this.probeRepository(binding, submission), ciHead]).then(
       ([probe, identified]) => {
-        const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
+        const matches = Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
         return comparison(matches, identified);
       },
-      () => ({ ...owner, stillMatches: () => false }),
+      noMatch,
     );
   }
 

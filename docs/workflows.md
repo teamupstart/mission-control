@@ -2657,9 +2657,11 @@ A completed review can continue to own the author's CI turns on the primary chec
 the confirmed Pull Request action includes CI follow-through, a pending check observation
 can extend its handoff by one consecutive generation. Each claim verifies the action's own
 prompt, the current intent, the adopted branch and exact reviewed head, and the accepted
-checkout content. The daemon checks the Git commit again when it spends the CI handoff,
-even if another commit has the same tree. Another pending observation can extend it again. A passing observation
-spends the final handoff. An explicit **Run again** starts a separate review.
+checkout content. From the first publication handoff onward, the daemon verifies the full
+commit ID before the checkout probe and again when it spends the handoff. A different
+commit starts a fresh review even if it has the same tree. Another pending observation
+can extend the handoff again. A passing observation spends the final handoff. An explicit
+**Run again** starts a separate review.
 
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow

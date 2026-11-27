@@ -5428,6 +5428,7 @@ export class WorkflowStore {
     const row = this.db.prepare(
       `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree,
               child.id AS submission_id, action.id AS action_id, r.publication_ci_generation AS ci_generation,
+              json_extract(action.output_json, '$.expectation.expectedHeadOid') AS published_head,
               json_extract(action.output_json, '$.expectation.repositoryRoot') AS repo_id,
               json_extract(action.output_json, '$.expectation.pullRequestKey') AS pr_key
          FROM workflow_submissions child
@@ -5447,6 +5448,7 @@ export class WorkflowStore {
         AND json_extract(payload_json, '$.expectedWorkCycle.generation') = ?
       ORDER BY id DESC LIMIT 1`).get(runId, generation - 1);
     return { treeOid: row.tree, submissionId: row.submission_id, actionId: row.action_id, ciOnly,
+      publishedHead: typeof row.published_head === "string" ? row.published_head : null,
       lastCiObservation: lastCi && typeof lastCi.observed_at === "number" ? lastCi.observed_at : null,
       repoId: typeof row.repo_id === "string" ? row.repo_id : null, prKey: typeof row.pr_key === "string" ? row.pr_key : null };
   }

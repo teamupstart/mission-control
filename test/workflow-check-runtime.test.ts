@@ -1285,6 +1285,14 @@ test("a second CodeRabbit hand-back probe timeout keeps the lease pinned and the
     await leases.reclaimLeaked(runtime.groupRecovery);
     await pool.stop();
   }
+  const returned = leaseRows.get(store.latestAttemptForNode(submissionId, "gate")!.id)!;
+  assert.equal(returned.cleanupState, "returned");
+  assert.equal(pool.lookupLease({
+    path: returned.leasePath,
+    leaseId: returned.leaseId!,
+    owner: { kind: "check", key: returned.attemptId },
+  }).state, "released");
+  assert.equal(gitIn(returned.leasePath, "rev-parse", "HEAD"), gitIn(repoRoot, "rev-parse", "origin/main"));
 });
 
 /**

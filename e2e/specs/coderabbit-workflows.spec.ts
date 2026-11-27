@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { Page } from "@playwright/test";
 import { WORKFLOW_EXECUTION_LIMITS, type WorkflowCommandView, type WorkflowRunDetail } from "../../src/shared/workflow.ts";
 
@@ -81,10 +80,6 @@ test.describe("pooled CodeRabbit cleanup", () => {
   const timeout = "network probe timeout: git ls-remote --symref origin HEAD timed out after 30 s";
   expect(first.error).toContain(timeout);
   expect(first.error).not.toContain("Settings > Setup");
-  const lease = () => withDaemonDb(daemon, db => db.prepare(
-   "SELECT provider, cleanup_state AS state FROM workflow_check_leases WHERE attempt_id = ?",
-  ).get(first.id));
-  expect(lease()).toEqual({ provider: "mission", state: "returning" });
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${id}`);
   await expect(dashboard.getByRole("main")).toContainText("Mission Control retries worktree cleanup automatically");
@@ -101,7 +96,6 @@ test.describe("pooled CodeRabbit cleanup", () => {
   expect(after.submissions.map(s => s.id)).toEqual(blocked.submissions.map(s => s.id));
   expect(after.events.filter(event => event.kind === "check_cleanup_resolved")).toHaveLength(1);
   expect(after.events.some(event => event.kind === "command_action_required")).toBe(false);
-  expect(lease()).toEqual({ provider: "mission", state: "returned" });
   const attempts = after.attempts.filter(a => a.nodeId === "cr");
   expect(attempts).toHaveLength(2);
   expect(attempts.at(-1)?.output).toMatchObject({ status: "passed", review: { remainingRuns: 0 } });

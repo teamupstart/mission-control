@@ -1,6 +1,9 @@
+import { mkdirSync } from "node:fs";
+
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -33,6 +36,18 @@ async function holdDetail(page: Page, id: string, hold: Promise<void>): Promise<
     await hold;
     await route.continue();
   });
+}
+
+const EVIDENCE = artifactsDir("workflow-builder-validation");
+
+/** Gated behind `MC_E2E_EVIDENCE`: the rendered state the assertions beside it just passed on. */
+async function capture(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer.
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  console.log(`CAPTURED e2e/.artifacts/workflow-builder-validation/${name}.png`);
 }
 
 const session = { id: "session", kind: "session", position: { x: 0, y: 0 } };
@@ -85,4 +100,12 @@ test("the builder validates a draft once its graph arrives: rail, diagnostics an
   await expect(dashboard.getByText("Add at least one End node.")).toBeVisible();
   await expect(dashboard.locator("code.workflow-diagnostic-code", { hasText: "missing_end" })).toBeVisible();
   await expect(publish).toBeDisabled();
+  // One frame for both claims: a taller viewport fits the header's Publish and the named diagnostic.
+  if (process.env.MC_E2E_EVIDENCE) {
+    await dashboard.setViewportSize({ width: 1280, height: 1000 });
+    await dashboard.evaluate(() => window.scrollTo(0, 0));
+    await expect(dashboard.locator("code.workflow-diagnostic-code", { hasText: "missing_end" })).toBeInViewport();
+    await expect(publish).toBeInViewport();
+  }
+  await capture(dashboard, "builder-missing-end-publish-disabled");
 });

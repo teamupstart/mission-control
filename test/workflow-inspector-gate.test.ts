@@ -5070,3 +5070,56 @@ test("a run repairing GitHub findings keeps the worker on the GitHub path even w
   assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_new_head");
   assert.equal(await ask(), null, "the worker's answer agrees with the gate's: stay on the GitHub path");
 });
+
+test("a pull request head that moves during the tree lookup is evaluated afresh, not completed locally", async (t) => {
+  const moved = "moved-during-lookup";
+  let moveOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async (_root, commit) => {
+      // The lookup for the reviewed head is where the gate awaits git; a newer observation of
+      // the pull request commits right then.
+      if (commit !== moved && moveOnce) { const move = moveOnce; moveOnce = null; move(); }
+      return commit === moved ? OTHER_TREE : REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  moveOnce = () => updateInspectorPr(seeded.key, { observedHeadSha: moved, observedState: "OPEN", observedAt: Date.now() + 1 }, Date.now());
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_head_mismatch",
+    "the moved head was not evaluated afresh");
+  assert.equal(moveOnce, null, "the observation did move during the lookup");
+  assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed", "the superseded head did not complete the run");
+  assert.equal(gateOf(seeded).localReview, undefined);
+  assert.equal(gateOf(seeded).observedHeadSha, moved);
+});
+
+test("a newer owner that decides during the tree lookup takes the decision back from an older pass", async (t) => {
+  let decideDuringLookup: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (decideDuringLookup) { const decide = decideDuringLookup; decideDuringLookup = null; decide(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+  const later = await newerRunOnSamePullRequest(seeded, { stage: true });
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the newer run is pending, the older pass stands");
+
+  // The newer run's Local Inspector review fails while the older pass's tree is being resolved.
+  decideDuringLookup = () => {
+    const at = Date.now();
+    seeded.store.insertAttempt({ id: `${later}-late`, submissionId: `${later}-submission`, nodeId: "local-inspector",
+      attempt: 1, state: "running", persona: null, inputFingerprint: `${later}-late`, now: at });
+    seeded.store.finishAttempt(`${later}-late`, { state: "completed", output: workflowJson({
+      slot: "inspector", status: "failed", command: null, exitCode: null, output: "", truncatedBytes: 0,
+      artifacts: [], timeoutMs: null, note: "Local Inspector failed.",
+      localInspector: { status: "failed", publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main",
+        mergeBase: "m".repeat(40), blockingSeverity: "major", findingCount: 1 },
+    }) }, at);
+  };
+  assert.equal(await ask(), null, "the newer owner's decision, made during the await, wins");
+  assert.equal(decideDuringLookup, null, "the decision did land during the lookup");
+});

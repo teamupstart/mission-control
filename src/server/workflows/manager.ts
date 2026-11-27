@@ -3437,6 +3437,15 @@ export class WorkflowManager {
   ): Promise<WorkflowLocalReviewMatch | null> {
     const adopted = getInspectorPr(prKey);
     if (!adopted || !getInspectorConfig().localReview) return null;
+    // Newer owners whose review was still pending when an older pass was consulted. The tree
+    // lookup below awaits git, so each is read again afterwards: one that has since decided -
+    // failed, skipped, finished, cancelled - takes the decision back from the older pass.
+    const pending: Array<{ run: WorkflowRun; version: WorkflowVersion }> = [];
+    const stillPending = (owner: { run: WorkflowRun; version: WorkflowVersion }): boolean => {
+      const run = this.store.getRun(owner.run.id);
+      return Boolean(run) && !["cancelled", "failed", "waiting_for_new_head"].includes(run!.status)
+        && this.localReviewState(owner.run.id, owner.version).kind === "pending";
+    };
     for (const run of this.localReviewOwners(adopted.key)) {
       // A cancelled or failed owner still decides, and it decides no: it never finishes a local
       // review, so it can neither vouch for a head nor let an older run's pass stand in for one.
@@ -3447,10 +3456,14 @@ export class WorkflowManager {
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       if (version?.completionPolicy.kind !== "inspector") return null;
       const review = this.localReviewState(run.id, version);
-      if (review.kind === "pending") continue;
+      if (review.kind === "pending") {
+        pending.push({ run, version });
+        continue;
+      }
       if (review.kind === "none") return null;
-      return this.matchLocalReview(run, version, adopted, head,
+      const match = await this.matchLocalReview(run, version, adopted, head,
         this.store.getBinding(run.bindingId)?.sessionRepoRoot || adopted.repoRoot);
+      return match && pending.every(stillPending) ? match : null;
     }
     return null;
   }
@@ -5564,6 +5577,22 @@ export class WorkflowManager {
       const local = await this.matchLocalReview(run, version, ledger,
         { headSha: state.observedHeadSha, baseRefName: ledger.baseRefName ?? null }, repositoryRoot);
       if (local) {
+        // The tree lookup awaited git. A newer observation committed meanwhile does not change
+        // the gate state the completion compares, so read the durable observation again, as the
+        // GitHub path does before its own verdict: a moved head or a closed pull request is
+        // evaluated afresh rather than completed under the head the lookup started with.
+        const current = loadInspectorInspection(state.prKey!);
+        if (!current || current.state === "closed") return;
+        if (current.observedAt !== null && current.observedAt >= (state.lastObservedAt ?? state.enteredAt)) {
+          if (current.observedState === null) return;
+          if (current.observedHeadSha !== state.observedHeadSha || inspectorStateSaysClosed(current.observedState)) {
+            this.scheduleGateEvaluation(run.id, {
+              prKey: current.key, observedHeadSha: current.observedHeadSha,
+              observedAt: current.observedAt, observedState: current.observedState, ledger: current,
+            });
+            return;
+          }
+        }
         this.transitionInspectorGate(
           run,
           state,

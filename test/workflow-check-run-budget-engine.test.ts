@@ -1559,3 +1559,88 @@ test("a check runner that throws during a host sleep is retried without spending
   const gate = store.latestAttemptForNode("submission-check-throw-sleep", "gate")!;
   assert.equal((gate.output as Record<string, unknown>).status, "passed");
 });
+
+/**
+ * Persist three sleep-excused check attempts, the node's whole raw allowance, and stop the
+ * engine with the fourth attempt waiting to retry. Returns that attempt and the clock.
+ */
+async function threeExcusedSleeps(id: string): Promise<{
+  store: InstanceType<typeof WorkflowStore>;
+  waiting: ReturnType<InstanceType<typeof WorkflowStore>["latestAttemptForNode"]>;
+  clock: number;
+}> {
+  const store = seedSubmission(id);
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 11_000_000;
+  const engine = sleepEngine(store, sleep, () => clock, async () => (
+    { kind: "infrastructure" as const, reason: CHECK_TIMEOUT }
+  ));
+  engine.start();
+  try {
+    engine.activateSubmission(`submission-${id}`);
+    for (let excused = 1; excused <= 3; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode(`submission-${id}`, "gate");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      if (excused < 3) {
+        clock = store.latestAttemptForNode(`submission-${id}`, "gate")!.retryAt!;
+        engine.wake();
+      }
+    }
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(store.hostSuspendedAttempts(`submission-${id}`, "gate"), 3);
+  return { store, waiting: store.latestAttemptForNode(`submission-${id}`, "gate"), clock };
+}
+
+/** A fresh engine over the same store, awake, whose check passes: the daemon after a restart. */
+function restartedEngine(store: InstanceType<typeof WorkflowStore>, now: () => number, onRun: () => void) {
+  return sleepEngine(store, scriptedSleep(), now, async () => {
+    onRun();
+    return { kind: "exited" as const, exitCode: 0, output: "42 passing\n", truncatedBytes: 0 };
+  });
+}
+
+test("a restart that interrupts a check after excused sleeps retries it instead of blocking", async () => {
+  const { store, waiting, clock } = await threeExcusedSleeps("restart-running");
+  // The daemon died while attempt 4 was running: three excused tries, one real one in flight.
+  assert.ok(store.claimAttempt(waiting!.id, null, null, clock), "attempt 4 is now running");
+  let runs = 0;
+  const engine = restartedEngine(store, () => clock, () => { runs++; });
+  engine.start();
+  try {
+    // Recovery read the attempts actually spent (1), not the raw attempt number (4).
+    const recovered = store.latestAttemptForNode("submission-restart-running", "gate")!;
+    assert.equal(recovered.attempt, 5);
+    assert.notEqual(store.getRun("run-restart-running")?.currentPhase, "infrastructure_error");
+    assert.equal(store.getAttempt(waiting!.id)?.error, "Interrupted by daemon restart");
+    await waitFor(() => store.getRun("run-restart-running")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(runs, 1);
+  assert.equal((store.latestAttemptForNode("submission-restart-running", "gate")!.output as Record<string, unknown>).status, "passed");
+});
+
+test("a restart that finds a failed check after excused sleeps retries it instead of blocking", async () => {
+  const { store, waiting, clock } = await threeExcusedSleeps("restart-errored");
+  // The daemon died between a real failure on attempt 4 and queueing its retry.
+  store.finishAttempt(waiting!.id, { state: "error", error: CHECK_TIMEOUT }, clock);
+  let runs = 0;
+  const engine = restartedEngine(store, () => clock, () => { runs++; });
+  engine.start();
+  try {
+    const recovered = store.latestAttemptForNode("submission-restart-errored", "gate")!;
+    assert.equal(recovered.attempt, 5);
+    assert.equal(store.getRun("run-restart-errored")?.status === "blocked", false,
+      "one spent attempt of three is not exhausted");
+    assert.equal(store.listEvents("run-restart-errored").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+    await waitFor(() => store.getRun("run-restart-errored")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(runs, 1);
+});

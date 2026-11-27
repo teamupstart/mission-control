@@ -10595,13 +10595,31 @@ export class WorkflowStore {
       .get(operationId) as { n: number }).n;
   }
 
-  /** Provider refusals have their own elapsed retry window, not a correction execution. */
+  /**
+   * Provider refusals have their own elapsed retry window, not a correction execution, and a
+   * call the host slept through is not evidence about the call at all.
+   */
   personaOperationCorrectionCalls(operationId: string): number {
     return (this.db.prepare(`SELECT count(*) AS n FROM workflow_llm_calls c
       JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
       WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?
-        AND c.error_code IS NOT 'persona_provider_retryable'`)
+        AND c.error_code IS NOT 'persona_provider_retryable'
+        AND c.error_code IS NOT 'persona_host_suspended'`)
       .get(operationId) as { n: number }).n;
+  }
+
+  /**
+   * Attempts of one node in one submission that a host suspension excused, Persona calls and
+   * checks alike. Each is a `host_suspended_attempt` event recorded with the attempt's failure,
+   * so it survives a restart, and a block that held its retry back, with the attempt it explains.
+   */
+  hostSuspendedAttempts(submissionId: string, nodeId: string): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_events e
+      JOIN workflow_submissions s ON s.run_id = e.run_id AND s.id = ?
+      WHERE e.event_kind = 'host_suspended_attempt'
+        AND json_extract(e.payload_json, '$.submissionId') = ?
+        AND json_extract(e.payload_json, '$.nodeId') = ?`)
+      .get(submissionId, submissionId, nodeId) as { n: number }).n;
   }
 
   /** The first completed provider refusal is the durable origin of the retry deadline. */

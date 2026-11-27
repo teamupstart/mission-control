@@ -4,6 +4,7 @@ import { Codex } from "@openai/codex-sdk";
 import type { LlmRunOptions } from "@shared/llm.ts";
 import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { ProviderFailure } from "./provider-failure.ts";
+import { setAwakeTimeout } from "../host-suspend.ts";
 
 /**
  * One headless Codex call, driven through `@openai/codex-sdk` instead of hand-parsed argv.
@@ -246,7 +247,8 @@ function withTimeout<T>(
   controller: AbortController,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
+    // Awake time, not wall time (see `host-suspend.ts`).
+    const timer = setAwakeTimeout(() => {
       controller.abort();
       // Swallow the rejection the abort above is about to cause. The caller has already been
       // handed the timeout error and has degraded; this is only here so the process survives.
@@ -255,11 +257,11 @@ function withTimeout<T>(
     }, ms);
     promise.then(
       (value) => {
-        clearTimeout(timer);
+        timer.clear();
         resolve(value);
       },
       (err: unknown) => {
-        clearTimeout(timer);
+        timer.clear();
         reject(err instanceof Error ? err : new Error(String(err)));
       },
     );

@@ -1754,6 +1754,24 @@ infrastructure retry starts a new bounded operation. Provider token or quota exh
 pauses immediately in `provider_token_exhausted` and shows the error to the operator. Local CLI
 timeouts, process failures, parse errors, and contract violations keep their existing bounded
 policy. Rejected responses remain inspectable on the attempt.
+
+A host that sleeps mid-call does not spend that budget. Model call timeouts count only time the
+host was awake, so a Mac that idle-sleeps on battery no longer times a call out on the next wake.
+A Persona call that fails anyway while the host slept through it, for example because its
+connection dropped, is recorded as `persona_host_suspended` and retried about five seconds later.
+When the attempt has frozen review input, the retry reuses that input and consumes no correction
+execution. An older attempt without frozen review input is retried the same way without spending
+one of the node's three infrastructure attempts. Every such call is excused, however many sleeps a
+night brings, because each one needs a newly observed sleep. A token limit still pauses the run at
+once. Checks get similar treatment. A check command's timeout counts only awake time. A check
+whose command could not finish while the host slept through it is retried about five seconds
+later without spending one of the node's three infrastructure attempts: an infrastructure failure
+such as a timeout, a dropped CodeRabbit connection, or an error from the check runner itself. A
+check whose command ran and reported a failure is a verdict, not an infrastructure failure, and is
+not retried. The daemon sees a sleep as a heartbeat arriving more than 30
+seconds late, so an event loop stalled that long counts as one. Session turns are run by the
+agent's own CLI, which Mission Control does not time out or retry.
+[Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep) prevents the sleep altogether.
 Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
 
 The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the

@@ -64,7 +64,7 @@ Pipeline and Graph are two views of one workflow, and the toolbar offers both fo
 ## No-Mistakes Review
 <!-- stage: workflow-no-mistakes -->
 
-Six stages, in order: typecheck, test, and lint together; optional YAML-enabled CodeRabbit review; Intent Conformance and Test Coverage together as the first review gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence, Documentation and Slop Filter in parallel; then the verified Pull Request action before End and the final GitHub Inspector gate. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
+Seven stages, in order: typecheck, test, and lint together; optional YAML-enabled CodeRabbit review; Intent Conformance and Test Coverage together as the first review gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence, Documentation and Slop Filter in parallel; the Local Inspector, which skips unless local review is on; then the verified Pull Request action before End and the final Inspector gate. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
 
 ## Binding it
 <!-- stage: workflow-bind -->
@@ -74,7 +74,7 @@ Binding attaches a published version to one session's work in one repository. Th
 ## A run, moving
 <!-- stage: run-moving -->
 
-The stages pinned by that run, now carrying real state from a finished run of your own. Earlier versions keep their original pipeline; version 22 adds optional CodeRabbit. Under the strip, the review worklist sorts what the reviewers actually said: Blocking is what is still open, Passed is what cleared, and an individual verdict opens in place.
+The stages pinned by that run, now carrying real state from a finished run of your own. Earlier versions keep their original pipeline; version 22 adds optional CodeRabbit and version 23 the Local Inspector. Under the strip, the review worklist sorts what the reviewers actually said: Blocking is what is still open, Passed is what cleared, and an individual verdict opens in place.
 
 ## Where a run is watched
 <!-- stage: run-watched -->

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, open, realpath, rename, rmdir, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
   type ArchiveManifestArtifact,
   type ArchiveManifestRepository,
 } from "@shared/archives.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import { verifyArchiveBundle } from "./bundle.ts";
 import type { ArchiveCaptureJob } from "./capture-store.ts";
 import { headOf, resolveRoots } from "./checkout.ts";
@@ -229,7 +230,7 @@ export async function publishBundle(
   const stageDir = path.join(stageProducer, identity.archiveId);
 
   try {
-    await rm(stageDir, { recursive: true, force: true, maxRetries: 2 });
+    await removeTree(stageDir);
     await mkdir(stageDir, { recursive: true, mode: 0o700 });
 
     const content = await stage(stageDir);
@@ -286,7 +287,7 @@ export async function publishBundle(
   } finally {
     // Staging is disposable by construction: a failed attempt re-stages from scratch next
     // time, and a successful one has already renamed the directory away.
-    await rm(stageDir, { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+    await removeTree(stageDir).catch(() => {});
     await rmdir(stageProducer).catch(() => {});
   }
 }

@@ -722,6 +722,7 @@ const stopAgentsShadow = startAgentsShadow(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
+  localReview: (prKey, head) => workflows.localReviewMatch(prKey, head),
 });
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 // Whether each live session has been corrected by its human, which is half of whether the

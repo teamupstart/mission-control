@@ -3443,6 +3443,11 @@ export interface InspectorPr {
   reviewComplete?: boolean | null;
   /** Exact head whose final clean review was confirmed on GitHub. */
   cleanReviewHeadSha?: string | null;
+  /**
+   * The head the worker matched to a passed Local Inspector review, recorded in any posture.
+   * No GitHub review ran for it. Null for a head reviewed on GitHub and for older rows.
+   */
+  localReviewHeadSha?: string | null;
   /** Completed review rounds. Also the runaway guard. */
   round: number;
   lastReviewedAt: number | null;
@@ -3689,6 +3694,8 @@ export interface InspectorSummary {
   reviewedHeadSha?: string | null;
   observedHeadSha?: string | null;
   cleanReviewHeadSha?: string | null;
+  /** The head matched to a passed Local Inspector review; see `InspectorPr`. */
+  localReviewHeadSha?: string | null;
 }
 
 /**

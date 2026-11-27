@@ -67,6 +67,7 @@ export interface CheckInfrastructureFailure {
   kind: "infrastructure";
   reason: string;
   artifacts?: WorkflowCommandArtifactDescriptor[];
+  review?: CodeRabbitReviewSummary;
 }
 
 export interface CheckActionRequiredFailure {
@@ -136,7 +137,12 @@ export type CheckExecutionResult =
    * dependency claim that failed for a reason the change does not own is retried as the same
    * execution, and must not have spent one.
    */
-  | { kind: "infrastructure"; reason: string; started?: boolean; ranNothing?: boolean; artifacts?: WorkflowCommandArtifactDescriptor[]; review?: CodeRabbitReviewSummary };
+  | (CheckInfrastructureFailure & {
+    started?: boolean;
+    ranNothing?: boolean;
+    /** The executor withheld the result because it could not account for the worktree. */
+    cleanupFailed?: true;
+  });
 
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 

@@ -1741,7 +1741,10 @@ export class WorkflowEngine {
       return;
     }
     if (result.kind === "infrastructure") {
-      this.handleInfrastructureFailure(claimed, run.id, result.reason);
+      const output = result.review
+        ? jsonValue({ review: result.review, artifacts: result.artifacts ?? [] })
+        : undefined;
+      this.handleInfrastructureFailure(claimed, run.id, result.reason, false, output);
       return;
     }
 
@@ -1934,6 +1937,7 @@ export class WorkflowEngine {
     runId: string,
     reason: string,
     exhausted = false,
+    output?: WorkflowNodeAttempt["output"],
   ): void {
     const currentRun = this.store.getRun(runId);
     const currentSubmission = this.store.getSubmission(attempt.submissionId);
@@ -1948,6 +1952,7 @@ export class WorkflowEngine {
     this.store.finishAttempt(attempt.id, {
       state: "error",
       error: reason,
+      output,
     }, this.now());
     if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
     if (!exhausted && attempt.attempt < MAX_INFRA_ATTEMPTS) {

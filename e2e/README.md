@@ -90,6 +90,7 @@ Playwright uses at most four workers, and Mission Control permits one E2E invoca
 a host at a time. This is a shared limit across linked worktrees: a second full or focused run
 waits before Playwright starts any browser workers, prints the PID and checkout holding the lease,
 and begins when that run exits. The kernel releases the lease automatically if its process dies.
+If a probe connection fails, the owner logs the socket error and continues serving waiters.
 If an unrelated process owns the derived lease port, the run refuses promptly instead of waiting.
 
 The resolved worker count is a hard ceiling. A command that asks for more than four workers is

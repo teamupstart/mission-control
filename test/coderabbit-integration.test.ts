@@ -331,7 +331,7 @@ test("normalized findings use the existing quota and authenticated reader; raw c
 test("all 33 previously published versions retain exact hashes; only No-Mistakes appends the stage",()=>{
  const expected=JSON.parse(readFileSync(new URL("./fixtures/coderabbit-workflow-history.json",import.meta.url),"utf8"));
  for(const [id,hash] of Object.entries(expected)){const v=BUILTIN_WORKFLOWS.flatMap(w=>w.versions).find(v=>v.id===id)!;assert.equal(createHash("sha256").update(JSON.stringify(v)).digest("hex"),hash,id);}
- const noMistakes=BUILTIN_WORKFLOWS.find(w=>w.definition.id.includes("no-mistakes"))!;assert.equal(noMistakes.versions.length,22);
+ const noMistakes=BUILTIN_WORKFLOWS.find(w=>w.definition.id.includes("no-mistakes"))!;assert.equal(noMistakes.versions.length,23);
  const nodes=noMistakes.versions.at(-1)!.graph.nodes;assert.equal(nodes.filter(n=>n.kind==="check"&&n.slot==="coderabbit").length,1);
  for(const w of BUILTIN_WORKFLOWS.filter(w=>w!==noMistakes))assert.ok(!w.versions.some(v=>v.graph.nodes.some(n=>n.kind==="check"&&n.slot==="coderabbit")));
 });
@@ -344,6 +344,21 @@ test("a runtime refusal proven before process start returns its allowance",async
  const i=input();let releases=0;i.reserveRun=()=>({granted:true,spent:0,release:()=>{releases++;}});
  const r=await runCheck(i,{...deps(),execute:async()=>({kind:"infrastructure",started:false,reason:"no lease could be acquired"})});
  assert.equal(r.kind,"action_required");assert.equal(releases,1);
+});
+
+test("CodeRabbit hands a withheld verdict to automatic infrastructure recovery", async () => {
+ const i = input();
+ let refunds = 0;
+ i.reserveRun = () => ({ granted: true, spent: 0, release: () => { refunds++; } });
+ const reason = "the coderabbit check exited 2, but git ls-remote --symref origin HEAD was stopped during worktree hand-back";
+ const execution = {
+  kind: "infrastructure" as const, cleanupFailed: true as const, reason,
+  review: { ...summary, status: "incomplete" as const },
+ };
+ const result = await runCheck(i, { ...deps(), execute: async () => execution });
+ assert.equal(result.kind, "infrastructure");
+ assert.equal(result.reason, reason);
+ assert.equal(refunds, 1);
 });
 test("unexpected comparison and executor failures log classified secret-free diagnostics",async(t)=>{
  const logs:string[]=[];t.mock.method(console,"error",(...args:unknown[])=>logs.push(args.join(" ")));

@@ -95,6 +95,11 @@
       }
     },
     {
+      // Checkouts, pool slots, seed staging and archive bundles can hold Electron's asar.
+      "files": ["src/server/worktrees/**/*", "src/server/archives/**/*"],
+      "rules": { "repository/tree-removal": "error" }
+    },
+    {
       "files": ["src/server/http-body.ts"],
       "rules": { "repository/parse-request-body": "off" }
     },

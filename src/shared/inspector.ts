@@ -47,13 +47,20 @@ export const INSPECTOR_LIMITS = {
 // it too.
 
 /**
- * What the Inspector is currently able to do about one pull request.
+ * What the Inspector is able to do about one pull request, and what a reviewed head was
+ * recorded under. APPEND-ONLY: persisted beside a reviewed head.
  *
- * `live` is the only value that means "this review is real": it was published under the
- * operator's GitHub identity, in a repo they trusted, with the feature switched on.
- * Every other value names which switch is withholding that.
+ * `live` is the only value that means "this GitHub review is real": it was published under the
+ * operator's GitHub identity, in a repo they trusted, with the feature switched on. `off`,
+ * `dry-run` and `not-allowlisted` each name the switch that is withholding that.
+ *
+ * `local` is different: it withholds nothing. It records that a head's tree matched a passed
+ * Local Inspector review, so no GitHub review ran. It is a recorded posture, never a current
+ * one - `inspectorPosture` cannot return it - and the worker writes it only while the current
+ * posture is `live`, so Dry run never produces one. The merge predicate refuses it until
+ * Shipping accepts local reviews.
  */
-export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted"] as const;
+export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted", "local"] as const;
 export type InspectorPosture = (typeof INSPECTOR_POSTURES)[number];
 
 /**
@@ -70,7 +77,7 @@ export function inspectorPosture(
   cfg: Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist">,
   cwd: string | null,
   repoRoot: string | null,
-): InspectorPosture {
+): Exclude<InspectorPosture, "local"> {
   if (!cfg.enabled) return "off";
   if (cfg.mode !== "live") return "dry-run";
   if (!repoAllowlisted(cwd, repoRoot, cfg.repoAllowlist)) return "not-allowlisted";
@@ -83,6 +90,11 @@ export function inspectorPosture(
  * A non-live current posture does not spend another model run: it still could not
  * publish the result. The transition to live is what makes an earlier dry-run,
  * unallowlisted, or legacy review stale for shipping purposes.
+ *
+ * A `local` head counts as unpublished here too. The worker never asks about a head that
+ * still matches a passed local review - it records that head and stops - so a `local` head
+ * that reaches this question no longer matches (Local review switched off, or the repository
+ * given the merge grant) and is reviewed on GitHub.
  */
 export function reviewNeedsLiveRerun(
   current: InspectorPosture,
@@ -252,5 +264,6 @@ export function inspectorSummaryOf(
     reviewedHeadSha: row.headSha,
     observedHeadSha: row.observedHeadSha,
     cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
+    localReviewHeadSha: row.localReviewHeadSha ?? null,
   };
 }

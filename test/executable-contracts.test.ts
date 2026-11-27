@@ -161,6 +161,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/util/git.ts": [
     { operation: "spawnSync", command: "executable.path", contract: "locator-result", reason: "bounded Git config parser for synchronous repository identity, cached for configs without includes" },
   ],
+  "src/server/util/remove-tree.ts": [
+    { operation: "spawn", command: "executable", contract: "fixed-os-utility", reason: "recursive deletes of operator trees through the pinned /bin/rm, which has no Electron asar layer; never a PATH search" },
+  ],
   "src/server/workflows/check-identity.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved process-status utility" },
   ],

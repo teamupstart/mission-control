@@ -49,7 +49,7 @@ import {
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
 import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
-import { blockedPhaseClause, workflowCaptureFailure, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause, workflowCaptureFailure, workflowCheckCleanupBlock, workflowPreparationRecovery } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -1430,8 +1430,29 @@ export function inspectorGateHeadLabel(detail: WorkflowRunDetail): string | null
   return head ? `head ${shortSha(head)}` : null;
 }
 
+/**
+ * The Local Inspector review a gate completed on, with the attempt's recorded outcome, or
+ * null when the gate took - or is still on - the GitHub path.
+ */
+export function localReviewGate(detail: WorkflowRunDetail): {
+  headSha: string;
+  treeOid: string;
+  outcome: WorkflowCheckOutcome | null;
+} | null {
+  const local = detail.inspectorGate?.state.localReview;
+  if (!local) return null;
+  const attempt = detail.attempts.find((row) => row.id === local.attemptId);
+  return { headSha: local.headSha, treeOid: local.treeOid, outcome: attempt ? checkOutcomeOf(attempt) : null };
+}
+
 /** The current-truth sentence for a spent gate, with live-gate wording left unchanged. */
 export function inspectorGateSentence(detail: WorkflowRunDetail): string {
+  const local = localReviewGate(detail);
+  if (local) {
+    return `Reviewed locally: pull request head ${shortSha(local.headSha) ?? local.headSha} has the tree `
+      + `${shortSha(local.treeOid) ?? local.treeOid} the Local Inspector passed before the pull request opened, `
+      + "so no GitHub review ran and nothing was posted.";
+  }
   const condition = spentInspectorGateCondition(detail);
   if (!condition) {
     if (detail.inspectorGate?.state.waitReason === "reviewed_tree_changed") {
@@ -2536,6 +2557,10 @@ export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
         ?? "This review is standing still. The path forward is yours to pick.");
     }
     case "blocked": {
+      if (workflowCheckCleanupBlock({ status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null })) {
+        return autoPosture("Mission Control retries worktree cleanup automatically."
+          + " The check can retry in this round once cleanup is confirmed.");
+      }
       const preparation = preparationRecoverySentence(detail);
       if (preparation) {
         const recovery = workflowPreparationRecovery({ status, phase: detail.run.currentPhase, gateState: detail.run.gateState ?? null });

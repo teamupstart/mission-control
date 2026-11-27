@@ -2782,9 +2782,39 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
 ] as const;
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 
+/**
+ * The branch a Local Inspector review compared against, in the form GitHub names a pull
+ * request's base, or null for a ref this cannot read as one branch.
+ *
+ * The review records the ref it resolved: `refs/remotes/origin/main` from `origin/HEAD`, a
+ * stacked parent's `refs/remotes/origin/<branch>`, or an operator's explicit base ref. Null is
+ * the safe answer - it matches no pull request, so the head keeps its GitHub review.
+ */
+export function localReviewBaseBranch(baseRef: string): string | null {
+  const branch = /^refs\/remotes\/[^/]+\/(.+)$/.exec(baseRef)?.[1]
+    ?? /^refs\/heads\/(.+)$/.exec(baseRef)?.[1]
+    ?? /^origin\/(.+)$/.exec(baseRef)?.[1];
+  return branch && branch !== "HEAD" ? branch : null;
+}
+
+/** A pull request head whose Git tree and base match a passed Local Inspector review. */
+// A type alias, not an interface, so a gate state carrying it stays assignable to `WorkflowJson`.
+export type WorkflowLocalReviewMatch = {
+  submissionId: string;
+  attemptId: string;
+  headSha: string;
+  treeOid: string;
+  baseRef: string;
+};
+
 export interface WorkflowInspectorGateState {
   /** Ignore the saved observation when selecting the first head after a grant. */
   grantObservation?: { minimumObservedAt: number; requestedAt: number; verifiedHeadSha?: string };
+  /**
+   * Which review satisfied the gate, when it was a local one: the pushed head's tree matched
+   * the publication tree a passed Local Inspector attempt reviewed. Absent on the GitHub path.
+   */
+  localReview?: WorkflowLocalReviewMatch;
   /** Present when a published shipping continuation differs from its semantic review. */
   reviewedContent?: {
     submissionId: string;

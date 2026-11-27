@@ -206,9 +206,10 @@ interface Outcome {
 }
 
 /**
- * Script a host that slept for `sleptMs` while the call ran, with a timer that kept counting
- * (macOS). The timeout marks this clock when it arms, so its first mark is when the deadline
- * started; `armedAt` reads it back.
+ * Script a host that slept for `sleptMs` while the call ran, with a timer clock that kept
+ * counting through the sleep, the behavior #1734's wake-aligned timeouts suggest. The timeout
+ * marks this clock when it arms, so its first mark is when the deadline started; `armedAt`
+ * reads it back.
  */
 function scriptSleep(sleptMs: number): { restore: () => void; armedAt: () => number | null } {
   let armedAt: number | null = null;
@@ -239,6 +240,10 @@ async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome>
     );
     await eventually(() => sleep.armedAt() !== null || settled, `${runner.name} armed its timeout`);
     const armedAt = sleep.armedAt();
+    // A subprocess runner arms its timeout as it spawns, before the fake has run a line, so on a
+    // loaded machine its pid can appear after the deadline. Wait for the work to exist first:
+    // "still running" is only a claim about work that started.
+    await eventually(() => runner.live() || settled, `${runner.name} started its work`);
     // Just past the deadline a wall-clock timer would have used.
     const wallDeadline = armedAt! + TIMEOUT_MS + 60;
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, wallDeadline - Date.now())));

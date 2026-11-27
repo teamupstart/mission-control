@@ -228,8 +228,9 @@ test("a timeout is infrastructure, never a non-zero exit", async () => {
 });
 
 /**
- * Script a host that slept for `sleptMs` while the check ran, with a timer that kept counting
- * (macOS), for the check's deadlines to read (issue #1734).
+ * Script a host that slept for `sleptMs` while the check ran, with a timer clock that kept
+ * counting through the sleep (the behavior #1734's wake-aligned timeouts suggest), for the
+ * check's deadlines to read.
  */
 function scriptSleep(sleptMs: number): () => void {
   return configureHostSuspendClock({

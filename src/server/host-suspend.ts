@@ -3,12 +3,14 @@ import { performance } from "node:perf_hooks";
 /**
  * Host suspension, observed from inside the process.
  *
- * A laptop that idle-sleeps freezes every process on it, and on macOS Node's timers keep
- * counting while it is frozen: a ten-minute timeout armed 23 seconds before a seventeen-minute
- * sleep fires three seconds after the next wake, having watched almost none of the work it was
- * meant to bound (issue #1734). Nothing in the process is told the host slept. What it CAN see
- * is a heartbeat that was due every few seconds arriving minutes late, and that gap is the
- * whole signal this module keeps.
+ * A laptop that idle-sleeps freezes every process on it. In issue #1734 a Mac on battery slept
+ * 23 seconds into a Persona call with a ten-minute timeout, and the call failed with a timeout
+ * three seconds after the wake seventeen minutes later; the next call did the same. That wake
+ * alignment strongly suggests the timer counted the time the host was asleep, but which clock
+ * Node's timers use across a macOS sleep was never established, and this module does not
+ * depend on the answer: `setAwakeTimeout` is correct either way. Nothing in the process is told
+ * the host slept. What it CAN see is a heartbeat that was due every few seconds arriving
+ * minutes late, and that gap is the whole signal this module keeps.
  *
  * Two callers read it, for two different questions:
  *
@@ -164,9 +166,11 @@ export interface AwakeTimeoutDeps {
  *
  * With no suspension observed it is exactly `setTimeout`: the timer fires and so does `fn`.
  * When the host slept, the elapsed time is measured on both clocks and the smaller is taken as
- * awake time, which is correct whichever way the platform's timer clock treats sleep - macOS
- * counts it (wall and timer elapsed agree, minus the suspension), Linux's monotonic clock does
- * not (timer elapsed is already awake time). The timer re-arms for whatever is left.
+ * awake time, which is correct whichever way the platform's timer clock treats sleep. If the
+ * timer clock counts sleep, its elapsed time agrees with the wall clock's, and the wall clock
+ * minus the suspension is the smaller. If it stops during sleep, its own elapsed time is
+ * already awake time, and is the smaller. Neither is assumed of any platform; the wake-aligned
+ * failures in #1734 suggest macOS behaved like the first. The timer re-arms for whatever is left.
  */
 export function setAwakeTimeout(fn: () => void, ms: number, deps: AwakeTimeoutDeps = {}): AwakeTimeout {
   const clock = deps.clock ?? hostSuspendMonitor();

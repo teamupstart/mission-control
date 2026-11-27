@@ -140,7 +140,7 @@ test("an awake timeout with no sleep fires exactly like setTimeout", () => {
   assert.deepEqual(timers.armed, [600_000]);
 });
 
-test("a timeout whose clock counts sleep re-arms for the time the host was asleep (macOS)", () => {
+test("a timeout whose clock counts sleep re-arms for the time the host was asleep", () => {
   const host = monitorAt(1_000_000);
   const timers = fakeTimers(host.monitor);
   let fired = 0;
@@ -166,7 +166,7 @@ test("a timeout whose clock counts sleep re-arms for the time the host was aslee
   assert.ok(afterWake >= 600_000 - awake && afterWake <= 600_000 - awake + HOST_SUSPEND_INTERVAL_MS, `fired ${afterWake} ms after the wake`);
 });
 
-test("a timeout whose clock excludes sleep is not extended a second time (Linux)", () => {
+test("a timeout whose clock stops during sleep is not extended a second time", () => {
   const host = monitorAt(1_000_000);
   const timers = fakeTimers(host.monitor);
   let fired = 0;

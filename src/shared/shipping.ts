@@ -54,7 +54,9 @@ export type MergeBlock =
   | "no-checks"
   | "conflicting"
   | "mergeability-unknown"
-  | "soaking";
+  | "soaking"
+  // Appended: stored values are never renamed or reordered.
+  | "local-review-missing";
 
 /**
  * One sentence per gate, for the panel.
@@ -98,6 +100,10 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   conflicting: "the branch conflicts with its base",
   "mergeability-unknown": "GitHub has not worked out whether it merges cleanly",
   soaking: "waiting out the soak window",
+  // Front-loaded for the one ellipsized merge-queue line: what is missing comes first, the
+  // remedy (the GitHub review the worker now runs) trails.
+  "local-review-missing":
+    "no Local Inspector review matches this push - GitHub Inspector must review it",
 };
 
 /**
@@ -155,6 +161,13 @@ export interface MergeInput {
   /** The head the Inspector last completed a review of, and the posture that produced it. */
   reviewedSha: string | null;
   reviewPosture: InspectorPosture | null;
+  /**
+   * What a recorded `local` posture may rest on, asked afresh on every sweep: whether the
+   * Inspector's Local review setting is on (it reads as off while its preview flag is off),
+   * and the head the workflow manager - the one owner of the match - says a passed Local
+   * Inspector review read, by tree and base. Null when it reports no match.
+   */
+  localReview: { enabled: boolean; matchedHeadSha: string | null };
   /** How many completed review rounds it has run. */
   rounds: number;
   /** Findings the Inspector is currently carrying: posted, previewed, or mid-post. */
@@ -238,6 +251,13 @@ function blocked(block: MergeBlock, waitMs = 0): MergeVerdict {
  *   exactly as it does live. Whoever calls this may not be the worker - the two
  *   `inspector-*` blocks below are also the backstop against the second poller that
  *   `shipping/merge.ts` warns about - so the veto lives with the decision.
+ * - **A local review is provenance only while it matches, and never in Dry run.** A head the
+ *   Local Inspector passed is recorded `local`, and stands in for a published GitHub review
+ *   only while the current posture is `live` (the first gate, unchanged, so Dry run stays
+ *   dry), Local review is on, the recorded head and base are this push's, and the workflow
+ *   manager still reports the match for this exact head. A later commit with the same tree
+ *   merges only after the worker has recorded it, because until then the recorded head is
+ *   another commit.
  */
 export function mergeVerdict(input: MergeInput): MergeVerdict {
   const { cfg, pr } = input;
@@ -291,18 +311,33 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
   // The review has to be of THIS push. `rounds` alone would let a PR that was reviewed
   // clean three force-pushes ago merge whatever is on the branch now.
   // And of THIS base: a retarget under an unchanged head changes the diff the review judged.
+  // A head recorded from a local match has no GitHub round behind it, so the round count
+  // is asked only of a GitHub review; the head and base are asked of both.
+  const local = input.reviewPosture === "local";
   if (
-    input.rounds < 1 ||
+    (!local && input.rounds < 1) ||
     !pr.headSha ||
     input.reviewedSha !== pr.headSha ||
     !reviewBaseMatches(input.reviewedBase, pr.baseRefName, pr.defaultBranch)
   ) {
     return blocked("not-reviewed");
   }
-  // Current live consent cannot retroactively publish a review completed while the
-  // Inspector was dry-run or the repo was untrusted. The worker will run this head again
-  // under live posture; until that succeeds, the stored review cannot authorize a merge.
-  if (input.reviewPosture !== "live") return blocked("review-unpublished");
+  if (local) {
+    // A Local Inspector review is merge provenance only while it still describes this push.
+    // The current posture is already `live` (the gate above), the recorded head is this head
+    // on this base (just checked), and here: Local review is still on, and the manager still
+    // reports a match for exactly this head. Anything else - the setting switched off, a newer
+    // run that did not pass, a tree the manager no longer matches - is refused until the
+    // worker's GitHub review replaces the local record.
+    if (!input.localReview.enabled || input.localReview.matchedHeadSha !== pr.headSha) {
+      return blocked("local-review-missing");
+    }
+  } else if (input.reviewPosture !== "live") {
+    // Current live consent cannot retroactively publish a review completed while the
+    // Inspector was dry-run or the repo was untrusted. The worker will run this head again
+    // under live posture; until that succeeds, the stored review cannot authorize a merge.
+    return blocked("review-unpublished");
+  }
   if (input.openFindings > 0) return blocked("findings");
   if (pr.unresolvedThreads > 0) return blocked("threads");
 

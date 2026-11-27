@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readUnchangedRepository } from "../src/server/workflows/unchanged-repository.ts";
 import { tempDir } from "./temp-root.mjs";
@@ -80,4 +80,27 @@ test("an empty commit ahead is still work to publish", async () => {
   git(root, "switch", "-q", "-c", "feature");
   git(root, "commit", "-q", "--allow-empty", "-m", "ahead");
   assert.equal(await readUnchangedRepository(root, git(root, "rev-parse", "HEAD")), null);
+});
+
+// The proof is read while a Pull Request action's repository capture may be sealing the same
+// checkout. That capture refuses when the checkout's git directory changes under it, so this
+// read must never take or rewrite the index, even when its stat cache is stale.
+test("reading the proof never takes the index lock or rewrites the index", async () => {
+  const root = join(home, "stale-index");
+  execFileSync("git", ["init", "-q", "-b", "main", root]);
+  writeFileSync(join(root, "tracked.txt"), "same content\n");
+  git(root, "add", "tracked.txt");
+  git(root, "commit", "-q", "-m", "base");
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(root, "checkout", "-q", "--detach");
+  // Same bytes, new mtime: the index's cached stat data no longer matches the file, which is
+  // exactly what makes a plain `git status` refresh and write the index.
+  utimesSync(join(root, "tracked.txt"), new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
+  const index = join(root, ".git", "index");
+  const before = statSync(index, { bigint: true });
+  const head = git(root, "rev-parse", "HEAD");
+  assert.ok(await readUnchangedRepository(root, head), "an unchanged checkout still proves no changes");
+  const after = statSync(index, { bigint: true });
+  assert.equal(after.mtimeNs, before.mtimeNs, "the index was not rewritten");
+  assert.equal(after.ino, before.ino, "the index was not replaced through index.lock");
 });

@@ -1921,12 +1921,18 @@ cards to `PUT /api/voice/open-cards`. A focus timestamp in the request header or
 across windows. The dashboard also reports when the question became eligible on the daemon's
 monotonic clock, so a delayed report can still accept speech captured while the card was visible.
 The dashboard reports focus immediately and refines a slow clock sample with a second round trip.
+A first sample taken while the daemon is busy can be usable but still wide. The dashboard keeps
+sampling in the background, with growing pauses, until the interval is within 10 milliseconds.
+Each narrower interval re-reports the current observation, so a reply spoken soon after a focus
+change is not refused for the startup round trip.
 Before starting the countdown, the daemon requests a fresh focus report for “reply” and for named
 answers that depend on an open card. If the transcript overtakes a focus update, the daemon
 checks the question that was drawn at capture against the newly confirmed report.
 The daemon asks each connected reporting window, so a dashboard can confirm a reply after gaining focus or while its first card report is still in transit.
 A confirmed foreground reply gives background windows 400 milliseconds to respond.
-A suspended window must report its current state again before it can take over.
+A suspended window must report its current state again before it can take over. Answering that
+request, or any later one, resumes it. An unnamed reply asks every live dashboard, including a
+suspended one, so a dashboard that missed one deadline can still receive the reply after it confirms.
 A reply waiting for calibration stays bound to the observed question and can be cancelled.
 Focusing a manual-only question prevents a reply from filling its neighbor. If speech falls within the
 remaining timing uncertainty, it asks the operator to repeat the reply. Without a clock sample,

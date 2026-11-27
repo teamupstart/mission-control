@@ -32,6 +32,11 @@ export class VoiceCardClock {
     return this.observe(sent, received, serverStart, serverEnd);
   }
 
+  /** How wide every translated time is: the shortest round trip seen, plus rounding. */
+  get width(): number {
+    return this.upper - this.lower;
+  }
+
   /** Earliest and latest daemon time consistent with both legs of every round trip. */
   serverTimeAt(localTime: number): VoiceTimeBounds | undefined {
     if (!Number.isFinite(this.lower)) return undefined;
@@ -52,6 +57,37 @@ export class VoiceCardClock {
     // Until the latest possible deadline the daemon may still accept Cancel. Its
     // response settles the action even when the independent time probe failed.
     return { offset: this.upper, uncertain: this.upper - this.lower > 100, receivedAt: received };
+  }
+}
+
+/** Every focus observation is as wide as this clock. Speech that starts inside that width
+ * cannot be ordered against the focus change, so the daemon asks for the reply again. */
+export const VOICE_CARD_CLOCK_TIGHT_MS = 10;
+/** The first sample usually lands in the dashboard's startup burst, when every round trip
+ * is slow. Keep sampling, with growing pauses, until the interval is tight. */
+export const VOICE_CARD_CLOCK_REFINE_DELAYS_MS: readonly number[] = [0, 100, 250, 500, 1000, 2000, 4000];
+
+export type VoiceClockSample = { sent: number; received: number; stamp: number };
+
+/** Narrow a usable but wide calibration in the background. `sampled` runs after each sample,
+ * so the caller can re-report a focus observation whose bounds this clock just narrowed. */
+export async function refineVoiceCardClock(clock: VoiceCardClock, sample: () => Promise<VoiceClockSample | null>,
+  sampled: () => void, signal: AbortSignal, delays = VOICE_CARD_CLOCK_REFINE_DELAYS_MS): Promise<void> {
+  for (const delay of delays) {
+    if (signal.aborted || clock.width <= VOICE_CARD_CLOCK_TIGHT_MS) return;
+    if (delay > 0) await new Promise<void>(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      const timer = setTimeout(done, delay);
+      signal.addEventListener("abort", done, { once: true });
+    });
+    const result = signal.aborted ? null : await sample();
+    if (!result || signal.aborted) continue;
+    clock.observe(result.sent, result.received, result.stamp, result.stamp);
+    sampled();
   }
 }
 

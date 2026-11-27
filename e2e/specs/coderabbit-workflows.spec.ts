@@ -67,8 +67,7 @@ test.describe("pooled CodeRabbit cleanup", () => {
  test("reclaims a hand-back after a 30-second network probe timeout", async ({ dashboard, daemon }) => {
   test.setTimeout(240_000);
   yaml(daemon, "reviews: {}");
-  const script = join(daemon.home, "coderabbit-script.json");
-  writeFileSync(script, JSON.stringify({ mode: "findings" }));
+  writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ mode: "findings", findingsOnFirstReview: true }));
   const { id } = await start(dashboard, daemon, { maxRuns: 1 });
   await expect.poll(async () => (await detail(daemon, id)).run.currentPhase,
    { timeout: 90_000 }).toBe("check_cleanup_unresolved");
@@ -90,7 +89,6 @@ test.describe("pooled CodeRabbit cleanup", () => {
   await expect(diagnostic).toBeVisible();
   await diagnostic.scrollIntoViewIfNeeded();
   await shot(dashboard, "hand-back-diagnostic");
-  writeFileSync(script, JSON.stringify({ mode: "clean" }));
   await expect.poll(async () => (await detail(daemon, id)).run.status, { timeout: 150_000 }).toBe("completed");
   const after = await detail(daemon, id);
   expect(after.submissions.map(s => s.id)).toEqual(blocked.submissions.map(s => s.id));

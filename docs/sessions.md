@@ -3582,8 +3582,9 @@ your decision is a `request_input` question; that half of the description never 
   naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
   not mark it read.
 - **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
-  document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived
-  unless you press it. The card then reads **Published** with **Open archive**, which opens the
+  document, with the files it links to beside it that were stored when the report was posted, to
+  the [scout archive](archives.md#how-a-report-produces-one). A link to a file that was not
+  stored is unlinked and listed as missing evidence. Nothing is archived unless you press it. The card then reads **Published** with **Open archive**, which opens the
   archive on the Scouts page; a document the archive refuses (a script, say) lists every problem
   on the card and publishes nothing. Pressing it again returns the same archive. If that archive
   is deleted or leaves the library, the card offers **Publish as scout** again; see

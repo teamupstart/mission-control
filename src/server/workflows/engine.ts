@@ -82,6 +82,7 @@ import {
 import { killLiveCheckGroups } from "./check-group.ts";
 import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
+import { hostSuspendMonitor, type HostSuspendClock } from "../host-suspend.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 /**
@@ -105,6 +106,18 @@ const PERSONA_TIMEOUT_MS = Number(envVar("WORKFLOW_PERSONA_TIMEOUT_MS") ?? 600_0
 const RETRY_BASE_MS = 1_000;
 const PROVIDER_RETRY_WINDOW_MS = 10 * 60_000;
 const PROVIDER_RETRY_DELAY_CAP_MS = 60_000;
+
+/**
+ * How long a Persona call that failed across a host suspension waits before it runs again.
+ *
+ * Such a call is retried without spending the operation's two-call budget, however many times
+ * it happens (issue #1734): the failure says the laptop went to sleep, not that the call or the
+ * model failed, and a Mac on battery can sleep through every call of a long night. No count
+ * bounds it, because a count would turn the next sleep into the same block. What bounds it is
+ * the evidence: every excused call needs a newly observed suspension, so the retries track
+ * real sleeps rather than spinning.
+ */
+const HOST_SUSPENDED_RETRY_DELAY_MS = 5_000;
 
 function providerRetryDelayMs(failures: number): number {
   return Math.min(PROVIDER_RETRY_DELAY_CAP_MS, 1_000 * 2 ** Math.min(failures - 1, 6));
@@ -148,6 +161,8 @@ export interface WorkflowEngineOptions {
   concurrency?: number;
   now?: () => number;
   retryBaseMs?: number;
+  /** Where the engine learns the host slept through a call. Defaults to this process's monitor. */
+  hostSuspend?: HostSuspendClock;
   runnerFor?: (id: LlmRunner["id"]) => LlmRunner;
   /**
    * How a Persona SNAPSHOT resolves to a provider and model, for tests that pin a runner.
@@ -476,6 +491,7 @@ export class WorkflowEngine {
   private readonly limit: ReviewScheduler;
   private readonly now: () => number;
   private readonly retryBaseMs: number;
+  private readonly hostSuspend: HostSuspendClock;
   private readonly runnerFor: (id: LlmRunner["id"]) => LlmRunner;
   private readonly resolveExecution: NonNullable<WorkflowEngineOptions["resolveExecution"]>;
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
@@ -517,6 +533,7 @@ export class WorkflowEngine {
       ?? createReviewScheduler(options.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
     this.now = options.now ?? Date.now;
     this.retryBaseMs = options.retryBaseMs ?? RETRY_BASE_MS;
+    this.hostSuspend = options.hostSuspend ?? hostSuspendMonitor();
     this.runnerFor = options.runnerFor ?? llmRunner;
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
@@ -1220,6 +1237,10 @@ export class WorkflowEngine {
       return;
     }
     const callIds = new Map<number, string>();
+    const callMarks = new Map<number, number>();
+    // Set when the call that just failed overlapped a host suspension. Read once per
+    // execution, right after `runStructured` returns.
+    let hostSuspended = false;
     const observer: StructuredAttemptObserver = {
       start: (attempt, request) => {
         if (
@@ -1230,6 +1251,7 @@ export class WorkflowEngine {
         }
         const id = randomUUID();
         callIds.set(attempt, id);
+        callMarks.set(attempt, this.hostSuspend.mark());
         this.store.insertLlmCall({
           id,
           runId: run.id,
@@ -1253,11 +1275,21 @@ export class WorkflowEngine {
       finish: (attempt, callResult) => {
         const id = callIds.get(attempt);
         if (!id) return;
+        const mark = callMarks.get(attempt);
+        // A token limit is the provider's answer and stands whenever it arrives. Any other
+        // failure of a call the host slept through is evidence about the host.
+        hostSuspended = !!callResult.error
+          && callResult.providerFailure !== "token_exhausted"
+          && !!claimed.reviewInput
+          && mark !== undefined
+          && this.hostSuspend.suspendedMsSince(mark) > 0;
         this.store.finishLlmCall(
           id,
           callResult.parsed ? "succeeded" : "failed",
           callResult.raw ? Buffer.byteLength(callResult.raw) : 0,
-          callResult.error
+          hostSuspended
+            ? "persona_host_suspended"
+            : callResult.error
             ? callResult.providerFailure === "retryable"
               ? "persona_provider_retryable"
               : callResult.providerFailure === "token_exhausted"
@@ -1336,6 +1368,10 @@ export class WorkflowEngine {
         this.handleInfrastructureFailure(claimed, run.id, result.reason, true);
         return;
       }
+      if (hostSuspended) {
+        failure = result.reason;
+        break;
+      }
       if (result.providerFailure) {
         failure = result.reason;
         providerFailure = result.providerFailure;
@@ -1344,11 +1380,15 @@ export class WorkflowEngine {
       failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
       if (result.cause === "cancelled") break;
     }
-    if (claimed.reviewInput && providerFailure !== "retryable") this.store.appendEvent(run.id, "persona_contract_outcome", {
+    if (claimed.reviewInput && !hostSuspended && providerFailure !== "retryable") this.store.appendEvent(run.id, "persona_contract_outcome", {
       attemptId: claimed.id, contractVersion: 1, outcome: verdict ? "accepted" : "exhausted",
       basis: violation, executions: this.store.personaOperationCalls(claimed.reviewInput.operationId),
     }, this.now(), `persona-contract-outcome:${claimed.id}`);
     if (!verdict) {
+      if (hostSuspended) {
+        this.scheduleHostSuspendedRetry(claimed, run.id, failure);
+        return;
+      }
       if (providerFailure === "retryable") {
         this.scheduleProviderRetry(claimed, run.id, failure);
         return;
@@ -1924,6 +1964,38 @@ export class WorkflowEngine {
     this.store.appendEvent(runId, "persona_retry_scheduled", {
       nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt,
       deadlineAt, providerFailures: state.failures, error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+    this.wake();
+  }
+
+  /**
+   * Retry a Persona call that failed while the host was suspended, without spending the
+   * operation's call budget: the call is recorded as `persona_host_suspended`, which the
+   * budget does not count. The same operation continues, so the budget it already spent and
+   * any correction it owes carry over.
+   */
+  private scheduleHostSuspendedRetry(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const error = `The host was asleep during this call, so it did not count against the retry budget: ${reason}`;
+    this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+    const retryAt = this.now() + HOST_SUSPENDED_RETRY_DELAY_MS;
+    this.store.insertAttempt({
+      id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+      attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+      checkEvidence: attempt.checkEvidence, reviewInput: attempt.reviewInput,
+      inputFingerprint: attempt.inputFingerprint, retryAt,
+      error: `Retry scheduled after the host slept: ${reason}`, now: this.now(),
+    });
+    this.store.appendEvent(runId, "persona_retry_scheduled", {
+      nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt,
+      hostSuspended: true, error: reason,
     }, this.now());
     this.onRunChanged(runId);
     this.wake();

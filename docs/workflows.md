@@ -1750,6 +1750,16 @@ infrastructure retry starts a new bounded operation. Provider token or quota exh
 pauses immediately in `provider_token_exhausted` and shows the error to the operator. Local CLI
 timeouts, process failures, parse errors, and contract violations keep their existing bounded
 policy. Rejected responses remain inspectable on the attempt.
+
+A host that sleeps mid-call does not spend that budget. Model call timeouts count only time the
+host was awake, so a Mac that idle-sleeps on battery no longer times a call out on the next wake.
+A Persona call that fails anyway while the host slept through it, for example because its
+connection dropped, is recorded as `persona_host_suspended` and retried on the same frozen input
+about five seconds later without consuming a correction execution. Every such call is excused,
+however many sleeps a night brings, because each one needs a newly observed sleep. A token limit
+still pauses the run at once. The daemon sees a sleep as a heartbeat arriving more than 30 seconds late, so an event
+loop stalled that long counts as one. [Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep)
+prevents the sleep altogether.
 Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
 
 The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the

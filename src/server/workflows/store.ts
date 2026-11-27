@@ -10555,12 +10555,16 @@ export class WorkflowStore {
       .get(operationId) as { n: number }).n;
   }
 
-  /** Provider refusals have their own elapsed retry window, not a correction execution. */
+  /**
+   * Provider refusals have their own elapsed retry window, not a correction execution, and a
+   * call the host slept through is not evidence about the call at all.
+   */
   personaOperationCorrectionCalls(operationId: string): number {
     return (this.db.prepare(`SELECT count(*) AS n FROM workflow_llm_calls c
       JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
       WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?
-        AND c.error_code IS NOT 'persona_provider_retryable'`)
+        AND c.error_code IS NOT 'persona_provider_retryable'
+        AND c.error_code IS NOT 'persona_host_suspended'`)
       .get(operationId) as { n: number }).n;
   }
 

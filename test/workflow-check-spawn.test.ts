@@ -250,6 +250,23 @@ test("a check the host slept through can still finish after its wall-clock deadl
   assert.equal(emptiness, "empty");
 });
 
+test("a check supervisor that becomes ready after a sleep is not abandoned at the wall-clock ready deadline", async (t) => {
+  // A 1 ms ready deadline no supervisor can meet on the wall clock, with 2 s of it asleep: the
+  // readiness that follows must be accepted, and the command must run to its end.
+  t.after(scriptSleep(2_000));
+  const outcome = await spawnCheckProcess({
+    attemptId: `attempt-${supervisors.length}-ready-after-sleep`,
+    command: ["sh", "-c", "echo ready-after-sleep"],
+    cwd: process.cwd(),
+    env: { PATH: process.env.PATH ?? "" },
+    timeoutMs: 20_000,
+    readyMs: 1,
+  });
+  if (outcome.supervisor) supervisors.push(outcome.supervisor.pid);
+  assert.deepEqual(outcome.result, { kind: "exited", exitCode: 0, output: "ready-after-sleep\n", truncatedBytes: 0 });
+  assert.equal(outcome.emptiness, "empty");
+});
+
 test("a check the host slept through still times out once its awake time is spent", async (t) => {
   t.after(scriptSleep(1_500));
   const started = Date.now();

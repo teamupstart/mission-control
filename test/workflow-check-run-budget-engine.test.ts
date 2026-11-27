@@ -1521,3 +1521,41 @@ test("a CodeRabbit disconnect during a host sleep keeps its incomplete review fo
   assert.equal(kept?.review?.diagnostic, "WebSocket closed");
   assert.equal(store.hostSuspendedAttempts(submissionId, "gate"), 1);
 });
+
+test("a check runner that throws during a host sleep is retried without spending an attempt", async () => {
+  const store = seedSubmission("check-throw-sleep");
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 10_000_000;
+  let runs = 0;
+  // A throw out of the runner, not a returned result: the engine's own catch must excuse it.
+  const engine = sleepEngine(store, sleep, () => clock, async () => {
+    runs++;
+    if (runs <= 3) throw new Error("check runtime lost its supervisor connection");
+    return { kind: "exited" as const, exitCode: 0, output: "42 passing\n", truncatedBytes: 0 };
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-throw-sleep");
+    for (let excused = 1; excused <= 3; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-check-throw-sleep", "gate");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      if (excused === 3) sleep.asleep = false;
+      clock = store.latestAttemptForNode("submission-check-throw-sleep", "gate")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-check-throw-sleep")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  // Three throws, as many as the node's whole infrastructure allowance, all excused.
+  assert.equal(runs, 4);
+  assert.equal(store.hostSuspendedAttempts("submission-check-throw-sleep", "gate"), 3);
+  const first = store.listAttempts("submission-check-throw-sleep").find((attempt) => attempt.nodeId === "gate" && attempt.attempt === 1)!;
+  assert.match(first.error ?? "", /host was asleep during this check.*lost its supervisor connection/);
+  assert.equal(store.listEvents("run-check-throw-sleep").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+  const gate = store.latestAttemptForNode("submission-check-throw-sleep", "gate")!;
+  assert.equal((gate.output as Record<string, unknown>).status, "passed");
+});

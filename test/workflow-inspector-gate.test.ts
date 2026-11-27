@@ -206,8 +206,16 @@ interface SeedOptions {
   /** Replaces the real GitHub re-read a closed-PR recheck makes. */
   reobservePullRequest?: (prKey: string) => Promise<InspectorReobservation>;
   /** Pins a Local Inspector node and records its attempt on the submission. */
-  localInspector?: { status: "passed" | "failed" | "skipped"; publicationTree: string; baseRef: string };
+  localInspector?: LocalInspectorSeed;
+  /** Several Local Inspector nodes, in graph order; wins over `localInspector`. */
+  localInspectors?: LocalInspectorSeed[];
 }
+
+type LocalInspectorSeed = { status: "passed" | "failed" | "skipped"; publicationTree: string; baseRef: string };
+/** The first node and attempt keep their single-stage ids; later ones are numbered from 2. */
+const localNodeId = (index: number) => index === 0 ? "local-inspector" : `local-inspector-${index + 1}`;
+const localAttemptId = (suffix: string, index: number) =>
+  index === 0 ? `local-attempt-${suffix}` : `local-attempt-${suffix}-${index + 1}`;
 
 async function seed(over: SeedOptions = {}) {
   clearWorkflowTables(db);
@@ -238,10 +246,11 @@ async function seed(over: SeedOptions = {}) {
     deliveryMode: over.deliveryMode ?? "preview",
     maxRepairRounds: 3,
   };
+  const locals = over.localInspectors ?? (over.localInspector ? [over.localInspector] : []);
   const graph = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
-      ...(over.localInspector ? [{ id: "local-inspector", kind: "check", slot: "inspector", position: { x: 100, y: 0 } }] : []),
+      ...locals.map((_, index) => ({ id: localNodeId(index), kind: "check", slot: "inspector", position: { x: 100, y: index * 50 } })),
       { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
     ],
     edges: [],
@@ -353,11 +362,11 @@ async function seed(over: SeedOptions = {}) {
     fingerprint: `fingerprint-${suffix}`,
     status: "running",
   }, now);
-  if (over.localInspector) {
-    const local = over.localInspector;
-    store.insertAttempt({ id: `local-attempt-${suffix}`, submissionId: ids.submission, nodeId: "local-inspector",
-      attempt: 1, state: "running", persona: null, inputFingerprint: `local-${suffix}`, now });
-    store.finishAttempt(`local-attempt-${suffix}`, { state: "completed", output: workflowJson({
+  for (const [index, local] of locals.entries()) {
+    const attemptId = localAttemptId(suffix, index);
+    store.insertAttempt({ id: attemptId, submissionId: ids.submission, nodeId: localNodeId(index),
+      attempt: 1, state: "running", persona: null, inputFingerprint: `local-${suffix}-${index}`, now });
+    store.finishAttempt(attemptId, { state: "completed", output: workflowJson({
       slot: "inspector", status: local.status, command: null, exitCode: null, output: "", truncatedBytes: 0,
       artifacts: [], timeoutMs: null, note: `Local Inspector ${local.status}.`,
       localInspector: { status: local.status, publicationTree: local.publicationTree, baseRef: local.baseRef,
@@ -4832,6 +4841,42 @@ for (const fallback of ["skipped", "failed", "local-review-off", "no-stage"] as 
     await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the GitHub review did not complete the gate");
     const clean = seeded.store.listEvents(seeded.ids.run).find((event) => event.kind === "inspector_gate_clean");
     assert.equal((clean?.payload as { path?: string } | undefined)?.path, "github");
+  });
+}
+
+// A version may carry more than one Local Inspector node. The match needs every one of them
+// passed on the same tree and base; one pass among several is not a local review of the head.
+const PASSED_ON_MAIN: LocalInspectorSeed = { status: "passed", publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main" };
+
+test("two Local Inspector nodes that both passed the same tree and base complete the gate locally", async (t) => {
+  const seeded = await seedLocal({ localInspectors: [PASSED_ON_MAIN, PASSED_ON_MAIN] });
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "two matching passes did not complete the gate");
+  const gate = gateOf(seeded);
+  assert.equal(gate.localReview?.treeOid, REVIEWED_TREE);
+  assert.equal(gate.localReview?.headSha, seeded.head);
+  const clean = seeded.store.listEvents(seeded.ids.run).find((event) => event.kind === "inspector_gate_clean");
+  assert.equal((clean?.payload as { path?: string } | undefined)?.path, "local");
+  assert.equal(getInspectorPr(seeded.key)?.round, 0);
+});
+
+for (const [name, second] of [
+  ["skipped", { ...PASSED_ON_MAIN, status: "skipped" }],
+  ["failed", { ...PASSED_ON_MAIN, status: "failed" }],
+  ["passed on a different tree", { ...PASSED_ON_MAIN, publicationTree: OTHER_TREE }],
+  ["passed on a different base", { ...PASSED_ON_MAIN, baseRef: "refs/remotes/origin/release" }],
+] as const satisfies ReadonlyArray<readonly [string, LocalInspectorSeed]>) {
+  test(`a second Local Inspector node ${name} keeps the GitHub review though the first passed`, async (t) => {
+    const seeded = await seedLocal({ localInspectors: [PASSED_ON_MAIN, second] });
+    t.after(localTeardown(seeded));
+    // The pull request's tree equals the first node's reviewed tree, so only the second decides.
+    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "the gate completed on one passed node of two");
+    assert.equal(gateOf(seeded).localReview, undefined);
+    assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
   });
 }
 

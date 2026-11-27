@@ -5,6 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import type { WorkflowInspectorGateState, WorkflowRunDetail } from "../../src/shared/workflow.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { readGhCiRuns, writeGhPullRequests } from "../fixtures/fake-agents.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -15,8 +16,13 @@ import { expect, test } from "../fixtures/test.ts";
  * A change the Local Inspector passed is pushed once, the real Inspector worker observes its
  * pull request through the fake `gh`, the workflow manager answers that the head's tree is the
  * tree the local review read, and the run completes with no GitHub review and no comment. The
- * fallbacks keep today's GitHub review: a repository holding the merge grant, and a later push
+ * fallbacks keep today's GitHub review: a skipped stage, a version without one, and a later push
  * whose content differs.
+ *
+ * Shipping on local provenance: with YOLO mode armed in a repository holding the merge grant, a
+ * locally reviewed head waits in the merge queue only on the gates every pull request waits on and
+ * then merges itself, with no GitHub review behind it. In Dry run nothing merges, a locally
+ * reviewed head included. The merge itself is the fake `gh`'s compare-and-swap on the head.
  *
  * Real: the dispatched session and worktree, the published workflow, the Local Inspector stage
  * (answered by the repository-review fixture, no model tokens), the Pull Request action's Live
@@ -101,6 +107,11 @@ async function announcePullRequest(daemon: DaemonHandle, sessionId: string): Pro
  */
 async function reviewLocallyAndPublish(page: Page, daemon: DaemonHandle, options: {
   mode: "live" | "dry-run"; mergeGrant?: boolean; localReview?: boolean;
+  /**
+   * Arm YOLO mode in this repository (the merge grant, no soak) and report the head's CI as
+   * `checks` to the merge gate.
+   */
+  yolo?: { checks: string };
   /** False publishes a workflow version with no Local Inspector stage at all. */
   stage?: boolean;
   /**
@@ -116,7 +127,9 @@ async function reviewLocallyAndPublish(page: Page, daemon: DaemonHandle, options
   await api(daemon, "/api/inspector/config", {
     enabled: true, mode: options.mode, repoAllowlist: [daemon.repo], localReview, runner: "codex", model: "gpt-5.6-sol",
   }, "PUT");
-  await api(daemon, "/api/shipping/config", { repoAllowlist: options.mergeGrant ? [daemon.repo] : [] }, "PUT");
+  await api(daemon, "/api/shipping/config", options.yolo
+    ? { autoMerge: true, soakMinutes: 0, repoAllowlist: [daemon.repo] }
+    : { repoAllowlist: options.mergeGrant ? [daemon.repo] : [] }, "PUT");
   await api(daemon, "/api/workflows/config", {
     liveEnabled: true, checksEnabled: true, repoAllowlist: [daemon.repo], defaultWorkflowId: null, checkCommands: [],
   }, "PUT");
@@ -234,6 +247,7 @@ async function reviewLocallyAndPublish(page: Page, daemon: DaemonHandle, options
   writeGhPullRequests(daemon.home, [{
     cwd: realpathSync(checkout), number: PR_NUMBER, url: PR_URL, state: "OPEN", createdAt: new Date().toISOString(),
     mergedAt: null, headRefOid: head, headRefName: BRANCH, baseRefName: "main",
+    ...(options.yolo ? { mergeGate: { checks: options.yolo.checks } } : {}),
   }]);
   return { runId: run.id, detail, head, checkout, origin, publicationTree: reviewed.localInspector.publicationTree, remoteRefs };
 }
@@ -273,7 +287,9 @@ test("Settings explains which heads skip the GitHub review", async ({ dashboard,
   await expect(control).toBeVisible();
   const card = dashboard.locator(".sc-card").filter({ has: control });
   await expect(card).toContainText("a pushed head whose content matches a passed local review gets no GitHub review and no comments");
-  await expect(card).toContainText("Repositories holding the merge grant keep the GitHub review for every head.");
+  await expect(card).not.toContainText("merge grant keep the GitHub review");
+  await expect(card).toContainText("In Live, YOLO mode may merge a head whose content matches a passed local review");
+  await expect(card).toContainText("In Dry run nothing merges, a locally reviewed head included.");
   await shoot(dashboard, card, "settings-local-review");
 });
 
@@ -336,18 +352,15 @@ for (const mode of ["live", "dry-run"] as const) {
   });
 }
 
-for (const fallback of ["merge-grant", "skipped-stage", "no-stage"] as const) test(fallback === "merge-grant"
-  ? "a repository holding the merge grant keeps the GitHub review for a matching head"
-  : fallback === "skipped-stage"
-    ? "a skipped Local Inspector stage keeps the GitHub review"
-    : "a workflow version without the Local Inspector stage keeps the GitHub review", async ({ dashboard, daemon }) => {
+for (const fallback of ["skipped-stage", "no-stage"] as const) test(fallback === "skipped-stage"
+  ? "a skipped Local Inspector stage keeps the GitHub review"
+  : "a workflow version without the Local Inspector stage keeps the GitHub review", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   // The no-stage case keeps Local review on, so the version is the only thing that differs.
-  const run = await reviewLocallyAndPublish(dashboard, daemon, fallback === "merge-grant"
-    ? { mode: "live", mergeGrant: true }
+  const run = await reviewLocallyAndPublish(dashboard, daemon, fallback === "skipped-stage"
     // Captured with Local review off, so the stage skips; then switched on, so the skipped
     // attempt itself is what keeps the GitHub review.
-    : fallback === "skipped-stage" ? { mode: "live", localReview: false, enableLocalReviewAfterStage: true }
+    ? { mode: "live", localReview: false, enableLocalReviewAfterStage: true }
     : { mode: "live", stage: false });
 
   // The gate reaches the point where it waits for the GitHub Inspector, and the worker reviews.
@@ -356,10 +369,8 @@ for (const fallback of ["merge-grant", "skipped-stage", "no-stage"] as const) te
   await expect.poll(() => diffReads(daemon).length, { timeout: 60_000 }).toBeGreaterThan(0);
   const detail = await run.detail();
   expect(detail.run.status).not.toBe("completed");
-  if (fallback !== "merge-grant") {
-    expect((await api<{ localReview: boolean }>(daemon, "/api/inspector/config")).localReview,
-      "Local review was on while the published head was evaluated").toBe(true);
-  }
+  expect((await api<{ localReview: boolean }>(daemon, "/api/inspector/config")).localReview,
+    "Local review was on while the published head was evaluated").toBe(true);
   expect(gateOf(detail)?.localReview).toBeUndefined();
   expect((await ledger(daemon))?.localReviewHeadSha ?? null).toBeNull();
 
@@ -406,4 +417,247 @@ test("a later push whose content differs is reviewed on GitHub as before", async
   await expect(chip).toBeVisible({ timeout: 60_000 });
   await expect(chip).not.toHaveAccessibleName(/reviewed locally/);
   await shoot(dashboard, chip, "chip-after-different-push");
+});
+
+// ---- Shipping on local provenance ----
+
+interface MergeRow { key: string; mergeBlock: string | null; mergedAt: number | null; state: string }
+const mergeRow = async (daemon: DaemonHandle) =>
+  (await api<MergeRow[]>(daemon, "/api/inspector/prs")).find((row) => row.key === PR_KEY);
+/** Every merge the daemon asked GitHub for, with the head it asked to land. */
+const merges = (daemon: DaemonHandle) => readdirSync(daemon.recordDir).filter((name) => name.startsWith("gh-merge-")).sort()
+  .map((name) => JSON.parse((JSON.parse(readFileSync(join(daemon.recordDir, name), "utf8")) as { input: string }).input) as { sha: string });
+
+test("YOLO merges a locally reviewed head in a merge-grant repository once its gates pass", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  // CI is still running when the pull request opens, so the merge queue shows the head eligible
+  // on its review and waiting only on CI.
+  const run = await reviewLocallyAndPublish(dashboard, daemon, { mode: "live", yolo: { checks: "PENDING" } });
+  await settles(daemon, run.detail, "completed");
+  expect(gateOf(await run.detail())?.localReview, "the merge grant no longer keeps the GitHub review").toMatchObject({ headSha: run.head });
+  await expect.poll(async () => (await ledger(daemon))?.reviewPosture, { timeout: 60_000 }).toBe("local");
+  await expect.poll(async () => (await mergeRow(daemon))?.mergeBlock, { timeout: 60_000 }).toBe("checks-pending");
+  expect(merges(daemon)).toEqual([]);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const lede = dashboard.locator(".sc-lede");
+  await expect(lede).toContainText("or a passed Local Inspector review matches its exact content and base");
+  const queueRow = dashboard.locator(".sc-row").filter({ hasText: `repo#${PR_NUMBER}` });
+  await expect(queueRow).toContainText("CI is still running");
+  await shoot(dashboard, queueRow, "merge-queue-local-head-waiting-on-ci");
+
+  // CI goes green. The next sweep merges the head the local review read, as a compare-and-swap.
+  writeGhPullRequests(daemon.home, [{
+    cwd: realpathSync(run.checkout), number: PR_NUMBER, url: PR_URL, state: "OPEN", createdAt: new Date().toISOString(),
+    mergedAt: null, headRefOid: run.head, headRefName: BRANCH, baseRefName: "main", mergeGate: { checks: "SUCCESS" },
+  }]);
+  await expect.poll(() => merges(daemon), { timeout: 60_000 }).toEqual([{ sha: run.head, merge_method: "squash" }]);
+  await expect.poll(async () => (await mergeRow(daemon))?.mergedAt ?? null, { timeout: 30_000 }).not.toBeNull();
+  expect(githubWrites(daemon), "nothing was posted to the pull request").toEqual([]);
+  expect(diffReads(daemon), "no GitHub review ran").toEqual([]);
+  expect((await ledger(daemon))?.round, "no GitHub round").toBe(0);
+
+  await expect(queueRow).toContainText("merged", { timeout: 30_000 });
+  await shoot(dashboard, queueRow, "merge-queue-local-head-merged");
+});
+
+test("Dry run stays dry for the merge: a matching local pass never merges", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const run = await reviewLocallyAndPublish(dashboard, daemon, { mode: "dry-run", yolo: { checks: "SUCCESS" } });
+  await settles(daemon, run.detail, "completed");
+  await expect.poll(async () => (await ledger(daemon))?.localReviewHeadSha, { timeout: 60_000 }).toBe(run.head);
+  expect((await ledger(daemon))?.reviewPosture, "Dry run never records a local head").toBe("dry-run");
+  await expect.poll(async () => (await mergeRow(daemon))?.mergeBlock, { timeout: 60_000 }).toBe("inspector-dry-run");
+  // Two more sweeps with every other gate green, and still nothing merges.
+  const sweeps = prReads(daemon).length;
+  await expect.poll(() => prReads(daemon).length, { timeout: 60_000 }).toBeGreaterThanOrEqual(sweeps + 2);
+  expect(merges(daemon)).toEqual([]);
+  expect((await mergeRow(daemon))?.mergedAt ?? null).toBeNull();
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const prerequisites = dashboard.locator(".sc-card").filter({ has: dashboard.getByRole("heading", { name: "Prerequisites" }) });
+  await expect(prerequisites).toContainText("GitHub Inspector is in dry run");
+  await expect(prerequisites).toContainText("Pull requests the Local Inspector reviewed wait too: Dry run stays dry for the merge.");
+  await shoot(dashboard, prerequisites, "shipping-prerequisites-dry-run-local");
+  const queueRow = dashboard.locator(".sc-row").filter({ hasText: `repo#${PR_NUMBER}` });
+  await expect(queueRow).toContainText("GitHub Inspector is in dry run, so its review was never published");
+  await shoot(dashboard, queueRow, "merge-queue-dry-run-local-head");
+});
+
+/** Report the pull request at `headSha` on `baseRefName`, with CI at `checks`, from now on. */
+function scriptPullRequest(daemon: DaemonHandle, run: { checkout: string }, headSha: string,
+  over: { checks: string; baseRefName?: string; defaultBranch?: string }): void {
+  writeGhPullRequests(daemon.home, [{
+    cwd: realpathSync(run.checkout), number: PR_NUMBER, url: PR_URL, state: "OPEN", createdAt: new Date().toISOString(),
+    mergedAt: null, headRefOid: headSha, headRefName: BRANCH, baseRefName: over.baseRefName ?? "main",
+    mergeGate: { checks: over.checks }, ...(over.defaultBranch ? { defaultBranch: over.defaultBranch } : {}),
+  }]);
+}
+
+/*
+ * The fake reviewer answers a GitHub Inspector review with text that is not a verdict, so a GitHub
+ * review in this spec starts (its diff is read) and never completes. A head that is held here is
+ * therefore held on its provenance alone: no GitHub review can stand in for the local one.
+ */
+
+/**
+ * Run a Local Inspector workflow to completion with YOLO armed and CI still running, and wait
+ * until the worker has recorded the reviewed head as `local` and the queue holds it on CI alone.
+ */
+async function locallyReviewedAndWaitingOnCi(dashboard: Page, daemon: DaemonHandle) {
+  const run = await reviewLocallyAndPublish(dashboard, daemon, { mode: "live", yolo: { checks: "PENDING" } });
+  await settles(daemon, run.detail, "completed");
+  await expect.poll(async () => (await ledger(daemon))?.reviewPosture, { timeout: 60_000 }).toBe("local");
+  await expect.poll(async () => (await mergeRow(daemon))?.mergeBlock, { timeout: 60_000 }).toBe("checks-pending");
+  expect(merges(daemon)).toEqual([]);
+  return run;
+}
+
+test("a later commit with the same content merges once the worker has recorded it, with no GitHub review", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const run = await locallyReviewedAndWaitingOnCi(dashboard, daemon);
+
+  // The commit is re-created with the reviewed tree (an empty commit on top keeps the tree), and
+  // pushed. CI is green, so the only thing between this head and a merge is its provenance.
+  git(run.checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+    "commit", "-q", "--allow-empty", "-m", "Re-created with the reviewed content");
+  const recreated = git(run.checkout, "rev-parse", "HEAD");
+  expect(recreated).not.toBe(run.head);
+  expect(git(run.checkout, "rev-parse", "HEAD^{tree}"), "the same content").toBe(run.publicationTree);
+  git(run.checkout, "push", "-q", run.origin, `HEAD:refs/heads/${BRANCH}`);
+  scriptPullRequest(daemon, run, recreated, { checks: "SUCCESS" });
+
+  // The worker records the new head as local, and only the sweep after that merges it - the head
+  // sent to GitHub is the re-created commit, never the one the local review first recorded.
+  await expect.poll(async () => (await ledger(daemon))?.localReviewHeadSha, { timeout: 60_000 }).toBe(recreated);
+  await expect.poll(() => merges(daemon), { timeout: 60_000 }).toEqual([{ sha: recreated, merge_method: "squash" }]);
+  await expect.poll(async () => (await mergeRow(daemon))?.mergedAt ?? null, { timeout: 30_000 }).not.toBeNull();
+  expect(diffReads(daemon), "no GitHub review ran for the re-created commit").toEqual([]);
+  expect(githubWrites(daemon)).toEqual([]);
+  expect((await ledger(daemon))?.round).toBe(0);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queueRow = dashboard.locator(".sc-row").filter({ hasText: `repo#${PR_NUMBER}` });
+  await expect(queueRow).toContainText("merged");
+  await shoot(dashboard, queueRow, "merge-queue-same-content-commit-merged");
+});
+
+test("a push that changes the content never merges on the local review, with YOLO armed and CI green", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const run = await locallyReviewedAndWaitingOnCi(dashboard, daemon);
+
+  // New content, pushed to the same pull request, with every other merge gate green.
+  writeFileSync(join(run.checkout, "submitted.txt"), "the reviewed change, edited after review\n");
+  git(run.checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+    "commit", "-qam", "Change the content after review");
+  const changed = git(run.checkout, "rev-parse", "HEAD");
+  expect(git(run.checkout, "rev-parse", "HEAD^{tree}"), "different content").not.toBe(run.publicationTree);
+  git(run.checkout, "push", "-q", run.origin, `HEAD:refs/heads/${BRANCH}`);
+  scriptPullRequest(daemon, run, changed, { checks: "SUCCESS" });
+
+  // The manager does not match the new tree, so the worker never records it as local, holds it as
+  // unreviewed, and starts a GitHub review of it instead.
+  await expect.poll(async () => (await ledger(daemon))?.observedHeadSha, { timeout: 60_000 }).toBe(changed);
+  await expect.poll(async () => (await mergeRow(daemon))?.mergeBlock, { timeout: 60_000 }).toBe("not-reviewed");
+  await expect.poll(() => diffReads(daemon).length, { timeout: 60_000 }).toBeGreaterThan(0);
+  const sweeps = prReads(daemon).length;
+  await expect.poll(() => prReads(daemon).length, { timeout: 60_000 }).toBeGreaterThanOrEqual(sweeps + 2);
+  expect(merges(daemon), "no merge was requested for the changed head, or any head").toEqual([]);
+  const row = (await ledger(daemon))!;
+  expect(row.localReviewHeadSha, "the local record still names only the reviewed head").toBe(run.head);
+  expect((await mergeRow(daemon))?.mergedAt ?? null).toBeNull();
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queueRow = dashboard.locator(".sc-row").filter({ hasText: `repo#${PR_NUMBER}` });
+  await expect(queueRow).toContainText("GitHub Inspector has not reviewed this push yet");
+  await shoot(dashboard, queueRow, "merge-queue-changed-content-held");
+});
+
+test("a pull request retargeted to a new default branch never merges on the local review", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const run = await locallyReviewedAndWaitingOnCi(dashboard, daemon);
+
+  // Same head and content, CI green, and the new base is the repository's default branch, so the
+  // default-branch gate passes. Only the base the local review compared against differs: it read a
+  // diff against main, which no longer describes this pull request.
+  scriptPullRequest(daemon, run, run.head, { checks: "SUCCESS", baseRefName: "release", defaultBranch: "release" });
+  await expect.poll(async () => (await mergeRow(daemon))?.mergeBlock, { timeout: 60_000 }).toBe("not-reviewed");
+  // The manager no longer matches the head on its new base, so the worker takes the GitHub path.
+  await expect.poll(() => diffReads(daemon).length, { timeout: 60_000 }).toBeGreaterThan(0);
+  const sweeps = prReads(daemon).length;
+  await expect.poll(() => prReads(daemon).length, { timeout: 60_000 }).toBeGreaterThanOrEqual(sweeps + 2);
+  expect(merges(daemon), "nothing was sent to GitHub to merge").toEqual([]);
+  expect((await mergeRow(daemon))?.mergeBlock, "never the default-branch gate").not.toBe("base-not-default");
+  expect((await mergeRow(daemon))?.mergedAt ?? null).toBeNull();
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queueRow = dashboard.locator(".sc-row").filter({ hasText: `repo#${PR_NUMBER}` });
+  await expect(queueRow).toContainText("GitHub Inspector has not reviewed this push yet");
+  await shoot(dashboard, queueRow, "merge-queue-retargeted-local-head");
+});
+
+test("Local review switched off holds a locally reviewed head as missing its local review", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const run = await locallyReviewedAndWaitingOnCi(dashboard, daemon);
+
+  // CI goes green on the same head in the same moment Local review is switched off. Had the local
+  // record still counted, this sweep would merge it.
+  await api(daemon, "/api/inspector/config", { localReview: false }, "PUT");
+  expect((await api<{ localReview: boolean }>(daemon, "/api/inspector/config")).localReview).toBe(false);
+  scriptPullRequest(daemon, run, run.head, { checks: "SUCCESS" });
+  await expect.poll(async () => (await mergeRow(daemon))?.mergeBlock, { timeout: 60_000, intervals: [100] })
+    .toBe("local-review-missing");
+  expect(merges(daemon), "the local record alone merged nothing").toEqual([]);
+  // The head is reviewed on GitHub instead, which is what may authorize a later merge.
+  await expect.poll(() => diffReads(daemon).length, { timeout: 60_000 }).toBeGreaterThan(0);
+  const head = merges(daemon)[0];
+  if (head) {
+    expect(head.sha, "any merge is of the reviewed head").toBe(run.head);
+    expect((await ledger(daemon))?.round ?? 0, "and only after a GitHub round").toBeGreaterThanOrEqual(1);
+  }
+});
+
+test("the merge queue names a missing local review, and Trust names the review a merge relies on", async ({ dashboard, daemon }) => {
+  // The daemon's verdict for a head recorded `local` that no Local Inspector review backs any
+  // more (worker and predicate tests drive that verdict); seeded here so the queue's copy is
+  // read without waiting on the GitHub review that replaces the record one sweep later.
+  const now = Date.now();
+  await daemon.crash();
+  withDaemonDb(daemon, (db) => {
+    db.prepare(`INSERT INTO inspector_prs
+      (key, url, owner, repo, number, repo_root, cwd, session_id, source, state, head_sha, review_posture,
+       round, merge_block, observed_head_sha, observed_state, observed_at, head_ref_name, title, base_ref_name,
+       local_review_head_sha, adopted_at, updated_at)
+      VALUES ('acme/mission-e2e#51', 'https://github.com/acme/mission-e2e/pull/51', 'acme', 'mission-e2e', 51, ?, ?,
+              NULL, 'hook', 'open', 'head', 'local', 0, 'local-review-missing', 'head', 'OPEN', ?, 'feat/local',
+              'Locally reviewed, no longer matched', 'main', 'head', ?, ?)`).run(daemon.repo, daemon.repo, now, now, now);
+  });
+  await daemon.restart();
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "local-inspector", enabled: true }, "PUT");
+  await api(daemon, "/api/inspector/config", { enabled: true, mode: "live", repoAllowlist: [daemon.repo], localReview: true }, "PUT");
+  await api(daemon, "/api/shipping/config", { repoAllowlist: [daemon.repo] }, "PUT");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const row = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#51" });
+  await expect(row).toContainText("no Local Inspector review matches this push - GitHub Inspector must review it");
+  await shoot(dashboard, row, "merge-queue-local-review-missing");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
+  const header = () => dashboard.getByRole("table", { name: "Repository trust grants" }).getByText("YOLO merges", { exact: true });
+  await expect(header()).toHaveAccessibleDescription(
+    /on a Live GitHub Inspector review of the exact push or a passed Local Inspector review of its exact content and base/);
+  await header().hover();
+  await expect(dashboard.locator(".tooltip")).toContainText("a passed Local Inspector review of its exact content and base");
+  if (process.env.MC_E2E_EVIDENCE) {
+    // Not through `shoot`, which moves the pointer away first and so dismisses the tooltip.
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.locator(".tooltip").screenshot({ path: join(EVIDENCE, "trust-merge-column-local.png") });
+  }
+
+  // With Local review off, the explanation names the GitHub review alone.
+  await api(daemon, "/api/inspector/config", { localReview: false }, "PUT");
+  await dashboard.mouse.move(0, 0);
+  await dashboard.reload();
+  await expect(header()).toHaveAccessibleDescription(/on a Live GitHub Inspector review of the exact push\.$/);
+  await expect(header()).not.toHaveAccessibleDescription(/Local Inspector/);
 });

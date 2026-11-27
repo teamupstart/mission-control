@@ -252,7 +252,6 @@ import {
   taskReposFor,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
-import { repositoryHoldsMergeGrant } from "../shipping/config.ts";
 import { parsePrUrl, readInspectorBranchActivity, recheckInspectorRecoveryTip } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
@@ -3427,9 +3426,9 @@ export class WorkflowManager {
    * older run's pass keep vouching for a head it already reviewed.
    *
    * Every other case answers null, which keeps today's GitHub review: Local review off, a
-   * different tree or base, a head git cannot resolve, and - until Shipping accepts local
-   * reviews - a repository holding the merge grant, so no head there is left without merge
-   * provenance.
+   * different tree or base, a head git cannot resolve. A repository holding the Shipping merge
+   * grant takes the local path like any other: Shipping accepts a matching local review as
+   * merge provenance, and asks this same question on every sweep before it relies on one.
    */
   async localReviewMatch(
     prKey: string,
@@ -3461,7 +3460,7 @@ export class WorkflowManager {
         continue;
       }
       if (review.kind === "none") return null;
-      const match = await this.matchLocalReview(run, version, adopted, head,
+      const match = await this.matchLocalReview(run, version, head,
         this.store.getBinding(run.bindingId)?.sessionRepoRoot || adopted.repoRoot);
       return match && pending.every(stillPending) ? match : null;
     }
@@ -3486,21 +3485,19 @@ export class WorkflowManager {
   private async matchLocalReview(
     run: WorkflowRun,
     version: WorkflowVersion,
-    pr: Pick<InspectorPr, "cwd" | "repoRoot">,
     head: { headSha: string; baseRefName: string | null },
     repositoryRoot: string | null,
   ): Promise<WorkflowLocalReviewMatch | null> {
     if (!getInspectorConfig().localReview || !repositoryRoot || !head.baseRefName) return null;
-    if (repositoryHoldsMergeGrant(pr.cwd, pr.repoRoot)) return null;
     const review = this.localReviewState(run.id, version);
     if (review.kind !== "passed" || localReviewBaseBranch(review.match.baseRef) !== head.baseRefName) return null;
     const tree = await (this.options.resolveCommitTree ?? resolveCommitTree)(repositoryRoot, head.headSha)
       .catch(() => null);
     if (!tree || tree !== review.match.treeOid) return null;
     // The lookup awaited git, so eligibility is checked again here, at the one boundary both the
-    // gate and the worker pass through: Local review switched off, the merge grant given, or the
-    // run's review superseded meanwhile all mean no match, and the GitHub review stays.
-    if (!getInspectorConfig().localReview || repositoryHoldsMergeGrant(pr.cwd, pr.repoRoot)) return null;
+    // gate and the worker pass through: Local review switched off or the run's review superseded
+    // meanwhile both mean no match, and the GitHub review stays.
+    if (!getInspectorConfig().localReview) return null;
     const after = this.localReviewState(run.id, version);
     if (after.kind !== "passed" || after.match.attemptId !== review.match.attemptId
       || after.match.treeOid !== review.match.treeOid) return null;
@@ -5581,7 +5578,7 @@ export class WorkflowManager {
     // skipped stage, a version without one - falls through to today's checks unchanged, so a
     // different head keeps its `head_mismatch` wait and every other head its GitHub review.
     if (run.status !== "waiting_for_new_head" && state.observedHeadSha) {
-      const local = await this.matchLocalReview(run, version, ledger,
+      const local = await this.matchLocalReview(run, version,
         { headSha: state.observedHeadSha, baseRefName: ledger.baseRefName ?? null }, repositoryRoot);
       if (local) {
         // The tree lookup awaited git. A newer observation committed meanwhile does not change

@@ -4880,15 +4880,18 @@ for (const [name, second] of [
   });
 }
 
-test("a repository holding the merge grant keeps the GitHub review for a matching head", async (t) => {
+test("a repository holding the merge grant now takes the local path for a matching head", async (t) => {
   const seeded = await seedLocal();
   t.after(localTeardown(seeded));
+  // Shipping accepts a matching local review as merge provenance, so the merge grant no longer
+  // keeps the GitHub review: the gate and the worker take the same local path as anywhere else.
   setShippingConfig({ repoAllowlist: ["/repo"] });
+  assert.equal((await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }))?.treeOid,
+    REVIEWED_TREE, "the worker sees the match in a merge-grant repository");
   signal(seeded, seeded.head);
-  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
-    "a merge-grant repository skipped its GitHub review");
-  assert.equal(gateOf(seeded).localReview, undefined);
-  assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed",
+    "a merge-grant repository did not complete on the local review");
+  assert.equal(gateOf(seeded).localReview?.treeOid, REVIEWED_TREE);
 });
 
 test("the manager's one match answer is what the worker asks, before and after the gate completes", async (t) => {
@@ -5108,8 +5111,8 @@ test("a run repairing GitHub findings keeps the worker on the GitHub path even w
   t.after(localTeardown(seeded));
   const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
   assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the head matches the passed local review");
-  // The gate sent this run to repair published GitHub findings (for example while the repository
-  // held the merge grant, which was since removed). The head and its tree are unchanged.
+  // The gate sent this run to repair published GitHub findings (for example while Local review was
+  // off, and it has since been switched on). The head and its tree are unchanged.
   db.prepare(`UPDATE workflow_runs SET status = 'waiting_for_new_head', current_phase = 'inspector_findings' WHERE id = ?`)
     .run(seeded.ids.run);
   assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_new_head");
@@ -5189,35 +5192,45 @@ test("a pull request retargeted during the tree lookup is evaluated on its new b
   assert.equal(getInspectorPr(seeded.key)?.observedHeadSha ?? seeded.head, seeded.head, "the head itself never moved");
 });
 
-for (const change of ["merge grant given", "Local review switched off"] as const) {
-  test(`eligibility that changes during the tree lookup (${change}) keeps the GitHub review`, async (t) => {
-    let changeOnce: (() => void) | null = null;
-    const seeded = await seedLocal({
-      resolveCommitTree: async () => {
-        if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
-        return REVIEWED_TREE;
-      },
-    });
-    t.after(localTeardown(seeded));
-    const apply = () => change === "merge grant given"
-      ? setShippingConfig({ repoAllowlist: ["/repo"] })
-      : setInspectorConfig({ localReview: false });
-    // The shared answer: what the worker asks.
-    changeOnce = apply;
-    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
-    assert.equal(changeOnce, null, "the change did land during the lookup");
-    // Restore, then the same race on the gate's path.
-    setShippingConfig({ repoAllowlist: [] });
-    setInspectorConfig({ localReview: true });
-    changeOnce = apply;
-    signal(seeded, seeded.head);
-    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
-      "the gate did not wait for the GitHub review");
-    assert.equal(changeOnce, null);
-    assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
-    assert.equal(gateOf(seeded).localReview, undefined);
+test("eligibility that changes during the tree lookup (Local review switched off) keeps the GitHub review", async (t) => {
+  let changeOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
+      return REVIEWED_TREE;
+    },
   });
-}
+  t.after(localTeardown(seeded));
+  const apply = () => setInspectorConfig({ localReview: false });
+  // The shared answer: what the worker asks.
+  changeOnce = apply;
+  assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+  assert.equal(changeOnce, null, "the change did land during the lookup");
+  // Restore, then the same race on the gate's path.
+  setInspectorConfig({ localReview: true });
+  changeOnce = apply;
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "the gate did not wait for the GitHub review");
+  assert.equal(changeOnce, null);
+  assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+  assert.equal(gateOf(seeded).localReview, undefined);
+});
+
+test("the merge grant given during the tree lookup no longer takes the match away", async (t) => {
+  let changeOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  changeOnce = () => setShippingConfig({ repoAllowlist: ["/repo"] });
+  assert.equal((await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }))?.treeOid,
+    REVIEWED_TREE);
+  assert.equal(changeOnce, null, "the grant did land during the lookup");
+});
 
 const { localReviewBaseBranch } = await import("../src/shared/workflow.ts");
 

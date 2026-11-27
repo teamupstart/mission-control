@@ -57,8 +57,9 @@ export const INSPECTOR_LIMITS = {
  * `local` is different: it withholds nothing. It records that a head's tree matched a passed
  * Local Inspector review, so no GitHub review ran. It is a recorded posture, never a current
  * one - `inspectorPosture` cannot return it - and the worker writes it only while the current
- * posture is `live`, so Dry run never produces one. The merge predicate refuses it until
- * Shipping accepts local reviews.
+ * posture is `live`, so Dry run never produces one. The merge predicate accepts it as review
+ * provenance only while Local review is on and the workflow manager still reports the match for
+ * the observed head; otherwise it refuses it as `local-review-missing`.
  */
 export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted", "local"] as const;
 export type InspectorPosture = (typeof INSPECTOR_POSTURES)[number];
@@ -93,8 +94,8 @@ export function inspectorPosture(
  *
  * A `local` head counts as unpublished here too. The worker never asks about a head that
  * still matches a passed local review - it records that head and stops - so a `local` head
- * that reaches this question no longer matches (Local review switched off, or the repository
- * given the merge grant) and is reviewed on GitHub.
+ * that reaches this question no longer matches (Local review switched off, or a newer run that
+ * did not pass) and is reviewed on GitHub.
  */
 export function reviewNeedsLiveRerun(
   current: InspectorPosture,

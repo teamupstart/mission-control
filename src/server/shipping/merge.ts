@@ -30,6 +30,11 @@ import { getShippingConfig } from "./config.ts";
 // gate and land on the default branch. Both the current `inspectorPosture` and the posture
 // persisted with that reviewed head now have to be live; changing the setting later
 // cannot promote an unpublished review.
+//
+// The one other posture a merge may rest on is `local`: a head whose tree and base a passed
+// Local Inspector review read. The worker records it only under a live Inspector, and this
+// passes the manager's match for the observed head so the predicate can refuse a record the
+// match no longer backs. The current posture must still be live, so Dry run stays dry.
 
 /** Findings the Inspector is currently carrying, by the same rule the panel counts them. */
 function openFindings(rows: Map<string, InspectorComment>): number {
@@ -71,6 +76,11 @@ export async function maybeMerge(
   rows: Map<string, InspectorComment>,
   now: number,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
+  /**
+   * The workflow manager's answer, asked this sweep, to "does this head match a passed local
+   * review". Read only for a head recorded with the `local` posture; null is no match.
+   */
+  localMatch: { headSha: string } | null = null,
 ): Promise<boolean> {
   const cfg = getShippingConfig();
   const verdict = mergeVerdict({
@@ -101,6 +111,7 @@ export async function maybeMerge(
     reviewedBase: pr.reviewedBaseRef ?? null,
     reviewedSha: pr.headSha,
     reviewPosture: pr.reviewPosture,
+    localReview: { enabled: inspector.localReview, matchedHeadSha: localMatch?.headSha ?? null },
     rounds: pr.round,
     openFindings: openFindings(rows),
     workflowGate: workflowGate(pr.key),

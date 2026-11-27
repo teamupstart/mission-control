@@ -313,16 +313,26 @@ for (const [name, phrase] of [["reply", "reply, tomorrow"], ["named answer", "St
     await firstReport;
     const held = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
+    // The latest daemon time the dashboard can have observed the second card's focus. The
+    // daemon treats speech captured inside an observation's calibration interval as
+    // uncertain and cancels it, and that interval is wider on a slow runner than any fixed
+    // pause, so the reply is spoken only once the daemon's clock is past this bound.
+    const observed = Promise.withResolvers<number>();
     await page.route("**/api/voice/open-cards", async route => {
       held.resolve();
+      const stamp = route.request().headers()["x-voice-cards-observed-at-ms"];
+      if (stamp && route.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.focused && c.id === second)) {
+        observed.resolve(Number(stamp));
+      }
       await release.promise;
       await route.continue().catch(() => {});
     });
     try {
       await questionCard(second).focus();
       await held.promise;
-      const focusedAt = Date.now();
-      await expect.poll(() => Date.now(), { intervals: [10] }).toBeGreaterThan(focusedAt + 30);
+      const latest = await observed.promise;
+      await expect.poll(async () => Number((await page.request.head(daemon.baseURL + "/api/voice/config")).headers()["x-voice-monotonic-time-ms"]))
+        .toBeGreaterThan(latest + 1);
       const reply = say(daemon, phrase, { id: "before-focus-delivery" });
       await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries
         .some((entry: { id: string }) => entry.id === "before-focus-delivery"), { intervals: [10] }).toBe(true);

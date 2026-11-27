@@ -1998,7 +1998,10 @@ export class WorkflowEngine {
       return;
     }
     const error = `The host was asleep during this call, so it did not count against the retry budget: ${reason}`;
-    this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+    this.store.transact(() => {
+      this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+      this.recordHostSuspendedAttempt(attempt, runId);
+    });
     const retryAt = this.now() + HOST_SUSPENDED_RETRY_DELAY_MS;
     this.store.insertAttempt({
       id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
@@ -2017,18 +2020,38 @@ export class WorkflowEngine {
 
   /**
    * The infrastructure attempts a node has spent in this submission. Attempt numbers count
-   * every try, and a try the host slept through is not one the node spent (issue #1734).
+   * every try, and a try the host slept through is not one the node spent (issue #1734). Both
+   * the limit and the backoff between retries read this, never the raw attempt number: after
+   * twenty excused sleeps, the next real failure is the node's first, and waits like one.
    */
   private infraAttemptsSpent(attempt: WorkflowNodeAttempt): number {
     return attempt.attempt
-      - this.store.hostSuspendedCheckRetries(attempt.submissionId, attempt.nodeId);
+      - this.store.hostSuspendedAttempts(attempt.submissionId, attempt.nodeId);
+  }
+
+  /** Backoff before the next infrastructure retry, from the attempts actually spent. */
+  private infraRetryDelayMs(attempt: WorkflowNodeAttempt): number {
+    return this.retryBaseMs * 4 ** Math.max(0, this.infraAttemptsSpent(attempt) - 1);
+  }
+
+  /**
+   * Durably excuse `attempt`: the host slept through it, so it is not one of the node's
+   * infrastructure attempts. Recorded with the attempt's own failure, before anything can stop
+   * its retry from being queued, so a block that holds the retry back (an unresolved check
+   * lease) still finds the attempt excused when it resumes. Keyed by attempt, so it is
+   * recorded once however often it is asked.
+   */
+  private recordHostSuspendedAttempt(attempt: WorkflowNodeAttempt, runId: string): void {
+    this.store.appendEvent(runId, "host_suspended_attempt", {
+      nodeId: attempt.nodeId, submissionId: attempt.submissionId, attemptId: attempt.id,
+    }, this.now(), `host-suspended:${attempt.id}`);
   }
 
   /**
    * Retry a check that could not finish because the host slept through it, without spending
-   * the node's infrastructure attempts. The durable record of the excuse is the
-   * `persona_retry_scheduled` event carrying `hostSuspended`, which `infraAttemptsSpent`
-   * subtracts. An unresolved lease still blocks first, as for any retry. The Command's run
+   * the node's infrastructure attempts. The excuse is recorded with the failure, before an
+   * unresolved lease can block the retry (`recordHostSuspendedAttempt`), and the lease still
+   * blocks first, as for any retry. The Command's run
    * allowance needs nothing here: an errored attempt does not count against it, except a
    * CodeRabbit run, whose vendor credit may really have been spent.
    */
@@ -2041,7 +2064,10 @@ export class WorkflowEngine {
       return;
     }
     const error = `The host was asleep during this check, so it did not count against the retry budget: ${reason}`;
-    this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+    this.store.transact(() => {
+      this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+      this.recordHostSuspendedAttempt(attempt, runId);
+    });
     if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
     const now = this.now();
     const retryAt = now + HOST_SUSPENDED_RETRY_DELAY_MS;
@@ -2084,7 +2110,7 @@ export class WorkflowEngine {
     }, this.now());
     if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
     if (!exhausted && this.infraAttemptsSpent(attempt) < MAX_INFRA_ATTEMPTS) {
-      const retryAt = this.now() + this.retryBaseMs * 4 ** (attempt.attempt - 1);
+      const retryAt = this.now() + this.infraRetryDelayMs(attempt);
       this.store.insertAttempt({
         id: randomUUID(),
         submissionId: attempt.submissionId,
@@ -2144,7 +2170,7 @@ export class WorkflowEngine {
     }
     const now = this.now();
     // Keep retries spread across workflows after a shared outage. A vendor wait is a floor.
-    const delay = 30_000 * 2 ** (attempt.attempt - 1);
+    const delay = 30_000 * 2 ** Math.max(0, this.infraAttemptsSpent(attempt) - 1);
     const retryAt = Math.max(now + delay, result.review.retryAt ?? 0) + Math.floor(Math.random() * delay / 2);
     this.store.finishAttempt(attempt.id, { state: "error", error: result.reason,
       output: jsonValue({ review: result.review, artifacts: result.artifacts ?? [] }) }, now);
@@ -2293,7 +2319,7 @@ export class WorkflowEngine {
     if (!this.store.reviveFailedSubmission(submission.id, run.id, CHECK_CLEANUP_UNRESOLVED_PHASE, now)) {
       return;
     }
-    const retryAt = now + this.retryBaseMs * 4 ** (failed.attempt - 1);
+    const retryAt = now + this.infraRetryDelayMs(failed);
     this.store.insertAttempt({
       id: randomUUID(),
       submissionId: submission.id,

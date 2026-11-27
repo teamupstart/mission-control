@@ -10569,15 +10569,14 @@ export class WorkflowStore {
   }
 
   /**
-   * Check retries a host suspension excused for one node of one submission. The excuse is
-   * recorded on the retry's own `persona_retry_scheduled` event, so it survives a restart with
-   * the attempt it explains.
+   * Attempts of one node in one submission that a host suspension excused, Persona calls and
+   * checks alike. Each is a `host_suspended_attempt` event recorded with the attempt's failure,
+   * so it survives a restart, and a block that held its retry back, with the attempt it explains.
    */
-  hostSuspendedCheckRetries(submissionId: string, nodeId: string): number {
+  hostSuspendedAttempts(submissionId: string, nodeId: string): number {
     return (this.db.prepare(`SELECT count(*) AS n FROM workflow_events e
       JOIN workflow_submissions s ON s.run_id = e.run_id AND s.id = ?
-      WHERE e.event_kind = 'persona_retry_scheduled'
-        AND json_extract(e.payload_json, '$.hostSuspended') = 1
+      WHERE e.event_kind = 'host_suspended_attempt'
         AND json_extract(e.payload_json, '$.submissionId') = ?
         AND json_extract(e.payload_json, '$.nodeId') = ?`)
       .get(submissionId, submissionId, nodeId) as { n: number }).n;

@@ -134,6 +134,57 @@ test("a state file that cannot be read says why in its preview, and reading it a
   await expect(preview).toContainText("Handled reply 42.");
 });
 
+test("a read from a closed viewer cannot overlap or overwrite the next one", async ({ dashboard: page, daemon }) => {
+  const { profile, stateUrl, directory } = await profileWithState(page.request, daemon.baseURL, "Stale read guard");
+  const memory = join(directory, "MEMORY.md");
+  writeFileSync(memory, "Old note 1.");
+  await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+  const panel = page.getByRole("region", { name: "Durable resident state" });
+  const viewState = panel.getByRole("button", { name: "View state", exact: true });
+
+  // Hold the first viewer's read of MEMORY.md with the text it had when requested.
+  let releaseOld!: () => void;
+  const oldHeld = new Promise<void>((resolve) => { releaseOld = resolve; });
+  let oldFetched!: () => void;
+  const oldReady = new Promise<void>((resolve) => { oldFetched = resolve; });
+  let reads = 0;
+  await page.route(`${stateUrl}/file?*`, async (route) => {
+    reads++;
+    if (reads > 1) return route.continue();
+    const response = await route.fetch();
+    oldFetched();
+    await oldHeld;
+    await route.fulfill({ response });
+  });
+  await viewState.click();
+  const viewer = page.getByRole("dialog", { name: "Durable state: Stale read guard" });
+  await oldReady;
+  await expect(viewer.getByRole("status")).toHaveText("Loading MEMORY.md…");
+  await viewer.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(viewer).toBeHidden();
+
+  // A second viewer cannot start while the first one's read is still pending, so the two never
+  // share the busy flag: the old read settling is what re-enables the controls.
+  await expect(viewState).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "Reset state", exact: true })).toBeDisabled();
+  writeFileSync(memory, "Current note 2.");
+  writeFileSync(join(directory, "ledger.md"), "Current ledger.");
+  releaseOld();
+  await expect(viewState).toBeEnabled();
+  await expect(viewer).toBeHidden();
+
+  // The reopened viewer shows only what is on disk now; the stale answer never reaches it.
+  await viewState.click();
+  const files = viewer.getByRole("navigation", { name: "State files" });
+  await expect(files.getByRole("button")).toHaveText(["ledger.md", "MEMORY.md"]);
+  const preview = viewer.getByRole("region", { name: "State file MEMORY.md" });
+  await expect(preview).toContainText("Current note 2.");
+  await expect(viewer).not.toContainText("Old note 1.");
+  await expect(files.getByRole("button", { name: "MEMORY.md" })).toBeEnabled();
+  expect(reads).toBe(2);
+  await capture(page, "stale-read-reopened-viewer", viewer);
+});
+
 test("a reset confirmed while the viewer is open reloads it with the cleared state", async ({ dashboard: page, daemon }) => {
   const { profile, directory } = await profileWithState(page.request, daemon.baseURL, "Reset behind viewer");
   const memory = join(directory, "MEMORY.md");

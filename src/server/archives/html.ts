@@ -295,6 +295,12 @@ export function reportRelativeReferences(html: string): string[] {
  * The rest of the document keeps its bytes: each attribute is cut out by its source location,
  * never by re-serializing the tree. Only attributes are rewritten. A `<style>` element that
  * names an unstored file is left alone, and the checker that runs after this still refuses it.
+ *
+ * The unit is the attribute, never one value inside it. A `srcset` or `style` attribute that
+ * names one unstored file and one stored file loses both references. That is deliberate: rewriting
+ * a single candidate or `url()` would mean re-serializing srcset and CSS grammar, including
+ * `data:` URLs whose commas defeat a naive split. The stored file is still in the bundle and
+ * listed with its evidence, and an `<img>`'s own `src` is a separate attribute that is kept.
  */
 export function unlinkMissingCompanions(
   html: string,

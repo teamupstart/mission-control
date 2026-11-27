@@ -434,7 +434,9 @@ The bundle's title is the report's title. It has no prompt trail, no summary or 
   posted before companions were stored, or a file left out at post time) is unlinked rather than
   refused: the attribute naming it is removed, so its text stays and the rest of the page keeps
   its bytes, and the bundle is `partial` with each such path listed as a missing
-  `report_companion`. A link in a `<style>` element is not rewritten. Anything else the checker
+  `report_companion`. The whole attribute goes, so a `srcset` or `style` attribute that also names
+  a stored file loses that reference too; the stored file stays in the bundle and is listed with
+  its evidence. A link in a `<style>` element is not rewritten. Anything else the checker
   refuses (a link that leaves the report directory, anything that runs or fetches) still refuses
   the page: it is answered with every problem named, shown on the card, and nothing is written.
 - **One archive per report.** The archive id is derived from this machine's producer id, the

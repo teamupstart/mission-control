@@ -224,9 +224,20 @@ function scriptSleep(sleptMs: number): { restore: () => void; armedAt: () => num
   return { restore, armedAt: () => armedAt };
 }
 
+/**
+ * A referenced handle for as long as a call is in flight. The awake timeout is unref'd, like
+ * the timers it replaced, and an SDK fake holds only a pending promise, so without this the
+ * worker's event loop could empty and exit before the call settles.
+ */
+function holdOpen(): () => void {
+  const handle = setInterval(() => {}, 1_000);
+  return () => clearInterval(handle);
+}
+
 async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome> {
   const sleep = scriptSleep(sleptMs);
   const restore = sleep.restore;
+  const release = holdOpen();
   try {
     let settled = false;
     let settledAt = 0;
@@ -252,6 +263,7 @@ async function runThrough(runner: RunnerCase, sleptMs: number): Promise<Outcome>
     const error = await call;
     return { elapsed: settledAt - armedAt!, error, pendingAtWallDeadline, liveAtWallDeadline };
   } finally {
+    release();
     restore();
   }
 }
@@ -285,8 +297,8 @@ for (const runner of RUNNERS) {
     setAnswerAfter(TIMEOUT_MS + 500);
     t.after(() => setAnswerAfter(null));
     const sleep = scriptSleep(SLEPT_MS);
+    const release = holdOpen();
     try {
-      const started = Date.now();
       const value = await runner.start();
       const answeredAt = Date.now();
       const armedAt = sleep.armedAt();
@@ -295,13 +307,14 @@ for (const runner of RUNNERS) {
         answeredAt - armedAt > TIMEOUT_MS + 60,
         `answered ${answeredAt - armedAt} ms after arming, before the wall-clock deadline it must outlast`,
       );
-      assert.ok(answeredAt - started < TIMEOUT_MS + SLEPT_MS, "answered after the awake budget too");
+      assert.ok(answeredAt - armedAt < TIMEOUT_MS + SLEPT_MS, "answered after the awake budget too");
       assert.match(JSON.stringify(value), new RegExp(ANSWER));
       assert.equal(runner.cancelled(), false, "a call that answered must not have been cancelled");
       // Nothing fires later: the timeout was cleared when the call settled.
       await new Promise((resolve) => setTimeout(resolve, TIMEOUT_MS + SLEPT_MS - (Date.now() - armedAt) + 100));
       assert.equal(runner.cancelled(), false, "the cleared timeout must not cancel the work afterwards");
     } finally {
+      release();
       sleep.restore();
     }
   });

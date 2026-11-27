@@ -1783,7 +1783,13 @@ export class WorkflowEngine {
     // or a deadline passed while nothing ran) is evidence about the host, not the change.
     if ((result.kind === "infrastructure" || result.kind === "retryable_connection")
       && this.hostSuspend.suspendedMsSince(sleepMark) > 0) {
-      this.scheduleHostSuspendedCheckRetry(claimed, run.id, result.reason);
+      // A disconnected CodeRabbit review stays on the attempt, as in
+      // `handleCodeRabbitConnectionFailure`: it is what keeps the review incomplete across the
+      // retry, and what carries the vendor's own retry-after floor to it.
+      this.scheduleHostSuspendedCheckRetry(claimed, run.id, result.reason,
+        result.kind === "retryable_connection"
+          ? jsonValue({ review: result.review, artifacts: result.artifacts ?? [] })
+          : undefined);
       return;
     }
     if (result.kind === "retryable_connection") {
@@ -2055,7 +2061,12 @@ export class WorkflowEngine {
    * allowance needs nothing here: an errored attempt does not count against it, except a
    * CodeRabbit run, whose vendor credit may really have been spent.
    */
-  private scheduleHostSuspendedCheckRetry(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
+  private scheduleHostSuspendedCheckRetry(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+    output?: WorkflowJson,
+  ): void {
     const run = this.store.getRun(runId);
     const submission = this.store.getSubmission(attempt.submissionId);
     if (run?.status !== "running" || submission?.status !== "running") {
@@ -2065,7 +2076,7 @@ export class WorkflowEngine {
     }
     const error = `The host was asleep during this check, so it did not count against the retry budget: ${reason}`;
     this.store.transact(() => {
-      this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+      this.store.finishAttempt(attempt.id, { state: "error", error, ...(output ? { output } : {}) }, this.now());
       this.recordHostSuspendedAttempt(attempt, runId);
     });
     if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;

@@ -1466,3 +1466,58 @@ test("a check excused by a sleep stays excused while an unresolved lease holds i
   assert.equal(runs, 4);
   assert.equal((store.latestAttemptForNode("submission-check-lease", "gate")!.output as Record<string, unknown>).status, "passed");
 });
+
+test("a CodeRabbit disconnect during a host sleep keeps its incomplete review for the retry", async () => {
+  const id = "coderabbit-sleep";
+  const submissionId = `submission-${id}`;
+  const graph: PublishedWorkflowGraph = {
+    ...budgetGraph,
+    nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+  };
+  const store = seedSubmission(id, 5, graph);
+  const yaml = { source: ".coderabbit.yaml" as const, enabled: true, state: "enabled" as const, digest: "a".repeat(64), diagnostic: "enabled" };
+  const evidence = { ...context.evidence, coderabbit: yaml };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson({ ...context, evidence }), evidence: workflowJson(evidence),
+    fingerprint: id, status: "running",
+  }, 4);
+  const comparison = store.freezeCodeRabbitComparison(submissionId, {
+    interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
+    baseRef: "main", severity: "major", maxRuns: 1, timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
+  });
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  const engine = new WorkflowEngine(store, () => {}, {
+    now: () => 9_000_000,
+    hostSuspend: sleep.clock,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async () => ({
+        kind: "exited", exitCode: 1, output: "", truncatedBytes: 0,
+        review: {
+          comparison, status: "incomplete",
+          counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 },
+          titles: [], diagnostic: "WebSocket closed", retryableConnection: true as const,
+        },
+      }),
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission(submissionId);
+    await waitFor(() => store.latestAttemptForNode(submissionId, "gate")?.state === "retry_wait");
+  } finally {
+    await engine.stop();
+  }
+  const failed = store.listAttempts(submissionId).find((attempt) => attempt.nodeId === "gate" && attempt.attempt === 1)!;
+  assert.match(failed.error ?? "", /host was asleep during this check/);
+  // The disconnect's review stays on the excused attempt, incomplete, as it would without a sleep.
+  const kept = failed.output as { review?: { status?: string; diagnostic?: string } } | null;
+  assert.equal(kept?.review?.status, "incomplete");
+  assert.equal(kept?.review?.diagnostic, "WebSocket closed");
+  assert.equal(store.hostSuspendedAttempts(submissionId, "gate"), 1);
+});

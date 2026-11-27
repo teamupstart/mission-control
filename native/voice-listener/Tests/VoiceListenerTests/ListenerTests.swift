@@ -248,19 +248,19 @@ final class ListenerTests: XCTestCase {
         _ = try await capture.transcribe(segment, using: recognizer, boosting: nil)
 
         // The operator edits the word while the same capture is listening.
-        XCTAssertTrue(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "pineapple"))
+        XCTAssertTrue(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "pineapple", firstPreviewVoicedMs: nil))
         XCTAssertTrue(mic.isRunning, "a live edit must not close the microphone")
         XCTAssertTrue(capture.mic === mic, "a live edit keeps the same open input")
         _ = try await capture.transcribe(segment, using: recognizer, boosting: nil)
         XCTAssertEqual(recognizer.separators, ["bagel", "pineapple"], "the decode after the edit uses the edited word")
 
         // A directive for another capture, or a held capture, reopens instead and leaves the word alone.
-        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-2", held: false, endOfSpeechMs: 800, separator: "kiwi"))
-        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: true, endOfSpeechMs: 800, separator: "kiwi"))
-        XCTAssertFalse(capture.applyLiveEdit(captureRevision: nil, held: false, endOfSpeechMs: 800, separator: "kiwi"))
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-2", held: false, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil))
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: true, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil))
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: nil, held: false, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil))
         XCTAssertEqual(capture.separator, "pineapple")
         mic.stop()
-        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "kiwi"),
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil),
                        "a stopped microphone cannot take a live edit")
         XCTAssertEqual(capture.separator, "pineapple")
     }

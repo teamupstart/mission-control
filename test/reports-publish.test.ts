@@ -695,6 +695,37 @@ test("a same-directory link to a symlink that resolves outside the checkout is n
   assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
 });
 
+test("a srcset mixing an escaping link with a missing file refuses the publish, and no archive is written", async () => {
+  const { post, publish, bundles, reports, checkout } = setup();
+  mkdirSync(join(checkout, "sub"), { recursive: true });
+  writeFileSync(join(checkout, "outside.png"), "png");
+  const report = await post("sub/mixed.html", "<html><body><img alt=\"x\" srcset=\"../outside.png 1x, gone.png 2x\"></body></html>", "Mixed srcset");
+  const refused = await publish(report.id);
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(refused.body.problems!.join(" "), /leaves the report directory/);
+  assert.deepEqual(bundles(), [], "no archive is written");
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+});
+
+test("a link to a path beneath report.html is never stored, and publishes as missing instead of failing the bundle write", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  // In the checkout, `report.html` is a directory holding data; in the archive it is the page.
+  mkdirSync(join(checkout, "report.html"), { recursive: true });
+  writeFileSync(join(checkout, "report.html", "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("notes.md", "# Notes\n\n[data](report.html/data.csv) and [kept](kept.csv)\n", "Beneath report.html");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "nothing beneath report.html is stored");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/kept.csv"]);
+  assert.deepEqual(missing, ["report.html/data.csv"]);
+  assert.doesNotMatch(archivedPage(archiveId).toString("utf8"), /href="report\.html\/data\.csv"/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
 test("a link that climbs out of the document's directory is neither stored nor unlinked, and still refuses the page", async () => {
   const { post, publish, bundles, checkout } = setup();
   mkdirSync(join(checkout, "sub"), { recursive: true });

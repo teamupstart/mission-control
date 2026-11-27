@@ -317,11 +317,24 @@ export function unlinkMissingCompanions(
   walk(document, (node) => {
     if (!isElement(node)) return true;
     const locations = node.sourceCodeLocation?.attrs;
+    const tag = node.tagName.toLowerCase();
     for (const attr of node.attrs) {
-      const missing = referenceValues(attributeName(attr), attr.value)
+      const name = attributeName(attr);
+      const values = referenceValues(name, attr.value);
+      const missing = values
         .map(inReportReference)
         .filter((path): path is string => path !== null && !targets.has(path));
       if (missing.length === 0) continue;
+      // Only an attribute whose sole problem is files that were not stored is removed. One that
+      // also carries a reference the checker refuses for another reason (a path that climbs out,
+      // a fetching scheme) is left whole, so removing it can never hide that refusal.
+      const context = name === "style"
+        ? { linkTarget: false, clickable: false, relativeTargets: targets }
+        : { linkTarget: LINK_TARGET_ATTRIBUTES.has(name), clickable: isClickableDestination(tag, name), relativeTargets: targets };
+      if (values.some((value) => {
+        const problem = urlProblem(value, context);
+        return problem !== null && problem.code !== "missing_companion";
+      })) continue;
       const location = locations?.[attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name] ?? locations?.[attr.name];
       if (!location) continue;
       spans.push({ start: location.startOffset, end: location.endOffset });

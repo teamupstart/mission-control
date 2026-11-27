@@ -1039,7 +1039,8 @@ export class ArchiveManager {
     // page: the file was never stored, so no later press could publish it either.
     const primaryName = ARCHIVE_PRIMARY_REPORT_PATH.slice(ARCHIVE_REPORT_DIR.length + 1);
     const companions = input.companions.filter((companion) =>
-      companion.path !== primaryName && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${companion.path}`) !== null);
+      companion.path !== primaryName && !companion.path.startsWith(`${primaryName}/`)
+      && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${companion.path}`) !== null);
     const targets = new Set([
       ...(input.documentName === primaryName ? [primaryName] : []),
       ...companions.map((companion) => companion.path),

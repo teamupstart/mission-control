@@ -75,6 +75,23 @@ test("a page whose links are all stored comes back unchanged, and refusals other
   );
 });
 
+test("an attribute that mixes a missing file with an escaping or fetching reference is kept whole, so the checker refuses it", () => {
+  const html = page(
+    `<img alt="x" srcset="../outside.png 1x, gone.png 2x">` +
+      `<div style="background:url(gone-bg.png), url(https://tracker.example/p.png)">styled</div>` +
+      `<a href="gone.csv">only missing</a>`,
+  );
+  const result = unlinkMissingCompanions(html, new Set(["report.html"]));
+  assert.deepEqual(result.unlinked, ["gone.csv"], "only the missing-only attribute is unlinked");
+  assert.match(result.html, /srcset="\.\.\/outside\.png 1x, gone\.png 2x"/);
+  assert.match(result.html, /style="background:url\(gone-bg\.png\), url\(https:\/\/tracker\.example\/p\.png\)"/);
+  const checked = validateStaticReportHtml(result.html, new Set(["report.html"]));
+  assert.equal(checked.ok, false);
+  const codes = !checked.ok ? checked.problems.map((problem) => problem.code) : [];
+  assert.ok(codes.includes("escaping_link"), JSON.stringify(codes));
+  assert.ok(codes.includes("external_url"), JSON.stringify(codes));
+});
+
 test("a <style> element that names an unstored file is not rewritten, and the checker still refuses it", () => {
   const html = page("<p>x</p>", "<style>.x{background:url(gone.png)}</style>");
   const result = unlinkMissingCompanions(html, new Set());

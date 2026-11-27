@@ -42,17 +42,27 @@ export interface ReportCompanion {
  *
  * Read from the page Publish as scout would build (a Markdown document is rendered first), so
  * what is stored is exactly what that page's links name. A path that could not sit beside
- * `report/report.html` in an archive is left out, and so is `report.html` itself, which is the
- * name the page takes there.
+ * `report/report.html` in an archive is left out, and so are `report.html` itself, which is the
+ * name the page takes there, and any path beneath it.
  */
 export function linkedCompanionPaths(kind: ReportDocumentKind, bytes: Buffer): string[] {
   const text = utf8(bytes);
   if (text === null) return [];
   const html = kind === "html" ? text : renderMarkdownPage(text, "");
   return reportRelativeReferences(html)
-    .filter((path) => `${ARCHIVE_REPORT_DIR}/${path}` !== ARCHIVE_PRIMARY_REPORT_PATH
+    .filter((path) => !isUnderPrimaryReport(path)
       && validateArchivePath(`${ARCHIVE_REPORT_DIR}/${path}`) !== null)
     .sort();
+}
+
+/**
+ * Whether `path`, relative to the report directory, is the page's own archive name or beneath it.
+ * The page is a file at `report/report.html`, so nothing can be stored as `report.html` or under
+ * `report.html/`; a link to either is unlinked as missing when the page is published.
+ */
+export function isUnderPrimaryReport(path: string): boolean {
+  const primary = ARCHIVE_PRIMARY_REPORT_PATH.slice(ARCHIVE_REPORT_DIR.length + 1);
+  return path === primary || path.startsWith(`${primary}/`);
 }
 
 /**

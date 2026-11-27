@@ -27,6 +27,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   write("src/server/registry.ts", 'export const evict = (sessions, id, emit) => { sessions.delete(id); emit({ type: "session_remove" as const, id }); };');
   write("test/allowed.ts", 'import "node:test"; import "node:assert/strict";');
   write("e2e/allowed.ts", 'import "@playwright/test";');
+  write("src/server/worktrees/file-delete.ts", 'import { rm } from "node:fs/promises"; export const drop = (path) => rm(path, { force: true }); export const flat = (path) => rm(path, { recursive: false });');
+  write("src/server/scratch-delete.ts", 'import { rmSync } from "node:fs"; export const drop = (path) => rmSync(path, { recursive: true, force: true });');
 
   write("src/shared/non-agent-values.ts", 'export const model = (provider) => provider === "codex"; export const wire = (form) => form === "claude";');
   write("src/server/independent-map.ts", 'export function prune(id) { const sessions = new Map(); sessions.delete(id); }');
@@ -85,6 +87,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "test/blocked.ts": 'import "node:assert"; import "@testing-library/react"; void import("jsdom");',
     "e2e/blocked.cjs": 'require("jest"); require("vitest/config");',
     "e2e/locator.ts": 'export const locate = (page) => page["getByTestId"]("view");',
+    "src/server/worktrees/raw-delete.ts": 'import { rm } from "node:fs/promises"; export const drop = (path) => rm(path, { recursive: true, maxRetries: 2 });',
+    "src/server/archives/nested/sync-delete.ts": 'import fs from "node:fs"; export const drop = (path, deep) => fs.rmSync(path, { recursive: deep });',
   };
   const run = () => spawnSync(process.execPath, [
     join(checkout, "node_modules/oxlint/bin/oxlint"), "--format", "unix", "--quiet", "src", "test", "e2e",
@@ -103,6 +107,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "parse-request-body": 7,
     "agent-comparison": 8,
     "registry-eviction": 20,
+    "tree-removal": 2,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);

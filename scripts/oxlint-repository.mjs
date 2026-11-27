@@ -219,6 +219,25 @@ export default {
         };
       },
     },
+    "tree-removal": {
+      create(context) {
+        return {
+          CallExpression(node) {
+            const callee = node.callee;
+            const called = callee.type === "Identifier" ? callee.name
+              : callee.type === "MemberExpression" ? name(callee.property, callee.computed) : undefined;
+            if (called !== "rm" && called !== "rmSync") return;
+            const recursive = node.arguments.some((argument) => argument.type === "ObjectExpression" &&
+              argument.properties.some((property) => property.type === "Property" &&
+                name(property.key, property.computed) === "recursive" &&
+                !(property.value.type === "Literal" && property.value.value === false)));
+            if (recursive) {
+              context.report({ node, message: "Remove operator trees with removeTree (src/server/util/remove-tree.ts): under Electron fs.rm cannot delete .asar files." });
+            }
+          },
+        };
+      },
+    },
     "registry-eviction": {
       create(context) {
         function report(node) {

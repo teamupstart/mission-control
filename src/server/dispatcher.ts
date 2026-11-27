@@ -3323,6 +3323,11 @@ export async function teardownWorktree(
   manager?: WorktreeManager,
   /** Automatic lifecycle policy, checked before home cleanup and each destructive provider boundary. */
   beforeReturn?: (path: string) => Promise<string | null>,
+  /**
+   * Automatic retention's two narrow extensions, supplied only by `reclaimForRetention` while
+   * orphaned-checkout reclaim is enabled. Every other caller keeps the rules above unchanged.
+   */
+  extensions: TeardownExtensions = {},
 ): Promise<void> {
   // Every tree the task holds, primary first. Each is attempted even if an earlier one
   // failed, and the failures are reported together: stopping at the first would leave the
@@ -3365,7 +3370,7 @@ export async function teardownWorktree(
       // A refused close is harmless only when the recorded resource is proved absent.
       // Keep the checkout when the terminal is live or its identity cannot be checked.
       const alive = await homeAlive(task.homeName, configuredTerminalDeps, task.homeBackend ?? null, task.terminalResourceId ?? null);
-      if (alive !== false) {
+      if (alive !== false && !(await extensions.homeAbsent?.())) {
         throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
       }
     }
@@ -3391,7 +3396,7 @@ export async function teardownWorktree(
   const failures: string[] = [];
   const reclaimed: string[] = [];
   for (const tree of trees) {
-    await teardownOneWorktree(tree, legacy, manager, beforeReturn).then(
+    await teardownOneWorktree(tree, legacy, manager, beforeReturn, extensions.unregistered).then(
       () => {
         if (tree.worktreePath) reclaimed.push(tree.worktreePath);
       },
@@ -3404,6 +3409,19 @@ export async function teardownWorktree(
   // back. Without it a partial failure reads as a total one and the row goes on naming
   // worktrees that no longer exist - see `releasedTaskResources`.
   if (failures.length > 0) throw new WorktreeTeardownError(failures.join("; "), reclaimed);
+}
+
+/** See `teardownWorktree`'s `extensions`. */
+export interface TeardownExtensions {
+  /**
+   * A disposable Git checkout Git no longer knows cannot be removed by `git worktree remove`.
+   * Called after `beforeReturn` passes; `removed`/`absent` means the exact slot directory is
+   * gone and the tree counts as released, `registered` hands it back to the ordinary path.
+   * Throws to refuse, and the tree keeps its record.
+   */
+  unregistered?: (path: string) => Promise<"removed" | "absent" | "registered">;
+  /** A refused home close is harmless when this positively proves the home absent. */
+  homeAbsent?: () => Promise<boolean>;
 }
 
 /**
@@ -3493,12 +3511,15 @@ async function teardownOneWorktree(
   legacy: LegacyTreehouseService,
   manager?: WorktreeManager,
   beforeReturn?: (path: string) => Promise<string | null>,
+  unregistered?: TeardownExtensions["unregistered"],
 ): Promise<void> {
   if (!task.worktreePath) return;
   // Read once so every provider check and diagnostic names the same requested path.
   const worktreePath = task.worktreePath;
   const blocked = await beforeReturn?.(worktreePath);
   if (blocked) throw new Error(blocked);
+  if (beforeReturn && unregistered && task.provider === "git" &&
+      (await unregistered(worktreePath)) !== "registered") return;
 
   if (task.provider === "mission") {
     if (!manager) throw new Error("native worktree manager is unavailable");

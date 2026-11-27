@@ -29,7 +29,8 @@ function returnGit(path: string, execute: typeof run) {
   });
 }
 
-export type ReadReturnActivity = () => Promise<{ head: string } | { blocker: string }>;
+/** `head` is null for a checkout with no HEAD of its own, which a registered return refuses. */
+export type ReadReturnActivity = () => Promise<{ head: string | null } | { blocker: string }>;
 
 async function metadataExists(path: string): Promise<boolean> {
   try {

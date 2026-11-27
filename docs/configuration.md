@@ -553,6 +553,12 @@ without a restart and recomputes deadlines on successful observation.
 If the daemon previously used `MISSION_WORKTREE_CLEANUP_PREVIEW=enforce`, enable the flag to
 continue using seven days.
 
+**Reclaim orphaned task worktrees** in **Settings > Feature flags** adds two classes to the same
+retention clock: disposable task checkouts Git no longer recognizes, and tasks whose terminal
+home is proved absent. Report-only mode evaluates both classes whether or not that flag is on,
+records what it would do as the retention blocker, and never archives, fetches or deletes.
+See [orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
+
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.
 

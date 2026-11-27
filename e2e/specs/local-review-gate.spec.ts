@@ -103,6 +103,12 @@ async function reviewLocallyAndPublish(page: Page, daemon: DaemonHandle, options
   mode: "live" | "dry-run"; mergeGrant?: boolean; localReview?: boolean;
   /** False publishes a workflow version with no Local Inspector stage at all. */
   stage?: boolean;
+  /**
+   * Turn Local review on once the stage has skipped, before the pull request is reported, so
+   * the head is evaluated with Local review enabled and only the skipped attempt stands between
+   * it and a match.
+   */
+  enableLocalReviewAfterStage?: boolean;
 }) {
   const localReview = options.localReview ?? true;
   const stage = options.stage ?? true;
@@ -201,6 +207,10 @@ async function reviewLocallyAndPublish(page: Page, daemon: DaemonHandle, options
       : { status: "skipped", localInspector: { status: "skipped" } });
   }
   expect(remoteRefs(), "nothing reaches the remote before the Pull Request action").toEqual(refsBefore);
+  if (options.enableLocalReviewAfterStage) {
+    await api(daemon, "/api/inspector/config", { localReview: true }, "PUT");
+    expect((await api<{ localReview: boolean }>(daemon, "/api/inspector/config")).localReview).toBe(true);
+  }
   await expect.poll(async () => (await detail()).summary.actionWait, { timeout: 90_000 }).toBe("awaiting_pull_request");
 
   // The author pushes exactly the reviewed content, once. By URL, so no remote-tracking ref in
@@ -335,7 +345,10 @@ for (const fallback of ["merge-grant", "skipped-stage", "no-stage"] as const) te
   // The no-stage case keeps Local review on, so the version is the only thing that differs.
   const run = await reviewLocallyAndPublish(dashboard, daemon, fallback === "merge-grant"
     ? { mode: "live", mergeGrant: true }
-    : fallback === "skipped-stage" ? { mode: "live", localReview: false } : { mode: "live", stage: false });
+    // Captured with Local review off, so the stage skips; then switched on, so the skipped
+    // attempt itself is what keeps the GitHub review.
+    : fallback === "skipped-stage" ? { mode: "live", localReview: false, enableLocalReviewAfterStage: true }
+    : { mode: "live", stage: false });
 
   // The gate reaches the point where it waits for the GitHub Inspector, and the worker reviews.
   await expect.poll(async () => (await run.detail()).run.currentPhase, { timeout: 120_000 })
@@ -343,6 +356,10 @@ for (const fallback of ["merge-grant", "skipped-stage", "no-stage"] as const) te
   await expect.poll(() => diffReads(daemon).length, { timeout: 60_000 }).toBeGreaterThan(0);
   const detail = await run.detail();
   expect(detail.run.status).not.toBe("completed");
+  if (fallback !== "merge-grant") {
+    expect((await api<{ localReview: boolean }>(daemon, "/api/inspector/config")).localReview,
+      "Local review was on while the published head was evaluated").toBe(true);
+  }
   expect(gateOf(detail)?.localReview).toBeUndefined();
   expect((await ledger(daemon))?.localReviewHeadSha ?? null).toBeNull();
 

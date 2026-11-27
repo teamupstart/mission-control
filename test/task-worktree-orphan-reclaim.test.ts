@@ -1,7 +1,7 @@
 import { after, test, type TestContext } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -26,17 +26,29 @@ const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/ind
 const { bindTaskWorkEpisode, getTaskWorktreeRetention } = await import("../src/server/db.ts");
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { ArchiveCaptureStore } = await import("../src/server/archives/capture-store.ts");
+const { checkoutArchiveSegments } = await import("../src/server/archives/checkout-capture-plan.ts");
 const { disposableWorktreeCensus } = await import("../src/server/worktrees/disposable-census.ts");
 const { homeAbsenceEstablished } = await import("../src/server/terminal/home.ts");
 const { tmuxMultiplexer } = await import("../src/server/terminal/tmux.ts");
 const { herdrMultiplexer } = await import("../src/server/terminal/herdr.ts");
 const {
-  classifyTaskCheckout, orphanedCheckoutEvidence, orphanedCheckoutFingerprint, regenerableIgnoredPath, removeOrphanedTaskCheckout,
+  classifyTaskCheckout, orphanedCheckoutFingerprint, proveOrphanedContent, regenerableIgnoredPath, removeOrphanedTaskCheckout,
 } = await import("../src/server/worktrees/orphaned-task-checkout.ts");
 const {
   createDaemonRetentionObserver, backgroundWorktreeRetentionStatus, SEVEN_DAY_RETENTION_MS: WEEK,
 } = await import("../src/server/task-worktree-retention.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
+
+/** Direct removal for a checkout with no local-only files: the guard only lets the delete run. */
+function removeWithoutArchive(
+  ref: Parameters<typeof removeOrphanedTaskCheckout>[0],
+  slot: string,
+  digest: string | undefined,
+  occupied: (path: string) => Promise<string | null>,
+  remove?: (path: string) => Promise<void>,
+) {
+  return removeOrphanedTaskCheckout(ref, slot, digest, occupied, (_aside, _commonDir, finish) => finish(), remove);
+}
 
 let sequence = 0;
 
@@ -243,9 +255,7 @@ test("an orphan equal to its merged pull request head is removed, fetching the h
       writeFileSync(join(path, "keep.txt"), "base\nchanged by the pull request\n");
     },
     deps: {
-      orphanEvidence: (input) => orphanedCheckoutEvidence({
-        ...input, pullRequest: () => ({ url: "https://github.com/example/repo/pull/7", headSha: head, merged: true }),
-      }),
+      orphanPullRequest: () => ({ url: "https://github.com/example/repo/pull/7", headSha: head, merged: true }),
     },
   });
   assert.throws(() => gitIn(w.clone, "cat-file", "-e", `${head}^{commit}`), "the recorded repository lacks the head");
@@ -264,9 +274,7 @@ test("an unavailable pull request host holds an orphan that differs from its bas
       gitIn(clone, "remote", "set-url", "origin", join(home, "no-such-remote"));
     },
     deps: {
-      orphanEvidence: (input) => orphanedCheckoutEvidence({
-        ...input, pullRequest: () => ({ url: "https://github.com/example/repo/pull/8", headSha: "a".repeat(40), merged: true }),
-      }),
+      orphanPullRequest: () => ({ url: "https://github.com/example/repo/pull/8", headSha: "a".repeat(40), merged: true }),
     },
   });
   const pass = await w.runToDeadline();
@@ -386,7 +394,7 @@ test("process occupancy holds an orphan and is re-checked immediately before the
     worktreeLeaseId: null, baseSha: w.baseSha, role: "primary" as const, position: 0 };
   const claimed = await orphanedCheckoutFingerprint(ref, w.path);
   assert.equal(claimed?.kind, "known");
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, claimed?.kind === "known" ? claimed.digest : undefined,
+  await assert.rejects(removeWithoutArchive(ref, w.path, claimed?.kind === "known" ? claimed.digest : undefined,
     async () => "a process still uses a checkout"),
     /a process still uses a checkout/);
   assert.ok(existsSync(w.path));
@@ -841,7 +849,7 @@ async function boundary(t: TestContext) {
 test("a file written during the first occupancy check refuses the delete and survives", async (t) => {
   const { w, ref, digest } = await boundary(t);
   const seen: string[] = [];
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async (at) => {
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async (at) => {
     seen.push(at);
     if (seen.length === 1) writeFileSync(join(at, "late.md"), "written during the boundary\n");
     return null;
@@ -855,7 +863,7 @@ test("a file written during the first occupancy check refuses the delete and sur
 test("a file written during the occupancy check on the set-aside directory is re-read and refuses the delete", async (t) => {
   const { w, ref, digest } = await boundary(t);
   let calls = 0;
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async (at) => {
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async (at) => {
     // The second call runs on the set-aside directory; content is re-read after it returns.
     if (++calls === 2) writeFileSync(join(at, "late.md"), "written during the last check\n");
     return null;
@@ -869,7 +877,7 @@ test("nothing can be added through the slot path once it is set aside", async (t
   const { w, ref, digest } = await boundary(t);
   let calls = 0;
   let writeThroughSlot: unknown = null;
-  assert.equal(await removeOrphanedTaskCheckout(ref, w.path, digest, async () => {
+  assert.equal(await removeWithoutArchive(ref, w.path, digest, async () => {
     if (++calls === 2) {
       try {
         writeFileSync(join(w.path, "late.md"), "too late\n");
@@ -898,20 +906,28 @@ test("a link naming another task's worktree is not this task's orphan", async (t
   assert.ok(existsSync(join(w.path, "keep.txt")));
 });
 
-test("a different orphan swapped into the slot is never deleted in its place", async (t) => {
+test("a different directory swapped into the slot is never deleted in its place", async (t) => {
   const { w, ref, digest } = await boundary(t);
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async (at) => {
-    // Same content, same kind of dangling link - but to a different administrative directory.
-    writeFileSync(join(at, ".git"), `gitdir: ${join(w.clone, ".git", "worktrees", "someone-else")}\n`);
+  const original = `${w.path}-moved-away`;
+  t.after(() => rmSync(original, { recursive: true, force: true }));
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async (at) => {
+    if (at === w.path) {
+      // A separate directory with the same files and the same `.git` link takes the slot.
+      renameSync(w.path, original);
+      cpSync(original, w.path, { recursive: true });
+    }
     return null;
   }), /orphaned checkout changed before its removal/);
-  assert.ok(existsSync(join(w.path, "notes.md")), "restored to its slot");
+  assert.equal(readFileSync(join(original, "notes.md"), "utf8"), "archived work\n", "the original survives");
+  assert.equal(readFileSync(join(w.path, "notes.md"), "utf8"), "archived work\n", "the replacement survives at the slot");
+  assert.equal(readFileSync(join(w.path, ".git"), "utf8"), readFileSync(join(original, ".git"), "utf8"));
+  assert.deepEqual(readdirSync(dirname(w.path)).filter((name) => name.includes(".reclaim-")), []);
 });
 
 test("occupancy on the set-aside directory refuses the delete and restores the slot", async (t) => {
   const { w, ref, digest } = await boundary(t);
   const order: string[] = [];
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async (at) => {
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async (at) => {
     order.push(at === w.path ? "slot" : "aside");
     return order.length === 2 ? "a process still uses a checkout" : null;
   }), /a process still uses a checkout/);
@@ -921,7 +937,7 @@ test("occupancy on the set-aside directory refuses the delete and restores the s
 
   // The final occupancy check, after content and identity are re-read, refuses too.
   const final: string[] = [];
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async (at) => {
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async (at) => {
     final.push(at === w.path ? "slot" : "aside");
     return final.length === 3 ? "a process still uses a checkout" : null;
   }), /a process still uses a checkout/);
@@ -929,14 +945,14 @@ test("occupancy on the set-aside directory refuses the delete and restores the s
   assert.ok(existsSync(join(w.path, "notes.md")));
 
   // A claim taken against different content is refused outright.
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, "0".repeat(64), async () => null),
+  await assert.rejects(removeWithoutArchive(ref, w.path, "0".repeat(64), async () => null),
     /orphaned checkout changed before its removal/);
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, undefined, async () => null),
+  await assert.rejects(removeWithoutArchive(ref, w.path, undefined, async () => null),
     /no claimed fingerprint/);
   assert.ok(existsSync(w.path));
 
   // With nothing changed and nobody inside, the exact slot is deleted.
-  assert.equal(await removeOrphanedTaskCheckout(ref, w.path, digest, async () => null), "removed");
+  assert.equal(await removeWithoutArchive(ref, w.path, digest, async () => null), "removed");
   assert.equal(existsSync(w.path), false);
   assert.deepEqual(readdirSync(dirname(w.path)).filter((name) => name.includes(".reclaim-")), []);
   assert.ok(existsSync(w.clone), "the recorded repository is untouched");
@@ -958,27 +974,27 @@ test("an unknown ignored file that appears at the boundary refuses the delete", 
   assert.equal(claimed?.kind, "known");
   const digest = claimed?.kind === "known" ? claimed.digest : "";
   // Ignored files do not move the digest, so only the ignored-file rule can see this one.
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async (at) => {
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async (at) => {
     if (at !== w.path) writeFileSync(join(at, ".env"), "TOKEN=local\n");
     return null;
   }), /ignored files outside regenerable directories/);
   assert.equal(readFileSync(join(w.path, ".env"), "utf8"), "TOKEN=local\n", "restored to its slot");
   // And present before the delete starts, it refuses before anything is moved.
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async () => null),
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async () => null),
     /ignored files outside regenerable directories/);
   assert.ok(existsSync(join(w.path, ".env")));
 });
 
 test("a delete that fails part-way restores what is left to the slot", async (t) => {
   const { w, ref, digest } = await boundary(t);
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async () => null, async (aside) => {
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async () => null, async (aside) => {
     rmSync(join(aside, "keep.txt"));
     throw Object.assign(new Error("busy"), { code: "EBUSY" });
   }), /orphaned checkout removal failed/);
   assert.ok(existsSync(join(w.path, "notes.md")), "the remainder is back at the slot the task records");
   assert.deepEqual(readdirSync(dirname(w.path)).filter((name) => name.includes(".reclaim-")), []);
   // The partial remainder no longer matches the claim, so a retry holds it rather than deleting.
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async () => null),
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async () => null),
     /orphaned checkout changed before its removal/);
 });
 
@@ -991,7 +1007,7 @@ test("a set-aside checkout that could not be restored keeps its task and ledger 
   const claimed = await orphanedCheckoutFingerprint(ref, w.path);
   const digest = claimed?.kind === "known" ? claimed.digest : "";
   // The delete fails, and something has taken the slot path, so the rename back fails too.
-  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async () => null, async () => {
+  await assert.rejects(removeWithoutArchive(ref, w.path, digest, async () => null, async () => {
     writeFileSync(w.path, "squatter\n");
     throw Object.assign(new Error("busy"), { code: "EBUSY" });
   }), /the checkout was kept beside its slot/);
@@ -1035,6 +1051,7 @@ test("an archive deleted during removal waits for the removal, and one deleted b
   const events: string[] = [];
   let deletion: Promise<unknown> | null = null;
   let taskId = "";
+  let archivedKey = "";
   const gate: TaskArchiveGate = {
     ensureReady: (id) => real.ensureReady(id),
     settleBeforeCleanup: (id) => real.settleBeforeCleanup(id),
@@ -1043,10 +1060,18 @@ test("an archive deleted during removal waits for the removal, and one deleted b
       // The operator deletes the archive while the checkout is being removed.
       const job = new ArchiveCaptureStore().forTask(taskId).find((entry) => entry.kind === "checkout")!;
       const key = archiveKey(job.producerId, job.archiveId);
+      const archived = join(library, job.relativePath!, "artifacts", "repo-01", "notes.md");
       deletion = real.delete(key, key).then(() => events.push("archive deleted"));
+      // A controlled boundary: the delete has been requested and given time to run. The bundle
+      // must still be on disk and readable, before and after the checkout is deleted.
       await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(await real.archivePresent(key), true, "the bundle is present while removal holds it");
+      assert.equal(readFileSync(archived, "utf8"), "keep me\n");
       const removed = await removal();
       events.push("checkout removed");
+      assert.equal(await real.archivePresent(key), true, "still present when the checkout is gone");
+      assert.equal(readFileSync(archived, "utf8"), "keep me\n");
+      archivedKey = key;
       return removed;
     }),
   };
@@ -1056,6 +1081,7 @@ test("an archive deleted during removal waits for the removal, and one deleted b
   await deletion;
   assert.deepEqual(pass.cleanups, { reclaimed: 1 });
   assert.deepEqual(events, ["checkout removed", "archive deleted"], "the delete waited for the removal");
+  assert.equal(await real.archivePresent(archivedKey), false, "and then removed the bundle");
 
   // Deleted first: the hold refuses and never calls the removal.
   const other = world(t, { archives: "real", prepare: (path) => writeFileSync(join(path, "notes.md"), "keep me\n") });
@@ -1117,4 +1143,119 @@ test("a merged pull request with no recorded head commit holds the orphan", asyn
   w.state.now = w.row()!.retryAt!;
   assert.deepEqual((await w.observer.runPass()).cleanups, { "validation-unknown": 1 });
   assert.ok(existsSync(join(w.path, "feature.txt")));
+});
+
+// --- review round: escaped archive paths, lossy conversions, nested repositories, the guard ---
+
+test("checkout archive paths escape dot-prefixed segments reversibly", () => {
+  assert.equal(checkoutArchiveSegments(".github/workflows/ci.yml"), "%2Egithub/workflows/ci.yml");
+  assert.equal(checkoutArchiveSegments(".envrc"), "%2Eenvrc");
+  assert.equal(checkoutArchiveSegments("a/%2Egithub"), "a/%252Egithub", "a literal escape cannot collide");
+  assert.equal(checkoutArchiveSegments("notes/report.html"), "notes/report.html");
+});
+
+test("local-only files under dot-prefixed directories are archived, keeping their original path", async (t) => {
+  enable(t);
+  const w = world(t, {
+    archives: "real",
+    prepare: (path) => {
+      mkdirSync(join(path, ".github", "workflows"), { recursive: true });
+      writeFileSync(join(path, ".github", "workflows", "ci.yml"), "on: push\n");
+      writeFileSync(join(path, ".envrc"), "export LOCAL=1\n");
+    },
+  });
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, { reclaimed: 1 });
+  assert.equal(existsSync(w.path), false);
+  const job = new ArchiveCaptureStore().forTask(w.id).find((entry) => entry.kind === "checkout")!;
+  const bundle = join(w.library, job.relativePath!);
+  assert.equal(readFileSync(join(bundle, "artifacts", "repo-01", "%2Egithub", "workflows", "ci.yml"), "utf8"), "on: push\n");
+  assert.equal(readFileSync(join(bundle, "artifacts", "repo-01", "%2Eenvrc"), "utf8"), "export LOCAL=1\n");
+  const manifest = JSON.parse(readFileSync(join(bundle, "manifest.json"), "utf8")) as {
+    content: { artifacts: { original_path: string; archive_path: string }[] };
+  };
+  assert.deepEqual(manifest.content.artifacts.map((artifact) => artifact.original_path).sort(),
+    [".envrc", ".github/workflows/ci.yml"]);
+});
+
+test("a tracked file whose ident conversion hides local text is archived, not trusted to a clean status", async (t) => {
+  enable(t);
+  let base = "";
+  const w = world(t, {
+    prepare: (path) => {
+      writeFileSync(join(path, ".gitattributes"), "notes.txt ident\n");
+      writeFileSync(join(path, "notes.txt"), "$Id$\n");
+      gitIn(path, "add", ".gitattributes", "notes.txt");
+      gitIn(path, "commit", "-qm", "ident notes");
+      base = gitIn(path, "rev-parse", "HEAD");
+      // Git collapses `$Id: ... $` to `$Id$` before comparing, so status reports this clean.
+      writeFileSync(join(path, "notes.txt"), "$Id: private notes nobody committed $\n");
+    },
+  });
+  w.registry.upsertTask({ ...w.task(), baseSha: base });
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, { reclaimed: 1 });
+  assert.ok(w.state.preserved.length > 0, "the raw bytes were archived as local-only work");
+  for (const entry of w.state.preserved) assert.deepEqual(entry.files.map((file) => file.path), ["notes.txt"]);
+  assert.ok(w.state.held.length > 0, "and deleted only while that archive was held");
+});
+
+test("a nested repository inside a regenerable ignored directory holds the orphan", async (t) => {
+  enable(t);
+  let base = "";
+  const w = world(t, {
+    prepare: (path) => {
+      writeFileSync(join(path, ".gitignore"), "dist\n");
+      gitIn(path, "add", ".gitignore");
+      gitIn(path, "commit", "-qm", "ignore dist");
+      base = gitIn(path, "rev-parse", "HEAD");
+    },
+  });
+  w.registry.upsertTask({ ...w.task(), baseSha: base });
+  mkdirSync(join(w.path, "dist", "vendored"), { recursive: true });
+  writeFileSync(join(w.path, "dist", "vendored", "work.txt"), "a repository of its own\n");
+  gitIn(join(w.path, "dist", "vendored"), "init", "-q");
+  // Ignored content never moves the clock, as for registered checkouts; it holds the delete.
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, { "validation-unknown": 1 }, "no deletion is authorized");
+  assert.match(w.row()?.lastError ?? "", /nested repository inside an ignored directory/);
+  assert.ok(existsSync(join(w.path, "dist", "vendored", ".git")));
+  assert.equal(readFileSync(join(w.path, "dist", "vendored", "work.txt"), "utf8"), "a repository of its own\n");
+});
+
+test("the removal guard computes local-only files from the set-aside bytes and can refuse", async (t) => {
+  const { w, ref, digest } = await boundary(t);
+  let found: string[] = [];
+  let guardSaw = "";
+  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async () => null, async (aside, commonDir) => {
+    guardSaw = aside;
+    const proof = await proveOrphanedContent({ ref, commonDir, contentPath: aside, fetchRemote: false, pullRequest: () => null });
+    found = proof.kind === "orphaned" ? proof.localOnly.map((file) => file.path) : [];
+    throw new Error("the archive of this checkout's local-only files could not be verified");
+  }), /could not be verified/);
+  assert.notEqual(guardSaw, w.path, "the guard ran on the set-aside directory");
+  assert.deepEqual(found, ["notes.md"]);
+  assert.equal(readFileSync(join(w.path, "notes.md"), "utf8"), "archived work\n", "restored to its slot");
+
+  // A guard that returns without letting the delete run is a refusal too.
+  await assert.rejects(removeOrphanedTaskCheckout(ref, w.path, digest, async () => null, async () => {}),
+    /removal was not attempted/);
+  assert.ok(existsSync(join(w.path, "notes.md")));
+});
+
+test("local-only files are not deleted by a daemon whose archive library cannot hold them", async (t) => {
+  enable(t);
+  const w = world(t, {
+    prepare: (path) => writeFileSync(join(path, "notes.md"), "keep me\n"),
+    archives: {
+      ensureReady: async () => ({ ok: true }),
+      settleBeforeCleanup: async () => ({ ok: true }),
+      preserveCheckoutFiles: async () => ({ ok: true }),
+    },
+  });
+  const pass = await w.runToDeadline();
+  assert.deepEqual(pass.cleanups, { failed: 1 });
+  assert.match(w.row()?.lastError ?? "", /need the archive library/);
+  assert.equal(readFileSync(join(w.path, "notes.md"), "utf8"), "keep me\n");
+  assert.equal(w.task().worktreePath, w.path);
 });

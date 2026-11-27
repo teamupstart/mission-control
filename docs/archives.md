@@ -11,7 +11,9 @@ just before automatic retention removes it - and the container itself knows noth
 of them, which is the point: another kind of durable artifact reuses this library rather than
 growing a second one beside it. A `checkout` bundle has no report, so it is always `partial`,
 names the missing report in `missing`, and stores every file as a supporting artifact under
-`artifacts/repo-01/` at its checkout-relative path.
+`artifacts/repo-01/` at its checkout-relative path. Each path segment is escaped (`%` as `%25`,
+then a leading `.` as `%2E`) because bundle paths refuse dot-prefixed segments; the manifest's
+`original_path` keeps the path exactly as it was.
 
 This page describes the local library: where it lives, what a bundle contains, how one is
 produced, how Mission Control discovers one, and what deleting one does. It is the storage,

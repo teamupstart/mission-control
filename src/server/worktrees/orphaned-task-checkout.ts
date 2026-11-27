@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, opendir, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { ORPHANED_WORKTREE_RECLAIM_FLAG_ID } from "@shared/feature-flag-registry.ts";
@@ -217,7 +217,14 @@ async function withScratch<T>(commonDir: string, fn: (scratch: Scratch) => Promi
   const dir = await mkdtemp(join(tmpdir(), "mission-orphan-proof-"));
   try {
     const gitDir = join(dir, "repo.git");
-    const init = await isolatedGit(["init", "--bare", "-q", gitDir], dir);
+    // The scratch repository must hash objects the way the borrowed one does, or every raw
+    // comparison below would differ by construction.
+    const format = await isolatedGit([`--git-dir=${commonDir}`, "rev-parse", "--show-object-format"], dir);
+    const objectFormat = format.stdout.trim();
+    if (!answered(format) || !/^(?:sha1|sha256)$/.test(objectFormat)) {
+      throw Object.assign(new Error("recorded repository object format could not be read"), { scratch: true });
+    }
+    const init = await isolatedGit(["init", "--bare", "-q", `--object-format=${objectFormat}`, gitDir], dir);
     if (!answered(init)) throw Object.assign(new Error("scratch repository could not be created"), { scratch: true });
     await mkdir(join(gitDir, "objects", "info"), { recursive: true });
     await writeFile(join(gitDir, "objects", "info", "alternates"), `${join(commonDir, "objects")}\n`);
@@ -285,6 +292,7 @@ async function compareWith(scratch: Scratch, worktreePath: string, commit: strin
   const entries: string[] = [];
   let deletedTracked = 0;
   let ignoredBlocker: string | null = null;
+  const regenerableDirectories: string[] = [];
   for (const record of status.stdout.split("\0").filter(Boolean)) {
     if (record.length < 4 || record[2] !== " ") return unknown("orphaned checkout status could not be parsed");
     const code = record.slice(0, 2);
@@ -294,6 +302,7 @@ async function compareWith(scratch: Scratch, worktreePath: string, commit: strin
     }
     if (code === "!!") {
       if (!regenerableIgnoredPath(path)) ignoredBlocker = "orphaned checkout holds ignored files outside regenerable directories";
+      else if (path.endsWith("/")) regenerableDirectories.push(path);
       continue;
     }
     const worktreeSide = code[1];
@@ -322,10 +331,125 @@ async function compareWith(scratch: Scratch, worktreePath: string, commit: strin
       return unknown("orphaned checkout status is not understood");
     }
   }
+  // Status compares a tracked file through Git's conversions, and some are lossy: `ident`
+  // collapses `$Id: anything $` to `$Id$`, and a clean filter or working-tree encoding can map
+  // different bytes to the same blob. A clean status is no proof for those paths, so their raw
+  // bytes are compared with the commit's blob, and a difference is local-only work.
+  const lossy = await lossyConversionChanges(scratch, worktreePath, tree.stdout, new Set(localOnly.map((file) => file.path)));
+  if (lossy.kind === "unknown") return lossy;
+  for (const file of lossy.files) {
+    localOnly.push(file);
+    entries.push(`raw\0${file.path}\0${file.sha256}`);
+  }
+  // `--ignored=matching` reports an ignored directory as one entry without descending into it.
+  // A repository nested inside one is not regenerable output, so every tolerated ignored
+  // directory is walked, without following links, for a `.git` entry.
+  if (!ignoredBlocker) {
+    for (const directory of regenerableDirectories) {
+      const nested = await containsNestedRepository(join(worktreePath, directory));
+      if (nested !== false) {
+        ignoredBlocker = nested === null
+          ? "an ignored directory in the orphaned checkout could not be read"
+          : "orphaned checkout holds a nested repository inside an ignored directory";
+        break;
+      }
+    }
+  }
   entries.sort();
   localOnly.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const digest = createHash("sha256").update(`orphan:${commit}\0`).update(entries.join("\0")).digest("hex");
   return { kind: "compared", digest, localOnly, deletedTracked, ignoredBlocker };
+}
+
+/** Attributes whose conversion can make different working-tree bytes compare clean. */
+const LOSSY_ATTRIBUTES = ["ident", "filter", "working-tree-encoding"] as const;
+/** How many entries a nested-repository walk visits before it refuses to vouch for a directory. */
+const NESTED_WALK_LIMIT = 1_000_000;
+
+/**
+ * Tracked files whose working-tree bytes differ from the commit's blob while a lossy attribute
+ * applies to them, as local-only files. `skip` holds paths status already reported.
+ */
+async function lossyConversionChanges(
+  scratch: Scratch,
+  worktreePath: string,
+  lsTree: string,
+  skip: ReadonlySet<string>,
+): Promise<{ kind: "files"; files: LocalOnlyFile[] } | { kind: "unknown"; reason: string }> {
+  const unknown = (reason: string) => ({ kind: "unknown" as const, reason });
+  const blobs = new Map<string, string>();
+  for (const record of lsTree.split("\0").filter(Boolean)) {
+    const tab = record.indexOf("\t");
+    const [mode, type, oid] = record.slice(0, tab).split(" ");
+    if (type === "blob" && mode !== "120000" && oid) blobs.set(record.slice(tab + 1), oid);
+  }
+  if (blobs.size === 0) return { kind: "files", files: [] };
+  const checked = await runCheckAttr(scratch, worktreePath, [...blobs.keys()]);
+  if (checked === null) return unknown("orphaned checkout attributes could not be read");
+  const files: LocalOnlyFile[] = [];
+  for (const path of checked) {
+    if (skip.has(path)) continue;
+    const absolute = join(worktreePath, path);
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(absolute);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; // a deletion; status counted it
+      return unknown("a converted tracked file could not be read");
+    }
+    if (!info.isFile()) return unknown("orphaned checkout holds a converted tracked path that is not an ordinary file");
+    const raw = await isolatedGit([`--git-dir=${scratch.gitDir}`, "hash-object", "--no-filters", "--", absolute], scratch.dir);
+    if (!answered(raw)) return unknown("a converted tracked file could not be hashed");
+    if (raw.stdout.trim() === blobs.get(path)) continue;
+    try {
+      files.push({ path, ...(await hashFile(absolute)) });
+    } catch {
+      return unknown("orphaned checkout holds a file that could not be read");
+    }
+  }
+  return { kind: "files", files };
+}
+
+/** Tracked paths with a lossy attribute set, or null when Git could not answer. */
+async function runCheckAttr(scratch: Scratch, worktreePath: string, paths: string[]): Promise<string[] | null> {
+  const result = await run("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", `--git-dir=${scratch.gitDir}`,
+    `--work-tree=${worktreePath}`, "check-attr", "-z", "--stdin", ...LOSSY_ATTRIBUTES], {
+    cwd: worktreePath,
+    timeoutMs: GIT_TIMEOUT_MS,
+    maxBuffer: GIT_OUTPUT_LIMIT,
+    input: `${paths.join("\0")}\0`,
+    env: isolatedGitEnvironment({ GIT_TERMINAL_PROMPT: "0", GIT_INDEX_FILE: scratch.indexFile }),
+  });
+  if (!answered(result)) return null;
+  const fields = result.stdout.split("\0");
+  const out = new Set<string>();
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const value = fields[i + 2];
+    if (value !== "unspecified" && value !== "unset") out.add(fields[i]!);
+  }
+  return [...out];
+}
+
+/** Whether a directory holds a `.git` entry at any depth; null when the walk cannot finish. */
+async function containsNestedRepository(directory: string): Promise<boolean | null> {
+  const pending = [directory];
+  let visited = 0;
+  try {
+    const top = await lstat(directory);
+    if (!top.isDirectory()) return null;
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      for await (const entry of await opendir(current)) {
+        if (++visited > NESTED_WALK_LIMIT) return null;
+        if (entry.name === ".git") return true;
+        // Dirent types come from the directory itself and never follow a link.
+        if (entry.isDirectory()) pending.push(join(current, entry.name));
+      }
+    }
+    return false;
+  } catch {
+    return null;
+  }
 }
 
 /** Compare a proven orphan with one commit. Read-only; creates and removes its own scratch. */
@@ -388,16 +512,32 @@ export async function orphanedCheckoutEvidence(input: {
   fetchRemote: boolean;
   pullRequest: () => RecordedPullRequestLookup;
 }): Promise<OrphanReturnEvidence> {
-  const { ref } = input;
-  const checkout = await classifyTaskCheckout(ref, input.slotPath);
+  const checkout = await classifyTaskCheckout(input.ref, input.slotPath);
   if (checkout.kind === "registered" || checkout.kind === "absent") return checkout;
   if (checkout.kind === "unproven") return { kind: "held", reason: checkout.reason };
+  return proveOrphanedContent({ ...input, commonDir: checkout.commonDir, contentPath: input.slotPath });
+}
+
+/**
+ * The content half of `orphanedCheckoutEvidence`, for a directory already proven to be this
+ * checkout: the slot itself, or the private name removal set it aside under. Removal calls it
+ * on the set-aside directory, so the local-only set it archives is computed from the exact
+ * bytes the delete will remove.
+ */
+export async function proveOrphanedContent(input: {
+  ref: TaskRepoRef;
+  commonDir: string;
+  contentPath: string;
+  fetchRemote: boolean;
+  pullRequest: () => RecordedPullRequestLookup;
+}): Promise<Extract<OrphanReturnEvidence, { kind: "held" | "orphaned" }>> {
+  const { ref } = input;
   const base = ref.baseSha;
   if (!base || !OBJECT_ID.test(base)) return { kind: "held", reason: "orphaned checkout has no recorded base commit" };
   try {
-    return await withScratch(checkout.commonDir, async (scratch): Promise<OrphanReturnEvidence> => {
-      const against = await compareWith(scratch, input.slotPath, base);
-      if (against.kind === "unknown") return { kind: "held", reason: against.reason };
+    return await withScratch(input.commonDir, async (scratch) => {
+      const against = await compareWith(scratch, input.contentPath, base);
+      if (against.kind === "unknown") return { kind: "held" as const, reason: against.reason };
       if (against.ignoredBlocker) return { kind: "held", reason: against.ignoredBlocker };
       if (against.localOnly.length === 0 && against.deletedTracked === 0) {
         return { kind: "orphaned", proof: "base", commit: base, localOnly: [] };
@@ -414,7 +554,7 @@ export async function orphanedCheckoutEvidence(input: {
           ? "merged pull request head could not be fetched"
           : "merged pull request head is not available locally" };
       }
-      const merged = await compareWith(scratch, input.slotPath, head);
+      const merged = await compareWith(scratch, input.contentPath, head);
       if (merged.kind === "unknown") return { kind: "held", reason: merged.reason };
       if (merged.ignoredBlocker) return { kind: "held", reason: merged.ignoredBlocker };
       return merged.localOnly.length === 0 && merged.deletedTracked === 0
@@ -463,29 +603,37 @@ function linkNamesSlot(gitDir: string, slotPath: string): boolean {
 }
 
 /**
+ * Run the delete of a set-aside orphan. Given the set-aside directory, it decides what must be
+ * held while `finish` deletes it - typically the archive of the local-only files it finds there
+ * - and calls `finish` exactly once, or throws to refuse.
+ */
+export type OrphanRemovalGuard = (aside: string, commonDir: string, finish: () => Promise<void>) => Promise<void>;
+
+/**
  * Delete the exact slot directory of a proven orphan, or report that nothing is there.
  *
  * Git cannot remove what it does not know, so this is a recursive delete of the slot path. The
  * order is the safety argument:
  *
  *  1. Prove the orphan in full - including that its link names this task's own administrative
- *     directory - and require the content digest the cleanup claim was taken against, with no
- *     ignored file outside the regenerable directories.
+ *     directory - and remember the slot directory's identity (device and inode). Require the
+ *     content digest the cleanup claim was taken against, with no ignored file outside the
+ *     regenerable directories.
  *  2. Check process occupancy at the slot, so a checkout somebody is in is never moved.
- *  3. Rename the slot, atomically and within its own parent, to a private name. From here
- *     nothing can reach it by the slot path, so nothing can add a file to it or swap it out
- *     unseen. The verification below therefore describes exactly what `rm` will delete.
+ *  3. Rename the slot, atomically and within its own parent, to a private name, and require
+ *     that what moved is the very directory proven in step 1 - not a byte-identical copy
+ *     swapped in meanwhile. From here nothing can reach it by the slot path.
  *  4. On the set-aside directory: check occupancy (a process inside moved with it), re-read the
  *     content against the claimed digest and the ignored-file rule, and require the link to
- *     name the proven administrative directory. Then check occupancy once more: it is the last
- *     awaited step before the delete.
- *  5. Delete it. Any refusal in step 4 renames it back to the slot first, and so does a delete
- *     that fails part-way, so the task keeps tracking whatever is left. If even that rename
- *     fails, the slot is never classified absent while the set-aside directory remains (see
- *     `classifyTaskCheckout`), so the ledger row cannot complete over it.
+ *     name the proven administrative directory.
+ *  5. Hand it to `guard`, which computes the local-only files from these very bytes and holds
+ *     their archive. Inside the guard, occupancy is checked once more as the last step, and the
+ *     directory is deleted.
+ *  6. Any refusal, and a delete that fails part-way, renames it back to the slot first, so the
+ *     task keeps tracking whatever is left. If even that rename fails, the slot is never
+ *     classified absent while the set-aside directory remains (see `classifyTaskCheckout`).
  *
- * Throws with a bounded reason on any refusal; the caller keeps the task's record of the
- * checkout.
+ * Throws with a bounded reason on any refusal; the caller keeps the task's record.
  */
 export async function removeOrphanedTaskCheckout(
   ref: TaskRepoRef,
@@ -493,6 +641,7 @@ export async function removeOrphanedTaskCheckout(
   /** The per-checkout digest the cleanup claim was taken against. */
   expectedDigest: string | undefined,
   occupied: (path: string) => Promise<string | null>,
+  guard: OrphanRemovalGuard,
   /** The recursive delete. A seam so a test can make it fail after the rename. */
   remove: (path: string) => Promise<void> = (path) => rm(path, { recursive: true, maxRetries: 2 }),
 ): Promise<"removed" | "absent"> {
@@ -501,6 +650,13 @@ export async function removeOrphanedTaskCheckout(
   if (before.kind === "absent") return "absent";
   if (before.kind !== "orphaned") throw new Error(before.kind === "unproven" ? before.reason : changed);
   if (!expectedDigest) throw new Error("orphaned checkout has no claimed fingerprint");
+  let identity: { dev: number; ino: number };
+  try {
+    const info = await lstat(slotPath);
+    identity = { dev: info.dev, ino: info.ino };
+  } catch {
+    throw new Error(changed);
+  }
   const unchanged = (content: OrphanComparison): string | null => {
     if (content.kind !== "compared") return changed;
     if (content.ignoredBlocker) return content.ignoredBlocker;
@@ -526,20 +682,34 @@ export async function removeOrphanedTaskCheckout(
     throw new Error(reason);
   };
   const refusal = await (async (): Promise<string | null> => {
+    const moved = await lstat(aside).catch(() => null);
+    if (!moved || moved.dev !== identity.dev || moved.ino !== identity.ino) return changed;
     const inside = await occupied(aside);
     if (inside) return inside;
     const content = unchanged(await compareOrphanedCheckout(aside, before.commonDir, ref.baseSha ?? ""));
     if (content) return content;
     const link = await observeWorktreeLink(aside);
     if (link?.kind !== "dangling-link" || link.gitDir !== before.gitDir) return changed;
-    return occupied(aside);
+    return null;
   })();
   if (refusal) return restore(refusal);
+  let finished = false;
   try {
-    await remove(aside);
-  } catch {
-    return restore("orphaned checkout removal failed");
+    await guard(aside, before.commonDir, async () => {
+      if (finished) throw new Error("orphaned checkout removal was attempted twice");
+      finished = true;
+      const last = await occupied(aside);
+      if (last) throw new Error(last);
+      try {
+        await remove(aside);
+      } catch {
+        throw new Error("orphaned checkout removal failed");
+      }
+    });
+  } catch (error) {
+    return restore(error instanceof Error ? error.message.slice(0, 200) : changed);
   }
+  if (!finished) return restore("orphaned checkout removal was not attempted");
   try {
     await lstat(aside);
   } catch (error) {

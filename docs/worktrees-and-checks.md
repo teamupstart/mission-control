@@ -869,37 +869,50 @@ checkout. The user's repository is never written.
    [`checkout` archive](archives.md) and verifies the bundle again at the provider boundary. If
    the archive cannot settle, the checkout is held with that blocker and retried with backoff.
    Deleting that archive from the library before the checkout is removed holds it too: the
-   daemon never recreates a bundle an operator deleted. The removal itself runs under that
-   archive's own lock and re-verifies the bundle, including every file's digest, first, so a
-   delete requested while the checkout is being removed waits until the removal has finished.
+   daemon never recreates a bundle an operator deleted. At the delete itself the local-only set
+   is computed again from the exact bytes about to be removed, and the delete runs under that
+   set's archive lock after re-verifying the bundle and every file's digest, so a delete
+   requested while the checkout is being removed waits until the removal has finished. Files
+   under dot-prefixed directories such as `.github` are stored at an escaped bundle path and
+   keep their original path in the manifest.
 
 A tracked file missing from the checkout does not hold it: its content is in the proof commit.
-A missing or unreadable base commit, submodules in the proof commit, a nested repository, a
-symbolic link or special file among the local-only paths, and a path that is not valid UTF-8
-all hold.
+A clean status is not trusted for a tracked path with the `ident`, `filter` or
+`working-tree-encoding` attribute, because those conversions can make different bytes compare
+equal (`ident` turns `$Id: anything $` into `$Id$`). Such a path's raw bytes are compared with the
+commit's blob, and a difference is local-only work. A missing or unreadable base commit,
+submodules in the proof commit, a nested repository, a symbolic link or special file among the
+local-only paths, and a path that is not valid UTF-8 all hold.
 
 Ignored files follow a deliberately different rule from registered checkouts. A registered
 return holds on any ignored file, because it has no cache-disposal policy. An orphan cannot be
 recovered any other way, so it tolerates ignored entries inside directories named
 `node_modules`, `dist`, `test-results`, `.evidence` or `.pipeline`, or whose name starts with
-`.tmp`, at any depth. Every other ignored entry, such as `.env`, still holds it.
+`.tmp`, at any depth, after walking each such directory without following links: a nested
+repository inside one is not regenerable output and holds the checkout. Every other ignored
+entry, such as `.env`, still holds it. As for registered checkouts, ignored content never moves
+the retention clock; it holds the delete.
 
 Removal deletes the exact slot directory, because `git worktree remove` cannot remove what Git
-does not know. Under the retention claim, the daemon proves the orphan again, requires the
-exact content digest the claim was taken against with no ignored file outside the regenerable
-directories, and checks process occupancy. It then renames the slot, atomically and within its
-parent, to a private name, so nothing can reach it by the slot path any more. On that set-aside
-directory it checks occupancy, re-reads the content against the claimed digest and the
-ignored-file rule, requires the same `.git` link naming the same administrative directory, and
-checks occupancy once more as the last step. Only then is it deleted, and the daemon confirms
-nothing is left. Any refusal, and a delete that fails part-way, renames it back to its slot
-first, so a file written or a directory swapped in during these checks is never deleted and the
-task keeps tracking whatever remains. If even that rename fails, the directory stays beside the
-slot under its private name, and the slot is not treated as already gone while it is there: the
-task and its ledger row are held with that blocker until the operator resolves it. The task then
-releases the checkout and the ledger row finishes through the ordinary claim and complete flow.
-A checkout that is already gone, for example removed by hand, completes the same way with
-nothing to delete. Manual **Clean up**, **Cancel** and **Delete** keep their own rules.
+does not know. Under the retention claim, the daemon proves the orphan again, remembers the slot
+directory's identity (device and inode), requires the exact content digest the claim was taken
+against with no ignored file outside the regenerable directories, and checks process occupancy.
+It then renames the slot, atomically and within its parent, to a private name, so nothing can
+reach it by the slot path any more, and requires that what moved is the very directory it
+proved rather than a byte-identical copy swapped in. On that set-aside directory it checks
+occupancy, re-reads the content against the claimed digest and the ignored-file rule, and
+requires the same `.git` link naming the same administrative directory. It then computes the
+local-only files from those bytes, holds their archive as described above, checks occupancy
+once more as the last step, and deletes the directory. The task then releases the checkout and
+the ledger row finishes through the ordinary claim and complete flow. A checkout that is
+already gone, for example removed by hand, completes the same way with nothing to delete.
+
+Any refusal, and a delete that fails part-way, renames the directory back to its slot first, so
+a file written or a directory swapped in during these checks is never deleted and the task keeps
+tracking whatever remains. If even that rename fails, the directory stays beside the slot under
+its private name, and the slot is not treated as already gone while it is there: the task and
+its ledger row are held with that blocker until the operator resolves it. Manual **Clean up**,
+**Cancel** and **Delete** keep their own rules.
 
 **Terminal homes proved absent.** Retention also holds a terminal task while its terminal home
 is present or its absence cannot be verified. A home with no `terminal_resource_id`, or one

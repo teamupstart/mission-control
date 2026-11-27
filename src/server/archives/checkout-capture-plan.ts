@@ -32,7 +32,7 @@ export async function planCheckoutCapture(
       continue;
     }
     const relative = path.relative(root.realRoot, resolved.path).split(path.sep).join("/");
-    const archivePath = `${ARCHIVE_ARTIFACTS_DIR}/${root.slot}/${relative}`;
+    const archivePath = `${ARCHIVE_ARTIFACTS_DIR}/${root.slot}/${checkoutArchiveSegments(relative)}`;
     if (relative !== file.path || !validateArchivePath(archivePath)) {
       problems.push(`${file.path} cannot be represented inside an archive`);
     } else if (resolved.bytes !== file.bytes) {
@@ -62,4 +62,17 @@ export async function planCheckoutCapture(
     missing: [{ kind: "primary_report", expectedSource: null, reason: "an orphaned checkout's local-only files have no report" }],
     captureStatus: "partial",
   };
+}
+
+/**
+ * The bundle path for one checkout-relative path, escaped so every checkout file can be held.
+ *
+ * Archive paths refuse a segment that starts with `.`, and an orphan's local-only work is often
+ * exactly there - a modified `.github/workflows/ci.yml`, an untracked `.envrc`. Each segment is
+ * percent-escaped: `%` becomes `%25`, then a leading `.` becomes `%2E`. The mapping is
+ * reversible, so no two checkout paths share a bundle path, and the manifest's `original_path`
+ * keeps the path exactly as it was in the checkout.
+ */
+export function checkoutArchiveSegments(relative: string): string {
+  return relative.split("/").map((segment) => segment.replaceAll("%", "%25").replace(/^\./, "%2E")).join("/");
 }

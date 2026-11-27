@@ -17,7 +17,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -179,8 +179,10 @@ interface HarnessOptions {
   deliveryMode?: "preview" | "live";
   maxRepairRounds?: number;
   probeEvidence?: boolean;
+  afterEvidenceProbe?: () => void;
   publicationCheckoutRevision?: WorkflowManagerOptions["publicationCheckoutRevision"];
   readEvidenceProbe?: WorkflowManagerOptions["readEvidenceProbe"];
+  readIntentSnapshot?: WorkflowManagerOptions["readIntentSnapshot"];
   readPublishedCheckout?: WorkflowManagerOptions["readPublishedCheckout"];
   resolveCommit?: WorkflowManagerOptions["resolveCommit"];
   /** A reviewer AFTER the last action, so downstream activation is observable. */
@@ -246,21 +248,27 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const managerOptions: WorkflowManagerOptions = {
     trackCiFailures: options.trackCiFailures,
+    readIntentSnapshot: options.readIntentSnapshot,
     reobservePullRequest: options.reobservePullRequest,
-    publicationCheckoutRevision: options.publicationCheckoutRevision ?? (() => contentTree.oid),
+    publicationCheckoutRevision: options.publicationCheckoutRevision ?? ((_cwd, _retained, _deadline, expectedHead) =>
+      expectedHead && full(head.sha) !== expectedHead ? null : contentTree.oid),
     resumptionSettleMs: options.resumptionSettleMs,
     sessionActionSessionGraceMs: options.sessionActionSessionGraceMs,
-    ...(options.probeEvidence ? { readEvidenceProbe: async (_registry, binding) => ({
-      stagedImageGeneration: store.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""),
-      contentTreeOid: options.localReport ? full("tree-with-report") : contentTree.oid,
-      headSha: captureHead.sha ?? head.sha,
-      workingTreeStatus: [],
-      diffFingerprint: `diff-${captureHead.sha ?? head.sha}`,
-      localArtifactHashes: options.localReport ? [{
-        path: "docs/reports/result/report.html",
-        sha256: createHash("sha256").update("report").digest("hex"),
-      }] : [],
-    }) } : {}),
+    ...(options.probeEvidence ? { readEvidenceProbe: async (_registry, binding) => {
+      const probe = {
+        stagedImageGeneration: store.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""),
+        contentTreeOid: options.localReport ? full("tree-with-report") : contentTree.oid,
+        headSha: captureHead.sha ?? head.sha,
+        workingTreeStatus: [],
+        diffFingerprint: `diff-${captureHead.sha ?? head.sha}`,
+        localArtifactHashes: options.localReport ? [{
+          path: "docs/reports/result/report.html",
+          sha256: createHash("sha256").update("report").digest("hex"),
+        }] : [],
+      };
+      options.afterEvidenceProbe?.();
+      return probe;
+    } } : {}),
     ...(options.readEvidenceProbe ? { readEvidenceProbe: options.readEvidenceProbe } : {}),
     readUnchangedRepository: options.readUnchangedRepository ?? (async (_root, headOid) => {
       if (options.unchangedRepositoryProblem) throw new Error(options.unchangedRepositoryProblem);
@@ -669,13 +677,14 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
 type Harness = Awaited<ReturnType<typeof harness>>;
 
 /** Bind, submit, and wait for the first action to be waiting with its packet prepared. */
-async function runToAction(h: Harness, prompted = false): Promise<string> {
-  const bound = h.manager.createBinding({
+async function runToAction(h: Harness, prompted = false, evidenceEpisode: string | null = null): Promise<string> {
+  const selected = h.store.listBindings().find(b => b.sessionId === h.sessionId && b.state === "active" && b.workflowVersionId === h.versionId);
+  const bound = selected ? { ok: true as const, value: selected } : h.manager.createBinding({
     workflowVersionId: h.versionId,
     sessionId: h.sessionId,
     ...(prompted ? { triggerMode: "foreman_complete" as const } : {}),
   });
-  assert.equal(bound.ok, true, "the binding was refused");
+  assert.equal(bound.ok, true, `the binding was refused: ${JSON.stringify(bound.ok ? null : bound)}`);
   const bindingId = bound.ok ? bound.value.id : "";
   if (h.evidenceReadinessPolicy === "criterion_mapped_v1") {
     const evidenceId = `reviewed-content-command-${h.sessionId}`;
@@ -695,7 +704,7 @@ async function runToAction(h: Harness, prompted = false): Promise<string> {
       mimeType: "text/plain",
       bytes: Buffer.byteLength(output),
       sha256: createHash("sha256").update(output).digest("hex"),
-    }], Date.now(), null, [{
+    }], Date.now(), evidenceEpisode, [{
         id: `reviewed-content-coverage-${h.sessionId}`,
         sourceRoot: "/repo",
         clientCriterionId: "reviewed-content",
@@ -2087,7 +2096,7 @@ async function observeCleanInspectorReview(h: Harness, number: number, head: str
     mergedAt: null, mergeBlock: null, observedHeadSha: head, observedState: "OPEN", observedAt: now,
     headRefName: "feature", title: "Publish", adoptedAt: now, updatedAt: now,
   });
-  updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: clean ? head : null, lastAttemptSha: head,
+  updateInspectorPr(key, { headSha: head, reviewComplete: true, cleanReviewHeadSha: clean ? head : null, lastAttemptSha: head,
     reviewPosture: "live", round: 1, lastReviewedAt: now, observedHeadSha: head, observedState: "OPEN", observedAt: now }, now);
   h.registry.inspectionUpdated(key, head, "OPEN", now);
 }
@@ -2464,6 +2473,512 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
   });
 }
 
+function configurePublicationForeman(t: import("node:test").TestContext, h: Harness) {
+  const client = new ForemanClient();
+  const claims: Array<{ expectedWorkCycle: { generation: number }; expectedIntent: { promptRevision: number } }> = [];
+  t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
+    const request = new Request(input, init);
+    if (new URL(request.url).pathname.endsWith("/workflow-completion")) claims.push(await request.clone().json());
+    request.headers.set("host", "127.0.0.1:7317");
+    return h.app!.request(request);
+  });
+  t.mock.method(client, "diff", async () => ({
+    ok: true, error: null, base: "main", baseSha: "base", headSha: h.head.sha, repoRoot: "/repo", branch: "feature",
+    filesChanged: 1, insertions: 1, deletions: 0, truncated: false,
+    patch: "diff --git a/src/card.ts b/src/card.ts\n+++ b/src/card.ts\n+export const name = 'Reference';\n",
+  }));
+  t.mock.method(client, "transcriptSize", async () => 1);
+  t.mock.method(client, "transcript", async () => ({ messages: [], truncated: false }));
+  t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
+  t.mock.method(client, "instructions", async () => "");
+  let verifications = 0;
+  t.after(configureClaudeRunnerTransport(() => "sdk", {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async () => {
+      verifications++;
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: "result", subtype: "success", is_error: false, structured_output: {
+            complete: true, confidence: 1, gaps: [], resolved: [],
+            summary: "The publication follow-through is finished and the pull request is current.",
+          } };
+        },
+      };
+    },
+  }));
+  const cfg = ForemanConfigSchema.parse({
+    enabled: true, mode: "live", repoAllowlist: ["/repo"],
+    wrapup: "pr", wrapupTriggers: ["prompted"], skipScoutWrapup: false, skipReviewArtifactWrapup: false,
+  });
+  return { client, cfg, claims, verifications: () => verifications };
+}
+
+const ciScenarios = ["unchanged", "changed checkout", "new intent", "failing CI", "stale pending poll", "independent cycle",
+  "legacy recovery", "legacy human decision", "legacy message id collision", "same-tree head race", "legacy late decision",
+  "legacy accepted PR action without CI consent", "pending then green without accepted CI consent",
+  "skipped poll before first handoff", "legacy recovery with an accepted check budget epoch",
+  "legacy recovery with a gap in claim generations", "legacy recovery with overridden duplicate evidence readiness",
+  "legacy recovery after explicit Run again", "legacy recovery with a disabled node on the accepted review",
+  "legacy recovery after an accepted full repair round", "legacy recovery with task reassignment during the probe"] as const;
+for (const [index, scenario] of ciScenarios.entries()) {
+  test(`Foreman publication CI across restart: ${scenario}`, async t => {
+    const legacy = scenario.startsWith("legacy");
+    const acceptedBudgetEpoch = scenario === "legacy recovery with an accepted check budget epoch";
+    const acceptedDisabledNode = scenario === "legacy recovery with a disabled node on the accepted review";
+    const acceptedRepairRound = scenario === "legacy recovery after an accepted full repair round";
+    const claimGap = scenario === "legacy recovery with a gap in claim generations";
+    const overrideDuplicateReadiness = scenario === "legacy recovery with overridden duplicate evidence readiness";
+    const pendingWithoutConsent = scenario === "pending then green without accepted CI consent";
+    const skippedBeforeHandoff = scenario === "skipped poll before first handoff";
+    const pendingCannotRenew = pendingWithoutConsent || skippedBeforeHandoff;
+    const noPriorConsent = scenario === "legacy accepted PR action without CI consent" || pendingWithoutConsent;
+    let trackCi = !noPriorConsent;
+    const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+    const { enabled, mode, repoAllowlist } = getInspectorConfig();
+    setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
+    t.after(() => setInspectorConfig({ enabled, mode, repoAllowlist }));
+    const { mergedCiWitness } = await import("../src/server/inspector/github.ts");
+    const { reobserveInspectorPr } = await import("../src/server/inspector/worker.ts");
+    const number = 1970 + index;
+    const githubRecordPath = join(home, "publication-ci-record.json");
+    const fakeGh = join(home, "publication-ci-gh");
+    if (legacy) {
+      const previous = process.env.MISSION_GH_BIN;
+      writeFileSync(fakeGh, `#!${process.execPath}
+if (!process.argv.includes("graphql") || !process.argv.includes("number=${number}")) process.exit(2);
+const pullRequest = JSON.parse(require("node:fs").readFileSync(${JSON.stringify(githubRecordPath)}, "utf8"));
+process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
+`);
+      chmodSync(fakeGh, 0o755);
+      process.env.MISSION_GH_BIN = fakeGh;
+      t.after(() => {
+        if (previous === undefined) delete process.env.MISSION_GH_BIN;
+        else process.env.MISSION_GH_BIN = previous;
+      });
+    }
+    const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+    const { freezeWorkflowRunIntent } = await import("../src/server/workflows/intent-fingerprint.ts");
+    let afterProbe: (() => void) | undefined;
+    let historicalMessage: { id: string; text: string } | null = null;
+    const h: Harness = await harness(`ci-publication-${scenario.replaceAll(" ", "-")}`, { pullRequest: true, inspector: true,
+      clientMessageIds: legacy,
+      resumptionPolicy: acceptedRepairRound ? "auto" : "manual",
+      afterEvidenceProbe: () => afterProbe?.(),
+      onInject: (text, id) => {
+        if (legacy && !noPriorConsent && !historicalMessage) {
+          assert.ok(id);
+          historicalMessage = { id, text };
+        }
+      },
+      // The old capture included its own delivered PR packet as a human decision. A human
+      // repeating the exact text has a different message id and must retain the closed hold.
+      readIntentSnapshot: (...args) => {
+        const intent = readWorkflowIntentSnapshot(...args);
+        if (!intent || !historicalMessage) return intent;
+        return freezeWorkflowRunIntent({ ...intent, decisions: [...intent.decisions, {
+          decision: scenario === "legacy message id collision" ? "Also update the export format." : historicalMessage.text.trim(), rationale: null,
+          source: { kind: "transcript", id: scenario === "legacy human decision" ? "operator-message" : historicalMessage.id },
+        }] });
+      },
+      reobservePullRequest: prKey => reobserveInspectorPr(h.registry, prKey),
+      probeEvidence: true, trackCiFailures: () => trackCi, evidenceReadinessPolicy: legacy && !overrideDuplicateReadiness ? "off" : "criterion_mapped_v1" });
+    try {
+      const taskId = `task-${h.sessionId}`;
+      h.registry.upsertTask(mkTask({ id: taskId, kind: "bugfix", status: "running", sessionId: h.sessionId, branch: "feature",
+        worktreePath: "/repo", dispatchedAt: Date.now(), workflowId: h.store.getWorkflowVersionById(h.versionId)!.workflowId }));
+      h.registry.bindTaskToWorkEpisode(taskId, h.sessionId);
+      const runId = await runToAction(h, true, "intent:1:1");
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no publication");
+      const publication = h.store.listDeliveries(runId).find(d => d.state === "delivered")!;
+      assert.equal(publication.payload.includes("## Workflow pull request CI follow-through"), trackCi);
+      trackCi = true; // Later packets cannot grant CI consent to this earlier delivery.
+      h.reportPrompt(publication.payload);
+      h.head.sha = "published";
+      if (acceptedRepairRound) h.contentTree.oid = h.full("unreviewed-publication");
+      h.runActionTurn();
+      const url = `https://github.com/owner/repo/pull/${number}`;
+      const observe = (checks: "pending" | "passing" | "failing" | null, merged = false) => {
+        const episode = h.registry.recordedWorkEpisodeForSession(h.sessionId)!;
+        h.registry.reconcilePrs(new Map([[h.sessionId, {
+          url, number, state: merged ? "merged" : "open", branch: "feature", checks,
+          episodeId: episode.episodeId, agentSessionId: episode.agentSessionId, createdAt: episode.startedAt,
+          mergedAt: merged ? Date.now() : null, headSha: h.full(h.head.sha), worktreeHeadSha: h.full(h.head.sha),
+        }]]), new Set());
+      };
+      h.adoptPr({ key: `owner/repo#${number}`, url, number });
+      await h.manager.sweepSessionActions(SETTLED());
+      await waitFor(() => h.store.listEvents(runId).some(e => e.kind === "inspector_gate_entered"), "no gate");
+      if (acceptedBudgetEpoch) h.store.setRunCheckBudgetEpoch(runId, 1);
+      if (acceptedDisabledNode) {
+        // Toggle after the Persona passed, so its verdict still qualifies independently.
+        assert.ok(h.manager.setNodesDisabled(runId, {
+          requestId: "disable-accepted-reviewer", nodeIds: ["upstream"], disabled: true,
+        }).ok);
+      }
+      await observeCleanInspectorReview(h, number, h.full(h.head.sha), Date.now());
+      if (acceptedRepairRound) {
+        await waitFor(() => h.store.getRun(runId)?.currentPhase === "inspector_reviewed_tree_changed",
+          "the first publication should require a fresh full review");
+        h.head.sha = "repaired";
+        h.contentTree.oid = h.full("repaired-tree");
+        h.adopted[0]!.observedHeadOid = h.full(h.head.sha);
+        observe(null);
+        historicalMessage = null; // The next delivered PR packet belongs to the repaired publication.
+        h.runActionTurn();
+        await h.manager.sweepResumptions(SETTLED());
+        const repair = h.store.latestSubmission(runId)!;
+        assert.equal(repair.round, 2);
+        assert.equal(repair.mode, "full_workflow");
+        assert.equal(repair.triggerSource, "session");
+        const repairPacket = () => h.store.listDeliveries(runId).find(d =>
+          d.submissionId === repair.id && d.kind === "session_action" && d.state === "delivered");
+        await waitFor(() => !!repairPacket(), "the repair round did not publish");
+        h.reportPrompt(repairPacket()!.payload);
+        h.runActionTurn();
+        await h.manager.sweepSessionActions(SETTLED());
+        await waitFor(() => h.store.listEvents(runId).filter(e => e.kind === "inspector_gate_entered").length === 2,
+          "the repaired publication did not reach Inspector");
+        await observeCleanInspectorReview(h, number, h.full(h.head.sha), Date.now());
+      }
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "no clean review");
+      const submissions = h.store.listSubmissions(runId).map(s => s.id);
+      const { client, cfg, claims } = configurePublicationForeman(t, h);
+      const turns = legacy || pendingCannotRenew ? ["pending", "passing"] as const : ["pending", "pending", "passing"] as const;
+      const ciStarted = Date.now();
+      for (const checks of turns) {
+        const stale = scenario === "stale pending poll" && claims.length === 1;
+        if (!stale) await h.restartDaemon();
+        if (claimGap && checks === "passing") h.runActionTurn(); // This generation settles without a Foreman claim.
+        h.runActionTurn();
+        const observedChecks = legacy && checks === "pending" ? null
+          : checks === "passing" && scenario === "failing CI" ? "failing" : checks;
+        if (checks === "passing" && scenario === "changed checkout") h.contentTree.oid = h.full("another-tree");
+        if (checks === "passing" && scenario === "same-tree head race") {
+          afterProbe = () => { h.head.sha = "other-commit-with-identical-tree"; afterProbe = undefined; };
+        }
+        if (!stale) observe(observedChecks);
+        if (skippedBeforeHandoff && checks === "pending") {
+          assert.equal(h.registry.prObservationFor(h.sessionId)?.checks, "pending");
+          h.registry.reconcilePrs(new Map(), new Set([h.sessionId]));
+        }
+        const ciFinished = Date.now();
+        if (checks === "passing" && scenario === "new intent") {
+          const objective = "Document the new API before publication.";
+          h.registry.upsertGoal(h.sessionId, { objective, text: objective, prompt: objective, focus: objective,
+            relationship: "amend", rationale: "Additional requirement", objectiveVersion: 2, promptRevision: 2,
+            resolvedPromptRevision: 2, pendingPrompts: [], source: "heuristic" }, Date.now());
+        }
+        const session = h.registry.getSession(h.sessionId)!;
+        assert.equal(session.prChecks, observedChecks);
+        const evaluate = () => processPromptedWrapup(client, cfg, session, [session], h.registry.getQueue(h.sessionId), new Set());
+        if (checks === "passing" && scenario === "legacy recovery after explicit Run again") {
+          const again = h.manager.enqueueSubmit(h.store.getRun(runId)!.bindingId, { requestId: "operator-run-again" });
+          assert.ok(again.ok);
+          assert.notEqual(again.value.run.id, runId);
+          assert.equal(again.value.run.triggerSource, "manual");
+        } else {
+          const evaluations = checks === "passing" && scenario === "unchanged"
+            ? await Promise.all([evaluate(), evaluate()]) : [await evaluate()];
+          assert.ok(evaluations.some(Boolean), `Foreman evaluated the ${checks} turn`);
+        }
+        if (checks === "passing" && scenario === "new intent") {
+          assert.equal(h.registry.getQueue(h.sessionId)?.promptedDecision?.outcome, "held");
+          assert.equal(claims.at(-1)?.expectedIntent.promptRevision, 1, "excluded evidence could not authorize a new claim");
+          return;
+        }
+        if (observedChecks === "pending" && !stale && !pendingCannotRenew) {
+          const receipt = h.store.listEvents(runId).filter(e => e.kind === "workflow_completion_claimed").at(-1)!;
+          assert.match(JSON.stringify(receipt.payload), /"pendingCi":/);
+        }
+        const latest = h.store.latestRunForBinding(h.store.getRun(runId)!.bindingId)!;
+        if (stale || (checks === "passing" && (pendingCannotRenew || scenario === "changed checkout" || scenario === "same-tree head race" || scenario === "failing CI"))) {
+          assert.notEqual(latest.id, runId);
+          await waitFor(() => h.store.latestSubmission(latest.id)?.status === "waiting_for_evidence_readiness", "new review needs evidence");
+          return;
+        }
+        if (legacy && checks === "passing") {
+          assert.notEqual(latest.id, runId, "the second review must be distinct from the accepted publication");
+          if (claimGap) {
+            assert.equal(claims.length, 2);
+            assert.equal(claims[1]!.expectedWorkCycle.generation, claims[0]!.expectedWorkCycle.generation + 2);
+          }
+          if (overrideDuplicateReadiness) {
+            await waitFor(() => h.store.latestSubmission(latest.id)?.status === "waiting_for_evidence_readiness", "no duplicate preflight hold");
+            const root = h.store.latestSubmission(latest.id)!;
+            assert.equal(h.manager.overrideEvidenceReadiness(latest.id, root.id, "continue-duplicate-review",
+              "Continue this review with the recorded evidence gap.", true).ok, true);
+            assert.equal(h.store.getSubmission(root.id)?.readiness?.status, "overridden");
+          }
+          await waitFor(() => h.store.listDeliveries(latest.id).some(d => d.kind === "session_action" && d.state === "delivered"), "duplicate PR action");
+          const packet = h.store.listDeliveries(latest.id).find(d => d.kind === "session_action")!;
+          h.reportPrompt(packet.payload);
+          h.runActionTurn();
+          observe("passing", true);
+          const { updateInspectorPr } = await import("../src/server/db.ts");
+          const key = `owner/repo#${number}`;
+          const now = Date.now();
+          updateInspectorPr(key, { state: "closed", observedState: "MERGED", observedAt: now, mergedAt: now }, now);
+          h.registry.inspectionUpdated(key, h.full(h.head.sha), "MERGED", now);
+          h.runActionTurn();
+          await h.manager.sweepSessionActions(SETTLED());
+          await waitFor(() => h.store.getRun(latest.id)?.currentPhase === "inspector_pr_closed", "duplicate held after merge");
+          assert.equal(h.registry.getTask(taskId)?.status, "running");
+          await h.restartDaemon();
+          h.reportIdle();
+          assert.equal(h.registry.getTask(taskId)?.status, "running", "restart preserves the held task");
+          const recheck = async (requestId: string) => {
+            assert.equal(h.manager.recheckInspector(latest.id, requestId).ok, true);
+            await h.settle();
+          };
+          writeFileSync(githubRecordPath, JSON.stringify({ state: "MERGED", headRefName: "feature", headRefOid: h.full(h.head.sha), isDraft: false }));
+          await recheck("missing-ci-history");
+          assert.equal(h.store.getRun(latest.id)?.currentPhase, "inspector_pr_closed");
+          const head = h.full(h.head.sha);
+          const githubRecord = {
+            state: "MERGED", headRefName: "feature", headRefOid: head, mergedAt: new Date(now).toISOString(),
+            isDraft: false, reviewDecision: "APPROVED", reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
+            commits: { nodes: [{ commit: { oid: head, statusCheckRollup: { state: "SUCCESS",
+              contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", status: "COMPLETED",
+                conclusion: "SUCCESS", startedAt: new Date(ciStarted).toISOString(), completedAt: new Date(ciFinished).toISOString() }] } } } }] },
+          };
+          const ci = mergedCiWitness(githubRecord);
+          assert.ok(ci);
+          writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+          if (noPriorConsent) {
+            assert.ok(packet.payload.includes("## Workflow pull request CI follow-through"));
+            assert.equal(latest.intent?.fingerprint, h.store.getRun(runId)?.intent?.fingerprint);
+            await recheck("no-ci-contract-on-accepted-publication");
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+            return;
+          }
+          assert.notEqual(latest.intent?.fingerprint, h.store.getRun(runId)?.intent?.fingerprint);
+          if (scenario === "legacy recovery with task reassignment during the probe") {
+            const newOwner = "replacement-task-session";
+            h.registry.applyDiscovery([discovered(h.sessionId), discovered(newOwner)]);
+            assert.ok(h.registry.getSession(newOwner));
+            const task = h.registry.getTask(taskId)!;
+            assert.equal(task.sessionId, h.sessionId);
+            afterProbe = () => {
+              afterProbe = undefined;
+              h.registry.upsertTask({ ...task, sessionId: newOwner, updatedAt: Date.now() });
+            };
+            await recheck("task-reassigned-during-probe");
+            const reassigned = h.registry.getTask(taskId);
+            assert.equal(reassigned?.sessionId, newOwner);
+            assert.equal(reassigned.status, "running");
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.store.listEvents(latest.id).some(e => e.kind === "duplicate_publication_recovered"), false);
+            return;
+          }
+          if (scenario === "legacy late decision") {
+            const path = join(home, "late-recovery-instruction.jsonl");
+            writeFileSync(path, "");
+            h.reportIdle(path);
+            const before = h.registry.getGoal(h.sessionId)!;
+            let appended = false;
+            afterProbe = () => {
+              appendFileSync(path, JSON.stringify({ type: "user", uuid: "late-human-instruction",
+                timestamp: new Date().toISOString(), message: { role: "user", content: "Wait for my audit before closing." } }) + "\n");
+              appended = true;
+              afterProbe = undefined;
+            };
+            await recheck("decision-after-proof-read");
+            assert.ok(appended, "the transcript changed while the recovery probe was outstanding");
+            const goal = h.registry.getGoal(h.sessionId)!;
+            assert.deepEqual([goal.objectiveVersion, goal.promptRevision], [before.objectiveVersion, before.promptRevision]);
+            assert.equal(h.store.getRun(latest.id)?.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+            return;
+          }
+          if (scenario !== "legacy recovery") {
+            await recheck(scenario);
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+            if (scenario === "legacy recovery after explicit Run again") assert.equal(held.triggerSource, "manual");
+            if (acceptedBudgetEpoch) {
+              assert.equal(h.store.getRun(runId)?.checkBudgetEpochRound, 1);
+              assert.equal(held.checkBudgetEpochRound, null);
+            }
+            if (acceptedDisabledNode) {
+              assert.deepEqual(h.store.getRun(runId)?.disabledNodeIds, ["upstream"]);
+              assert.deepEqual(held.disabledNodeIds, []);
+            }
+            return;
+          }
+          await t.test("recovery proof requires a Foreman trigger even with matching automatic claim receipts", async () => {
+            // A real Run again also has a manual submission and lacks a Foreman start receipt.
+            // Keep those independent checks satisfied to exercise the run trigger on its own.
+            const { duplicatePublicationProof } = await import("../src/server/workflows/duplicate-publication.ts");
+            const closed = h.store.getRun(latest.id)!;
+            const binding = h.store.getBinding(closed.bindingId)!;
+            assert.ok(duplicatePublicationProof(h.store, closed, binding, h.sessionId, key, ci));
+            const manual = { ...closed, triggerSource: "manual" as const };
+            assert.ok(!duplicatePublicationProof(h.store, manual, binding, h.sessionId, key, ci),
+              "a manual trigger cannot reuse an automatic review");
+          });
+          const thread = { id: "review-thread", isResolved: false, path: "src/card.ts", comments: { nodes: [{
+            id: "review-comment", url: url + "#discussion_r1", body: "Please address this finding.",
+            updatedAt: new Date(now).toISOString(), author: { __typename: "User", login: "reviewer" },
+          }] } };
+          for (const [hold, review] of [
+            ["changes requested", { reviewDecision: "CHANGES_REQUESTED" }],
+            ["an unresolved GitHub thread", { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [thread] } }],
+          ] as const) {
+            await t.test(`Check again keeps the duplicate blocked with ${hold}`, async () => {
+              writeFileSync(githubRecordPath, JSON.stringify({ ...githubRecord, ...review }));
+              await recheck(hold);
+              const held = h.store.getRun(latest.id);
+              assert.equal(held?.status, "blocked");
+              assert.equal(held.currentPhase, "inspector_pr_closed");
+              assert.equal(h.registry.getTask(taskId)?.status, "running");
+            });
+          }
+          const commit = githubRecord.commits.nodes[0]!.commit;
+          await t.test("Check again keeps the duplicate blocked when green CI belongs to another commit", async () => {
+            commit.oid = h.full("other-commit");
+            assert.notEqual(commit.oid, githubRecord.headRefOid);
+            writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+            await recheck("wrong-check-commit");
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+          });
+          commit.oid = head;
+          const rollup = commit.statusCheckRollup;
+          await t.test("Check again keeps the duplicate blocked and the merged task running with a FAILURE rollup", async () => {
+            rollup.state = "FAILURE";
+            writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+            await recheck("failed-rollup");
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+          });
+          rollup.state = "SUCCESS";
+          const contexts = rollup.contexts;
+          const finalCheck = contexts.nodes[0]!;
+          for (const invalid of ["paginated", "NEUTRAL", "SKIPPED"]) {
+            await t.test(`Check again keeps the merged task running with ${invalid} final CI history`, async () => {
+              contexts.pageInfo.hasNextPage = invalid === "paginated";
+              finalCheck.conclusion = invalid === "paginated" ? "SUCCESS" : invalid;
+              writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+              await recheck(invalid);
+              assert.equal(h.store.getRun(latest.id)?.currentPhase, "inspector_pr_closed");
+              assert.equal(h.registry.getTask(taskId)?.status, "running");
+            });
+          }
+          contexts.pageInfo.hasNextPage = false;
+          finalCheck.conclusion = "SUCCESS";
+          const missingWait = { ...finalCheck, completedAt: new Date(ciStarted - 1).toISOString(),
+            startedAt: new Date(ciStarted - 1000).toISOString() };
+          const ciHistory = (...nodes: (typeof finalCheck)[]) => ({ ...githubRecord, commits: { nodes: [{ commit: { oid: head,
+            statusCheckRollup: { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes } } } }] } });
+          const earlierCheck = { ...finalCheck, completedAt: new Date(ciFinished - 1).toISOString() };
+          await t.test("Check again holds the merged duplicate when one check is IN_PROGRESS", async () => {
+            // Keep the rollup, conclusions and timestamps eligible to isolate the status of the non-final check.
+            const history = ciHistory({ ...earlierCheck, status: "IN_PROGRESS" }, finalCheck);
+            writeFileSync(githubRecordPath, JSON.stringify(history));
+            await recheck("incomplete-check-run");
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+          });
+          await t.test("Check again keeps the duplicate blocked when SUCCESS finishes before NEUTRAL", async () => {
+            const history = ciHistory(earlierCheck, { ...finalCheck, conclusion: "NEUTRAL" });
+            writeFileSync(githubRecordPath, JSON.stringify(history));
+            await recheck("neutral-after-success");
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+          });
+          writeFileSync(githubRecordPath, JSON.stringify(ciHistory(missingWait)));
+          await recheck("green-without-overlap");
+          assert.equal(h.store.getRun(latest.id)?.currentPhase, "inspector_pr_closed");
+          const handoff = h.store.listEvents(runId).findLast(event => event.kind === "workflow_completion_claimed");
+          assert.ok(handoff);
+          for (const [boundary, timing] of [
+            ["starts 1 ms after the handoff", { startedAt: new Date(handoff.timestamp + 1).toISOString() }],
+            ["finishes 1 ms after the duplicate claim", { completedAt: new Date(latest.startedAt + 1).toISOString() }],
+          ] as const) {
+            await t.test(`Check again holds the duplicate when successful CI ${boundary}`, async () => {
+              const history = ciHistory({ ...finalCheck, ...timing });
+              assert.ok(mergedCiWitness(history), "GitHub supplied a valid green witness for the merged head");
+              writeFileSync(githubRecordPath, JSON.stringify(history));
+              await recheck(boundary);
+              const held = h.store.getRun(latest.id);
+              assert.equal(held?.status, "blocked");
+              assert.equal(held.currentPhase, "inspector_pr_closed");
+              assert.equal(h.registry.getTask(taskId)?.status, "running");
+            });
+          }
+          writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+          const { upsertInspectorComment } = await import("../src/server/db.ts");
+          const finding = { id: "post-publication-finding", prKey: key, fingerprint: "open-finding", path: "src/card.ts",
+            line: 4, title: "Review required", body: "Resolve this finding", severity: "major" as const,
+            round: 1, replies: 0, answeredCommentId: null, createdAt: now, updatedAt: now, githubUrl: url, postedAt: now };
+          upsertInspectorComment({ ...finding, status: "open" });
+          await recheck("open-inspector-finding");
+          assert.equal(h.store.getRun(latest.id)?.currentPhase, "inspector_pr_closed");
+          upsertInspectorComment({ ...finding, status: "resolved", replies: 1, updatedAt: Date.now() });
+          const tree = h.contentTree.oid;
+          h.contentTree.oid = h.full("edited");
+          await recheck("changed-checkout");
+          assert.equal(h.store.getRun(latest.id)?.currentPhase, "inspector_pr_closed");
+          h.contentTree.oid = tree;
+          assert.ok(h.registry.reportBlocker(h.sessionId, { kind: "dependency", reason: "Release signoff still pending",
+            waitingOn: "Release owner", resumeWhen: "Approved", referenceUrl: null, details: null }).ok);
+          await recheck("still-incomplete");
+          assert.equal(h.registry.getTask(taskId)?.status, "running");
+          assert.equal(h.store.getRun(latest.id)?.currentPhase, "inspector_pr_closed");
+          h.registry.clearBlocker(h.sessionId, "operator", "Approved");
+          // The latest check now succeeded and is listed first in GitHub's response.
+          writeFileSync(githubRecordPath, JSON.stringify(ciHistory(finalCheck, { ...earlierCheck, conclusion: "NEUTRAL" })));
+          await t.test("Check again preserves an operator review directive on the merged duplicate", async () => {
+            const nodeId = "upstream";
+            const feedback = "Review the release checklist before closing this task.";
+            assert.ok(h.manager.setPersonaDirective(latest.id, { nodeId, feedback, requestId: "hold-for-review" }).ok);
+            await recheck("active-persona-directive");
+            const held = h.store.getRun(latest.id);
+            assert.equal(held?.status, "blocked");
+            assert.equal(held.currentPhase, "inspector_pr_closed");
+            assert.equal(h.registry.getTask(taskId)?.status, "running");
+            assert.equal(held.personaDirectives?.find(d => d.nodeId === nodeId)?.feedback, feedback);
+            assert.ok(h.manager.removePersonaDirective(latest.id, { nodeId, requestId: "release-review-hold" }).ok);
+          });
+          await Promise.all([recheck("recover-a"), recheck("recover-b")]);
+          assert.equal(h.store.getRun(latest.id)?.status, "completed");
+          assert.equal(h.store.listEvents(latest.id).filter(e => e.kind === "duplicate_publication_recovered").length, 1);
+          await waitFor(() => h.registry.getTask(taskId)?.status === "done", "recovered task did not settle");
+          return;
+        }
+        assert.equal(h.store.latestRunForBinding(h.store.getRun(runId)!.bindingId)?.id, runId, `${checks} started another workflow`);
+        assert.deepEqual(h.store.listSubmissions(runId).map(s => s.id), submissions);
+      }
+      assert.equal(new Set(claims.map(claim => claim.expectedWorkCycle.generation)).size, turns.length);
+      if (scenario === "independent cycle") {
+        h.runActionTurn();
+        const session = h.registry.getSession(h.sessionId)!;
+        await processPromptedWrapup(client, cfg, session, [session], h.registry.getQueue(h.sessionId), new Set());
+        assert.notEqual(h.store.latestRunForBinding(h.store.getRun(runId)!.bindingId)?.id, runId);
+        return;
+      }
+      observe("passing", true);
+      await waitFor(() => h.registry.getTask(taskId)?.status === "done", "the accepted merged task did not settle");
+    } finally { await h.stop(); }
+  });
+}
+
 // ---- the same handoff across a full daemon restart, claimed by the real Foreman worker -----------
 //
 // Above, a test builds the claim and calls `claimCompletion`. Here nothing about the claim is
@@ -2488,7 +3003,6 @@ for (const [index, next] of (["unchanged", "edited after repair", "human instruc
       const objective = "Publish the reviewed plan";
 
       await h.restartDaemon();
-      const app = h.app!;
       assert.notEqual(h.registry.getSession(h.sessionId), undefined, "discovery found the pane again after restart");
       assert.equal(h.registry.getSession(h.sessionId)!.workCycle?.generation, before.generation,
         "the restarted daemon recovered the durable work cycle");
@@ -2505,47 +3019,11 @@ for (const [index, next] of (["unchanged", "edited after repair", "human instruc
       const cycle = h.registry.getSession(h.sessionId)!.workCycle!;
       assert.equal(cycle.generation, before.generation + 1);
 
-      const client = new ForemanClient();
-      const claims: Array<{ expectedWorkCycle: { generation: number }; expectedIntent: { promptRevision: number } }> = [];
-      t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
-        const request = new Request(input, init);
-        if (new URL(request.url).pathname.endsWith("/workflow-completion")) claims.push(await request.clone().json());
-        request.headers.set("host", "127.0.0.1:7317");
-        return app.request(request);
-      });
-      t.mock.method(client, "diff", async () => ({
-        ok: true, error: null, base: "main", baseSha: "base", headSha: h.head.sha, repoRoot: "/repo", branch: "feature",
-        filesChanged: 1, insertions: 1, deletions: 0, truncated: false,
-        patch: "diff --git a/src/card.ts b/src/card.ts\n+++ b/src/card.ts\n+export const name = 'Reference';\n",
-      }));
-      t.mock.method(client, "transcriptSize", async () => 1);
-      t.mock.method(client, "transcript", async () => ({ messages: [], truncated: false }));
-      t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
-      t.mock.method(client, "instructions", async () => "");
-      let verifications = 0;
-      t.after(configureClaudeRunnerTransport(() => "sdk", {
-        executable: async () => "/fake/bin/claude",
-        env: () => ({ PATH: "/usr/bin" }),
-        query: async () => {
-          verifications++;
-          return {
-            async *[Symbol.asyncIterator]() {
-              yield { type: "result", subtype: "success", is_error: false, structured_output: {
-                complete: true, confidence: 1, gaps: [], resolved: [],
-                summary: "The publication follow-through is finished and the pull request is current.",
-              } };
-            },
-          };
-        },
-      }));
-      const cfg = ForemanConfigSchema.parse({
-        enabled: true, mode: "live", repoAllowlist: ["/repo"],
-        wrapup: "pr", wrapupTriggers: ["prompted"], skipScoutWrapup: false, skipReviewArtifactWrapup: false,
-      });
+      const { client, cfg, claims, verifications } = configurePublicationForeman(t, h);
       const session = h.registry.getSession(h.sessionId)!;
       const advanced = await processPromptedWrapup(client, cfg, session, [session], h.registry.getQueue(h.sessionId), new Set());
       assert.equal(advanced, true, "Foreman claimed the verified idle");
-      assert.equal(verifications, 1);
+      assert.equal(verifications(), 1);
       assert.equal(claims.length, 1, "exactly one claim reached the restarted daemon");
       assert.equal(claims[0]!.expectedWorkCycle.generation, cycle.generation, "the claim names the observed generation");
       assert.equal(claims[0]!.expectedIntent.promptRevision, next === "human instruction" ? 2 : 1);

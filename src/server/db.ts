@@ -1486,6 +1486,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
       publication_handoff_generation INTEGER,
+      publication_ci_generation INTEGER,
       disabled_nodes_json   TEXT,
       persona_directives_json TEXT,
       check_budget_epoch_round INTEGER,
@@ -4164,6 +4165,7 @@ function migrate(d: DatabaseSync): void {
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
   addColumn(d, "workflow_runs", "publication_handoff_generation", "INTEGER");
+  addColumn(d, "workflow_runs", "publication_ci_generation", "INTEGER");
   addColumn(d, "workflow_delivery_turns", "discarded_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_discarded_turns ON workflow_delivery_turns(discarded_at) WHERE discarded_at IS NOT NULL");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");

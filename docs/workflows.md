@@ -2191,8 +2191,8 @@ of the route behind it. A parked run offers **Start repair round N**, naming the
 opens; a GitHub Inspector gate waiting on a pull request offers **Ask the session to open a
 PR**, or **Check again** when its immutable policy declines the handoff; a run blocked as
 **PR closed** offers **Check again**, which reads the pull request from GitHub again and lifts
-the block only if it is open; a run blocked on an exhausted provider call offers **Retry the
-failed call**.
+the block when it reopens. A merged duplicate can also qualify for the bounded recovery described below.
+A run blocked on an exhausted provider call offers **Retry the failed call**.
 
 The daemon reports allowed run recovery operations with every summary and run response. The
 header, GitHub Inspector controls, and Review drawer use that projection. Renaming a phase does
@@ -2653,6 +2653,14 @@ pre-write refusal can be retried explicitly; a lost or possibly-landed write bec
 mark it delivered or type the required confirmation to discard it and create a new repair
 round.
 
+A completed review can continue to own the author's CI turns on the primary checkout. When
+the confirmed Pull Request action includes CI follow-through, a pending check observation
+can extend its handoff by one consecutive generation. Each claim verifies the action's own
+prompt, the current intent, the adopted branch and exact reviewed head, and the accepted
+checkout content. The daemon checks the Git commit again when it spends the CI handoff,
+even if another commit has the same tree. Another pending observation can extend it again. A passing observation
+spends the final handoff. An explicit **Run again** starts a separate review.
+
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
 SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
@@ -2984,7 +2992,7 @@ never as a closed one. A run already blocked as **PR closed** recovers when its 
 seen open again. While GitHub Inspector still polls the pull request, its next poll lifts the
 block. GitHub Inspector stops polling a pull request once it reads it closed, so **Check again**
 on the run page reads the pull request from GitHub itself: an open answer resumes polling and
-lifts the block, a closed or merged answer leaves it, and a failed read leaves it and is recorded
+lifts the block. A closed or merged answer ordinarily leaves it in place. A failed read is recorded
 on the run's timeline. If GitHub cannot be reached, a pull request whose last read was open
 still recovers. Recovery restores the wait the block interrupted, including the repair-push
 wait, without a full restart or another Persona round.
@@ -3002,6 +3010,17 @@ pass: the run is not completed, no review is waived, no finding is cleared, and 
 its session stay as they were. A retired record whose last read did not say the pull request
 finished, or one that is not the pull request the gate pinned, proves nothing, and the run
 keeps waiting until **Check again** reads GitHub.
+
+For a ship or bugfix task stranded by a duplicate automatic review, use **Check again** on the
+**PR closed** run. Recovery requires a fresh GitHub read of the merged head, a complete green
+page of check runs and a successful final check that was running at the preceding handoff
+and finished by the duplicate claim. The daemon compares the two consecutive Foreman claims,
+the delivered CI action and prompt receipts, pinned workflow, intent, completed first-round
+publications, accepted trees, clean live Inspector review and current checkout. At settlement
+it rereads human decisions, including transcript instructions received since the block. An ambiguous
+history, unresolved finding, operator hold or active session blocker keeps the run open.
+Recovery records both submission IDs and the CI interval in the duplicate's timeline. The
+ordinary task settlement rules then evaluate the merged episode.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the

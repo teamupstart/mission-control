@@ -2526,7 +2526,7 @@ const ciScenarios = ["unchanged", "changed checkout", "new intent", "failing CI"
   "legacy recovery after explicit Run again", "legacy recovery with a disabled node on the accepted review",
   "legacy recovery after an accepted full repair round", "legacy recovery with task reassignment during the probe",
   "pending first observed during the checkout probe", "same tree on a different commit before the first CI handoff",
-  "legacy recovery at both inclusive CI boundaries"] as const;
+  "legacy recovery at both inclusive CI boundaries", "legacy recovery at the duplicate claim and merge boundary"] as const;
 for (const [index, scenario] of ciScenarios.entries()) {
   test(`Foreman publication CI across restart: ${scenario}`, async t => {
     const legacy = scenario.startsWith("legacy");
@@ -2784,6 +2784,35 @@ process.stdout.write(JSON.stringify({ data: { repository: { pullRequest } } }));
           const ci = mergedCiWitness(githubRecord);
           assert.ok(ci);
           writeFileSync(githubRecordPath, JSON.stringify(githubRecord));
+          if (scenario === "legacy recovery at the duplicate claim and merge boundary") {
+            // CI must already be green for even the earliest merge in this replay.
+            const check = githubRecord.commits.nodes[0]!.commit.statusCheckRollup.contexts.nodes[0]!;
+            check.completedAt = new Date(latest.startedAt - 1).toISOString();
+            const recoveryEvents = () => h.store.listEvents(latest.id).filter(event => event.kind === "duplicate_publication_recovered");
+            for (const [offset, timing] of [[-1, "1 ms before"], [0, "at"], [1, "1 ms after"]] as const) {
+              await t.test(`Check again with a merge ${timing} the duplicate claim`, async () => {
+                const mergedAt = latest.startedAt + offset;
+                const history = { ...githubRecord, mergedAt: new Date(mergedAt).toISOString() };
+                assert.equal(mergedCiWitness(history)?.mergedAt, mergedAt, "each merge has a valid green CI witness");
+                writeFileSync(githubRecordPath, JSON.stringify(history));
+                await recheck(`merge-offset-${offset}`);
+                const run = h.store.getRun(latest.id);
+                if (offset <= 0) {
+                  assert.equal(run?.status, "blocked");
+                  assert.equal(run.currentPhase, "inspector_pr_closed");
+                  assert.equal(h.registry.getTask(taskId)?.status, "running");
+                  assert.deepEqual(recoveryEvents(), []);
+                  return;
+                }
+                assert.equal(run?.status, "completed");
+                await waitFor(() => h.registry.getTask(taskId)?.status === "done", "recovered merged task did not settle");
+                const events = recoveryEvents();
+                assert.equal(events.length, 1);
+                assert.partialDeepStrictEqual(events[0]!.payload, { acceptedRunId: runId, mergedAt });
+              });
+            }
+            return;
+          }
           if (scenario === "legacy recovery at both inclusive CI boundaries") {
             const handoff = h.store.listEvents(runId).findLast(event => event.kind === "workflow_completion_claimed");
             assert.ok(handoff && handoff.timestamp < latest.startedAt);

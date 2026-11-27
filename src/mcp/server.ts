@@ -689,7 +689,7 @@ server.registerTool(
       "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
       "labels, callSign, planStorage (plan tasks only), and dependencies as needed. callSign is a short spoken name " +
       "the task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available; " +
-      "it is not the title and is set only when asked for. " +
+      "it is not the title and is set only when asked for; omitted, the task is given a distinctive one when it launches if a safe name is free, and launches without one when every safe name is taken. " +
       "Omitted agent uses the kind default; omitted or null " +
       "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
       "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +

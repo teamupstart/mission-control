@@ -327,6 +327,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       callSign={props.cardCallSignBySession?.get(s.id)}
+      callSignElement={props.cardCallSignElementBySession?.get(s.id)}
       selected={s.id === props.selectedId}
       onOpen={() => props.onSelect(s.id)}
       onOpenQueue={() => props.onSelect(s.id, "queue")}
@@ -425,6 +426,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       callSign={props.cardCallSignBySession?.get(s.id)}
+      callSignElement={props.cardCallSignElementBySession?.get(s.id)}
       selected={s.id === props.selectedId}
       sectionNavigation={Boolean(props.idleRailSections)}
       onSelect={() => props.onSelect(s.id)}

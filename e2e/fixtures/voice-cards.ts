@@ -41,6 +41,17 @@ export async function runningAgent(page: Page, daemon: DaemonHandle, callSign: s
     session = sessions.find(s => s.task?.id === task.id)!;
     return session?.agentSessionId && session.state;
   }, { timeout: 60_000 }).toBe("idle");
+  if (!callSign) {
+    // With voice on a task launched without a call sign is given one; take it off again so the
+    // agent stays one with no spoken name.
+    const cleared = await page.request.post(`${daemon.baseURL}/api/tasks/${task.id}/update`, { data: { callSign: null } });
+    expect(cleared.ok(), await cleared.text()).toBe(true);
+    await expect.poll(async () => {
+      const sessions: Session[] = await (await page.request.get(daemon.baseURL + "/api/sessions")).json();
+      session = sessions.find(s => s.task?.id === task.id)!;
+      return session?.task?.callSign ?? null;
+    }).toBeNull();
+  }
   return session;
 }
 

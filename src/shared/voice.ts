@@ -251,6 +251,20 @@ export function voiceCardsShowSpokenNames(state: Pick<VoiceState, "mode" | "push
     (state?.mode === "push-to-talk" && !!state.pushToTalkSession);
 }
 
+/**
+ * How a session card shows its call sign while voice can hear it (`voiceCardsShowSpokenNames`):
+ * `title` in the dedicated Push-to-talk mode, waiting for the shortcut or held, where the call
+ * sign replaces the title because the next hold may address any card; `element` while
+ * Always-on listens, where the card keeps the session's title and draws the call sign beside it
+ * in the operator's `callSignCardStyle`; null otherwise. Resident cards are not affected.
+ */
+export type VoiceCardCallSignMode = "title" | "element";
+
+export function voiceCardCallSignMode(state: Pick<VoiceState, "mode" | "pushToTalkSession"> | null | undefined): VoiceCardCallSignMode | null {
+  if (!voiceCardsShowSpokenNames(state)) return null;
+  return state?.mode === "listening" ? "element" : "title";
+}
+
 export const VoiceListenerDirectiveSchema = z.object({
   speak: SpeakDirectiveSchema.nullable().default(null),
   capture: z.boolean(),

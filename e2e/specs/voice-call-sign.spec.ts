@@ -96,7 +96,7 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   if ((await advanced.getAttribute("aria-expanded")) !== "true") await advanced.click();
   const field = callSignOf(dialog);
   await expect(field).toBeVisible();
-  await expect(field).toHaveAttribute("placeholder", "A short spoken name, like Atlas");
+  await expect(field).toHaveAttribute("placeholder", "Leave blank to get one automatically");
   await expect(dialog.getByText("Type a name to see how you would say it.")).toBeVisible();
   const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
   for (const value of ["scout", "plan", "chat", "bugfix", "document", "ship"]) {

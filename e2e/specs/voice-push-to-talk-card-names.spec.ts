@@ -91,12 +91,17 @@ async function useLayout(page: Page, daemon: DaemonHandle, layout: "board" | "co
   await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
 }
 
+/** The separate call-sign element an Always-on session card draws beside its title. */
+function callSignOf(page: Page): Locator {
+  return page.locator("main.board .tile:not(.is-resident) .cs-mark");
+}
+
 async function expectTitles(surfaces: Surfaces, session: string, resident: string): Promise<void> {
   await expect(surfaces.session).toHaveText(session);
   await expect(surfaces.resident).toHaveText(resident);
 }
 
-test("cards show call signs and quoted reference names in Always-on and in Push-to-talk between holds and while one is held", async ({ dashboard: page, daemon }) => {
+test("Always-on keeps the session title with its call sign beside it, and Push-to-talk titles cards by call signs and quoted reference names", async ({ dashboard: page, daemon }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1440, height: 960 });
   await enableVoice(daemon);
@@ -110,16 +115,21 @@ test("cards show call signs and quoted reference names in Always-on and in Push-
   try {
     await useLayout(page, daemon, "board");
     await expect(status).toHaveAccessibleName("Voice: listening. Mute");
-    await expectTitles(boardTitles(page), CALL_SIGN, `"${REFERENCE}"`);
-    await expect(page.locator("main.board").getByRole("button", { name: `Open ${CALL_SIGN}`, exact: true })).toBeVisible();
+    // Always-on: the session keeps its title and draws its call sign under it (Subtitle line,
+    // the default Call sign style). A resident still answers to its quoted reference name.
+    await expectTitles(boardTitles(page), session.name, `"${REFERENCE}"`);
+    await expect(callSignOf(page)).toHaveText(`Call sign Say ${CALL_SIGN}`);
+    await expect(page.locator("main.board").getByRole("button", { name: `Open ${session.name}`, exact: true })).toBeVisible();
     await capture(page, "01-always-on-listening-board");
     await status.click();
     await expect(status).toHaveAccessibleName("Voice: muted. Unmute");
     await expectTitles(boardTitles(page), session.name, RESIDENT);
+    await expect(callSignOf(page)).toHaveCount(0);
     await capture(page, "02-always-on-muted-board");
     await status.click();
     await expect(status).toHaveAccessibleName("Voice: listening. Mute");
-    await expectTitles(boardTitles(page), CALL_SIGN, `"${REFERENCE}"`);
+    await expectTitles(boardTitles(page), session.name, `"${REFERENCE}"`);
+    await expect(callSignOf(page)).toHaveText(`Call sign Say ${CALL_SIGN}`);
 
     await request(daemon, "/api/voice/config", { listeningMode: "push-to-talk" }, "PUT");
     const state = await voiceState(daemon);
@@ -131,6 +141,8 @@ test("cards show call signs and quoted reference names in Always-on and in Push-
       await expect(status).toContainText(held ? "Listening while held" : "Waiting for hotkey");
       await expect(status).toHaveClass(held ? /vi-push-to-talk/ : /vi-waiting-for-key/);
       await expectTitles(boardTitles(page), CALL_SIGN, `"${REFERENCE}"`);
+      // Push-to-talk makes the call sign the title, so no second copy is drawn beside it.
+      await expect(callSignOf(page)).toHaveCount(0);
       await expect(page.locator("main.board").getByRole("button", { name: `Open ${CALL_SIGN}`, exact: true })).toBeVisible();
       await capture(page, `0${index + 3}-push-to-talk-${phase}-board`);
     }

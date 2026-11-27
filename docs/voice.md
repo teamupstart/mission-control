@@ -1095,13 +1095,67 @@ annotation, like priority: nothing is provisioned from it, so an update may set 
 the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, and so do the MCP
 `create_task` and `update_task` tools; `get_task` and `list_tasks` report it.
 
-While Voice can hear you, a session with a call sign is titled by it on its Board card and its
-Console rail row, and its Open button and the fleet filter use the same name. That is while
-Always-on is listening, and in Push-to-talk both while waiting for the shortcut and while it is
-held, since the next hold may address any agent. Muted, auto-muted for a call, not listening and
-Voice off keep the session's ordinary title, as does a session without a call sign. Resident
-cards follow the same rule with their [reference names](#reference-names)
-(`voiceCardsShowSpokenNames` in `src/shared/voice.ts`).
+In Push-to-talk, while waiting for the shortcut, while it is held and after release, a session
+with a call sign is titled by it on its Board card and its Console rail row. Its Open button
+uses the same name, since the next hold may address any agent. Muted, auto-muted for a call, not
+listening and Voice off keep the session's ordinary title and draw no call sign, as does a
+session without a call sign. The fleet filter matches a call sign whenever Voice can hear you.
+Resident cards are titled by their [reference names](#reference-names) both while Always-on
+listens and in Push-to-talk (`voiceCardsShowSpokenNames` in `src/shared/voice.ts`).
+
+### Call signs on Always-on cards
+
+While Always-on is listening, a session card keeps the session's own title, and its Open button
+is named by that title. The call sign is drawn as a separate element in the style chosen under
+**Settings > Display > Board card > Call sign**. That choice is one radio group, offered while the
+`voice` flag is on, with a preview card beside it that redraws as you pick:
+
+- **Subtitle line** (the default): a muted line under the title reads "Say Juniper", with the name
+  in green. The title keeps its whole width, and each card is one short line taller.
+- **Trailing badge**: a green pill after the title, before the jump key. A long title is cut a
+  little sooner.
+- **Leading chip**: a chip before the title.
+- **Edge tab**: a tab on the card's top border, beside the task type tab.
+- **Off**: the title alone. Only the element is hidden: the call sign stays saved, the fleet filter
+  still matches it, and voice still routes to it.
+
+The Console rail row has room for one compact pill after its title, which it draws for every
+style but Off. Each style reads "Call sign Juniper" to a screen reader. The choice is
+`callSignCardStyle` in the UI config (`CALL_SIGN_CARD_STYLES` in `src/shared/protocol.ts`), stored
+and searchable like the other Display choices, and Push-to-talk ignores it. The decision and its
+four variants were picked from mock-ups with the operator; the variants were kept as choices.
+
+### Automatic call signs
+
+A task launched without a call sign is given a safe one when one is available, so a session can
+normally be addressed by voice. When every safe name is taken, the fallback below launches the
+task without one. Assignment happens whether or not Voice is on, so the name is already settled
+when Voice is turned on. A call sign you typed, or one set through `create_task` or `update_task`, is
+always kept. The name is drawn from `AUTO_CALL_SIGN_DICTIONARY` in `src/shared/voice-call-signs.ts`:
+a few dozen two-syllable everyday nouns such as Badger, Juniper and Topaz, each of which passes
+`validateSpokenName` on its own, and no two of which sound alike. A test holds both rules for every
+entry.
+
+The choice (`chooseAutoCallSign`) skips any name that draws a `validateSpokenName` warning
+against a name already spoken for: a resident's name or reference name, the call sign of every
+unfinished task, including one still launching or waiting in the backlog, and every call sign on
+the roster. Sound-alikes are measured the way routing measures them. Each task starts at its own
+point in the list, so concurrent launches spread out. If every name is taken, the choice falls back
+in two steps:
+
+1. It reuses the exact name of a finished task that is still listed as not running. That task
+   leaves the roster at once, as it would for any agent that takes its name.
+2. If no name can be reused safely, the task launches without a call sign. It is never given a
+   name that could be heard as another agent's. You can still set one by hand.
+
+The name is chosen in the same synchronous write that claims the launch (`Dispatcher.dispatch`,
+and the claim that hands a backlog task to a running agent), so concurrent dispatches cannot take
+the same name. It is stored in `tasks.call_sign` like a typed one, so it stays the same for the
+task's life, across relaunches and daemon restarts. Clearing it and launching again runs the
+choice again. That choice starts at the same point for the same task, so it picks the same name
+when that name is still safe, and the next safe one when it is not. With Voice off the name is
+still assigned and stored, but no card draws it and nothing routes by voice. Once Voice can hear you, cards show and route it like any call sign: beside the title
+while Always-on listens, and as the title in Push-to-talk.
 
 A resident's task takes no call sign: the resident answers to its profile's names, and the roster
 would leave a call sign out while its card printed it. Creating or updating one with a call sign
@@ -1427,6 +1481,27 @@ empty, keeps its words through a pause and clears at key-up.
 - `test/voice-call-sign.test.ts`: the schemas, a call sign set and cleared on a running task, and
   one refused on a resident's task, created or updated.
 - `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.
+- `test/voice-call-sign-allocation.test.ts`: every dictionary name passes validation and no two
+  sound alike; a claimed name or a sound-alike is skipped; a finished task's exact name is reused
+  before a task goes unnamed; an explicit call sign is kept; eight concurrent launches take eight
+  distinct names, each stored on its task row and kept when launched again. Through a real launch
+  claim: with every name held the task is still claimed and its launch goes on with no call sign
+  stored, and with one finished task's name free that exact name is reused.
+- `test/task-assign.test.ts`: an unnamed task handed to a running agent takes a name in the assign
+  claim, avoiding one another launch claimed while the prompt was typed; a named task keeps its own.
+- `test/call-sign-card-style.test.ts`: which voice modes draw the call sign beside the title or as
+  it; the stored default and its strict write; each style's markup with the title kept; Push-to-talk
+  drawing no second copy; the rail's compact pill; and the five-way radio group behind the flag with
+  its preview following the choice.
+- `e2e/specs/voice-always-on-call-sign-style.spec.ts`: three dispatched sessions keep their titles
+  with "Say <call sign>" under them; Settings offers five radios with Subtitle line checked, and each
+  pick moves the preview and every card; Off draws nothing while an utterance to the call sign still
+  routes; the Console rail shows the pill.
+- `e2e/specs/voice-auto-call-sign.spec.ts`: four concurrent dispatches through the real route,
+  one with its own call sign, take distinct dictionary names that are stored and listed on the
+  roster. A message addressed to one is routed to it, and the Board cards show every name in
+  Push-to-talk while waiting, while held, after release and after a reload. Words captured while
+  the shortcut is held and addressed to another assigned name are sent to that agent on release.
 - `test/display-name.test.ts`: a call sign and a reference name as the first rank, and a
   resident never named by its task's call sign.
 - `e2e/specs/voice-call-sign.spec.ts`: "Will" draws the everyday-word warning with Dispatch still

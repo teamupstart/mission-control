@@ -54,6 +54,7 @@ import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { TaskKindMark } from "../TaskKindMark.tsx";
+import { CallSignMark } from "./CallSignMark.tsx";
 import { SubagentChip } from "./SubagentChip.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { StackLifecycle } from "../StackLifecycle.tsx";
@@ -109,6 +110,7 @@ export function SessionTile({
   pipelineCommission = null,
   shortcutChord = null,
   callSign,
+  callSignElement,
   resident = null,
   residentLoopFeedback,
   stall = null,
@@ -116,6 +118,12 @@ export function SessionTile({
 }: {
   session: Session;
   callSign?: string;
+  /**
+   * The call sign to draw BESIDE the title while Always-on listens, in the operator's
+   * `callSignCardStyle`. `callSign` above replaces the title instead (Push-to-talk); App hands
+   * a card one or the other, never both.
+   */
+  callSignElement?: string;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
   selected?: boolean;
   onOpen: () => void;
@@ -364,6 +372,15 @@ export function SessionTile({
   const nameSubtitle = residentNameStyles.has("subtitle") ? residentProfileName : null;
   const chipName = residentNameStyles.has("chip") ? residentProfileName ?? undefined : undefined;
   const tileName = residentCardTitle(resident, session.name || "(unnamed)", callSign);
+  const callSignStyle = useDisplayChoice("callSignCardStyle");
+  const callSignMark = callSignElement && callSignStyle !== "off" ? callSignStyle : null;
+  const callSignTab = callSignMark === "tab" && callSignElement
+    ? <CallSignMark name={callSignElement} style="tab" />
+    : null;
+  const callSignSub = callSignMark === "subtitle" && callSignElement
+    ? <CallSignMark name={callSignElement} style="subtitle" />
+    : null;
+  const nameStacked = !!nameSubtitle || !!callSignSub;
 
   return (
     <div
@@ -376,7 +393,7 @@ export function SessionTile({
         workflowVisiblyExpanded ? " workflow-expanded" : ""
       }${
         isTourTask ? " mc-tour-task" : ""
-      }${kindMark === "tab" ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}${
+      }${kindMark === "tab" || callSignTab ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}${
         residentMark ? " is-resident" : ""
       }${paused ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
       style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
@@ -439,10 +456,17 @@ export function SessionTile({
 
       {/* The folder tab rides the tile's top border (absolutely placed), and the band is the
           tile's first row; both come before the head so the head reads under them. */}
-      {kindMark === "tab" && <TaskKindMark kind={taskKind!} variant="tab" />}
+      {/* An Always-on call sign tab rides the same border, after the kind tab when there is one:
+          both sit in one row so neither has to know how wide the other is. */}
+      {callSignTab ? (
+        <span className="tile-edge-tabs">
+          {kindMark === "tab" && <TaskKindMark kind={taskKind!} variant="tab" />}
+          {callSignTab}
+        </span>
+      ) : kindMark === "tab" && <TaskKindMark kind={taskKind!} variant="tab" />}
       {kindMark === "band" && <TaskKindMark kind={taskKind!} variant="band" />}
 
-      <span className={nameSubtitle ? "tile-head has-name-sub" : "tile-head"}>
+      <span className={nameStacked ? "tile-head has-name-sub" : "tile-head"}>
         {kindMark === "medallion" ? (
           <TaskKindMark kind={taskKind!} variant="medallion">
             {agentDot}
@@ -454,16 +478,19 @@ export function SessionTile({
         {residentMark && (
           <ResidentChip mark={residentMark} title={residentMarkTitle(residentMark)} expandedName={chipName} />
         )}
+        {callSignMark === "chip" && callSignElement && <CallSignMark name={callSignElement} style="chip" />}
         <Tooltip label={`Open ${openName}`}>
-          {nameSubtitle ? (
+          {nameStacked ? (
             <span className="tile-name-stack">
               <span className="tile-name">{tileName}</span>
-              <span className="tile-name-sub">{nameSubtitle}</span>
+              {nameSubtitle && <span className="tile-name-sub">{nameSubtitle}</span>}
+              {callSignSub}
             </span>
           ) : (
             <span className="tile-name">{tileName}</span>
           )}
         </Tooltip>
+        {callSignMark === "badge" && callSignElement && <CallSignMark name={callSignElement} style="badge" />}
         {/* Says the same thing as the section rule this tile sits under, and is not redundant
             with it: the rule scrolls off the top of a full column, and a tile dragged into view
             by the arrow keys has to carry its own answer to "why can I not use this one". */}

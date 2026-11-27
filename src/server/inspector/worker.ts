@@ -617,7 +617,7 @@ function recordPrObservation(key: string, s: PrSnapshot, now: number, reopen = f
 
 /** What an on-demand read of one adopted pull request found. */
 export type InspectorReobservation =
-  | { ok: true; state: PrSnapshot["state"] }
+  | { ok: true; state: PrSnapshot["state"]; mergedCiWitness?: PrSnapshot["mergedCiWitness"] }
   | { ok: false; error: string };
 
 /**
@@ -646,7 +646,7 @@ export async function reobserveInspectorPr(
   recordPrObservation(prKey, snap.value, now, true);
   registry.refreshInspections();
   notifyInspection(registry, prKey, snap.value.headSha || null, snap.value.state, now);
-  return { ok: true, state: snap.value.state };
+  return { ok: true, state: snap.value.state, ...(snap.value.mergedCiWitness ? { mergedCiWitness: snap.value.mergedCiWitness } : {}) };
 }
 
 /** Run one PR through the whole cycle. Returns true when it did something. */

@@ -547,6 +547,7 @@ export const claudeTranscript: TranscriptSpec = {
   locateByConversation: (session) => resolveTranscriptPath({ ...session, transcriptPath: null }),
   passiveRead: claudePassiveRead,
   messages: jsonlMessages({ parse: toMessage, narration: readCurrentTodo }),
+  userMessageText: conversationText,
   // Locating is two `existsSync` calls off fields the session already carries, so there
   // is nothing worth caching and nothing to prune.
   retain: null,

@@ -73,6 +73,19 @@ test("a publication checkout revision detects content, inventory, index and HEAD
   assert.equal(publicationCheckoutRevision(join(home, "absent"), []), null);
 });
 
+test("a publication checkout revision requires the reviewed commit even when two commits share a tree", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "same-tree-publication");
+  seedGitRepo(dir);
+  const reviewed = gitIn(dir, "rev-parse", "HEAD");
+  const stamp = () => publicationCheckoutRevision(dir, [], undefined, reviewed);
+  assert.ok(stamp());
+  gitIn(dir, "commit", "--allow-empty", "-qm", "same content, different commit");
+  assert.notEqual(gitIn(dir, "rev-parse", "HEAD"), reviewed);
+  assert.equal(gitIn(dir, "rev-parse", "HEAD^{tree}"), gitIn(dir, "rev-parse", `${reviewed}^{tree}`));
+  assert.equal(stamp(), null);
+});
+
 test("a publication checkout revision refuses HEAD drift during sampling", async (t) => {
   const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
   const dir = join(home, "publication-revision-drift");
@@ -800,6 +813,12 @@ test("repository capture fails closed and detects worktree evidence changes", as
   } as WorkflowBinding;
   const captured = await readWorkflowContextRaw(registry, binding);
   assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), false);
+
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const beforeProbe = publicationCheckoutRevision(repo, []);
+  assert.ok(beforeProbe);
+  await readWorkflowEvidenceProbe(registry, binding);
+  assert.equal(publicationCheckoutRevision(repo, []), beforeProbe, "the probe changed its own checkout revision");
 
   writeFileSync(join(repo, "file.txt"), "two\n");
 

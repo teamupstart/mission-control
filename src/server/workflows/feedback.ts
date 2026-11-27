@@ -780,13 +780,16 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
     workflowEvidence: input.workflowEvidence,
     workflowContinuation: input.origin.kind === "run",
   });
-  const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
-    ? ["", workflowPullRequestCiContract(), ""]
-    : [];
-  const prPolicy = input.pullRequestPolicy
-    ? ["", pullRequestPolicyContract(), ...(input.stackInstruction ? ["", sanitizeWorkflowFeedback(input.stackInstruction)] : []), ""]
-    : [];
-  const payload = `${[...lines, authorization, ...ciPolicy, ...prPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
+  // The transcript reader collapses extra blank lines. Put one between policy sections
+  // so the confirmed instruction retains its exact identity in the next intent snapshot.
+  const policies: string[] = [];
+  if (input.origin.kind === "run" && input.pullRequestCi) policies.push(workflowPullRequestCiContract());
+  if (input.pullRequestPolicy) {
+    policies.push(pullRequestPolicyContract());
+    if (input.stackInstruction) policies.push(sanitizeWorkflowFeedback(input.stackInstruction));
+  }
+  const body = [authorization, ...policies].join("\n\n");
+  const payload = [...lines, body, ...(policies.length ? [""] : []), sanitizeWorkflowFeedback(input.promptMarkdown)].join("\n");
   // REFUSED, never truncated. Every other packet in this file clips, because every other
   // packet is prose the daemon composed and a shorter summary is still a true summary. This
   // one is the operator's own instruction, frozen into an immutable version: a prefix of

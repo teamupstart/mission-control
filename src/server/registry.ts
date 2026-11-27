@@ -562,6 +562,8 @@ export type PrMatch = {
 };
 
 export type PrObservation = {
+  observedAt: number;
+  checks: PrChecks | null;
   url: string;
   branch: string | null;
   agentSessionId: string | null;
@@ -6331,7 +6333,13 @@ export class Registry extends EventEmitter {
    */
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
-      if (skip.has(id) || !taskHasRepository(s.task ?? {})) continue;
+      if (skip.has(id)) {
+        // Keep the association for its existing readers. A failed poll supplies no CI witness.
+        const prior = this.prObservations.get(id);
+        if (prior?.checks) this.prObservations.set(id, { ...prior, checks: null });
+        continue;
+      }
+      if (!taskHasRepository(s.task ?? {})) continue;
       let match = found.get(id) ?? null;
       const currentEpisode = sessionWorkEpisodeFor(id);
       if (
@@ -6387,6 +6395,7 @@ export class Registry extends EventEmitter {
       const checkDetails = match?.checkDetails ?? null;
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
+          observedAt: at, checks,
           url: match.url,
           branch: match.branch,
           agentSessionId: match.agentSessionId,

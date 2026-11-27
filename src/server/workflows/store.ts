@@ -2511,7 +2511,7 @@ const completionGenerationSql = `(SELECT c.generation FROM session_work_cycles c
 
 // The author's idle may already have landed at End, or may arrive one generation later.
 // Foreman coalesces missed cycles. A later generation cannot spend an earlier handoff.
-const publicationHandoffDueSql = "? BETWEEN publication_handoff_generation AND publication_handoff_generation + 1";
+const publicationHandoffDueSql = "(? BETWEEN publication_handoff_generation AND publication_handoff_generation + 1 OR ? = publication_ci_generation)";
 
 function transaction<T>(db: DatabaseSync, fn: () => T): T {
   if (db.isTransaction) return fn();
@@ -2939,7 +2939,7 @@ export interface ForemanCompletionStoreInput {
   /** Includes targets without a publication of their own when a sibling's probe yielded. */
   expectedLatestRunId?: string | null;
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
-  publicationComparison?: { runId: string; stillMatches: (deadline: number) => boolean };
+  publicationComparison?: { runId: string; stillMatches: (deadline: number) => boolean; pendingCi?: () => { prKey: string; headSha: string; observedAt: number; episodeId: string } | null };
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
@@ -5424,10 +5424,13 @@ export class WorkflowStore {
    * then finished through Inspector-only repair rounds proves its terminal content from this
    * submission forward, so the caller needs the row, not only its tree.
    */
-  publicationHandoff(runId: string, generation: number): { treeOid: string; submissionId: string } | null {
+  publicationHandoff(runId: string, generation: number) {
     const row = this.db.prepare(
       `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree,
-              child.id AS submission_id
+              child.id AS submission_id, action.id AS action_id, r.publication_ci_generation AS ci_generation,
+              json_extract(action.output_json, '$.expectation.expectedHeadOid') AS published_head,
+              json_extract(action.output_json, '$.expectation.repositoryRoot') AS repo_id,
+              json_extract(action.output_json, '$.expectation.pullRequestKey') AS pr_key
          FROM workflow_submissions child
         JOIN workflow_node_attempts action ON action.id = child.continuation_node_attempt_id
         JOIN workflow_runs r ON r.id = child.run_id
@@ -5437,9 +5440,67 @@ export class WorkflowStore {
           AND json_extract(action.output_json, '$.expectation.kind') = 'pull_request'
           AND json_extract(action.output_json, '$.continuationSubmissionId') = child.id
         ORDER BY child.round DESC, child.segment DESC LIMIT 1`,
-    ).get(runId, generation);
-    return typeof row?.tree === "string" && typeof row.submission_id === "string"
-      ? { treeOid: row.tree, submissionId: row.submission_id } : null;
+    ).get(runId, generation, generation);
+    if (typeof row?.tree !== "string" || typeof row.submission_id !== "string" || typeof row.action_id !== "string") return null;
+    const ciOnly = row.ci_generation === generation;
+    const lastCi = ciOnly && this.db.prepare(`SELECT json_extract(payload_json, '$.pendingCi.observedAt') AS observed_at
+      FROM workflow_events WHERE run_id = ? AND event_kind = 'workflow_completion_claimed'
+        AND json_extract(payload_json, '$.expectedWorkCycle.generation') = ?
+      ORDER BY id DESC LIMIT 1`).get(runId, generation - 1);
+    return { treeOid: row.tree, submissionId: row.submission_id, actionId: row.action_id, ciOnly,
+      publishedHead: typeof row.published_head === "string" ? row.published_head : null,
+      lastCiObservation: lastCi && typeof lastCi.observed_at === "number" ? lastCi.observed_at : null,
+      repoId: typeof row.repo_id === "string" ? row.repo_id : null, prKey: typeof row.pr_key === "string" ? row.pr_key : null };
+  }
+
+  /** The immediately preceding automatic cycle spent a publication handoff after End.
+   * Its action was still the most recent observed prompt when the duplicate started. */
+  precedingPublicationClaim(run: WorkflowRun, sessionId: string, noteKey: string) {
+    const row = this.db.prepare(`SELECT prior.id, wait.ts AS claimed_at,
+        prompt.episode_id, prompt.prompted_at
+      FROM workflow_runs prior
+      JOIN workflow_events wait ON wait.run_id = prior.id AND wait.event_kind = 'workflow_completion_claimed'
+      JOIN workflow_events root ON root.run_id = ? AND root.event_kind = 'workflow_completion_claimed'
+      JOIN session_work_episode_prompts prompt ON prompt.session_id = ?
+      WHERE prior.id = (SELECT id FROM workflow_runs WHERE binding_id = ? AND id <> ?
+        ORDER BY started_at DESC, id DESC LIMIT 1)
+        AND prior.status = 'completed' AND prior.completed_at <= wait.ts AND wait.ts < root.ts
+        AND prior.workflow_version_id = ? AND root.ts = ?
+        AND json_extract(root.payload_json, '$.triggerKey') = ?
+        AND json_extract(root.payload_json, '$.completionKind') = 'prompted'
+        AND json_extract(root.payload_json, '$.state') = 'started'
+        AND json_extract(wait.payload_json, '$.state') = 'already_claimed'
+        AND json_extract(wait.payload_json, '$.submissionId') IS NULL
+        AND json_extract(wait.payload_json, '$.completionKind') = 'prompted'
+        AND json_extract(root.payload_json, '$.expectedWorkCycle.logicalKey') = ?
+        AND json_extract(wait.payload_json, '$.expectedWorkCycle.logicalKey') = ?
+        AND json_extract(root.payload_json, '$.expectedWorkCycle.generation') =
+            json_extract(wait.payload_json, '$.expectedWorkCycle.generation') + 1
+        AND prompt.prompted_at = (SELECT max(p.prompted_at) FROM session_work_episode_prompts p
+          WHERE p.session_id = prompt.session_id AND p.prompted_at <= root.ts)
+        AND prompt.prompted_at <= prior.completed_at
+      LIMIT 2`).all(run.id, sessionId, run.bindingId, run.id, run.workflowVersionId, run.startedAt,
+        run.triggerKey, noteKey, noteKey);
+    if (row.length !== 1) return null;
+    const r = row[0]!;
+    return { run: this.mustRun(String(r.id)), claimedAt: Number(r.claimed_at),
+      episodeId: String(r.episode_id), promptedAt: Number(r.prompted_at) };
+  }
+
+  recoverDuplicatePublication(run: WorkflowRun, gate: WorkflowInspectorGateState, accepted: WorkflowInspectorGateState,
+    proof: WorkflowJson, stillCurrent: () => boolean) {
+    return transaction(this.db, () => {
+      const current = this.getRun(run.id);
+      if (current?.status !== "blocked" || current.currentPhase !== "inspector_pr_closed" || current.updatedAt !== run.updatedAt ||
+          current.evidencePrunedAt || current.disabledNodeIds?.length || current.personaDirectives?.length ||
+          this.latestRunForBinding(run.bindingId)?.id !== run.id || !stillCurrent()) return false;
+      const now = Date.now();
+      if (!this.updateInspectorGate({ runId: run.id, expectedState: gate, state: accepted, status: "completed",
+        phase: "complete", now })) return false;
+      this.db.prepare("UPDATE workflow_runs SET publication_handoff_generation = NULL WHERE id = ?").run(run.id);
+      this.appendEvent(run.id, "duplicate_publication_recovered", proof, now);
+      return true;
+    });
   }
 
   latestRunForBinding(bindingId: string): WorkflowRun | null {
@@ -7455,16 +7516,22 @@ export class WorkflowStore {
       }
       // Collect a common snapshot before spending any pin. Both passes share what remains
       // of the original budget. A slow checkout cannot start another full-budget Git read.
-      const eligible = new Set(inputs.filter(matches));
-      if (inputs.length > 1) {
+      const eligible = inputs.length > 1 ? new Set(inputs.filter(matches)) : null;
+      const stillEligible = (input: ForemanCompletionStoreInput) => {
+        if (matches(input)) return true;
+        if (performance.now() < deadline) throw new Error("Workflow checkout changed during shared completion claim");
+        return false;
+      };
+      if (eligible) {
         for (const input of [...eligible].reverse()) {
-          if (matches(input)) continue;
-          if (performance.now() < deadline) throw new Error("Workflow checkout changed during shared completion claim");
-          eligible.delete(input);
+          // The primary's final comparison runs at the write, after the continuation
+          // and intent guards. It is the only checkout that can own a CI handoff.
+          if (input !== inputs[0] && !stillEligible(input)) eligible.delete(input);
         }
       }
       for (const input of inputs) {
-        const stored = this.claimForemanCompletion(input, eligible.has(input), deadline);
+        const reuse = eligible ? () => eligible.has(input) && (input !== inputs[0] || stillEligible(input)) : undefined;
+        const stored = this.claimForemanCompletion(input, reuse, deadline);
         if (!stored.result.claimed) {
           if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
           return [stored];
@@ -7482,7 +7549,7 @@ export class WorkflowStore {
    */
   claimForemanCompletion(
     input: ForemanCompletionStoreInput,
-    reusePublication?: boolean,
+    reusePublication?: () => boolean,
     deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS,
   ): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
@@ -7576,19 +7643,23 @@ export class WorkflowStore {
       let previousFingerprint: string | undefined;
 
       const comparison = input.publicationComparison;
+      let pendingCi = null;
       if (comparison) {
         const latest = this.latestRunForBinding(binding.id);
         if (run || latest?.id !== comparison.runId || latest.status !== "completed") {
           throw new Error("Workflow publication changed during completion comparison");
         }
       }
-      if (comparison && (reusePublication ?? comparison.stillMatches(performance.now() + PUBLICATION_REVISION_BUDGET_MS))) {
-        // One follow-through per repository. Clearing the pin and consuming the shared
-        // generation commit together. An identical retry is answered by duplicateEvent.
+      if (comparison && (reusePublication?.() ?? (performance.now() < deadline
+        && comparison.stillMatches(deadline) && performance.now() < deadline))) {
+        // Pending checks on the accepted publication can arm exactly its next turn.
+        // The spent pin, successor and generation consumption commit together.
+        const generation = input.expectedWorkCycle!.generation;
+        pendingCi = comparison.pendingCi?.() ?? null;
         const spent = this.db.prepare(
-          `UPDATE workflow_runs SET publication_handoff_generation = NULL
+          `UPDATE workflow_runs SET publication_handoff_generation = NULL, publication_ci_generation = ?
             WHERE id = ? AND ${publicationHandoffDueSql}`,
-        ).run(comparison.runId, input.expectedWorkCycle!.generation);
+        ).run(pendingCi ? generation + 1 : null, comparison.runId, generation, generation);
         if (!spent.changes) throw new Error("Workflow publication handoff is no longer current");
         run = this.mustRun(comparison.runId);
         state = "already_claimed";
@@ -7689,6 +7760,7 @@ export class WorkflowStore {
         triggerKey,
         completionKind: input.completionKind,
         marker: input.marker,
+        ...(pendingCi ? { pendingCi } : {}),
         summary: input.summary,
         evidenceFingerprint: input.evidenceFingerprint,
         expectedWorkCycle: input.expectedWorkCycle,
@@ -9840,7 +9912,7 @@ export class WorkflowStore {
   }
 
   /** A confirmed action, not an operator follow-up, owns this episode's latest prompt. */
-  deliveredActionOwnsPrompt(runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null): boolean {
+  deliveredActionOwnsPrompt(runId: string, sessionId: string, episodeId: string, promptedAt: number, promptRevision: number | null, actionId: string | null = null): boolean {
     return !!this.db.prepare(`SELECT 1 FROM workflow_events e
       JOIN workflow_deliveries d ON d.id = json_extract(e.payload_json, '$.deliveryId')
         AND d.run_id = e.run_id
@@ -9849,7 +9921,8 @@ export class WorkflowStore {
         AND json_extract(e.payload_json, '$.promptedAt') = ?
         AND json_extract(e.payload_json, '$.promptRevision') IS ?
         AND d.session_id = ? AND d.kind = 'session_action' AND d.state = 'delivered'
-        AND d.delivered_at IS NOT NULL LIMIT 1`).get(runId, episodeId, promptedAt, promptRevision, sessionId);
+        AND d.delivered_at IS NOT NULL AND (? IS NULL OR d.node_attempt_id = ?) LIMIT 1`).get(
+        runId, episodeId, promptedAt, promptRevision, sessionId, actionId, actionId);
   }
 
   deliveryForPacket(

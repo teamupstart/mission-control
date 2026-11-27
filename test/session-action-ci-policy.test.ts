@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { conversationText } from "../src/server/harness/claude/scaffolding.ts";
 import { renderSessionAction } from "../src/server/workflows/feedback.ts";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 
@@ -50,6 +51,7 @@ test("PR policy reaches frozen actions without changing their authored prompt or
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.ok(result.payload.endsWith(legacyPrompt));
+  assert.equal(conversationText(result.payload), result.payload.trim(), "the transcript must retain the confirmed packet text");
   assert.match(result.payload, /get_pull_request_policy immediately before creating each PR/);
   assert.match(result.payload, /alwaysDraftPr is true/);
   assert.match(result.payload, /gh pr create --draft/);

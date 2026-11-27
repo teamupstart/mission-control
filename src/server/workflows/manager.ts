@@ -9,6 +9,7 @@ import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import { isImplementationTaskKind } from "@shared/task.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { checkBlockedReason, workflowCapturedLocalInspector, workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
@@ -17,6 +18,7 @@ import type { WorkflowRawCaptureRead, RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
 import { checkoutDigest, continuationDigest, evidenceContract, packetDigest } from "./continuation-evidence.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -152,6 +154,8 @@ import {
 import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger } from "../delivery-ledgers.ts";
 import { onSend } from "../delivery-binding.ts";
 import { QueueManager } from "../queue.ts";
+import { automaticWrapupBlock } from "../foreman/wrapup-eligibility.ts";
+import { isPaused } from "@shared/pause.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
 import type { JobExecution } from "../llm/jobs.ts";
@@ -211,6 +215,7 @@ import {
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
 import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { deliveredCiAction, duplicatePublicationProof } from "./duplicate-publication.ts";
 import { acceptedInspectorRepair, inspectorRepairTriggerKey, type AcceptedInspectorRepair } from "./inspector-repair-proof.ts";
 import {
   externalSourceKey,
@@ -253,7 +258,7 @@ import {
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
 import { repositoryHoldsMergeGrant } from "../shipping/config.ts";
-import { parsePrUrl, readInspectorBranchActivity, recheckInspectorRecoveryTip } from "../inspector/github.ts";
+import { type MergedCiWitness, parsePrUrl, readInspectorBranchActivity, recheckInspectorRecoveryTip } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
@@ -435,7 +440,7 @@ export interface WorkflowManagerOptions {
    */
   reobservePullRequest?: (
     prKey: string,
-  ) => Promise<{ ok: true; state: "OPEN" | "CLOSED" | "MERGED" } | { ok: false; error: string }>;
+  ) => Promise<{ ok: true; state: "OPEN" | "CLOSED" | "MERGED"; mergedCiWitness?: MergedCiWitness } | { ok: false; error: string }>;
   reconcileContext?: WorkflowCompactionDeps["reconcile"];
   compactContext?: typeof compactWorkflowContext;
   classifyCriterionFulfillment?: NonNullable<Parameters<typeof classifyWorkflowCriterionFulfillment>[1]>["execute"];
@@ -3895,7 +3900,8 @@ export class WorkflowManager {
     if (gate?.prKey && ((run.status === "blocked" && run.currentPhase === "inspector_pr_closed")
         || retiredWait
         || (run.status === "waiting_for_new_head" && grant && !grant.verifiedHeadSha))) {
-      void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt);
+      void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt,
+        run.currentPhase === "inspector_pr_closed" ? requestId : undefined);
     }
     return { ok: true, value: run };
   }
@@ -3909,7 +3915,7 @@ export class WorkflowManager {
    * gate evaluation that signal starts lifts the block if it said open. A read that failed is
    * recorded on the run, so a block that stayed put says why.
    */
-  private reobserveGatePullRequest(runId: string, prKey: string, afterGrant?: number): Promise<boolean> {
+  private reobserveGatePullRequest(runId: string, prKey: string, afterGrant?: number, recoveryRequestId?: string): Promise<boolean> {
     const reobserve = this.options.reobservePullRequest;
     if (!reobserve) return Promise.resolve(false);
     // A read started in the same millisecond as a grant cannot prove ordering after restart.
@@ -3919,8 +3925,22 @@ export class WorkflowManager {
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
       }))
-      .then((result) => {
-        if (result.ok) return true;
+      .then(async (result) => {
+        if (result.ok) {
+          if (recoveryRequestId && result.state === "MERGED" && result.mergedCiWitness) {
+            try {
+              await this.recoverMergedDuplicate(runId, prKey, result.mergedCiWitness);
+              if (this.store.getRun(runId)?.currentPhase === "inspector_pr_closed") {
+                this.store.appendEvent(runId, "duplicate_publication_recovery_held", { prKey, requestId: recoveryRequestId });
+                this.publishRun(runId);
+              }
+            } catch (error) {
+              this.store.appendEvent(runId, "inspector_pr_reobserve_failed", { prKey, requestId: recoveryRequestId, error: String(error) });
+              this.publishRun(runId);
+            }
+          }
+          return true;
+        }
         const run = this.store.getRun(runId);
         if (!run || runIsTerminal(run)) return false;
         this.store.appendEvent(runId, "inspector_pr_reobserve_failed", { prKey, error: result.error });
@@ -3929,6 +3949,88 @@ export class WorkflowManager {
       });
     this.trackBackgroundTask(task.then(() => {}));
     return task;
+  }
+
+  private async recoverMergedDuplicate(runId: string, prKey: string, ci: MergedCiWitness) {
+    const run = this.store.getRun(runId);
+    const binding = run && this.store.getBinding(run.bindingId);
+    const gate = run && this.gateState(run);
+    if (!run || !binding?.sessionId || !binding.sessionCwd || binding.repoRoot || !gate?.prUrl
+      || run.status !== "blocked" || run.currentPhase !== "inspector_pr_closed" || gate.waitReason !== "pr_closed"
+      || gate.prKey !== prKey || gate.failedHeadSha || gate.grantObservation || gate.findingFingerprints.length
+      || (gate.targetHeadSha && gate.targetHeadSha !== ci.headSha)
+      || (gate.observedHeadSha && gate.observedHeadSha !== ci.headSha)) return;
+    const sessionId = binding.sessionId;
+    const proof = duplicatePublicationProof(this.store, run, binding, sessionId, prKey, ci);
+    if (!proof) return;
+    const session = this.registry.getSession(sessionId);
+    const source = run.intent?.intentSource;
+    if (!session?.task || !source || source.resolvedPromptRevision !== source.promptRevision) return;
+    const taskId = session.task.id;
+    const workflowId = this.store.getWorkflowVersionById(run.workflowVersionId)?.workflowId;
+    const current = () => {
+      const s = this.registry.getSession(sessionId);
+      const task = this.registry.getTask(taskId);
+      const goal = this.registry.getGoal(sessionId);
+      const episode = this.registry.recordedWorkEpisodeForSession(sessionId);
+      const ledger = getInspectorPr(prKey);
+      const owner = this.store.activeBindingForNote(binding.noteKey);
+      return !!s && noteKeyFor(s) === binding.noteKey && s.task?.id === taskId && task?.status === "running" && task.sessionId === sessionId
+        && isImplementationTaskKind(task.kind) && !task.extraRepos.length
+        && task.workflowId === workflowId && task.dispatchedAt !== null && task.dispatchedAt <= proof.prior.run.startedAt
+        && task.branch === ci.branch && task.repoRoot === binding.sessionRepoRoot && task.worktreePath === binding.sessionCwd
+        && s.state === "idle" && !isPaused(s) && s.lastActivity === session.lastActivity && !s.queue?.openCount && !hasBlocker(s) && !isAwaiting(s)
+        && reportBucket(s) !== "needs-you"
+        && s.workCycle?.generation === session.workCycle?.generation && s.gitBranch === ci.branch && s.cwd === binding.sessionCwd
+        && owner?.id === binding.id && owner.deliveryMode === "live" && owner.triggerMode === "foreman_complete"
+        && owner.sessionId === sessionId && owner.workflowVersionId === run.workflowVersionId
+        && !this.bindingModeBlock(s, owner.triggerMode, owner.deliveryMode)
+        && inspectorPosture(getInspectorConfig(), s.cwd, s.repoRoot) === "live"
+        && this.registry.getQueue(sessionId)?.promptedDecision?.outcome === "workflow_claimed"
+        && !!goal?.relationship && goal.relationship !== "unclear" && !goal.pendingPrompts.length
+        && !automaticWrapupBlock({ taskKind: task.kind, workflowId: task.workflowId, objective: goal.objective,
+          skipScoutWrapup: false, skipReviewArtifactWrapup: false })
+        && goal.objectiveVersion === source.objectiveVersion && goal.promptRevision === source.promptRevision
+        && goal.resolvedPromptRevision === source.promptRevision && !!episode?.promptedAt
+        && this.store.deliveredActionOwnsPrompt(run.id, sessionId, episode.episodeId, episode.promptedAt,
+          goal.promptRevision, proof.duplicate.actionId)
+        && ledger?.state === "closed" && ledger.observedState === "MERGED" && ledger.headRefName === ci.branch
+        && ledger.sessionId === sessionId && ledger.repoRoot === binding.sessionRepoRoot && ledger.url === gate.prUrl
+        && ledger.observedHeadSha === ci.headSha && ledger.cleanReviewHeadSha === ci.headSha && ledger.headSha === ci.headSha
+        && ledger.reviewPosture === "live" && ledger.reviewComplete === true && !ledger.lastError && !loadInspectorComments(prKey).some(f => f.status !== "resolved");
+    };
+    if (!current()) return;
+    const evidence = proof.duplicate.evidence;
+    const artifacts = evidence.publication?.localArtifacts ?? [];
+    const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
+    const deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS;
+    const before = revision(binding.sessionCwd, artifacts, deadline);
+    if (!before) return;
+    const remaining = deadline - performance.now();
+    const [probe, head] = await Promise.all([this.probeRepository(binding, proof.duplicate.terminal),
+      (this.options.readRepositoryHead ?? readWorkflowRepositoryHead)(binding.sessionCwd)]);
+    if (!head || head.repositoryId !== proof.accepted.expected.repositoryRoot || head.headOid !== ci.headSha || head.branch !== ci.branch
+      || !probe.contentTreeOid || !probeMatchesRepositoryContent(probe, evidence) || !probeMatchesRepositoryContent(probe, proof.accepted.evidence)) return;
+    const until = performance.now() + remaining;
+    if (this.store.recoverDuplicatePublication(run, gate, { ...gate, waitReason: null, targetHeadSha: ci.headSha,
+      observedHeadSha: ci.headSha, reviewPosture: "live" }, {
+      acceptedRunId: proof.prior.run.id, acceptedSubmissionId: proof.accepted.terminal.id,
+      duplicateSubmissionId: proof.duplicate.terminal.id, handoffAt: proof.prior.claimedAt, prKey, ...ci,
+    }, () => {
+      const accepted = this.store.getRun(proof.prior.run.id);
+      if (accepted?.status !== "completed" || accepted.evidencePrunedAt
+        || accepted.updatedAt !== proof.prior.run.updatedAt || !current()
+        || revision(binding.sessionCwd!, artifacts, until, ci.headSha) !== before) return false;
+      // Current capture can exclude the historical daemon packet that the duplicate
+      // counted. Both frozen versions were proved above. Preserve human message IDs
+      // as well as the fingerprint, which deduplicates decisions with identical text.
+      const live = this.freezeRunIntent(binding, Date.now());
+      return !!live && [accepted.intent, run.intent].some(reviewed =>
+        reviewed?.fingerprint === live.fingerprint && reviewed.sourceNoteKey === live.sourceNoteKey
+        && isDeepStrictEqual(reviewed.decisions, live.decisions)) && performance.now() < until;
+    })) {
+      this.publishRun(runId);
+    }
   }
 
   async restartFull(
@@ -4485,6 +4587,30 @@ export class WorkflowManager {
     return answer;
   }
 
+  /** Read the poller's observation only for the episode owned by this exact PR packet. */
+  private publicationCiChecks(binding: WorkflowBinding, run: WorkflowRun, actionId: string) {
+    if (!binding.sessionId || binding.repoRoot || binding.deliveryMode !== "live" || run.triggerSource !== "foreman") return null;
+    const session = this.registry.getSession(binding.sessionId);
+    const observed = this.registry.prObservationFor(binding.sessionId);
+    const gate = this.gateState(run);
+    if (!session || isPaused(session) || this.bindingModeBlock(session, binding.triggerMode, binding.deliveryMode)
+      || inspectorPosture(getInspectorConfig(), session.cwd, session.repoRoot) !== "live" || session.prState !== "open" || !gate?.prKey || !gate.targetHeadSha || gate.waitReason
+      || gate.reviewPosture !== "live" || gate.observedHeadSha !== gate.targetHeadSha
+      || !observed || observed.url !== gate.prUrl || observed.headSha !== gate.targetHeadSha
+      || observed.agentSessionId !== session.agentSessionId || observed.branch !== session.gitBranch) return null;
+    const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+    const ledger = getInspectorPr(gate.prKey);
+    if (!episode?.promptedAt || episode.episodeId !== observed.episodeId || observed.observedAt < episode.promptedAt
+      || !ledger || ledger.state !== "open" || ledger.observedState !== "OPEN" || ledger.reviewPosture !== "live" || ledger.reviewComplete !== true
+      || ledger.cleanReviewHeadSha !== observed.headSha || ledger.observedHeadSha !== observed.headSha
+      || ledger.sessionId !== session.id || ledger.repoRoot !== binding.sessionRepoRoot
+      || ledger.headRefName !== observed.branch || ledger.lastError
+      || loadInspectorComments(gate.prKey).some(row => row.status !== "resolved")
+      || !this.store.deliveredActionOwnsPrompt(run.id, session.id, episode.episodeId, episode.promptedAt,
+        this.registry.getGoal(session.id)?.promptRevision ?? null, actionId)) return null;
+    return observed.checks === session.prChecks ? observed : null;
+  }
+
   /** A completed publication owns a later idle handoff only while its accepted work still matches. */
   private publicationComparison(
     binding: WorkflowBinding,
@@ -4492,7 +4618,7 @@ export class WorkflowManager {
     session: Session,
     claim: WorkflowCompletionClaim,
     deadline: number,
-  ): Promise<{ bindingId: string; runId: string; stillMatches: (deadline: number) => boolean }> | null {
+  ): Promise<{ bindingId: string } & NonNullable<ForemanCompletionStoreInput["publicationComparison"]>> | null {
     if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
     const source = run?.intent?.intentSource;
     if (!run || run.status !== "completed" || run.workflowVersionId !== binding.workflowVersionId
@@ -4534,22 +4660,53 @@ export class WorkflowManager {
     if (!checkout) return null;
     const retained = publication?.localArtifacts ?? [];
     const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
-    const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
+    const gate = this.gateState(run);
     const owner = { bindingId: binding.id, runId: run.id };
+    const noMatch = () => ({ ...owner, stillMatches: () => false });
+    // An Inspector repair can supersede the original publication. Without an Inspector
+    // head, use the full commit recorded by the completed PR action.
+    const reviewedHead = repair?.headSha ?? gate?.targetHeadSha ?? handoff.publishedHead;
+    if (!reviewedHead) return Promise.resolve(noMatch());
+    const before = performance.now() < deadline ? revision(checkout, retained, deadline, reviewedHead) : null;
+    const ciAuthorized = !!gate?.targetHeadSha && !!deliveredCiAction(this.store, handoff.actionId);
+    if (!before || (handoff.ciOnly && !ciAuthorized)) return Promise.resolve(noMatch());
+    const checks = () => {
+      if (!gate?.prKey || gate.prKey !== handoff.prKey) return null;
+      const observation = this.publicationCiChecks(binding, run, handoff.actionId);
+      if (handoff.ciOnly && (!observation || handoff.lastCiObservation === null
+        || observation.observedAt <= handoff.lastCiObservation)) return null;
+      return observation;
+    };
+    // A pending check can arrive while the checkout probe is in flight. Identify the head
+    // independently so the store can use its current observation when consuming the claim.
+    const ciHead = ciAuthorized && handoff.repoId
+      ? (this.options.readRepositoryHead ?? readWorkflowRepositoryHead)(checkout).then(head =>
+          !!head && head.repositoryId === handoff.repoId && head.branch === context.data.session.branch
+          && head.headOid === reviewedHead, () => false)
+      : Promise.resolve(false);
+    const comparison = (matches: boolean, identified: boolean) => ({
+      ...owner,
+      stillMatches: (until: number) => matches && (!ciAuthorized || identified)
+        && (!handoff.ciOnly || ["passing", "pending"].includes(checks()?.checks ?? ""))
+        && revision(checkout, retained, until, reviewedHead) === before,
+      pendingCi: () => {
+        const observed = identified ? checks() : null;
+        return observed?.checks === "pending" && handoff.prKey && observed.headSha
+          ? { prKey: handoff.prKey, headSha: observed.headSha, observedAt: observed.observedAt, episodeId: observed.episodeId } : null;
+      },
+    });
     if (repair) {
-      // Without a first revision the handoff can never be reused, so skip the Git reads.
-      if (before === null) return Promise.resolve({ ...owner, stillMatches: () => false });
-      return this.inspectorRepairMatches(checkout, evidence.headSha, repair, retained).then(
-        matches => ({ ...owner, stillMatches: (until: number) => matches && revision(checkout, retained, until) === before }),
-        () => ({ ...owner, stillMatches: () => false }),
+      return Promise.all([this.inspectorRepairMatches(checkout, evidence.headSha, repair, retained), ciHead]).then(
+        ([matches, identified]) => comparison(matches, identified),
+        noMatch,
       );
     }
-    return this.probeRepository(binding, submission).then(
-      probe => {
-        const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
-        return { ...owner, stillMatches: (until: number) => matches && revision(checkout, retained, until) === before };
+    return Promise.all([this.probeRepository(binding, submission), ciHead]).then(
+      ([probe, identified]) => {
+        const matches = Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
+        return comparison(matches, identified);
       },
-      () => ({ ...owner, stillMatches: () => false }),
+      noMatch,
     );
   }
 

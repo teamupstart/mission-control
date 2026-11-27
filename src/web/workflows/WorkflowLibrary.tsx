@@ -26,6 +26,7 @@ import {
   WORKFLOW_NODE_TARGET_PORTS,
   connectionAllowed,
   validateWorkflowGraph,
+  type WorkflowGraphValidationInput,
 } from "@shared/workflow-graph.ts";
 import {
   nodeLabel,
@@ -121,6 +122,20 @@ export function workflowSelectionAfterRemoval(
 
 export const WORKFLOW_REMOVED_UNSAVED_ERROR =
   "This workflow was deleted elsewhere. These unsaved changes cannot be saved because the workflow no longer exists. Copy anything you need before selecting another workflow or creating a new one.";
+
+/**
+ * The builder's validation of the open workflow: null only while there is no graph to check.
+ *
+ * Gated on the graph alone, like the stage blockers and pipeline beside it. The completion
+ * policy is passed through as it is - the validator treats an absent policy as "none" - so a
+ * workflow is never left unvalidated because its policy is not set.
+ */
+export function workflowDraftValidation(
+  input: Omit<WorkflowGraphValidationInput, "graph"> & { graph: WorkflowGraphValidationInput["graph"] | undefined },
+): ReturnType<typeof validateWorkflowGraph> | null {
+  const { graph, ...rest } = input;
+  return graph ? validateWorkflowGraph({ ...rest, graph }) : null;
+}
 
 export function workflowLifecycleError(caught: unknown): string {
   if (caught instanceof WorkflowApiError) {
@@ -322,15 +337,12 @@ export function WorkflowLibrary({
   const workflowGraph = workflow?.draft;
   const workflowCompletionPolicy = workflow?.completionPolicy;
   const validation = useMemo(
-    // Gated on the graph alone: a workflow whose policy is not set yet is still validated.
-    () => workflowGraph
-      ? validateWorkflowGraph({
-          graph: workflowGraph,
-          personas,
-          sessionActions,
-          completionPolicy: workflowCompletionPolicy,
-        })
-      : null,
+    () => workflowDraftValidation({
+      graph: workflowGraph,
+      personas,
+      sessionActions,
+      completionPolicy: workflowCompletionPolicy,
+    }),
     [personas, sessionActions, workflowCompletionPolicy, workflowGraph],
   );
   const currentVersion = draft.versions.find(version => version.id === workflow?.currentVersionId);

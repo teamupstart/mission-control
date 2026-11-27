@@ -324,6 +324,47 @@ questions are not owed yet, so they are not in the **to answer** count. The topb
 a separate **snoozed** figure, which also opens the inbox, so they can be reached when nothing
 else is waiting.
 
+### Unified split inbox (preview)
+
+With **Unified split inbox** (`inbox-split`) on in **Settings > Feature flags**, the inbox is one
+list with a detail pane beside it. Every question, permission request, parked menu, halt, stuck
+session and report is its own row: a session with two questions is two rows, marked **1 of 2**
+and **2 of 2**, and each report is its own row with a dot while it is unread. The selected row
+opens in the pane with the same card and controls the stacked inbox draws, so answering, **Mark
+read**, **Accept**, **Nudge** and the rest work exactly as described above.
+
+- **Moving on.** When the open row is settled and leaves the list (you answered it, accepted it,
+  marked it read or dismissed it), the row after it opens on its own and the pane says so. With
+  nothing after it, the row before it opens.
+- **Moving around.** Click a row, or press **J** for the next row and **K** for the previous one
+  (not while typing in a field). The arrow keys move through the list when it has focus.
+  **Previous** and **Next** in the pane do the same, and **Up next** lists the next two rows.
+- **Tabs.** **All**, **To answer** (everything owed, including rows that open elsewhere), **To
+  read** (reports) and **Snoozed**, each with its count.
+- **Reports opened from a notification.** A report the inbox already lists, or an earlier version
+  of one it lists, opens in its own row under **Reports**: that row is selected and shows the
+  latest version, and it is listed on **All** and **To read** like any report (choosing it from
+  another tab switches to **All**). A report the inbox does not list (already read, unlisted, or
+  from a muted agent) is listed first instead, under **Opened from a notification**, on every tab
+  but Snoozed. While such a report is still loading, or if it could not be loaded, a line above the
+  tabs says so and the list carries on without it.
+- **Rows that open elsewhere.** Decisions, Pipeline lifecycle, Waiting on you and Stuck
+  finalizations are settled on another page, so they are grouped under **Opens elsewhere**,
+  marked ↗, and their pane shows what the inbox knows with the button that goes there.
+- **Parked menus are answered in the pane.** A session parked on a terminal menu shows the menu's
+  numbered options in the pane, the same prompt the review modal draws.
+- **Dismiss narrows to one question.** A question row's **Dismiss** in the pane hides that one
+  question, because a row's dismissal is kept per question.
+- **Reports stay in step.** Selecting a report opens it on screen, the same open report a voice
+  command acts on, and selecting another row closes it. **Mark all read** sits beside the
+  **Reports** heading.
+- **Narrow windows.** Below 800 px wide the list and the pane stack: the list fills the inbox,
+  choosing a row shows its pane, and **‹ Inbox** goes back.
+
+Turning the flag off brings back the stacked inbox at once, in every open window. Nothing is
+stored by the split view itself. `e2e/specs/inbox-split.spec.ts` covers selecting, moving on after
+an answer and a **Mark read**, **J**, the tabs, the narrow layout and the flag turning off.
+
 ### Dismiss a row without resolving it
 
 Most rows have a **Dismiss** button. Session control requests stay visible until answered or withdrawn,

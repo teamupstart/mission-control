@@ -14,6 +14,7 @@ The flag core stores one set of operator choices for this machine. The registry 
 [MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
 [Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`),
 [Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`),
+[Unified split inbox](attention-and-alerts.md#unified-split-inbox-preview) (`inbox-split`),
 [Stalled section in Idle](attention-and-alerts.md#stuck-rows) (`idle-stalled`),
 [Voice addressing](voice.md) (`voice`) and
 [Markdown questions](sessions.md#markdown-questions-preview) (`markdown-questions`) as previews.
@@ -216,6 +217,7 @@ authority require an operator. Each new feature flag declares its session policy
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
 | `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section with its Mark all read and each report's Mute, the top bar's to read figure, and Settings > Reports with the report guidance and the muted agents), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
+| `inbox-split` | preview | The attention inbox's list-and-pane layout: its tabs, one row per question and report, the detail pane drawing each row's existing card, moving on to the next row when the open one is settled, J and K, and the stacked layout below 800 px. Off, the stacked inbox is drawn as before. It stores nothing of its own | [Unified split inbox](attention-and-alerts.md#unified-split-inbox-preview) |
 | `idle-stalled` | preview | Idle's Stalled section on the Board and the Console rail, its head count, the card's fact sheet and fixes, and removing the two idle stall rules from the inbox's Stuck section. It also opens `POST /api/sessions/:id/inbox-message`, which the `inbox` flag opens too. Switching it off returns those stalls to the inbox's Stuck section while the `inbox` preview is on (with `inbox` off there is no Stuck section, so they appear in neither); dismissals carry over | [Stuck rows](attention-and-alerts.md#stuck-rows), [UI](ui.md) |
 | `voice` | preview | Every voice route (`/api/voice/*` and `/voice/*`, listed in [Voice addressing](voice.md#routes)), the `voice_state`, `voice_roster`, and `voice_card` events, the `voice` and `voiceCards` reconnect snapshot fields, the speech model manager, the Settings > Voice category with its roster, the **Call sign** field under Dispatch > Advanced, the **Reference name** field on a resident profile, and the Setup panel's Voice family. A call sign or reference name already saved is kept while the flag is off, and the task and profile routes accept one either way, but it names an agent (in the inbox, cards, alerts, the Away digest and report authors) only while the flag is on. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
 | `markdown-questions` | preview | Markdown rendering of a `request_input` question's body on the review card, in the attention inbox and in the conversation's question entries. The agent-facing rule asking for Markdown `context` is not gated | [Sessions](sessions.md#markdown-questions-preview) |
@@ -235,6 +237,9 @@ switching the flag off brings back the plain paragraph.
 reaches the inbox and the to read figure, opening it changes no figure, Mark read clears it, a
 replacement shows once with its note, the session never turns amber, and nothing shows with the
 flag off.
+`e2e/specs/inbox-split.spec.ts` checks the unified split inbox: one row per question and report,
+the selected row's card in the pane, the next row opening after an answer and a Mark read, J,
+the tabs, the stacked layout below 800 px, and the stacked inbox returning with the flag off.
 `e2e/specs/inbox-stuck.spec.ts` checks the Stuck section: a stalled session's row, its count in
 **to answer**, Continue reaching the agent, Mark done opening the Complete dialog, the row leaving when the session works,
 Dismiss holding across a reload, and a queue-only row without Mark done.

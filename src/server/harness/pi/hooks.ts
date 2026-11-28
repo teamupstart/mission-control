@@ -27,6 +27,7 @@ export const piHooks: HookSpec = {
   },
   promptText,
   submittedPromptText: (evt) => evt.event === "UserPromptSubmit" ? evt.prompt ?? null : null,
+  isScaffoldingOnlyPrompt: () => false,
   // Pi has no sub-agents its hooks report, so a Pi session never shows the indicator.
   subagentSignals: () => [],
 };

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrMatch } from "../src/server/registry.ts";
+import type { HookIngest } from "../src/shared/protocol.ts";
 import type { Session } from "../src/shared/types.ts";
 import { tempDir } from "./temp-root.mjs";
 
@@ -173,6 +174,133 @@ test("an agent prompted long after its merge still owns a running task", () => {
     prompt: "now do the follow-up",
     ts: mergedAt + 60_000,
   });
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+// ---- a background task reporting in is not new work -------------------------------------
+
+const NOTIFICATION =
+  "<task-notification>\n<task-id>bg-watch</task-id>\n<status>completed</status>\n"
+  + "<summary>Background command \"gh pr checks --watch\" completed (exit code 0)</summary>\n"
+  + "</task-notification>";
+
+function hook(
+  f: ReturnType<typeof fleet>,
+  event: "UserPromptSubmit" | "Stop",
+  ts: number,
+  prompt?: string,
+): void {
+  f.registry.applyHook({
+    agent: "claude",
+    event,
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    ...(prompt === undefined ? {} : { prompt }),
+    ts,
+  });
+}
+
+function observeMerge(
+  f: ReturnType<typeof fleet>,
+  episode: { episodeId: string; startedAt: number },
+  mergedAt: number,
+): void {
+  f.registry.reconcilePrs(
+    new Map([[f.id, prMatch({
+      state: "merged",
+      mergedAt,
+      agentSessionId: `${f.id}-episode`,
+      episodeId: episode.episodeId,
+      createdAt: episode.startedAt,
+    })]]),
+    new Set(),
+  );
+}
+
+test("a watcher's notification after the merge, before the poller sees it, still lands the task", () => {
+  // The PR merges, `gh pr checks --watch` exits, and Claude Code reports that as a
+  // `<task-notification>` prompt a second or two before the poller observes the merge.
+  // Nobody asked for anything, so the episode that carries the PR must not roll over.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-notify-first", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, NOTIFICATION);
+  hook(f, "Stop", mergedAt + 2_000);
+  observeMerge(f, episode, mergedAt);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  const binding = f.registry.workEpisodeForTask(f.taskId)!;
+  assert.equal(binding.episodeId, episode.episodeId);
+  assert.equal(binding.prUrl, PR);
+});
+
+test("a notification after an idle merge already landed the task leaves it on that episode", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-notify-after");
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, NOTIFICATION);
+  hook(f, "Stop", mergedAt + 2_000);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  assert.equal(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+});
+
+test("a notification with typed prose after a merge is still new work", () => {
+  // The human typed alongside the notification, so this is an ask and the rollover rule
+  // applies exactly as it does to any other prompt after a merge.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-notify-prose", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, `${NOTIFICATION}\nnow do the follow-up`);
+  assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+test("typed prose that opens like a local-command echo after a merge is still new work", () => {
+  // No goal is captured from it, but a person typed it, so it is not scaffolding.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-echo-prose", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  hook(f, "UserPromptSubmit", mergedAt + 1_500, "Set model to opus and fix the failing tests");
+  assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+test("no harness treats an empty or whitespace-only prompt as scaffolding", async () => {
+  // Pi submits `""` verbatim while its goal reading is null, which is how the first cut of
+  // this exemption misread an empty Pi prompt as machine-only.
+  const { HARNESSES } = await import("../src/server/harness/index.ts");
+  for (const [agent, harness] of Object.entries(HARNESSES)) {
+    if (!harness.hooks) continue;
+    for (const prompt of ["", "  \n "]) {
+      const evt = { agent, event: "UserPromptSubmit", sessionId: null, cwd: null, transcriptPath: null, env: {}, prompt } as HookIngest;
+      assert.equal(harness.hooks.isScaffoldingOnlyPrompt(evt), false, `${agent} ${JSON.stringify(prompt)}`);
+    }
+  }
+});
+
+test("a prompt event with no prompt text after a merge is still new work", () => {
+  // Absent text is not evidence of machinery: only a prompt whose every word is Claude
+  // Code's scaffolding is.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-prompt-missing", true);
+  const episode = f.registry.workEpisodeForSession(f.id)!;
+  const mergedAt = episode.startedAt + 10;
+  observeMerge(f, episode, mergedAt);
+  hook(f, "UserPromptSubmit", mergedAt + 1_500);
+  assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
 

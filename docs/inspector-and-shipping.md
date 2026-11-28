@@ -1046,6 +1046,12 @@ The merge is recorded when it happens, and the task is first concluded once its 
 **appears to have finished the episode**: idle, nothing queued, and not rolled onto new
 work. An agent that is mid-turn is left alone whatever its pull request did.
 
+A prompt that is entirely the agent's own plumbing is not new work. When a background
+`gh pr checks --watch` exits because you merged, Claude Code reports it as a
+`<task-notification>` prompt, often before Mission Control has seen the merge. That prompt
+neither rolls the episode over nor keeps the task open. A notification that arrives with
+text you typed still counts as a prompt.
+
 Once the agent is **gone for good**, though, any pull request it merged is its outcome -
 including one on an episode it had already rolled past. The two cases differ because a
 present agent may still be mid-turn: while it is here, a rollover means it was handed more

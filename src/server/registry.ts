@@ -4233,8 +4233,10 @@ export class Registry extends EventEmitter {
               }
             : evt.event === "SessionStart" || evt.event === "SessionEnd"
               ? { kind: "hook_identity" }
+              // As new work, a notification landing just after a merge would roll the PR's
+              // episode over in `reconcileWorkEpisodeMerge` and strand the task.
               : evt.event === "UserPromptSubmit"
-                ? { kind: "new_work" }
+                ? spec.isScaffoldingOnlyPrompt(evt) ? { kind: "hook_work" } : { kind: "new_work" }
               : { kind: "hook_work" }
           : { kind: "none" },
       );

@@ -1,7 +1,7 @@
 import type { HookIngest } from "@shared/protocol.ts";
 import type { HookSubagentSignal } from "../hook-subagents.ts";
 import type { HookReading, HookSpec, WorkCycleSignal } from "../types.ts";
-import { substantivePrompt } from "./scaffolding.ts";
+import { scaffoldingOnly, substantivePrompt } from "./scaffolding.ts";
 
 // Claude Code's hook vocabulary: which events it fires, and what each one means.
 //
@@ -171,6 +171,11 @@ function submittedPromptText(evt: HookIngest): string | null {
   return evt.prompt?.trim() || null;
 }
 
+function isScaffoldingOnlyPrompt(evt: HookIngest): boolean {
+  if (evt.event !== "UserPromptSubmit" || !evt.prompt?.trim()) return false;
+  return scaffoldingOnly(evt.prompt);
+}
+
 /** Claude Code's friendly label for a sub-agent in `background_tasks`, and its raw task type. */
 const AGENT_TASK_TYPES = new Set(["subagent", "local_agent"]);
 
@@ -240,6 +245,7 @@ export const claudeHooks: HookSpec = {
   workCycleSignal,
   promptText,
   submittedPromptText,
+  isScaffoldingOnlyPrompt,
   subagentSignals,
 };
 

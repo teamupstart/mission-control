@@ -175,3 +175,18 @@ export function substantivePrompt(raw: string | null | undefined): string | null
   if (!text || ECHO_RE.test(text) || META_COMMAND_RE.test(text)) return null;
   return text;
 }
+
+/**
+ * Whether a non-empty user turn is nothing but Claude Code's own blocks, so no person typed
+ * any of it.
+ *
+ * Narrower than `substantivePrompt` returning null on purpose: that also rejects echoes and
+ * session commands, which a person can type as the start of a real ask ("Set model to opus
+ * and fix the failing tests"). Only the dropped blocks are proof that nobody typed the turn.
+ *
+ * Pure, for testing.
+ */
+export function scaffoldingOnly(raw: string): boolean {
+  const stripped = raw.replace(DROP_RE, " ");
+  return !stripped.trim() || LEADING_MACHINE_TAG_RE.test(stripped);
+}

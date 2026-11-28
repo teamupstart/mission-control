@@ -19,6 +19,7 @@ import {
 } from "../src/server/workflows/persona-workload/executor.ts";
 import {
   codexRepositoryConfig,
+  isSupportedProviderBuild,
   REPOSITORY_PROVIDERS,
   repositoryWorkerResult,
   runCodexRepositoryWorkload,
@@ -386,6 +387,82 @@ for (const provider of ["codex", "claude"] as const) {
     assert.deepEqual(await fixture.launches(), ["version"]);
   });
 }
+
+// Each provider's verified floor is a minimum, compared numerically by semver component.
+const providerBuildCases = {
+  codex: {
+    banner: (v: string) => `codex-cli ${v}`,
+    accepted: ["0.166.0", "0.166.1", "0.167.0", "0.172.0", "0.1000.0", "1.0.0"],
+    refused: ["0.165.9", "0.165.999", "0.99.0", "0.9.0"],
+  },
+  claude: {
+    banner: (v: string) => `${v} (Claude Code)`,
+    accepted: ["2.1.319", "2.1.320", "2.1.332", "2.1.1000", "2.2.0", "3.0.0"],
+    refused: ["2.1.318", "2.1.99", "2.0.999", "1.9.999"],
+  },
+} as const;
+for (const [provider, { banner, accepted, refused }] of Object.entries(providerBuildCases) as
+  [keyof typeof providerBuildCases, (typeof providerBuildCases)[keyof typeof providerBuildCases]][]) {
+  test(`${provider} accepts its verified build and every newer one, and refuses older builds`, () => {
+    // The CLI prints its banner with a trailing newline.
+    for (const version of accepted)
+      assert.equal(isSupportedProviderBuild(provider, `${banner(version)}\n`), true, `${provider} ${version}`);
+    for (const version of refused)
+      assert.equal(isSupportedProviderBuild(provider, banner(version)), false, `${provider} ${version}`);
+  });
+}
+
+test("a version banner that is not that provider's CLI fails closed", () => {
+  const unparseable = {
+    codex: ["", "codex-cli", "codex-cli 0.172", "codex-cli 0.172.0-alpha.1", "codex-cli v0.172.0",
+      "codex 0.172.0", "codex-cli 0.172.0.1", "2.1.332 (Claude Code)", "codex-cli 0.172.0 extra",
+      "codex-cli 0.1234567890.0"],
+    claude: ["", "(Claude Code)", "2.1 (Claude Code)", "2.1.332-beta (Claude Code)", "v2.1.332 (Claude Code)",
+      "2.1.332", "2.1.332 (Claude)", "codex-cli 0.172.0", "2.1.332 (Claude Code)\nextra",
+      "2.1.1234567890 (Claude Code)"],
+  } as const;
+  for (const provider of ["codex", "claude"] as const)
+    for (const output of unparseable[provider])
+      assert.equal(isSupportedProviderBuild(provider, output), false, `${provider} ${JSON.stringify(output)}`);
+});
+
+for (const [provider, version] of [
+  ["codex", "codex-cli 0.165.9"], ["claude", "2.1.318 (Claude Code)"],
+] as const) {
+  test(`${provider} refuses a build older than its floor before starting a review session`, async (t) => {
+    const fixture = await capabilityFixture(t, provider, { version });
+    await assert.rejects(fixture.run, { reason: "unverified_build" });
+    assert.deepEqual(await fixture.launches(), ["version"]);
+  });
+}
+
+test("a newer Codex build passes the build check and still faces the MCP server preflight", async (t) => {
+  const fixture = await capabilityFixture(t, "codex", {
+    version: "codex-cli 1.0.0",
+    servers: [{ name: "repository", enabled: true }, { name: "other", enabled: true }],
+  });
+  await assert.rejects(fixture.run, { reason: "tool_inventory" });
+  assert.deepEqual(await fixture.launches(), ["version", "mcp list"]);
+});
+
+test("a newer Claude build that exposes an extra tool is still refused at initialization", async (t) => {
+  const fixture = await capabilityFixture(t, "claude", {
+    version: "2.1.332 (Claude Code)",
+    tools: [...REPOSITORY_TOOL_NAMES, "StructuredOutput", "Bash"],
+  });
+  await assert.rejects(fixture.run, { reason: "tool_inventory" });
+  assert.deepEqual(await fixture.launches(), ["version", "session", "init"]);
+});
+
+test("a newer Claude build with the exact repository inventory runs the review", async (t) => {
+  const fixture = await capabilityFixture(t, "claude", {
+    version: "3.0.0 (Claude Code)",
+    tools: [...REPOSITORY_TOOL_NAMES, "StructuredOutput"],
+  });
+  const output = await fixture.run();
+  assert.deepEqual(output.verdict, pass);
+  assert.deepEqual(await fixture.launches(), ["version", "session", "init"]);
+});
 
 test("Codex refuses an extra enabled MCP server before starting a review session", async (t) => {
   const fixture = await capabilityFixture(t, "codex", {

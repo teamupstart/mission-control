@@ -89,11 +89,42 @@ export function codexRepositoryConfig(mcp: RepositoryProviderLaunch["mcp"]) {
     },
   };
 }
-// Native tool inventories are not a stable SDK API. Upgrade this allowlist only with the executable probe.
-const VERIFIED_PROVIDER_BUILDS = {
-  codex: "codex-cli 0.166.0",
-  claude: "2.1.319 (Claude Code)",
-} as const;
+type RepositoryProviderName = PersonaWorkloadRequest["execution"]["provider"];
+type ProviderVersion = readonly [major: number, minor: number, patch: number];
+/**
+ * The oldest build of each CLI whose read-only repository tool setup the executable probe
+ * verified. Newer builds are trusted to keep that setup, so each one is accepted here and still
+ * has to pass the startup tool-inventory, MCP server and effort checks, which refuse an extra
+ * tool with their own reason. To raise a floor, run
+ * `node --import tsx scripts/probe-repository-providers.mjs` against the new build and update
+ * the version here once its isolation assertions pass.
+ */
+const MINIMUM_PROVIDER_BUILDS: Record<
+  RepositoryProviderName,
+  { pattern: RegExp; minimum: ProviderVersion }
+> = {
+  codex: { pattern: /^codex-cli (\d{1,9})\.(\d{1,9})\.(\d{1,9})$/, minimum: [0, 166, 0] },
+  claude: { pattern: /^(\d{1,9})\.(\d{1,9})\.(\d{1,9}) \(Claude Code\)$/, minimum: [2, 1, 319] },
+};
+/**
+ * Whether `--version` output names a build at or above the provider's floor. Components compare
+ * numerically, so 2.1.1000 is newer than 2.1.319. Output in any other shape, including a
+ * prerelease suffix or another CLI's banner, is refused.
+ */
+export function isSupportedProviderBuild(
+  provider: RepositoryProviderName,
+  versionOutput: string,
+): boolean {
+  const { pattern, minimum } = MINIMUM_PROVIDER_BUILDS[provider];
+  const match = pattern.exec(versionOutput.trim());
+  if (!match) return false;
+  const version = match.slice(1, 4).map(Number);
+  for (const [index, floor] of minimum.entries()) {
+    const component = version[index]!;
+    if (component !== floor) return component > floor;
+  }
+  return true;
+}
 function providerProbe(
   executable: string,
   args: string[],
@@ -123,10 +154,7 @@ async function verifyProviderBuild(launch: RepositoryProviderLaunch) {
     launch,
     4096,
   );
-  if (
-    stdout.trim() !==
-    VERIFIED_PROVIDER_BUILDS[launch.request.execution.provider]
-  )
+  if (!isSupportedProviderBuild(launch.request.execution.provider, stdout))
     throw new RepositoryCapabilityError("unverified_build");
 }
 function toml(value: unknown): string {

@@ -1,3 +1,5 @@
+import { runLocalInspector, type LocalInspectorInput } from "./local-inspector.ts";
+import type { LocalInspectorReview } from "@shared/inspector-review.ts";
 import { runCodeRabbit, type probeCodeRabbit } from "./coderabbit.ts";
 import { commandMisfitSignal } from "./command-fit.ts";
 import { WORKFLOW_COMMAND_INTERPRETERS, type CodeRabbitComparison, type CodeRabbitConfigSnapshot, type CodeRabbitReviewSummary } from "@shared/workflow.ts";
@@ -49,7 +51,7 @@ import {
 export interface CheckRunReservation {
   granted: boolean;
   spent: number;
-  /** Return a granted claim when the executor proves it could not start the Command. */
+  /** Return a granted claim when the attempt does not consume an execution slot. */
   release?: () => void;
 }
 
@@ -65,9 +67,11 @@ export interface CheckInfrastructureFailure {
   kind: "infrastructure";
   reason: string;
   artifacts?: WorkflowCommandArtifactDescriptor[];
+  review?: CodeRabbitReviewSummary;
 }
 
 export interface CheckActionRequiredFailure {
+  localInspector?: LocalInspectorReview;
   kind: "action_required";
   reason: string;
   setup?: boolean;
@@ -133,7 +137,12 @@ export type CheckExecutionResult =
    * dependency claim that failed for a reason the change does not own is retried as the same
    * execution, and must not have spent one.
    */
-  | { kind: "infrastructure"; reason: string; started?: boolean; ranNothing?: boolean; artifacts?: WorkflowCommandArtifactDescriptor[]; review?: CodeRabbitReviewSummary };
+  | (CheckInfrastructureFailure & {
+    started?: boolean;
+    ranNothing?: boolean;
+    /** The executor withheld the result because it could not account for the worktree. */
+    cleanupFailed?: true;
+  });
 
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 
@@ -349,8 +358,17 @@ function runCount(runs: number): string {
  * different halves of the same question - see `resolveWorkflowCommand`.
  */
 export interface RunCheckInput {
+    localInspector?: LocalInspectorInput;
     slot: WorkflowCheckSlot;
-    coderabbit?: { yaml?: CodeRabbitConfigSnapshot; dirty: boolean; retryAt?: number; incompleteReview?: boolean; comparison: () => Promise<CodeRabbitComparison> };
+    coderabbit?: {
+      yaml?: CodeRabbitConfigSnapshot;
+      dirty: boolean;
+      retryAt?: number;
+      incompleteReview?: boolean;
+      priorCleanReview?: { attemptId: string; review: CodeRabbitReviewSummary };
+      readRunsSpent?: () => number;
+      comparison: () => Promise<CodeRabbitComparison>;
+    };
     /**
      * This slot's entry in the Global Command catalog, or null when the caller has none.
      *
@@ -390,6 +408,7 @@ export async function runCheck(
   deps: CheckRunDeps = {},
 ): Promise<CheckResult> {
   const { slot, policy } = input;
+  if (WORKFLOW_COMMAND_INTERPRETERS[slot] === "inspector") return runLocalInspector(input);
   if (WORKFLOW_COMMAND_INTERPRETERS[slot] === "coderabbit") return runCodeRabbit(input, deps);
 
   // Unconfigured is asked FIRST, before consent. A repository nobody wrote a command for is

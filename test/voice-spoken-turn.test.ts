@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import fs, { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { appendFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as db from "../src/server/db.ts";
@@ -10,6 +9,7 @@ import { claimHumanEcho, expectHumanEcho } from "../src/server/injections.ts";
 import type { TurnDelivered } from "../src/server/registry.ts";
 import { deliverySchedule } from "../src/shared/message-delivery.ts";
 import { fakeTranscript } from "./helpers/fake-transcript.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function claimSpoken(key: string, words: string, text: string) {
   const queued = db.createPendingTurn({ id: key + "-outbox", noteKey: key, spokenWords: words, text: words, now: Date.now() });
@@ -67,7 +67,7 @@ test("upgrade from 54 leaves typed rows untouched, and spoken composition surviv
   assert.deepEqual(db.listPendingTurns(key), [queued]);
   asks = [{ id: "new", title: "New question" }];
   const claimed = db.claimNextPendingTurn(key, 5, queued, compose)!;
-  assert.equal(claimed.text, compose(words));
+  assert.equal(claimed.text, words + "\n\nYour open questions:\n- new: New question\nWithdraw any question this message settles, with a reason.");
   assert.equal(claimed.spokenWords, words);
   db.closeDb();
   const replay = { id: queued.id, noteKey: key, spokenWords: words, text: words, now: 6 };
@@ -89,6 +89,24 @@ test("upgrade from 54 leaves typed rows untouched, and spoken composition surviv
   assert.equal(claimHumanEcho("sdk:test", key, retry.text, 8).kind, "capture");
   db.closeDb();
 });
+
+for (const note of ["", "\n\nYour operator has not read your report r 'Yesterday' yet."]) {
+  test(`retrying an older spoken payload keeps the spoken report request ${note ? "with" : "without"} frozen notes`, () => {
+    const key = "legacy-spoken-retry-" + (note ? "notes" : "plain");
+    const request = "When you have finished this, post a report.";
+    const words = "Check the build.\n\n" + request;
+    const expected = words + note;
+    const queued = db.createPendingTurn({ id: key, noteKey: key, spokenWords: words, text: words, now: 1 });
+    let claim = db.claimNextPendingTurn(key, 2, queued, () => expected + "\n\n" + request)!;
+    for (const now of [3, 5]) {
+      const released = db.releasePendingTurn(claim.id, claim.revision, "transport refused", now)!;
+      db.closeDb();
+      claim = db.claimNextPendingTurn(key, now + 1, released, () => assert.fail("retry recomposed"))!;
+      assert.equal(claim.text, expected);
+      assert.equal(claim.spokenWords, words);
+    }
+  });
+}
 
 test("preparation settlement cannot spend a replacement spoken claim's retry budget", () => {
   const key = "reused-preparation-claim";
@@ -235,6 +253,7 @@ test("a separate Codex client receipt follows the first native conversation key,
   const { parseCodexMessages } = await import("../src/server/harness/codex/transcript.ts");
   const synthetic = "sdk:cold-codex";
   const key = "codex-native";
+  // An older daemon delivered these bytes. Its native receipt must still bind after restart.
   const received = "check the build\n\nWhen you have finished this, post a report.";
   const row = reserveSpokenTurn({ key: synthetic, transcript: null }, "check the build", received, true,
     claimSpoken(synthetic, "check the build", received));
@@ -254,7 +273,7 @@ test("a separate Codex client receipt follows the first native conversation key,
 test("a terminal transcript created after reservation supplies a boundary; an older file with identical text does not", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "voice-late-transcript-"));
+  const dir = tempDir("voice-late-transcript-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "native.jsonl");
   writeFileSync(path, "");
@@ -286,7 +305,7 @@ test("a terminal transcript created after reservation supplies a boundary; an ol
 test("terminal handoff accepts an intervening append and rejects a prefix rewritten during final verification", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-active-boundary-"));
+  const dir = tempDir("spoken-active-boundary-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const read = claudeTranscript.messages!;
   const prefix = JSON.stringify({ padding: "x".repeat(128 * 1024) }) + "\n";
@@ -337,7 +356,7 @@ test("terminal handoff accepts an intervening append and rejects a prefix rewrit
 
 test("handoff and fixed-offset proof batches retry a final-pass rewrite and growth before certifying the new revision", async t => {
   const { captureHandoffBoundaries, transcriptBoundary, transcriptSnapshot } = await import("../src/server/transcript-boundary.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-proof-revision-"));
+  const dir = tempDir("spoken-proof-revision-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const prefix = "x".repeat(130_000);
   for (const handoff of [true, false]) {
@@ -371,7 +390,7 @@ test("handoff and fixed-offset proof batches retry a final-pass rewrite and grow
 
 test("a fixed-offset read error retries disclosure on the same revision while an unreadable handoff can proceed", async t => {
   const { captureHandoffBoundaries, transcriptSnapshot } = await import("../src/server/transcript-boundary.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-fixed-read-"));
+  const dir = tempDir("spoken-fixed-read-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "turns.jsonl");
   writeFileSync(path, "native transcript\n");
@@ -396,7 +415,7 @@ test("a fixed-offset read error retries disclosure on the same revision while an
 test("terminal proof preparation leaves the daemon responsive and rechecks the file and outbox claim at paste", async t => {
   const { prepareSpokenTranscript, reserveSpokenHandoff, SpokenTranscriptChanged } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-worker-proof-"));
+  const dir = tempDir("spoken-worker-proof-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const key = "off-thread-handoff";
   const path = join(dir, "terminal.jsonl");
@@ -439,7 +458,7 @@ test("typed, delegated and review sends leave unprepared spoken transcript work 
   const { reserveReviewDelivery } = await import("../src/server/review-deliveries.ts");
   const { wrapReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-unprepared-send-"));
+  const dir = tempDir("spoken-unprepared-send-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const native = claudeTranscript.messages!;
   const now = Date.now();
@@ -474,7 +493,7 @@ test("a new spoken handoff reconciles an older receipt across a long suffix outs
   const { prepareSpokenTranscript, reserveSpokenHandoff, reserveSpokenTurn, noteOtherSend, withdrawOtherSend,
     SpokenTranscriptChanged } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-handoff-reconcile-"));
+  const dir = tempDir("spoken-handoff-reconcile-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const now = Date.now();
   const words = "inspect the build";
@@ -559,7 +578,7 @@ test("a buffered older terminal turn flushed past the saved offset cannot claim 
 test("a confirmed terminal send binds only in the file and history captured at handoff", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-boundary-"));
+  const dir = tempDir("spoken-boundary-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const now = Date.now();
   const words = "inspect the build";
@@ -681,7 +700,7 @@ for (const handedOff of [false, true]) {
     const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
     const { unexpectedActiveSdkDelivery } = await import("./helpers/pending-turn-sender.ts");
     applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
-    const cwd = mkdtempSync(join(tmpdir(), "voice-handoff-"));
+    const cwd = tempDir("voice-handoff-");
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
     const key = `handoff-${handedOff}`;
     const id = `sdk:${key}`;
@@ -1018,7 +1037,7 @@ test("confirmed text-only payloads expire after the binding window while native 
   const { pruneExpiredSpokenTurns, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "unbound-terminal-"));
+  const dir = tempDir("unbound-terminal-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "native.jsonl");
   writeFileSync(path, "");
@@ -1186,7 +1205,7 @@ test("a rewritten terminal record that reuses a native ID cannot present an earl
 test("unrelated appends do not rescan the suffix of an unmatched spoken receipt", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-unmatched-appends-"));
+  const dir = tempDir("spoken-unmatched-appends-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const key = "unmatched-append-cost";
   const path = join(dir, key + ".jsonl");
@@ -1230,7 +1249,7 @@ test("a skipped terminal record prevents a later typed copy from taking the spok
   const { reserveSpokenTurn, spokenLedger, withSpokenReadProofs, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-skipped-record-"));
+  const dir = tempDir("spoken-skipped-record-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const key = "terminal-skipped-match";
   const path = join(dir, "transcript.jsonl");
@@ -1268,7 +1287,7 @@ test("a skipped terminal record prevents a later typed copy from taking the spok
 test("a visible spoken match beyond a large suffix yields between pages and restarts on a concurrent rewrite", async t => {
   const { reserveSpokenTurn, spokenLedger, withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-visible-scan-"));
+  const dir = tempDir("spoken-visible-scan-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const now = Date.now();
   const words = "check the logs";
@@ -1312,7 +1331,7 @@ test("a visible spoken match beyond a large suffix yields between pages and rest
 test("a rewritten transcript suffix is searched again from the confirmed spoken handoff", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-rescan-"));
+  const dir = tempDir("spoken-rescan-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const key = "rescan-terminal";
   const path = join(dir, key + ".jsonl");
@@ -1368,7 +1387,7 @@ test("spoken binding skips future-dated matches and finds an eligible buffered t
 test("a unique post-handoff timestamp can still identify a regenerated terminal ID", async t => {
   const { reserveSpokenTurn, spokenLedger, withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-fallback-position-"));
+  const dir = tempDir("spoken-fallback-position-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "transcript.jsonl");
   const key = "terminal-regenerated-id";
@@ -1443,7 +1462,7 @@ test("cleanup recovers an SDK receipt moved before its handoff offset by transcr
   const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "replaced-spoken-"));
+  const dir = tempDir("replaced-spoken-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const words = "inspect the build";
   const now = Date.now();
@@ -1486,7 +1505,7 @@ test("cleanup expires unmatched spoken receipts after a stable partial JSONL tai
   const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-partial-tail-"));
+  const dir = tempDir("spoken-partial-tail-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const key = "stable-partial";
   const path = join(dir, "turns.jsonl");
@@ -1531,7 +1550,7 @@ test("cleanup preserves an SDK receipt in an oversized native record and observe
   const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-oversized-cleanup-"));
+  const dir = tempDir("spoken-oversized-cleanup-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const key = "sdk-oversized-cleanup";
   const path = join(dir, "transcript.jsonl");
@@ -1563,7 +1582,7 @@ test("cleanup distinguishes a verified empty transcript from a failed read at by
   const { reserveSpokenTurn, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
-  const dir = mkdtempSync(join(tmpdir(), "zero-byte-spoken-"));
+  const dir = tempDir("zero-byte-spoken-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "rollout.jsonl");
   const key = "zero-byte-failure";
@@ -1588,7 +1607,7 @@ test("cleanup finds an evicted SDK conversation by its persisted binding and ver
   const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
   const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
-  const projects = mkdtempSync(join(tmpdir(), "spoken-archived-"));
+  const projects = tempDir("spoken-archived-");
   t.after(() => rmSync(projects, { recursive: true, force: true }));
   const key = "evicted-native";
   const cwd = "/archived";
@@ -1620,7 +1639,7 @@ test("cleanup checks live, persisted and handoff paths when a runtime moves its 
   const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
   const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
-  const projects = mkdtempSync(join(tmpdir(), "spoken-relocated-"));
+  const projects = tempDir("spoken-relocated-");
   t.after(() => rmSync(projects, { recursive: true, force: true }));
   const cwd = "/moved";
   mkdirSync(join(projects, "-moved"));
@@ -1660,7 +1679,7 @@ test("an evicted SDK default-path miss cannot block a verified custom archive or
   const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "sdk-only-custom-archive-"));
+  const dir = tempDir("sdk-only-custom-archive-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   t.mock.method(claudeTranscript, "locate", () => null);
   const key = "only-saved-custom-path";
@@ -1690,7 +1709,7 @@ test("after eviction cleanup searches later handoffs in the same conversation be
   const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-handoff-paths-"));
+  const dir = tempDir("spoken-handoff-paths-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   t.mock.method(claudeTranscript, "locate", (s: Parameters<typeof resolveTranscriptPath>[0]) => resolveTranscriptPath(s, dir));
   const key = "evicted-custom-files";
@@ -1841,7 +1860,7 @@ test("hourly terminal cleanup prepares handoff proofs off-thread and retries a c
   const { prepareSpokenTranscript, reserveSpokenHandoff, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-archive-worker-"));
+  const dir = tempDir("spoken-archive-worker-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "archive.jsonl");
   writeFileSync(path, JSON.stringify({ padding: "x".repeat(2 * 1024 * 1024) }) + "\n");
@@ -1882,7 +1901,7 @@ test("cleanup reopens an evicted terminal's native transcript before expiring it
   const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
   const { prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
-  const dir = mkdtempSync(join(tmpdir(), "spoken-archived-terminal-"));
+  const dir = tempDir("spoken-archived-terminal-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const cwd = "/archived-terminal";
   mkdirSync(join(dir, "-archived-terminal"));

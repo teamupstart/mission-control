@@ -9,7 +9,7 @@ import {
   REPOSITORY_EVIDENCE_CAPABILITY,
   PersonaWorkloadRequestSchema,
   PersonaWorkloadResultSchema,
-  PersonaWorkloadVerdictSchema,
+  parseRepositoryWorkloadVerdict,
   RepositoryViewDescriptorSchema,
   type PersonaWorkloadEvent,
   type PersonaWorkloadRequest,
@@ -18,6 +18,7 @@ import {
 } from "@shared/repository-access.ts";
 import type {
   PersonaWorkloadExecutor,
+  PersonaWorkloadSinks,
   RepositoryArtifactMaterializer,
   RepositoryViewLease,
 } from "./contracts.ts";
@@ -25,6 +26,8 @@ import { REPOSITORY_PROVIDERS, RepositoryCapabilityError, type RepositoryProvide
 
 interface Job {
   request: PersonaWorkloadRequest;
+  /** The owning dispatch's sinks. A replay observer cannot replace them. */
+  sinks: PersonaWorkloadSinks | undefined;
   controller: AbortController;
   generation: number;
   events: PersonaWorkloadEvent[];
@@ -54,6 +57,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   async *dispatch(
     raw: PersonaWorkloadRequest,
     signal: AbortSignal,
+    sinks?: PersonaWorkloadSinks,
   ): AsyncIterable<PersonaWorkloadEvent> {
     const request = PersonaWorkloadRequestSchema.parse(raw);
     let job = this.jobs.get(request.workloadId);
@@ -63,6 +67,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     if (!job) {
       job = {
         request,
+        sinks,
         controller: new AbortController(),
         generation: request.cancellationGeneration,
         events: [],
@@ -135,15 +140,15 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     let root: string | undefined;
     let registeredHome = false;
     let lease: RepositoryViewLease | undefined;
-    const emit = (payload: Record<string, unknown>) =>
-      job.events.push({
-        ...payload,
-        eventId: randomUUID(),
-        workloadId: request.workloadId,
-        attemptId: request.attemptId,
-        sequence: job.events.length + 1,
-        timestamp: Date.now(),
-      } as PersonaWorkloadEvent);
+    const stamp = (payload: Record<string, unknown>) => ({
+      ...payload,
+      eventId: randomUUID(),
+      workloadId: request.workloadId,
+      attemptId: request.attemptId,
+      sequence: job.events.length + 1,
+      timestamp: Date.now(),
+    } as PersonaWorkloadEvent);
+    const emit = (payload: Record<string, unknown>) => job.events.push(stamp(payload));
     const remaining = Math.min(
       request.deadline - Date.now(),
       request.budgets.attemptMs,
@@ -162,6 +167,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     let auditTimer: ReturnType<typeof setInterval> | undefined;
     let auditFailed = false;
     let usage: Record<string, number> | undefined;
+    let providerRunId: string | undefined;
     let result: PersonaWorkloadResult = {
       status: "failed",
       code: "artifact_unavailable",
@@ -213,6 +219,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
           budgets: request.budgets,
           auditPath,
           deadline: request.deadline,
+          ...(request.accounting.purpose === "inspector_review" ? { verifyWorktreeAbsenceByDefault: true } : {}),
         }),
         { mode: 0o600 },
       );
@@ -273,20 +280,32 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         },
         signal: job.controller.signal,
       });
+      // Before anything judges the reply: a returned response has spent its execution even if
+      // its usage, audit seal or verdict is rejected below. The supervisor's sink records it
+      // durably in this same tick, before the stream can carry it, so it survives the daemon.
+      const returned = stamp({ type: "persona_returned" }) as Extract<PersonaWorkloadEvent, { type: "persona_returned" }>;
+      try {
+        job.sinks?.returned?.(structuredClone(returned), structuredClone(job.events));
+      } catch {
+        // The supervisor still records the queued event in order, or recovers it from replay.
+      }
+      job.events.push(returned);
       usage = PersonaWorkloadResultSchema.options[0].shape.usage.parse(
         output.usage,
       );
+      providerRunId = output.providerRunId;
       // The provider owns the MCP child and closes it before returning. Drain only complete records.
       result = { status: "failed", code: "audit_unavailable" };
       clearInterval(auditTimer);
       auditTimer = undefined;
       await journal.finish(job.controller.signal);
       result = { status: "failed", code: "invalid_verdict" };
-      const verdict = PersonaWorkloadVerdictSchema.parse(output.verdict);
-      const evidence =
-        verdict.verdict === "pass"
-          ? verdict.approvalDetails.evidence
-          : verdict.requestedChanges.flatMap((c) => c.evidence);
+      const parsed = parseRepositoryWorkloadVerdict(request.accounting.purpose, output.verdict);
+      if (!parsed.success) throw parsed.error;
+      const verdict = parsed.data.kind === "persona_verdict" ? parsed.data.verdict : null;
+      const evidence = !verdict ? [] : verdict.verdict === "pass"
+        ? verdict.approvalDetails.evidence
+        : verdict.requestedChanges.flatMap(c => c.evidence);
       const handles = journal.handles;
       for (const reference of evidence)
         if (
@@ -300,11 +319,9 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
           throw Error("Invalid repository evidence reference");
       result = PersonaWorkloadResultSchema.parse({
         status: "completed",
-        result: {
-          kind: "persona_verdict",
-          verdict: PersonaWorkloadVerdictSchema.parse(output.verdict),
-        },
-        usage: output.usage,
+        result: parsed.data,
+        usage,
+        ...(providerRunId ? { providerRunId } : {}),
       });
     } catch (error) {
       if (error instanceof ProviderFailure) result = { status: "failed", code: "provider_unavailable", providerFailure: error.kind };
@@ -343,7 +360,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         };
       }
       if (auditFailed) result = { status: "failed", code: "audit_unavailable" };
-      if (result.status === "failed" && usage) result = { ...result, usage };
+      if (result.status === "failed" && usage) result = { ...result, usage, ...(providerRunId ? { providerRunId } : {}) };
       emit({ type: "terminal", capability: request.requiredCapability, result });
       job.terminal = true;
     }

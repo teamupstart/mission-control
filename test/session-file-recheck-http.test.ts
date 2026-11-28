@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The open document's re-check, over a real checkout.
 //
@@ -11,7 +11,7 @@ import { join } from "node:path";
 // still that revision the answer carries no text, and the moment it moves the whole document
 // comes back as an ordinary read.
 
-const home = mkdtempSync(join(tmpdir(), "mission-file-recheck-"));
+const home = tempDir("mission-file-recheck-");
 process.env.MISSION_HOME = home;
 
 const checkout = join(home, "checkout");

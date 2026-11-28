@@ -3,7 +3,6 @@ import { execFileSync, spawn } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -11,11 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installer = join(repo, "scripts", "install-service.mjs");
@@ -35,7 +34,7 @@ function plistProgramArguments(plist: string): string[] {
 }
 
 test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-install-service-native-"));
+  const root = tempDir("mission-install-service-native-");
   const home = join(root, "home");
   const state = join(root, "state");
   const fakeBin = join(root, "bin");
@@ -87,7 +86,7 @@ test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
 });
 
 test("the LaunchAgent entry builds first and runs the daemon at its exact PID", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-start-service-native-"));
+  const root = tempDir("mission-start-service-native-");
   const scripts = join(root, "scripts");
   const tsxDir = join(root, "node_modules", "tsx");
   const serverDir = join(root, "src", "server");
@@ -168,9 +167,7 @@ test("the LaunchAgent entry builds first and runs the daemon at its exact PID", 
 });
 
 async function assertBuildStopSignal(testedSignal: NodeJS.Signals): Promise<void> {
-  const root = mkdtempSync(
-    join(tmpdir(), `mission-start-service-build-${testedSignal.toLowerCase()}-`),
-  );
+  const root = tempDir(`mission-start-service-build-${testedSignal.toLowerCase()}-`);
   const scripts = join(root, "scripts");
   const tsxDir = join(root, "node_modules", "tsx");
   const serverDir = join(root, "src", "server");

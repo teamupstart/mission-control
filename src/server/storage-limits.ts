@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "./config-patch-storage.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   storageAlertStateFrom,
@@ -16,8 +17,9 @@ export function getStorageLimitsConfig(): StorageLimitsConfig {
 
 /** Merge a patch over the current limits and persist the result. Saving never deletes anything. */
 export function setStorageLimitsConfig(patch: StorageLimitsConfigPatch): StorageLimitsConfig {
-  const next = StorageLimitsConfigSchema.parse({ ...getStorageLimitsConfig(), ...patch });
-  setAppConfig(APP_CONFIG_ENTRIES.storageLimits, next);
+  const current = getStorageLimitsConfig();
+  const next = StorageLimitsConfigSchema.parse({ ...current, ...patch });
+  persistConfigPatch(APP_CONFIG_ENTRIES.storageLimits, current, next, patch);
   return next;
 }
 

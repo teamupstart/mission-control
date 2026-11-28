@@ -13,6 +13,8 @@ Read the [documentation index](docs/README.md) for product behavior and setup. B
 
 ## Commands
 
+The CI gates job runs `scripts/check-doc-links.mjs` for local documentation links.
+
 Run commands from the repository root with Node.js 24 or newer.
 
 ```sh
@@ -21,6 +23,7 @@ npm run dev
 npm run build
 npm run typecheck
 npm run lint
+npm run konsistent
 npm test
 npm run test:electron
 npm run test:e2e
@@ -30,6 +33,12 @@ npm run package
 
 `npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` to install the matching browser. `npm run package` builds the macOS application.
 
+For Apple silicon voice build or test failures, check `swift --version` and
+`xcode-select --print-path`. The Swift listener build needs Swift 6.2 or newer and the macOS SDK.
+If `swift test` reports `no such module 'XCTest'`, select a full Xcode installation for that
+command with `DEVELOPER_DIR`. See [macOS voice build and tests](CONTRIBUTING.md#macos-voice-build-and-tests)
+for the commands and the dashboard development path.
+
 Run one test file with the same loader as the full suite:
 
 ```sh
@@ -37,9 +46,18 @@ node --test --import ./test/setup-state.mjs --import tsx test/session-contracts.
 ```
 
 Include `--import ./test/setup-state.mjs` in hand-typed test commands. Keep the preload
-contract here and link to it from other guides. It gives each test worker its own
-`mission-test-state-*` directory before the test module loads and removes it on normal
-exit. Both `npm test` and `npm run test:electron` include the preload.
+contract here and link to it from other guides. Before the test module loads, it gives each
+test worker a private temp root (`mctmp-*`), points `TMPDIR` inside it for the worker and its
+children, and creates the worker's `mission-test-state-*` directory there. The root is removed
+when the worker exits or is stopped by SIGINT, SIGTERM or SIGHUP. A root left by a SIGKILL is
+removed by the sweep that starts each `npm test` and `npm run test:electron`, or by
+`npm run test:sweep-temp`, once its owner is dead and the root is older than the sweep's age
+threshold; a sweep that runs sooner leaves it for a later one.
+Both `npm test` and `npm run test:electron` include the preload. Create fixture directories
+with `tempDir` from `test/temp-root.mjs`; Oxlint rejects a bare `tmpdir()` in `test/` and
+`e2e/` (`repository/test-temp-dirs`). [Test temp directories](docs/test-temp-dirs.md) states
+the root, sweep and cleanup contract, including the opt-in cleaner for machines that leaked
+fixtures before it existed.
 
 A test worker must load the preload or inherit its capture for `openDb` to accept even
 a temp home. An operator can configure a live state home inside the temp directory.
@@ -109,7 +127,7 @@ On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=se
 requests. Its Linux jobs use ephemeral GitHub-hosted runners. Each job that consumes a
 `node_modules` cache depends on the producer for its Node.js version. The workflow
 defines the unit and E2E shard matrices. The [shared unit steps](.github/actions/run-unit-shard/action.yml)
-run the tests, build, and smoke-check the bundles. One dedicated Linux voice-recognizer check restores its pinned model cache. Typecheck and lint run in the gates job.
+run the tests, build, and smoke-check the bundles. The dedicated Linux voice job restores the pinned recognition and synthesis models and exercises both helpers. Typecheck and lint run in the gates job.
 See the [contributor lint guidance](CONTRIBUTING.md#commands) for what lint enforces.
 
 The [pull request title workflow](.github/workflows/pull-request-title.yml) checks titles
@@ -120,6 +138,11 @@ requires successful push CI for the release commit and ref.
 ## Working rules
 
 Route new session-initiated requests for operator input or approval, including MCP session control requests, to the attention inbox. Keep their decision controls out of the conversation window.
+
+For new or changed settings, declare the stable searchable key, read/write behavior and access
+policy at the owner. Share dashboard validation and mutation effects. Record the reason for
+protected or operational controls and update coverage. The fixed `mission_settings` tool supports
+find, get and set. See the [setting onboarding contract](CONTRIBUTING.md#onboard-a-setting).
 
 New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the preview, default-on, and retirement stages.
 
@@ -137,6 +160,9 @@ When a review workflow passes, do not rerun it to address Inspector feedback. Fi
 ## Code style and examples
 
 Use schemas and shared registries instead of hand-parsing or branching on concrete agents.
+Oxlint requires request JSON parsing through `src/server/http-body.ts` (`repository/parse-request-body`)
+and keeps direct agent equality comparisons and switch cases under `src/server/harness/`
+(`repository/agent-comparison`).
 
 Correct:
 
@@ -226,9 +252,11 @@ Incorrect:
 </Overlay>
 ```
 
-Tests in `test/` use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
+Tests in `test/` use `node:test` and `node:assert/strict`. React rendering tests use
+`renderToStaticMarkup`. Oxlint bans jsdom, Testing Library, Vitest, Jest, and bare
+`node:assert` in `test/` and `e2e/` (`repository/test-imports`).
 
-Browser specs in `e2e/` use `@playwright/test` and run only under `npm run test:e2e`.
+Browser specs under `e2e/specs/` use `@playwright/test` and run only under `npm run test:e2e`.
 They drive the built dashboard served by the built daemon, so run `npm run build`
 first. Tests in `test/` run under `npm test` and must pass on a fresh checkout.
 
@@ -276,7 +304,7 @@ edge cases - belong in `test/`.
 - **Never spend model tokens.** Use the E2E fixtures for agent binaries and SDK sessions.
   Keep both the one-shot Claude CLI and Agent SDK paths faked. Managed Pi sessions load
   the fake SDK through `MISSION_PI_SDK_MODULE`.
-- **Never add `data-testid`.** The app already labels its controls. Select by role,
+- **Never add `data-testid` or `getByTestId`** (Oxlint `repository/no-test-ids`). The app already labels its controls. Select by role,
   label, or placeholder so the spec exercises the names users rely on.
 
 A spec that opens a new modal calls `expectContentClearsBorder` from
@@ -286,21 +314,24 @@ A spec that opens a new modal calls `expectContentClearsBorder` from
 
 - Never commit secrets, tokens, credentials, local state, or operator data.
 - Never commit evidence artifacts. Proof-of-work screenshots and transcripts attach to the pull request. Evidence produced for or submitted to workflow personas is also never committed: produce it in a gitignored location and attach it to the pull request. Committed documentation imagery in `docs/images/` is documentation, not evidence.
+  The CI pull request policy gates new image paths outside `docs/images/` and established product asset locations.
 - Never modify production, signing, release, CI, or deployment configuration unless the task explicitly requires it.
 - Never let the Foreman worker touch SQLite. The daemon is the only database writer.
 - Never add a second session-eviction path. Terminal and SDK sessions leave through `Registry.beginEviction`.
+  Oxlint reserves `session_remove` construction and `sessions.delete` for the registry
+  (`repository/registry-eviction`).
 - Never infer durable cleanup from `state === "exited"`; use `session_remove`.
 - Never enable Electron `asar` or move `skills/` into `dist`.
 - Never hand-edit generated files. Change their source or generator and regenerate them.
-- Never hand-edit `CHANGELOG.md`.
+- Never hand-edit `CHANGELOG.md`. The CI pull request policy requires a Release Please PR.
 - Never rename or reorder persisted append-only IDs. See the change contracts before extending them.
 - Never use `git reset --hard`, force-push, or remove worktrees unless the user explicitly requests it and the target is verified.
-- Never add an agent name as a commit co-author.
+- Never add an agent name as a commit co-author. The CI pull request policy checks incoming commit trailers.
 - Never use an em dash in project prose.
 
 Treat these paths as controlled:
 
-- `src/shared/`: wire contracts and browser-safe shared logic only; no `node:` imports.
+- `src/shared/`: wire contracts and browser-safe shared logic only. Oxlint bans `node:` imports (`no-restricted-imports`).
 - `src/server/db.ts`: schema and migrations; upgrading databases must keep opening safely.
 - `src/server/registry.ts`: session ownership, comparators, and eviction.
 - `src/server/harness/`: harness-specific capabilities and protocol adapters.
@@ -314,6 +345,7 @@ Treat these paths as controlled:
 - Relevant tests pass.
 - `npm run typecheck` passes.
 - `npm run lint` passes.
+- `npm run konsistent` passes.
 - `npm run build` and `npm run smoke` pass when build or runtime surfaces changed.
 - `npm run test:e2e` passes when UI surfaces changed, with a spec covering the new behavior.
 - README and linked technical docs match the implementation.

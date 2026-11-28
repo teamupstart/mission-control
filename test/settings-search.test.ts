@@ -7,6 +7,9 @@ import { SetupPanel } from "../src/web/components/SetupPanel.tsx";
 import { SETUP_FAMILY_IDS } from "../src/shared/setup-catalog.ts";
 import { StorageSettingsPanelView } from "../src/web/components/StorageSettingsPanel.tsx";
 import { STORAGE_TABS } from "../src/web/lib/storage-view.ts";
+import { VoiceSettingsPanel } from "../src/web/components/VoiceSettingsPanel.tsx";
+import { VOICE_SETTINGS_TABS } from "../src/web/lib/voice-settings-tabs.ts";
+import type { VoiceConfigState } from "../src/web/useVoiceConfig.ts";
 import {
   IDLE_ACTIONS,
   idleStateFixture,
@@ -113,6 +116,18 @@ const EVERY_CATEGORY: SettingsStatus = {
   pipelines: { present: true, observing: 0 },
 };
 
+/** Voice settings before the daemon has answered: enough to draw every tab's rows. */
+const VOICE_STATE = {
+  config: null,
+  error: null,
+  update: async () => true,
+  confirmedDecisionProvider: undefined,
+  pendingDecisionProvider: undefined,
+  keyReportVersion: "",
+  observeProvider: () => true,
+  clock: { observe: () => {} },
+} as unknown as VoiceConfigState;
+
 function renderCategory(category: SettingsCategoryId): string {
   return renderToStaticMarkup(
     createElement(FeatureFlagsContext.Provider, { value: FLAGS_ON }, createElement(SettingsPageFixture, {
@@ -165,6 +180,17 @@ function renderedAnchors(): Set<string> {
       idleActions: IDLE_ACTIONS,
       onNavigate: () => {},
       jumpAnchor: tab.anchor,
+      jumpRequestId: 1,
+    }));
+    for (const m of html.matchAll(/data-anchor="([^"]+)"/g)) anchors.add(m[1]!);
+  }
+  // Voice shows one tab at a time too, selected during render by a deep link.
+  for (const tab of VOICE_SETTINGS_TABS) {
+    const html = renderToStaticMarkup(createElement(VoiceSettingsPanel, {
+      state: VOICE_STATE,
+      voice: null,
+      onNavigate: () => {},
+      jumpAnchor: tab.anchors[0],
       jumpRequestId: 1,
     }));
     for (const m of html.matchAll(/data-anchor="([^"]+)"/g)) anchors.add(m[1]!);
@@ -402,11 +428,12 @@ test("guided dispatch is reachable by the words someone would half-remember", ()
 // from the other end: the copy that says local-only means local-only, that a destination is a
 // separate decision, and that a withdrawal drops the backlog is the whole substance of the
 // choice. A consent flipped anonymously from a search row is consent nobody gave.
-test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, Workflow's two, and the two consents", () => {
+test("controls that need operator context stay on their settings panels", () => {
   const risky = SETTINGS_CONTROLS.filter((c) => c.risky).map((c) => c.id).sort();
   assert.deepEqual(risky, [
     "inspector-enabled",
     "inspector-mode",
+    "session-settings-access",
     "telemetry-collect",
     "telemetry-product",
     "workflow-checks",

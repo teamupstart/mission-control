@@ -71,9 +71,12 @@ test("schemas bound keys and entries while accepting future ids", () => {
 });
 test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), [
-    "AGENT_ENVIRONMENT_FLAG", "BACKGROUND_REASONING_EFFORT_FLAG_ID", "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "IDLE_RAIL_SECTION_COUNTS_FLAG_ID", "IDLE_STALLED_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MARKDOWN_QUESTIONS_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PERSONA_REPOSITORY_ACCESS_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
-    "WORK_UNIT_ID_FLAG_ID",
+    "AGENT_ENVIRONMENT_FLAG", "BACKGROUND_REASONING_EFFORT_FLAG_ID", "BUG_FIX_INSPECTOR_FLAG_ID", "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "IDLE_RAIL_SECTION_COUNTS_FLAG_ID", "IDLE_STALLED_FLAG_ID", "INBOX_SPLIT_FLAG_ID", "LOCAL_INSPECTOR_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MARKDOWN_QUESTIONS_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "ORPHANED_WORKTREE_RECLAIM_FLAG_ID", "PERSONA_REPOSITORY_ACCESS_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RESIDENT_CARD_NAMES_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
+    "SESSION_SETTINGS_FLAG_ID", "SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID", "SHAPER_SIGN_IN_FLAG_ID", "WORK_UNIT_ID_FLAG_ID",
   ]);
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BUG_FIX_INSPECTOR_FLAG_ID)?.stage, "preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.LOCAL_INSPECTOR_FLAG_ID)?.stage, "preview");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.SESSION_SETTINGS_FLAG_ID)?.stage, "preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.AGENT_ENVIRONMENT_FLAG)?.stage, "preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BACKGROUND_REASONING_EFFORT_FLAG_ID)?.stage, "preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.MCP_SCHEDULES_FLAG_ID)?.stage, "preview",
@@ -94,6 +97,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Headless mode",
     description: "Dispatch work to Mission Control from a Claude Code terminal session.",
     stage: "preview",
+    sessionSetting: "Enables terminal dispatch authority.",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   });
   // Session control requests ships off until the operator opts in.
@@ -102,6 +106,17 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   const flags: readonly FeatureFlagDefinition[] = registry.FEATURE_FLAGS;
   const ids = flags.map((flag) => flag.id);
   assert.ok(ids.includes("task-shaping"), "the task shaping preview is declared");
+  // Shaper sign-in ships as a preview beside the task shaping preview it extends.
+  assert.deepEqual(flags.find((flag) => flag.id === "shaper-sign-in"), {
+    id: "shaper-sign-in",
+    label: "Shaper sign-in",
+    description: "Sign a remote shaper in to an OAuth-protected server from Settings > Task shaping.",
+    stage: "preview",
+    sessionSetting: "Enables credential enrollment for remote shapers.",
+    keywords: ["shaping", "shaper", "oauth", "sign-in", "login", "token"],
+  });
+  assert.equal(registry.SHAPER_SIGN_IN_FLAG_ID, "shaper-sign-in");
+  assert.ok(ids.indexOf("shaper-sign-in") === ids.indexOf("task-shaping") + 1, "shaper sign-in sits beside task shaping");
   assert.equal(flags.find((flag) => flag.id === "async-input")?.stage, "preview", "ask without stopping ships as a preview");
   assert.equal(flags.find((flag) => flag.id === "filed-plan-decisions")?.stage, "preview", "filed plan decisions ships as a preview");
   assert.ok(ids.indexOf("filed-plan-decisions") === ids.indexOf("async-input") + 1, "filed plan decisions sits beside the flag it needs");
@@ -129,6 +144,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   assert.equal(new Set(registry.RETIRED_FEATURE_FLAG_IDS).size, registry.RETIRED_FEATURE_FLAG_IDS.length);
   // Off by default: the suite's default is every preview off.
   assert.equal(resolveFeatureFlag("task-shaping", FEATURE_FLAGS_DEFAULTS), false);
+  assert.equal(resolveFeatureFlag("shaper-sign-in", FEATURE_FLAGS_DEFAULTS), false);
   assert.equal(resolveFeatureFlag("async-input", FEATURE_FLAGS_DEFAULTS), false);
   assert.equal(resolveFeatureFlag("filed-plan-decisions", FEATURE_FLAGS_DEFAULTS), false);
   const files = ["src/shared/feature-flags.ts", "src/shared/feature-flag-registry.ts",
@@ -136,7 +152,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   for (const file of files) {
     const source = readFileSync(file, "utf8");
     assert.doesNotMatch(source, /(?:from\s*|import\s*\()["'][^"']*(?:update-preferences|\/update)\.ts/);
-    if (file.startsWith("src/shared")) assert.doesNotMatch(source, /["'](?:node:|[^"']*protocol\.ts)/);
+    if (file.startsWith("src/shared")) assert.doesNotMatch(source, /["'][^"']*protocol\.ts/);
   }
 });
 

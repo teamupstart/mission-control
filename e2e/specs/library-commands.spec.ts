@@ -194,7 +194,8 @@ test("a global default is typed, previewed, saved, and lands in the daemon's cat
   expect(telemetry.ok).toBe(true);
   // Precondition, asserted rather than assumed: every claim below is about a change of state.
   const opening = await catalog(daemon);
-  expect(opening.map((view) => view.slot)).toEqual([...SLOTS]);
+  // The persisted catalog includes the preview slot even while its authoring surfaces are hidden.
+  expect(opening.map((view) => view.slot)).toEqual([...SLOTS, "inspector"]);
   expect(opening.every((view) => view.defaultCommand === null)).toBe(true);
 
   await dashboard.goto(`${daemon.baseURL}/#/library`);

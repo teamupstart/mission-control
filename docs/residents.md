@@ -65,11 +65,18 @@ saved for a harness with an Agent SDK driver.
 
 ## Built-in residents
 
-Mission Control ships one resident ready to launch, installed on every machine:
+Mission Control installs these optional profiles. Choose **Launch** to start one.
 
 | Resident | What it does |
 |---|---|
 | Agent Shepherd | Watches the backlog and running tasks and unblocks stuck work. It removes dependencies on work that already shipped and grants repair rounds while a workflow still finds real bugs. It keeps reviewers within the task's original intent. Decisions only a human can make go to you through `request_input`. It runs Claude Code with Sonnet 5.5 at extra-high effort, and **Control other sessions** is on |
+| Bug Fix Inspector | Helps improve Mission Control over time by checking recent logs, sessions, and workflows for bugs affecting users. It runs Claude Sonnet 5.5 at extra-high effort, waits 45 minutes between automatic passes, and has a $20 spend cap per rolling 24 hours. A desktop Launch click grants read-only access to other sessions and workflows. The grant cannot steer sessions or change their workflows. It resumes inspection from a separate checkpoint for each source after an outage. |
+
+Enable **Settings → Feature flags → Bug Fix Inspector** to list and launch the built-in. Switching the preview off hides it from the catalog and prevents new launches. Existing runs keep their pinned revision. The inspector records missed history that its tools can no longer retrieve, including sessions that ended between snapshots. For known live sessions it pages back through the retained transcript to recover older turns. A desktop Launch grant can return after restart with the same run and conversation. Choose **Off** in the session control menu to revoke it. It checks the configured issue destination for duplicates and repeats the search if the destination changes.
+
+The inspector checks spend before each automatic pass. For example, if a turn starts at $19.50 and costs $1, the run records $20.50 and pauses at the next wake. Resume becomes available when enough spend leaves the rolling window.
+
+Launching the built-in inspector requests drafts for confirmed defects on its first and scheduled passes. It uses `report_product_issue` to preview each public report. Choose **Submit public issue** to publish it to the configured GitHub tracker (default `teamupstart/mission-control`). See [public product issue reporting](security.md#public-product-issue-reporting).
 
 Built-ins appear under **Built-in** in the Residents rail, and in the dock and in Dispatch beside
 your own profiles. They are **app data, not your data**. Opening one shows it read-only: Save and
@@ -95,8 +102,7 @@ reads `Launch <name> (built-in)`. Neither one hides the other. To run the built-
 your own, launch it, or archive yours once you no longer need it. Built-ins do not count toward the 200
 live-profile limit. Settings snapshots do not carry them, and a restore never archives one.
 
-The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
-the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
+The build includes the [Agent Shepherd instructions](../residents/agent-shepherd.md) and [Bug Fix Inspector instructions](../residents/bug-fix-inspector.md). See [`residents/README.md`](../residents/README.md) for how to change or add one.
 
 The **Meet your residents** guided tour walks this page on Agent Shepherd, then opens the
 [Residents drawer](#the-residents-drawer) and points at **Pin**. Start it from **Settings > Help &
@@ -218,6 +224,19 @@ is already running.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
+- **Resident name beside the call sign (preview).** While voice can hear you (Always-on listening,
+  or Push-to-talk waiting for the shortcut or held), a resident with a
+  [reference name](voice.md#reference-names) is titled on its Board card by that call sign in
+  double quotes. With the **Resident names on cards** preview (`resident-card-names`) on,
+  **Settings → Display → Board card → Resident name with call sign** offers two checkboxes
+  that also show the profile name on that card. Turn on either, or both. **Subtitle** puts it on a
+  muted line under the call sign and makes the card one short line taller. **Expanding chip**
+  keeps the card's size: the label chip spells the name out while you point at or focus the card,
+  truncating a long name inside the chip so the call sign stays readable, and it needs **Resident
+  marker** on to have a chip to expand. Both start unchecked, which shows the call sign alone. A
+  card titled by its session name, and one whose call sign is the profile name, show one name
+  whatever is checked. Turning the preview off hides the checkboxes and the extra name; what was
+  checked is kept for when it comes back.
 
 In **Drawer** placement there is no card or rail row for the marker or the pin to act on, so
 **Resident marker** and the profile's **Pin to top of column** say they apply only in Board and
@@ -252,6 +271,11 @@ and count.
   **Manage residents**, which opens the Residents page to author, edit and archive profiles.
 - **Cards.** One card per live resident, in its marker color, in the order the dock uses. The
   top line holds the chip, the name, a state dot, the resident's **⌥**-number and a fold caret.
+  While voice can hear you (Always-on listening, or Push-to-talk waiting for the shortcut or held),
+  a configured reference name appears in double quotes as the card title.
+  When live residents share a reference name, their drawer and Console entries include the ordinary
+  title in parentheses. Board Open buttons announce the same distinction.
+  Without a reference name, the card keeps its usual title.
   Under it are tags for the loop's state, iteration and next wake, and any pause or wake
   reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
   **Control** badge when the resident's revision asks for session control.
@@ -1000,9 +1024,11 @@ state folders are not automatically imported. Copy desired notes into the profil
 The [Claude memory reference](https://code.claude.com/docs/en/memory#storage-location) describes
 this setting. Codex receives the directory and instructions for explicit notes and ledgers.
 
-Open a saved profile in **Residents**, then **View state** to see its path and files, including
-text previews up to 256 KiB. **Refresh state** reloads the list. **Reset state** asks before
-permanently clearing the files, including auto-memory. Complete and close every run first;
+Open a saved profile in **Residents**, then **View state** to open the state viewer over the
+editor. It shows the directory path, lists the files, and previews one at a time, up to 256 KiB:
+`MEMORY.md` opens first when it exists, Markdown files are rendered, and any other file is shown
+verbatim. **Refresh** reloads the list and keeps the open file. Viewing never changes the files.
+**Reset state** asks before permanently clearing the files, including auto-memory. Complete and close every run first;
 pausing a loop leaves its session alive, so reset refuses it. Reset keeps profile settings and
 run history. Run completion, pauses, daemon restarts and profile archival retain the state.
 Profiles are archived rather than hard-deleted, so archival retains their state too.

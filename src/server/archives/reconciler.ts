@@ -1,7 +1,8 @@
 import { watch, type FSWatcher } from "node:fs";
-import { readdir, realpath, rm } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { isArchiveId, archiveKey, type ArchiveIdentity } from "@shared/archives.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import { unref } from "../util/timers.ts";
 import {
   readBundleFingerprint,
@@ -713,7 +714,7 @@ export class ArchiveReconciler {
         continue;
       }
       for (const entry of entries) {
-        await rm(join(trash, entry), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+        await removeTree(join(trash, entry)).catch(() => {});
       }
     }
   }

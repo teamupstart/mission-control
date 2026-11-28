@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { tempDir } from "./temp-root.mjs";
 
 test("the scout MCP tool gates older daemons, refreshes session authority, and never completes work", { timeout: 60_000 }, async () => {
-  const home = mkdtempSync(join(tmpdir(), "mission-scout-mcp-"));
+  const home = tempDir("mission-scout-mcp-");
   let supported = false;
   let explicitSupported = false;
   const submissions: { body: Record<string, unknown>; authority: unknown }[] = [];

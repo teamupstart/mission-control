@@ -90,6 +90,7 @@ Playwright uses at most four workers, and Mission Control permits one E2E invoca
 a host at a time. This is a shared limit across linked worktrees: a second full or focused run
 waits before Playwright starts any browser workers, prints the PID and checkout holding the lease,
 and begins when that run exits. The kernel releases the lease automatically if its process dies.
+If a probe connection fails, the owner logs the socket error and continues serving waiters.
 If an unrelated process owns the derived lease port, the run refuses promptly instead of waiting.
 
 The resolved worker count is a hard ceiling. A command that asks for more than four workers is
@@ -111,6 +112,9 @@ that snapshot. Vite clears its output during a rebuild; serving that mutable out
 page to receive an index whose JavaScript disappeared before it loaded, surfacing as a missing
 Dispatch button. The snapshot protects in-flight tests from later builds and is removed at
 teardown. This is build isolation, not a retry or a longer readiness timeout.
+
+Where a run's temp files and transform cache live, and how specs create fixture directories,
+is in [Test temp directories](../docs/test-temp-dirs.md).
 
 Useful flags:
 
@@ -2264,9 +2268,20 @@ depend on running before the spec that dispatches a second.
 
 ## What this layer still cannot see
 
-Playwright drives web contents. Native Electron shell behaviour - drag regions, traffic
-lights, window chrome, vibrancy - is invisible to CDP and to synthetic clicks, and stays a
-manual check.
+Playwright drives web contents. Native Electron shell behaviour such as drag regions,
+traffic lights and vibrancy needs a native fixture or a manual check.
+
+Run `desktop-voice-edge.spec.ts` with the Mac desktop unlocked. AppKit can find
+the view under the edge microphone while the screen is locked, but the fixture
+window needs focus to receive the native clicks. The spec checks mute and
+unmute, then hit-tests the blank title bar below the microphone. Where macOS
+permits desktop input, it also drags the title bar and checks that the window
+moves. To check movement manually on a Mac without that permission, run the
+focused spec and drag the green dot when it appears.
+
+```sh
+MC_E2E_MANUAL_WINDOW_DRAG=1 npm run test:e2e -- desktop-voice-edge.spec.ts
+```
 
 ## Pi installation and terminal dispatch
 
@@ -2302,7 +2317,7 @@ one window changes a second window without a reload. `headless-mode-flag.spec.ts
 `headless-mode` row, its second window and its daemon gates, and `task-shaping-flag.spec.ts` does
 the same for the Task shaping row and the daemon's `/api/shaping` gate. `feature-flags-populated.spec.ts`
 uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
-`feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
+`feature-flag-registry.ts` replaced by fixture data with preview and default-on flags.
 Use this build when a spec needs populated flag controls, search, palette or daemon writes.
 The spec owns and cleans up its private bundles. Both flag build helpers restore `NODE_ENV`
 after Vite builds, so reused workers still launch real development dashboards. `MC_E2E_EVIDENCE=1` retains panel screenshots

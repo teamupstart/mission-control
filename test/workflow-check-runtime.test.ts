@@ -15,18 +15,18 @@ import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { gitIn, originAndCloneAt, seedGitRepo } from "./helpers/git-fixture.ts";
 import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
 // assignments, so every module below arrives through a dynamic import (see db-isolation.test.ts).
 // `realpathSync` because $TMPDIR is a symlink into /private on macOS and every path this
 // subsystem stores is canonicalized.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-runtime-")));
+const home = realpathSync(tempDir("mission-check-runtime-"));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
@@ -41,7 +41,9 @@ const { ModeledCheckTreeProvider, checkHolderToken, pinModeledWorktree } =
   await import("./helpers/modeled-check-provider.ts");
 const { verifyPinnedBase } = await import("../src/server/dispatcher.ts");
 const { processStartIdentity, checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
-const { stubRun } = await import("../src/server/util/exec.ts");
+const { run: runCommand, stubRun } = await import("../src/server/util/exec.ts");
+const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
+const { NativeWorktreeGit } = await import("../src/server/worktrees/git.ts");
 
 type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").CheckSpawnOutcome;
@@ -871,6 +873,7 @@ test("a worktree that could not be handed back withholds the verdict too", async
 
   assert.equal(outcome.kind, "infrastructure");
   assert.match(outcome.kind === "infrastructure" ? outcome.reason : "", /could not be handed back/);
+  assert.equal(outcome.kind === "infrastructure" && outcome.cleanupFailed, true);
   // `returning` means AUTHORISED and failed: the row and the pin are retained and reclamation
   // retries, and no second lease is possible for this attempt in the meantime.
   assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returning");
@@ -1187,6 +1190,109 @@ test("engine shutdown refuses a check released after lease acquisition", { skip:
     await (shutdown ?? engine.stop());
     store.cancelRun(`run-${id}`, "test_cleanup");
   }
+});
+
+test("a second CodeRabbit hand-back probe timeout keeps the lease pinned and the run blocked", async () => {
+  const { clone: repoRoot } = originAndCloneAt(mkdtempSync(join(home, "hand-back-probe-")));
+  writeFileSync(join(repoRoot, "keep.txt"), "reviewed change\n");
+  gitIn(repoRoot, "-c", "commit.gpgsign=false", "commit", "-qam", "Change under review");
+  const headSha = gitIn(repoRoot, "rev-parse", "HEAD");
+  const store = seedCheckRun("hand-back-probe", repoRoot, headSha, "coderabbit");
+  const runId = "run-hand-back-probe";
+  const submissionId = "submission-hand-back-probe";
+  const captured = contextAt(headSha);
+  captured.evidence.coderabbit = {
+    source: ".coderabbit.yaml", digest: "a".repeat(64), enabled: true, state: "enabled", diagnostic: "enabled",
+  };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson(captured), evidence: workflowJson(captured.evidence),
+    fingerprint: submissionId, status: "running",
+  }, Date.now());
+
+  let now = Date.now();
+  let executions = 0;
+  let timedOutProbes = 0;
+  let failProbe = true;
+  const pool = new WorktreeManager(db, {
+    occupancy: async paths => new Map(paths.map(path => [path, { status: "known", occupants: [] }])),
+    git: new NativeWorktreeGit(async (bin, args, options) => {
+      if (failProbe && executions > 0 && args.slice(2).join(" ") === "ls-remote --symref origin HEAD") {
+        assert.equal(options?.timeoutMs, 30_000);
+        timedOutProbes++;
+        return { ...stubRun({ code: 1, stdout: "", stderr: "" }), outcomeUnknown: true, timedOut: true };
+      }
+      return runCommand(bin, args, options);
+    }),
+  });
+  const leases = new CheckLeaseManager(db, { manager: pool, now: () => now });
+  const runtime = new CheckRuntime(leases, {
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    supervise: async () => {
+      executions++;
+      return { result: { kind: "exited", exitCode: 2, output: "", truncatedBytes: 0 }, emptiness: "empty", supervisor: null };
+    },
+  });
+  const engine = new WorkflowEngine(store, () => {}, {
+    workflowPolicy: () => ({
+      liveEnabled: false, repoAllowlist: [repoRoot], kindWorkflowDefaults: {},
+      retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
+      checksEnabled: true, skipPassedJudges: true,
+    }),
+    workflowCommand: slot => ({ ...emptyWorkflowCommandView(slot), maxRuns: 1 }),
+    checkDeps: attempt => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: runtime.executorFor(attempt),
+    }),
+    unresolvedCheckLease: (submission, node) => leases.unresolvedLeaseForNode(submission, node),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission(submissionId);
+    await waitFor(() => store.getRun(runId)?.status === "blocked", "CodeRabbit never blocked on hand-back", 60_000);
+    const first = store.latestAttemptForNode(submissionId, "gate")!;
+    assert.match(first.error ?? "", /network probe timeout: git ls-remote --symref origin HEAD timed out after 30 s/);
+    assert.equal(timedOutProbes, 1);
+    const lease = leaseRows.get(first.id)!;
+    assert.equal(lease.cleanupState, "returning");
+    assert.equal(lease.provider, "mission");
+    assert.ok(lease.leaseId);
+    const lookup = () => pool.lookupLease({ path: lease.leasePath, leaseId: lease.leaseId!, owner: { kind: "check", key: first.id } });
+    const before = lookup();
+    assert.equal(before.state, "active");
+
+    now += 60_000;
+    await leases.reclaimLeaked(runtime.groupRecovery);
+    engine.resumeClearedCheckCleanup();
+
+    assert.equal(timedOutProbes, 2, "reclamation did not retry the timed-out probe");
+    assert.equal(leaseRows.get(first.id)?.cleanupState, "returning");
+    assert.deepEqual(lookup(), before, "the failed probe changed native lease ownership");
+    assert.ok(leases.pinnedPaths().includes(lease.leasePath));
+    assert.equal(store.getRun(runId)?.currentPhase, "check_cleanup_unresolved");
+    assert.equal(store.getRun(runId)?.status, "blocked");
+    assert.equal(store.getSubmission(submissionId)?.status, "failed");
+    const checkAttempts = store.listAttempts(submissionId).filter(attempt => attempt.nodeId === first.nodeId);
+    assert.deepEqual(checkAttempts.map(attempt => attempt.id), [first.id]);
+    assert.equal(executions, 1);
+    assert.equal(store.checkRunsSpent(runId, "coderabbit", null), 0);
+    assert.ok(!store.listEvents(runId).some(event =>
+      event.kind === "check_cleanup_resolved" || event.kind === "command_action_required"));
+  } finally {
+    await engine.stop();
+    failProbe = false;
+    now += 120_000;
+    await leases.reclaimLeaked(runtime.groupRecovery);
+    await pool.stop();
+  }
+  const returned = leaseRows.get(store.latestAttemptForNode(submissionId, "gate")!.id)!;
+  assert.equal(returned.cleanupState, "returned");
+  assert.equal(pool.lookupLease({
+    path: returned.leasePath,
+    leaseId: returned.leaseId!,
+    owner: { kind: "check", key: returned.attemptId },
+  }).state, "released");
+  assert.equal(gitIn(returned.leasePath, "rev-parse", "HEAD"), gitIn(repoRoot, "rev-parse", "origin/main"));
 });
 
 /**

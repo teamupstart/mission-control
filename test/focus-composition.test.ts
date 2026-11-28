@@ -1,12 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 // Isolate the daemon's SQLite DB before any value import that can resolve it loads - see
 // the preamble note in `ui-config-store.test.ts`.
-process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-focus-"));
+process.env.HARNESS_HOME = tempDir("harness-focus-");
 const { focus } = await import("../src/server/actions.ts");
 
 import {
@@ -20,6 +17,7 @@ import {
 } from "./helpers/terminal-fakes.ts";
 import { mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 import type { MuxSessions } from "../src/server/terminal/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: that Focus is a COMPOSITION of two axes and not a tmux special case.
 //

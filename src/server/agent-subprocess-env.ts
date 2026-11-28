@@ -81,7 +81,7 @@ function outcomeIsStale(path: string, now: number): boolean {
 
 /**
  * Remove only expired Pipeline caller files left by a previous daemon crash, and turn-one outcome
- * files (`turnOneOutcomePath`) whose launch is over: their wrapper has removed its state home,
+ * entries (`turnOneOutcomePath`) whose launch is over: their wrapper has removed its state home,
  * and the dispatch that would have read and removed them died with that daemon.
  */
 export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
@@ -99,10 +99,14 @@ export function reconcileDisposableAgentStateHomes(now = Date.now()): void {
       // daemon's dispatch may not have read it yet: leave it.
       if (!liveDisposableStateHomes.has(outcomeOf) && !existsSync(outcomeOf) && outcomeIsStale(join(DISPOSABLE_STATE_ROOT, entry), now)) {
         try {
-          rmSync(turnOneOutcomePath(outcomeOf), { force: true });
+          // The wrapper only ever writes a file here, but whatever else holds the name - a directory
+          // left by an interrupted run, say - is just as orphaned, and without `recursive` it would
+          // fail with EISDIR on every start and never be reclaimed.
+          rmSync(turnOneOutcomePath(outcomeOf), { recursive: true, force: true });
         } catch (error) {
-          // One entry that cannot be removed never stops the rest of the scan.
-          console.warn(`[launch] could not remove the orphaned turn-one outcome ${entry}:`, error);
+          // One entry that cannot be removed never stops the rest of the scan. One line, not a
+          // stack: a stuck entry is retried on every start, and its trace would bury real warnings.
+          console.warn(`[launch] could not remove the orphaned turn-one outcome ${entry}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       continue;

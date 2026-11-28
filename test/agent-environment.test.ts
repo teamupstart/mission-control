@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, renameSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
+import { tempDir } from "./temp-root.mjs";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -38,7 +38,7 @@ test("an unclaimed warning cannot be taken by a replaced launch directory and is
   const { rememberTerminalLaunchWarning, restoreTerminalLaunchWarning, pruneTerminalLaunchWarnings } =
     await import("../src/server/terminal-launch-warnings.ts");
   const { openDb } = await import("../src/server/db.ts");
-  const dir = mkdtempSync(join(tmpdir(), "agent-warning-"));
+  const dir = tempDir("agent-warning-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const home = join(dir, "launch");
   mkdirSync(home);
@@ -69,7 +69,7 @@ test("Agent environment accepts 32 unique names and rejects a 33rd", () => {
 });
 
 test("each launch reads selected names afresh, prefers the daemon and omits its token under an alias", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "agent-environment-test-"));
+  const dir = tempDir("agent-environment-test-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const shell = join(dir, "shell");
   const previous = { ...process.env };
@@ -120,7 +120,7 @@ test("each launch reads selected names afresh, prefers the daemon and omits its 
 });
 
 test("terminal handoff enforces SDK isolation before either launch command executes", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "terminal-environment-test-"));
+  const dir = tempDir("terminal-environment-test-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const guard = join(dir, "resume-guard.mjs");
   await build({ entryPoints: ["src/server/terminal/resume-guard.ts"], outfile: guard, platform: "node", format: "esm", bundle: true });
@@ -302,7 +302,7 @@ test("terminal handoff enforces SDK isolation before either launch command execu
 });
 
 test("the handoff refuses a valid ticket at its deadline even before the expiry timer runs", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "terminal-deadline-"));
+  const dir = tempDir("terminal-deadline-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const start = Date.now();
   t.mock.timers.enable({ apis: ["Date"], now: start });
@@ -324,7 +324,7 @@ test("the handoff refuses a valid ticket at its deadline even before the expiry 
 });
 
 test("startup reclaims a crashed handoff owner and leaves live, foreign and unexpected entries alone", { timeout: 15_000 }, async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "agent-env-crash-"));
+  const home = tempDir("agent-env-crash-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const script = `
     import { openTerminalEnvironmentHandoff } from "./src/server/terminal/environment-handoff.ts";
@@ -361,7 +361,7 @@ test("startup reclaims a crashed handoff owner and leaves live, foreign and unex
 });
 
 test("shutdown removes pending handoff sockets and directories and refuses new handoffs", async (t) => {
-  const cwd = mkdtempSync(join(tmpdir(), "terminal-environment-stop-"));
+  const cwd = tempDir("terminal-environment-stop-");
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const start = () => openTerminalEnvironmentHandoff({ cwd, stateHome: cwd }, { extraEnv: {}, missing: ["MISSING"] });
   const pending = await Promise.all([start(), start()]);

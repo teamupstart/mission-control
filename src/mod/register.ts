@@ -29,6 +29,7 @@ import { runQueued } from "./write-queue.ts";
  */
 export function register(on: EngineOn, _options: unknown): void {
   let core: ModCore | null = null;
+  let dispatchRequiresCommand = false;
   // What the flows need to speak for this session (7.11): set at session start, cleared at its end.
   let flowSession: { sessionId: string; cwd: string; live: () => boolean; reminded: Set<string> } | null = null;
   let flowHost: FlowHostType | null = null;
@@ -70,9 +71,11 @@ export function register(on: EngineOn, _options: unknown): void {
     flowHost = host;
     flowGate = createFlowGate();
     flowSession = { sessionId, cwd: e.cwd, live: () => mine === generation, reminded: new Set<string>() };
-    // The command and the tool are always registered: with the flag off they answer that it is off.
+    // The slash command is available even on hosts without a tool execution hook.
     await $.command.register({ name: DISPATCH_COMMAND, description: "Dispatch a task to Mission Control, or open its pane", argumentHint: "[kind] [what to do] | inbox | check | pane" }).catch((error: unknown) => logRegistrationFailure($, "command", error));
-    await $.tool.register({ name: DISPATCH_TOOL, description: START_DISPATCH_DESCRIPTION, inputSchema: START_DISPATCH_SCHEMA }).catch((error: unknown) => logRegistrationFailure($, "tool", error));
+    if (!dispatchRequiresCommand) {
+      await $.tool.register({ name: DISPATCH_TOOL, description: START_DISPATCH_DESCRIPTION, inputSchema: START_DISPATCH_SCHEMA }).catch((error: unknown) => logRegistrationFailure($, "tool", error));
+    }
     if (mine !== generation) return next(e);
     const started = createModCore(host, {
       sessionId,
@@ -130,7 +133,8 @@ export function register(on: EngineOn, _options: unknown): void {
     // when the prompt names Mission Control with a run or schedule word. The tool works without it.
     const intent = core?.phase() === "active" && typeof e.text === "string" ? dispatchIntentFor(e.text) : null;
     if (!intent) return next(e);
-    return next({ ...e, context: [...(Array.isArray(e.context) ? e.context : []), intentNudge(intent)] });
+    const nudge = dispatchRequiresCommand ? DISPATCH_COMMAND_HINT : intentNudge(intent);
+    return next({ ...e, context: [...(Array.isArray(e.context) ? e.context : []), nudge] });
   });
 
   // The banner and the band, above the prompt (7.12, 7.21): nothing while neither is set.
@@ -189,7 +193,19 @@ export function register(on: EngineOn, _options: unknown): void {
       .catch((error: unknown) => reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error, session));
     return {};
   });
-  on("tool.run", { tool: DISPATCH_TOOL_ID }, async ($, e) => {
+  // A wildcard loads on engines that lack tool.run. Only the post-permission
+  // execution event can send the brief. All checks and calls continue to core.
+  on("tool.*", { tool: DISPATCH_TOOL_ID }, async ($, e, next) => {
+    if (next.event !== "tool.run") {
+      const outcome = await next(e);
+      // Older hosts execute a placeholder for registered tools. Give that specific
+      // error an actionable message; preserve permission denials and other errors.
+      if (next.event === "tool.call" && isUnhandledDispatch(outcome)) {
+        dispatchRequiresCommand = true;
+        return { deny: DISPATCH_COMMAND_HINT };
+      }
+      return outcome;
+    }
     if (!flowHost || !flowSession || core?.phase() !== "active") return { result: FLOW_UNAVAILABLE_TEXT };
     const host = flowHost;
     // Captured now: by the time a failure arrives the session may have ended and cleared the module's copy.
@@ -202,6 +218,15 @@ export function register(on: EngineOn, _options: unknown): void {
       return { result: FLOW_FAILED_TEXT };
     }
   });
+}
+
+const DISPATCH_COMMAND_HINT = "Ask the person to run /mission-dispatch in this Claude Code version.";
+
+function isUnhandledDispatch(outcome: unknown): boolean {
+  return typeof outcome === "object" && outcome !== null && !("deny" in outcome)
+    && "isError" in outcome && outcome.isError === true && "text" in outcome
+    && typeof outcome.text === "string"
+    && outcome.text.includes("registered the tool start_dispatch but no tool.call hook answered this call");
 }
 
 /** A command or tool the engine refused to register simply stops existing; this leaves a line on the debug channel to say why. */
@@ -231,12 +256,12 @@ interface GlanceView {
 
 /* ------------------------------------------------------------------ the engine surface used */
 
-type Hook = ($: Engine, e: EngineEvent, next: (e: EngineEvent) => Promise<unknown> | unknown) => unknown;
+type Hook = ($: Engine, e: EngineEvent, next: { (e: EngineEvent): unknown; event: string }) => unknown;
 type EngineOn = {
   (event: "session.start" | "session.end" | "prompt.submit", hook: Hook): void;
   (event: "ui.render", matcher: { component: string; requestId?: string }, hook: Hook): void;
   (event: "command.run", matcher: { command: string }, hook: Hook): void;
-  (event: "tool.run", matcher: { tool: string }, hook: Hook): void;
+  (event: "tool.*", matcher: { tool: string }, hook: Hook): void;
 };
 // The engine's events are richer; this is the part the mod reads.
 type EngineEvent = { cwd: string; isInteractive: boolean; props?: { hasSurvey?: boolean; placement?: "dock" | "inline" | "widget"; bodyColumns?: number }; [field: string]: unknown };

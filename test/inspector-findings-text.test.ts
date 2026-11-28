@@ -8,6 +8,7 @@ import {
   inspectorFindingsMinimumBytes,
   omittedFindingsLine,
   renderInspectorFindings,
+  renderLocalInspectorFindings,
 } from "../src/server/inspector/findings-text.ts";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { InspectorComment } from "../src/shared/types.ts";
@@ -49,6 +50,17 @@ function finding(
 }
 
 const ONLY_COPY = "Not posted on GitHub. This message is the only copy.";
+
+test("local findings render their location, body and fingerprint with their own fields", () => {
+  const section = renderLocalInspectorFindings([{
+    fingerprint: "previous", severity: "major", path: "src/unchanged.ts", line: 12,
+    title: "Repair the route", body: "The prior defect remains.",
+  }], { budgetBytes: 8_000 });
+  assert.deepEqual(section, {
+    text: "## MAJOR - Repair the route\nLocation: src/unchanged.ts:12\nThe prior defect remains.\nFingerprint: previous",
+    shown: 1, omitted: 0, truncated: false,
+  });
+});
 
 test("every posted marker reads what the row proves", () => {
   const cases: Array<[string, Partial<InspectorComment>, string]> = [

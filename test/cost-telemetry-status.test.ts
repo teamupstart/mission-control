@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What the Cost panel is allowed to claim about telemetry, and when.
 //
@@ -40,7 +40,7 @@ import { join } from "node:path";
 // `MISSION_MANAGED_SETTINGS_ROOT` is redirected for the same reason: the status also reports
 // what this Mac's managed Claude Code policy does with metrics, and that is the developer's.
 
-const home = mkdtempSync(join(tmpdir(), "mission-cost-status-"));
+const home = tempDir("mission-cost-status-");
 process.env.MISSION_HOME = home;
 const settingsPath = join(home, "claude-settings.json");
 process.env.CLAUDE_SETTINGS_PATH = settingsPath;

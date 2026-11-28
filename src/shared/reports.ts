@@ -7,6 +7,7 @@
 // holds a completion, never counts toward the open-question limit, and Foreman never reads it.
 // It lives in its own table (`reports`) and outlives the session that posted it.
 
+import { spokenNameLabel, type SpokenNameIdentity } from "./voice-names.ts";
 import { canMessage, type Messageable } from "./pane.ts";
 import { isShippingTaskKind } from "./task.ts";
 import type { ResidentRunSummary } from "./residents.ts";
@@ -26,11 +27,29 @@ export const REPORT_LIMITS = {
   path: 1024,
   /** The attached document, copied into the state home when the report is posted. */
   documentBytes: 2 * 1024 * 1024,
+  /**
+   * The files an HTML or Markdown document links to inside its own directory, stored with it so
+   * Publish as scout can archive them beside the page. A file past either bound is not stored,
+   * and the published page lists it as missing.
+   */
+  companionFiles: 128,
+  companionBytes: 16 * 1024 * 1024,
+  /**
+   * How many linked paths posting looks up in the checkout, in sorted order. Each lookup walks
+   * the path, so a page of thousands of links to files that do not exist would otherwise stall
+   * the post without storing anything. A link past this bound is not stored either.
+   */
+  companionLookups: 512,
 } as const;
 
 /** How a report left to read. Null while it is unread. */
 export const REPORT_READ_BY = ["mark-read", "reply", "follow-up", "mark-all"] as const;
 export type ReportReadBy = (typeof REPORT_READ_BY)[number];
+
+/** The operator's Mark read action, also available for a sole unread report without a drawn card. */
+export function markReportRead<T>(id: string, post: (path: string) => T): T {
+  return post(`/api/reports/${encodeURIComponent(id)}/read`);
+}
 
 /** What kind of document a report may attach. */
 export const REPORT_DOCUMENT_KINDS = ["html", "markdown"] as const;
@@ -55,8 +74,10 @@ export const REPORT_ANNOUNCE_GRACE_MS = 20_000;
  * is one author, and `session:<sessionId>` for anything else.
  */
 export interface ReportAuthor {
-  /** Both labels at post time when a distinct spoken name existed. Older rows have just name. */
+  /** The raw voice-on and voice-off names at post time. Older rows have just name. */
   labels?: { spoken: string; fallback: string };
+  /** Present when the spoken label is a reference name. True while that label is active. */
+  referenceNameActive?: boolean;
   key: string;
   name: string;
   residentProfileId: string | null;
@@ -64,6 +85,16 @@ export interface ReportAuthor {
 
 export function reportAuthorName(author: ReportAuthor, voice: boolean): string {
   return author.labels ? (voice ? author.labels.spoken : author.labels.fallback) : author.name;
+}
+
+export function reportAuthorIdentity(author: ReportAuthor, voice?: boolean): SpokenNameIdentity {
+  const name = voice === undefined ? author.name : reportAuthorName(author, voice);
+  const reference = author.referenceNameActive !== undefined && (voice ?? author.referenceNameActive);
+  return reference ? { name, isReferenceName: true } : { name };
+}
+
+export function reportAuthorLabel(author: ReportAuthor, voice?: boolean): string {
+  return spokenNameLabel(reportAuthorIdentity(author, voice));
 }
 
 export interface ReportItem {
@@ -210,6 +241,7 @@ export interface ReportMute {
   authorKey: string;
   /** The author's display name when it was muted, so Settings can name it after it is gone. */
   authorName: string;
+  isReferenceName?: true;
   mutedAt: number;
 }
 
@@ -229,11 +261,6 @@ export function reportReceipt(report: Pick<ReportItem, "id" | "version">): strin
 }
 
 // ---- replying to a report, and following one up (Phase 3) ----
-//
-// The text builders below are a fixed contract: the voice plan calls `reportReplyText`,
-// `unseenReportsNote`, `POST_REPORT_LINE` and `resolveMarkReadTarget` with these signatures.
-// Nothing here appends anything to a typed message; only voice appends the note and the line,
-// and only to spoken ones.
 
 /** How long ago a report was posted, as the reply names it: "just now", "12 minutes ago". */
 export function reportAgeText(createdAt: number, now: number): string {
@@ -283,9 +310,6 @@ export function unseenReportsNote(
     ? `Your operator has not read your report ${listed} yet.`
     : `Your operator has not read ${unseen.length} of your reports yet: ${listed}.`;
 }
-
-/** The line voice adds to a spoken instruction. */
-export const POST_REPORT_LINE = "When you have finished this, post a report.";
 
 /**
  * Which report "{name}, mark read" means: the report open on screen when it is that author's,

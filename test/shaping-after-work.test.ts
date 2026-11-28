@@ -4,15 +4,15 @@
 // both real callers are driven through `WorkflowManager` at the end.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import type { PendingTurn, ServerEvent, Session, Task } from "../src/shared/types.ts";
 import type { TaskShaping } from "../src/shared/shaping.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-shaping-after-work-"));
+const home = tempDir("mission-shaping-after-work-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

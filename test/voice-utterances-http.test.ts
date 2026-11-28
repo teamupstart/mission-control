@@ -1,12 +1,15 @@
+import { deferred } from "./helpers/deferred.ts";
 import { VOICE_HELLO_LAPSE_MS, VOICE_SHELL_REPORT_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION } from "../src/shared/voice.ts";
 import type { HeardEntry } from "../src/shared/voice-routing.ts";
 import assert from "node:assert/strict";
-import { beforeEach, test } from "node:test";
+import { beforeEach, test, type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { model, utterancePath, listenerId, act, app, applyFeatureFlagIntent, capture, cards, home, interrupts, name, pending, post, queued, readHeard, registry, roster, say, sdk, token, voiceStateStore } from "./helpers/voice-http.ts";
 
+import { ListenerClient } from "../src/voice-listener/client.ts";
+import { playRecording } from "../src/voice-listener/playback.ts";
 import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 
@@ -244,6 +247,19 @@ test("a newer dated press supersedes a hold before the delayed key-up arrives", 
   assert.deepEqual(voiceStateStore.releasedCapture(second.revision), { revision: second.revision, pressedAtUs: (now + 30) * 1000, at: now + 50 });
   await down(now + 30);
   assert.equal(voiceStateStore.directive().capture, false, "replaying the completed press cannot reopen the microphone");
+});
+
+test("a release delivered before its press keeps call capture closed until a new hold", async t => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
+  const report = async (body: object) =>
+    (await (await post("/voice/shell-report", { callActive: true, ...body }, token)).json()).state;
+  assert.equal((await report({ reportedAtHostUs: 800_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 790_000 })).mode, "auto-muted");
+  const released = voiceStateStore.directive();
+  assert.equal(released.capture, false);
+  assert.equal((await report({ reportedAtHostUs: 500_000, pushToTalk: true, pushToTalkPressedAtHostUs: 150_000 })).mode, "auto-muted");
+  assert.deepEqual(voiceStateStore.directive(), released);
+  assert.equal((await report({ reportedAtHostUs: 990_000, pushToTalk: true, pushToTalkPressedAtHostUs: 900_000 })).mode, "push-to-talk");
+  assert.equal(voiceStateStore.directive().capture, true);
 });
 
 test("a future shell observation cannot change call state or block the next valid observation", async () => {
@@ -635,6 +651,41 @@ test("a cancel retried after toggling voice cannot dismiss a new card", async ()
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["new", "cancelled"]);
 });
 
+test("a dedicated hold opens the separate Cancel window on release while the microphone stays off", async t => {
+  const configure = (listeningMode: string) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ listeningMode }) });
+  assert.equal((await configure("push-to-talk")).status, 200);
+  t.after(async () => { await configure("always-on"); });
+  const headers = { "x-harness-token": token, "x-voice-listener-id": listenerId };
+  const poll = () => app.request("/voice/listener/directive", { headers });
+  const { pushToTalkSession, configuredHotkey } = voiceStateStore.state();
+  const report = (down: boolean, at: number) => post("/voice/shell-report", {
+    pushToTalkSession, registeredHotkey: configuredHotkey, capabilities: { hotkey: { available: true } },
+    reportedAtHostUs: at, pushToTalk: down,
+    ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }),
+  }, token);
+  assert.equal((await (await poll()).json()).capture, false);
+  await report(true, voiceHostTimeUs());
+  const hold = await poll();
+  const revision = hold.headers.get("x-voice-held-revision");
+  assert.ok(revision);
+  const start = voiceHostTimeUs();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const up = voiceHostTimeUs();
+  await report(false, up);
+  assert.equal((await (await poll()).json()).capture, false);
+  const utterance = await app.request(utterancePath(revision), { method: "POST", headers: {
+    ...headers, host: "localhost", "content-type": "application/json",
+    "x-voice-capture-start-host-us": String(start), "x-voice-capture-end-host-ms": String(Math.floor(up / 1000)),
+  }, body: JSON.stringify(capture("Steve wait for cancel", "held-message")) });
+  assert.deepEqual(await utterance.json(), { accepted: true });
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.equal((await (await poll()).json()).capture, false);
+  await act("held-message", "cancel");
+  assert.equal(cards.at(-1)?.state, "cancelled");
+  assert.deepEqual(queued("Steve"), []);
+});
+
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   await say("Steve check the build", "older");
@@ -650,6 +701,72 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
   assert.deepEqual(cards.map((c) => c.reason === "delivering" ? c.reason : c.state), ["pending", "pending", "cancelled", "delivering", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
+});
+
+test("a protocol 4.0 listener keeps its microphone revision through countdowns and delay edits", async t => {
+  await post("/voice/listener/hello", { backend: "fluidaudio", version: "4.0", devices: [],
+    microphone: "granted", modelLoaded: true, reportsSpeechOnset: true }, token);
+  const headers = { "x-harness-token": token, "x-voice-listener-id": listenerId };
+  const poll = async (revision = "") => (await app.request("/voice/listener/directive?revision=" + revision, { headers })).json();
+  const original = await poll();
+  const setDelay = (endOfSpeechMs: number) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ endOfSpeechMs }) });
+  t.after(async () => { await setDelay(original.endOfSpeechMs); });
+  const waiting = poll(original.revision);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  await say("Steve keep listening", "legacy-countdown");
+  assert.deepEqual(await poll(), original);
+  assert.equal((await setDelay(5000)).status, 200);
+  await act("legacy-countdown", "send-now");
+  assert.deepEqual(await poll(), original);
+  assert.deepEqual(await (await post(utterancePath(original.revision), capture("Will still here"), token)).json(), { accepted: true });
+  await post("/api/voice/mute", { muted: true });
+  const muted = await waiting;
+  assert.equal(muted.capture, false);
+  assert.notEqual(muted.revision, original.revision);
+  await post("/api/voice/mute", { muted: false });
+  assert.deepEqual(await (await post(utterancePath(original.revision), capture("Will stale audio"), token)).json(), { accepted: false });
+});
+
+test("spoken cancel beats a four-second delivery window with a five-second speech delay", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const configure = (endOfSpeechMs: number) => app.request("/api/voice/config", {
+    method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ endOfSpeechMs, cancelWindow: { enabled: true, seconds: 4 } }),
+  });
+  const originalDelay = voiceStateStore.directive().endOfSpeechMs;
+  assert.ok(originalDelay !== undefined);
+  t.after(async () => { await configure(originalDelay); });
+  assert.equal((await configure(5000)).status, 200);
+  const headers = { "x-harness-token": token, "x-voice-listener-id": listenerId };
+  const directive = async (revision = "") => (await app.request("/voice/listener/directive?revision=" + revision, { headers })).json();
+  const ordinary = await directive();
+  assert.equal(ordinary.endOfSpeechMs, 5000);
+  const waiting = directive(ordinary.revision);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  await say("Steve keep this message", "long-delay-keep");
+  assert.equal(cards.at(-1)?.deadline, now + 4000);
+  assert.equal((await directive()).endOfSpeechMs, 500);
+  const listeningForCancel = await waiting;
+  assert.equal(listeningForCancel.endOfSpeechMs, 500);
+  assert.equal(listeningForCancel.captureRevision, ordinary.captureRevision);
+
+  // A second countdown overlaps the first one. Speak for 300 ms, then wait for the listener's boundary.
+  t.mock.timers.tick(100);
+  await say("Steve drop this one", "long-delay-drop");
+  const cancel = capture("cancel");
+  t.mock.timers.tick(300 + listeningForCancel.endOfSpeechMs);
+  assert.deepEqual(await (await post(utterancePath(ordinary.captureRevision), cancel, token)).json(), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["long-delay-drop", "cancelled"]);
+  assert.equal((await configure(3000)).status, 200);
+  assert.equal((await directive()).endOfSpeechMs, 500);
+  const closing = directive(listeningForCancel.revision);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  t.mock.timers.tick(now + 4000 - Date.now());
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(queued("Steve"), ["keep this message"]);
+  assert.equal((await closing).endOfSpeechMs, 3000);
 });
 
 test("quoted or comma-prefixed cancel leaves the pending card open until a bare cancel dismisses it", async () => {
@@ -837,12 +954,14 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
     await say("Steve, " + message, id);
     assert.equal((await act(id, "send-now")).status, 200);
     assert.deepEqual([cards.at(-1)?.state, queued("Steve").at(-1)], ["queued", message]);
+    assert.equal(cards.at(-1)?.parts[0]?.command, undefined);
   }
   assert.equal(interrupts.length, before);
   for (const command of ["stop", "Stop!"]) {
     const id = randomUUID();
     await say("Steve, " + command, id);
     assert.equal((await act(id, "send-now")).status, 409);
+    assert.equal(cards.at(-1)?.parts[0]?.command, "stop");
   }
   assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
 });
@@ -980,9 +1099,40 @@ test("cancelling a split keeps the immediate interrupt and drops only the ordina
   await say("Steve, inspect the build, and Will, stop", "split-cancel");
   await resolved("split-cancel");
   assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  const pending = cards.at(-1)!;
+  assert.equal(pending.state, "pending");
+  assert.deepEqual(pending.parts.map(part => part.outcome), [undefined, "sent"]);
+  assert.equal(pending.deadline, cards.find(card => card.id === "split-cancel" && card.deadline !== null)?.deadline);
+  assert.deepEqual(registry.snapshot().voiceCards, [pending]);
+  const firstCancelFrame = cards.length;
   assert.equal((await act("split-cancel", "cancel")).status, 200);
   assert.equal(queued("Steve").length, 0);
+  const outcomes = cards.slice(firstCancelFrame).map(card => card.parts.map(part => part.outcome));
+  assert.deepEqual(outcomes, [["cancelled", "sent"]]);
   assert.match((await readHeard())[0]!.detail, /Part 1 \(Steve\) cancelled\. Part 2 \(Will\) sent\./);
+});
+
+test("cancelling while a split stop is in flight preserves its status through reconnect and settlement", async (t) => {
+  model.decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  let finish!: () => void;
+  const delayed = new Promise<void>(resolve => { finish = resolve; });
+  const driver = t.mock.method(sdk, "interrupt", async () => { await delayed; return "idle"; });
+  await say("Steve, stop, and Will, inspect the build", "delayed-stop");
+  await resolved("delayed-stop");
+  try {
+    assert.equal((await act("delayed-stop", "cancel")).status, 200);
+    const stopping = cards.at(-1)!;
+    assert.deepEqual(stopping.parts.map(p => [p.immediateStop, p.outcome]), [[true, undefined], [undefined, "cancelled"]]);
+    assert.deepEqual(registry.snapshot().voiceCards, [stopping]);
+    assert.equal((await act("delayed-stop", "cancel")).status, 409);
+  } finally {
+    finish();
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  assert.equal(driver.mock.callCount(), 1);
+  assert.deepEqual(cards.at(-1)?.parts.map(p => p.outcome), ["sent", "cancelled"]);
+  assert.equal(queued("Will").length, 0);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
 });
 
 test("Recently heard names both deliveries when the second part of a split fails", async (t) => {
@@ -990,6 +1140,11 @@ test("Recently heard names both deliveries when the second part of a split fails
   t.mock.method(sdk, "interrupt", async () => null);
   await say("Steve, check the queue, and Will, stop", "partial");
   await resolved("partial");
+  const pending = cards.at(-1)!;
+  assert.equal(pending.state, "pending");
+  assert.deepEqual(pending.parts.map(part => part.outcome), [undefined, "failed"]);
+  assert.match(pending.parts[1]!.detail!, /no live embedded driver/);
+  assert.deepEqual(registry.snapshot().voiceCards, [pending]);
   assert.equal((await act("partial", "send-now")).status, 200);
   assert.equal(queued("Steve").at(-1), "check the queue");
   const entry = (await readHeard())[0]!;
@@ -1445,4 +1600,725 @@ test("a busy session's accepted turn stays queued on its card and in Recently he
   assert.ok(session.pendingTurns.some((turn) => turn.text === "review the logs" && turn.claimedAt === null));
   assert.deepEqual(cards.map((card) => [card.state, card.reason]), [["pending", "exact"], ["pending", "delivering"], ["queued", "exact"]]);
   assert.equal((await readHeard())[0]?.outcome, "queued");
+});
+
+test("speech onset pins the in-window message across segmentation and a later capture", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const hostUs = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => hostUs + (Date.now() - now) * 1000);
+  const setWindow = async (seconds: number) => {
+    const response = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ cancelWindow: { enabled: true, seconds } }) });
+    assert.equal(response.status, 200);
+  };
+  await setWindow(10);
+  await say("Will keep the older message", "onset-older");
+  t.mock.timers.tick(100);
+  await setWindow(1);
+  await say("Will discard this message", "onset-target");
+  t.mock.timers.tick(970);
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const revision = voiceStateStore.directive().captureRevision;
+  assert.ok(revision);
+  const onset = await post("/voice/listener/speech?revision=" + revision, { speechStartUs, phase: "start" }, token);
+  t.mock.timers.tick(10);
+  await setWindow(10);
+  await say("Will keep the newer message", "onset-newer");
+  // Model a longer end-of-speech setting, then decoder and HTTP latency.
+  t.mock.timers.tick(5500);
+  const response = await app.request(utterancePath(revision), { method: "POST", headers: {
+    host: "localhost", "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs - 100000), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(speechStartUs / 1000) + 5300),
+  }, body: JSON.stringify({ ...capture("Cancel."), capturedAt: now + 970 }) });
+  assert.deepEqual(await response.json(), { accepted: true });
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), ["onset-older", "onset-newer"]);
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(queued("Will"), ["keep the older message", "keep the newer message"]);
+  assert.equal(onset.status, 200);
+  assert.deepEqual(cards.filter(card => card.state === "cancelled").map(card => card.id), ["onset-target"]);
+});
+
+test("a pre-release cancel onset arriving after key-up reserves the countdown until the held transcript arrives", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const baseUs = Math.floor(voiceHostTimeUs() / 1000) * 1000;
+  t.mock.method(voiceStateStore, "hostNowUs", () => baseUs + (Date.now() - now) * 1000);
+  await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
+    devices: [], microphone: "granted", modelLoaded: true, reportsSpeechOnset: true }, token);
+  await say("Will check the build", "held-target");
+  t.mock.timers.tick(850);
+  const press = voiceStateStore.hostNowUs();
+  await post("/voice/shell-report", { callActive: true, pushToTalk: true, reportedAtHostUs: press, pushToTalkPressedAtHostUs: press }, token);
+  const revision = voiceStateStore.directive().revision;
+  t.mock.timers.tick(120);
+  const release = voiceStateStore.hostNowUs();
+  await post("/voice/shell-report", { callActive: true, pushToTalk: false, reportedAtHostUs: release, pushToTalkReleasedAtHostUs: release }, token);
+  assert.equal(voiceStateStore.directive().capture, false);
+  t.mock.timers.tick(70); // The timer expired while the final microphone buffer was in transit.
+  const start = async (speechStartUs: number, rev = revision) =>
+    (await post("/voice/listener/speech?revision=" + rev, { phase: "start", speechStartUs }, token)).json();
+  const onset = release - 1;
+  assert.deepEqual(await start(press - 1), { accepted: false });
+  assert.deepEqual(await start(release), { accepted: false });
+  assert.deepEqual(await start(release + 1), { accepted: false });
+  assert.deepEqual(await start(onset, "unknown"), { accepted: false });
+  assert.deepEqual(await start(onset), { accepted: true });
+  t.mock.timers.tick(5500);
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.deepEqual(queued("Will"), []);
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(press), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(release / 1000),
+  }, body: JSON.stringify(capture("Cancel.")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(cards.filter(c => c.state === "cancelled").map(c => c.id), ["held-target"]);
+  assert.deepEqual(queued("Will"), []);
+});
+
+async function setupOnsetCountdown(t: TestContext, version: string = VOICE_LISTENER_PROTOCOL_VERSION) {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const hostUs = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => hostUs + (Date.now() - now) * 1000);
+  const hello = await post("/voice/listener/hello", { backend: "fluidaudio", version,
+    devices: [], microphone: "granted", modelLoaded: true, reportsSpeechOnset: true }, token);
+  assert.deepEqual(await hello.json(), { accepted: true, protocol: VOICE_LISTENER_PROTOCOL_VERSION });
+  return { hostUs, revision: voiceStateStore.directive().revision };
+}
+
+test("capture overflow cancels the reserved addressed message after its countdown without delivering it", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  const id = "overflow-target";
+  await say("Will check the build", id);
+  assert.equal(cards.at(-1)?.state, "pending");
+  t.mock.timers.tick(100);
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const speech = (phase: string) => post("/voice/listener/speech?revision=" + revision, { phase, speechStartUs }, token);
+  assert.deepEqual(await (await speech("start")).json(), { accepted: true });
+  t.mock.timers.tick(61_000);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id]);
+  assert.deepEqual(queued("Will"), []);
+
+  assert.deepEqual(await (await speech("capture-limit")).json(), { accepted: true });
+  assert.equal(cards.findLast(card => card.id === id)?.state, "cancelled");
+  assert.equal(cards.at(-1)?.reason, "capture-limit");
+  assert.deepEqual(registry.snapshot().voiceCards ?? [], []);
+  t.mock.timers.tick(90_000);
+  assert.deepEqual(queued("Will"), []);
+});
+
+test("overflow reported after dated key-up cancels the message reserved during that hold", async t => {
+  await setupOnsetCountdown(t);
+  const id = "released-overflow-target";
+  await say("Will check the build", id);
+  assert.equal(cards.at(-1)?.state, "pending");
+  t.mock.timers.tick(100);
+  const pressed = voiceStateStore.hostNowUs();
+  const reportKey = (down: boolean) => {
+    const now = voiceStateStore.hostNowUs();
+    return post("/voice/shell-report", { callActive: true, pushToTalk: down, reportedAtHostUs: now,
+      ...(down ? { pushToTalkPressedAtHostUs: pressed } : { pushToTalkReleasedAtHostUs: now }) }, token);
+  };
+  await reportKey(true);
+  const held = voiceStateStore.directive().revision;
+  t.mock.timers.tick(100);
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const report = (phase: string) => post("/voice/listener/speech?revision=" + held, { phase, speechStartUs }, token);
+  assert.deepEqual(await (await report("start")).json(), { accepted: true });
+  for (let i = 0; i < 6; i++) {
+    t.mock.timers.tick(10_000);
+    await reportKey(true);
+  }
+  t.mock.timers.tick(20);
+  await reportKey(false);
+  assert.equal(voiceStateStore.directive().capture, false);
+  assert.ok(voiceStateStore.releasedCapture(held));
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id]);
+  assert.deepEqual(await (await report("capture-limit")).json(), { accepted: true });
+  assert.equal(cards.findLast(card => card.id === id)?.state, "cancelled");
+  assert.equal(cards.at(-1)?.reason, "capture-limit");
+  assert.deepEqual(registry.snapshot().voiceCards ?? [], []);
+  t.mock.timers.tick(90_000);
+  assert.deepEqual(queued("Will"), []);
+});
+
+test("a hold that outlasts the decode budget keeps its reserved countdown until its transcript arrives after key-up", async t => {
+  await setupOnsetCountdown(t);
+  const id = "long-hold-target";
+  await say("Will check the build", id);
+  assert.equal(cards.at(-1)?.state, "pending");
+  t.mock.timers.tick(100);
+  const pressed = voiceStateStore.hostNowUs();
+  const reportKey = (down: boolean) => {
+    const now = voiceStateStore.hostNowUs();
+    return post("/voice/shell-report", { callActive: true, pushToTalk: down, reportedAtHostUs: now,
+      ...(down ? { pushToTalkPressedAtHostUs: pressed } : { pushToTalkReleasedAtHostUs: now }) }, token);
+  };
+  await reportKey(true);
+  const held = voiceStateStore.directive().revision;
+  t.mock.timers.tick(100);
+  // The hold's one onset falls inside the countdown and reserves it for a spoken Cancel.
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const started = await post("/voice/listener/speech?revision=" + held, { phase: "start", speechStartUs }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+  // The key stays down past the 90-second decode budget, still inside the two-minute hold.
+  for (let i = 0; i < 10; i++) {
+    t.mock.timers.tick(10_000);
+    await reportKey(true);
+  }
+  assert.equal(voiceStateStore.directive().revision, held, "the key is still held");
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id], "nothing is delivered while the key is down");
+  assert.deepEqual(queued("Will"), []);
+  t.mock.timers.tick(20);
+  await reportKey(false);
+  const releasedAt = voiceStateStore.releasedCapture(held)!.at;
+  const result = await app.request(utterancePath(held), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(releasedAt),
+  }, body: JSON.stringify(capture("Cancel.")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.equal(cards.findLast(card => card.id === id)?.state, "cancelled", "the hold's Cancel still reaches the message it reserved");
+  t.mock.timers.tick(90_000);
+  assert.deepEqual(queued("Will"), []);
+});
+
+test("a held reservation that never gets its transcript releases the message at the hold limit plus the decode budget", async t => {
+  await setupOnsetCountdown(t);
+  const id = "abandoned-hold-target";
+  await say("Will check the build", id);
+  assert.equal(cards.at(-1)?.state, "pending");
+  t.mock.timers.tick(100);
+  const pressed = voiceStateStore.hostNowUs();
+  const reportKey = (down: boolean) => {
+    const now = voiceStateStore.hostNowUs();
+    return post("/voice/shell-report", { callActive: true, pushToTalk: down, reportedAtHostUs: now,
+      ...(down ? { pushToTalkPressedAtHostUs: pressed } : { pushToTalkReleasedAtHostUs: now }) }, token);
+  };
+  await reportKey(true);
+  const held = voiceStateStore.directive().revision;
+  t.mock.timers.tick(100);
+  const started = await post("/voice/listener/speech?revision=" + held,
+    { phase: "start", speechStartUs: voiceStateStore.hostNowUs() }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+  const deadline = 120_000 + 90_000; // VOICE_MAX_HOLD_MS plus the long-capture decode budget, from the onset.
+  for (let i = 0; i < 11; i++) {
+    t.mock.timers.tick(10_000);
+    await reportKey(true);
+  }
+  t.mock.timers.tick(20);
+  await reportKey(false);
+  // No transcript and no finish ever arrive for this hold.
+  t.mock.timers.tick(deadline - 110_020 - 1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id], "the reservation holds until its combined deadline");
+  assert.deepEqual(queued("Will"), []);
+  t.mock.timers.tick(2);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards ?? [], [], "at the deadline the unanswered reservation lets the message go");
+  assert.equal(queued("Will").length, 1);
+});
+
+test("an Always-on onset still releases its reserved countdown after the 90-second decode budget", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  const id = "automatic-budget-target";
+  await say("Will check the build", id);
+  t.mock.timers.tick(100);
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const started = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+  t.mock.timers.tick(89_000);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id], "the countdown waits for the phrase's result");
+  t.mock.timers.tick(2_000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards ?? [], [], "an unanswered automatic phrase stops holding the message at the budget");
+  assert.equal(queued("Will").length, 1);
+});
+
+test("a capture-limit report for an unauthorized revision leaves the reserved card alone and publishes no recovery", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  const id = "still-reserved";
+  await say("Will keep the original message", id);
+  t.mock.timers.tick(100);
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const speech = (rev: string, phase: string) => post("/voice/listener/speech?revision=" + rev, { phase, speechStartUs }, token);
+  assert.deepEqual(await (await speech(revision, "start")).json(), { accepted: true });
+  t.mock.timers.tick(1500);
+  const count = cards.length;
+  assert.deepEqual(await (await speech("stale-revision", "capture-limit")).json(), { accepted: false });
+  assert.equal(cards.length, count);
+  assert.deepEqual((await readHeard()).map(entry => entry.id), [id]);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => [card.id, card.state]), [[id, "pending"]]);
+  assert.deepEqual(queued("Will"), []);
+  assert.deepEqual(await (await speech(revision, "finish")).json(), { accepted: true });
+  assert.deepEqual(queued("Will"), ["keep the original message"]);
+});
+
+test("the last microphone buffer can arrive after expiry, but speech starting at expiry cannot reserve delivery", async t => {
+  const { hostUs, revision } = await setupOnsetCountdown(t);
+  const speech = (phase: string, speechStartUs: number) =>
+    post("/voice/listener/speech?revision=" + revision, { phase, speechStartUs }, token);
+
+  await say("Will wait for the last frame", "last-frame");
+  t.mock.timers.tick(1050);
+  await speech("start", hostUs + 999_999);
+  t.mock.timers.tick(400);
+  assert.deepEqual(queued("Will"), []);
+  assert.equal((await act("last-frame", "cancel")).status, 409);
+  // The decoder dropped this segment. The waiting card must still send once.
+  await speech("finish", hostUs + 999_999);
+  assert.deepEqual(queued("Will"), ["wait for the last frame"]);
+
+  await say("Will send at expiry", "expired-frame");
+  const boundary = voiceStateStore.hostNowUs() + 1_000_000;
+  t.mock.timers.tick(1000);
+  await speech("start", boundary);
+  t.mock.timers.tick(250);
+  assert.deepEqual(queued("Will"), ["wait for the last frame", "send at expiry"]);
+});
+
+test("an onset arriving at 250 ms reserves its original card, but one arriving a microsecond later cannot", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  const reportStart = async (speechStartUs: number) => {
+    const response = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs }, token);
+    assert.deepEqual(await response.json(), { accepted: true });
+  };
+  await say("Will cancel this message", "at-limit");
+  t.mock.timers.tick(999);
+  const onset = voiceStateStore.hostNowUs();
+  const capturedAt = Date.now();
+  t.mock.timers.tick(1);
+  await say("Will deliver this message", "over-limit");
+  t.mock.timers.tick(249);
+  await reportStart(onset); // 250,000 µs old, one millisecond before automatic delivery.
+  t.mock.timers.tick(1);
+  assert.deepEqual(queued("Will"), []);
+  assert.equal(registry.snapshot().voiceCards?.find(card => card.id === "at-limit")?.state, "pending");
+
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(onset), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceStateStore.hostNowUs() / 1000)),
+  }, body: JSON.stringify({ ...capture("Cancel."), capturedAt }) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(cards.filter(card => card.state === "cancelled").map(card => card.id), ["at-limit"]);
+  t.mock.timers.tick(999);
+  // The second card is also one millisecond from automatic delivery and still eligible to be held.
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => [card.id, card.state]), [["over-limit", "pending"]]);
+  await reportStart(voiceStateStore.hostNowUs() - 250_001);
+  t.mock.timers.tick(1);
+  assert.deepEqual(queued("Will"), ["deliver this message"]);
+});
+
+for (const [version, seconds] of [["4.1", 35], [VOICE_LISTENER_PROTOCOL_VERSION, 90]] as const) {
+  test(`a missing speech result delivers once at ${seconds} seconds from a FluidAudio ${version} reservation`, async t => {
+    const { revision } = await setupOnsetCountdown(t, version);
+    const submits = t.mock.method(pending, "submitSpoken");
+    const id = "lost-frame-" + version;
+    await say("Will recover after listener loss", id);
+    t.mock.timers.tick(800);
+    const onset = voiceStateStore.hostNowUs();
+    t.mock.timers.tick(100);
+    const response = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: onset }, token);
+    assert.deepEqual(await response.json(), { accepted: true });
+    t.mock.timers.tick(seconds * 1000 - 1);
+    assert.deepEqual(registry.snapshot().voiceCards?.map(card => [card.id, card.state]), [[id, "pending"]]);
+    assert.deepEqual(queued("Will"), []);
+    assert.equal(submits.mock.callCount(), 0);
+    t.mock.timers.tick(1);
+    assert.deepEqual(queued("Will"), ["recover after listener loss"]);
+    t.mock.timers.tick(35_000);
+    assert.equal(submits.mock.callCount(), 1);
+  });
+}
+
+test("an explicitly cancelled target cannot redirect its in-flight spoken cancel onto another pending card", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const onset = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => onset + (Date.now() - now) * 1000);
+  await say("Will keep the other card", "pinned-other");
+  await say("Will discard by button", "pinned-click");
+  const revision = voiceStateStore.directive().revision;
+  const path = "/voice/listener/speech?revision=" + revision;
+  assert.equal((await post(path, { phase: "start", speechStartUs: onset })).status, 401);
+  await post(path, { phase: "start", speechStartUs: onset }, token);
+  assert.equal((await act("pinned-click", "cancel")).status, 200);
+  const cancel = { ...capture("cancel", "pinned-control"), capturedAt: now };
+  const response = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(onset), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(Math.ceil(onset / 1000) + 1),
+  }, body: JSON.stringify(cancel) });
+  assert.deepEqual(await response.json(), { accepted: true });
+  assert.equal((await readHeard())[0]?.rule, "nothing-pending");
+  t.mock.timers.tick(1000);
+  assert.deepEqual(queued("Will"), ["keep the other card"]);
+});
+
+test("a cancel arriving after its reservation times out cannot dismiss an older unsure card", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  await say("Steven ask Will about the build", "older-choice");
+  await resolved("older-choice");
+  t.mock.timers.tick(10);
+  await say("Will discard by button", "button-target");
+  t.mock.timers.tick(100);
+  const onset = voiceStateStore.hostNowUs();
+  const capturedAt = Date.now();
+  const start = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: onset }, token);
+  assert.deepEqual(await start.json(), { accepted: true });
+  assert.equal((await act("button-target", "cancel")).status, 200);
+  t.mock.timers.tick(55_000);
+
+  const postCancel = async (id: string, speechStartUs: number) => {
+    const response = await app.request(utterancePath(revision), { method: "POST", headers: {
+      "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+      "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+      "x-voice-capture-end-host-ms": String(Math.ceil(speechStartUs / 1000) + 1),
+    }, body: JSON.stringify({ ...capture("Cancel.", id), capturedAt }) });
+    assert.deepEqual(await response.json(), { accepted: true });
+  };
+  await postCancel("late-reserved", onset);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(({ id, state }) => [id, state]), [["older-choice", "unsure"]]);
+  assert.equal((await readHeard()).find(entry => entry.id === "late-reserved")?.rule, "nothing-pending");
+  assert.deepEqual(queued("Will"), []);
+
+  // A different onset with no reservation still addresses the older open choice.
+  await postCancel("never-reserved", onset + 1);
+  assert.equal(cards.findLast(card => card.id === "older-choice")?.state, "cancelled");
+  assert.equal((await readHeard()).find(entry => entry.id === "never-reserved")?.detail, "older-choice");
+});
+
+test("an accepted non-cancel transcript after expiry releases the reserved message exactly once", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const hostUs = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => hostUs + (Date.now() - now) * 1000);
+  const id = "reserved-non-cancel";
+  await say("Will check the logs", id);
+  t.mock.timers.tick(900);
+  const capturedAt = Date.now();
+  const onset = voiceStateStore.hostNowUs();
+  const revision = voiceStateStore.directive().revision;
+  const started = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: onset }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+
+  t.mock.timers.tick(1500);
+  const card = registry.snapshot().voiceCards?.find(card => card.id === id);
+  assert.equal(card?.state, "pending");
+  assert.ok(card.deadline !== null && card.deadline < Date.now());
+  assert.deepEqual(queued("Will"), []);
+
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(onset), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceStateStore.hostNowUs() / 1000)),
+  }, body: JSON.stringify({ ...capture("Just thinking aloud"), capturedAt }) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(queued("Will"), ["check the logs"]);
+  t.mock.timers.tick(40_000);
+  assert.deepEqual(queued("Will"), ["check the logs"]);
+});
+
+test("a claimed phrase stays out of session routing after blur", async () => {
+  const router = registry.voiceRouter!;
+  const disconnect = router.openCards.connect("dashboard", true);
+  const target = randomUUID();
+  const events: string[] = [];
+  const unsubscribe = registry.subscribe(event => {
+    if (event.type === "voice_dictation") {
+      assert.equal(event.target, target);
+      assert.equal(event.windowId, "dashboard");
+      events.push((event.interim ? "preview " : "final ") + event.text);
+    }
+  });
+  try {
+    router.openCards.report({ windowId: "dashboard", focused: true, dictationTarget: target, cards: [] });
+    const revision = voiceStateStore.directive().revision;
+    const path = "/voice/listener/speech?revision=" + revision;
+    const speechStartUs = voiceHostTimeUs();
+    const preview = { phase: "preview", speechStartUs, text: "Steve" };
+    assert.deepEqual(await (await post(path, preview, token)).json(), { accepted: false });
+    const start = await post(path, { phase: "start", speechStartUs }, token);
+    assert.equal(start.headers.get("x-voice-dictation"), "1");
+    assert.deepEqual(await (await post(path, preview, token)).json(), { accepted: true });
+    router.openCards.report({ windowId: "dashboard", focused: false, cards: [] });
+    assert.deepEqual(await (await post(path, preview, token)).json(), { accepted: false });
+    const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+      "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+      "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+      "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000)),
+    }, body: JSON.stringify(capture("Steve check the build")) });
+    assert.deepEqual(await result.json(), { accepted: true });
+    assert.deepEqual(events, ["preview Steve", "final Steve check the build"]);
+    assert.deepEqual(await readHeard(), []);
+    assert.deepEqual(cards, []);
+    assert.deepEqual(queued("Steve"), []);
+  } finally {
+    unsubscribe();
+    disconnect();
+  }
+});
+
+test("an active phrase discovers focus after onset and rechecks the editor for each preview and final", async t => {
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("dashboard", true));
+  const first = randomUUID(), second = randomUUID();
+  let field: string | undefined;
+  const frames: Array<[string, boolean, string]> = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") {
+      router.openCards.acknowledgeDictation(event.windowId, event.sequence, field);
+    } else {
+      if (event.type === "voice_dictation") frames.push([event.target, event.interim, event.text]);
+      publish(event);
+    }
+  });
+  const revision = voiceStateStore.directive().revision;
+  const speechStartUs = voiceHostTimeUs();
+  const path = "/voice/listener/speech?revision=" + revision;
+  const phase = (phase: string, text?: string) => post(path, { phase, speechStartUs, text }, token);
+  assert.equal((await phase("start")).headers.get("x-voice-dictation"), null);
+  field = first;
+  assert.equal((await phase("focus")).headers.get("x-voice-dictation"), "1");
+  assert.deepEqual(await (await phase("preview", "Steve")).json(), { accepted: true });
+  field = second;
+  assert.deepEqual(await (await phase("preview", "Steve")).json(), { accepted: true });
+  field = first;
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000) + 1),
+  }, body: JSON.stringify(capture("Steve check the build")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(await (await phase("preview", "late")).json(), { accepted: false });
+  assert.deepEqual(frames, [[first, true, "Steve"], [second, true, "Steve"], [first, false, "Steve check the build"]]);
+  assert.deepEqual(await readHeard(), []);
+  assert.deepEqual(queued("Steve"), []);
+});
+
+test("a delayed onset cannot supersede a newer preview binding", async t => {
+  const router = registry.voiceRouter!;
+  const started = deferred(), release = deferred();
+  const first = { windowId: "dashboard", target: randomUUID() };
+  const second = { ...first, target: randomUUID() };
+  let probes = 0;
+  t.mock.method(router, "resolveDictation", async () => {
+    if (++probes === 1) { started.resolve(); await release.promise; return first; }
+    return probes === 2 ? second : undefined;
+  });
+  const frames: string[] = [];
+  t.after(registry.subscribe(event => { if (event.type === "voice_dictation") frames.push(event.target); }));
+  const revision = voiceStateStore.directive().revision;
+  const speechStartUs = voiceHostTimeUs();
+  const path = "/voice/listener/speech?revision=" + revision;
+  const start = post(path, { phase: "start", speechStartUs }, token);
+  await started.promise;
+  assert.equal((await post(path, { phase: "preview", speechStartUs, text: "Steve" }, token)).headers.get("x-voice-dictation"), "1");
+  release.resolve();
+  await start;
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(speechStartUs / 1000) + 1),
+  }, body: JSON.stringify(capture("Steve check the build")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(frames, [second.target, second.target]);
+});
+
+test("a revoked owner cannot claim a field while an onset probe is pending", async t => {
+  const started = deferred(), release = deferred();
+  t.mock.method(registry.voiceRouter!, "resolveDictation", async () => {
+    started.resolve();
+    await release.promise;
+    return { windowId: "dashboard", target: randomUUID() };
+  });
+  const revision = voiceStateStore.directive().revision;
+  const start = post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: voiceHostTimeUs() }, token);
+  await started.promise;
+  t.mock.method(voiceStateStore, "ownsCapture", () => false);
+  release.resolve();
+  const response = await start;
+  assert.equal(response.headers.get("x-voice-dictation"), null);
+  assert.deepEqual(await response.json(), { accepted: false });
+});
+
+test("new onsets preserve an active dictation claim and abandoned onsets expire", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const router = registry.voiceRouter!;
+  const revision = voiceStateStore.directive().revision;
+  const path = "/voice/listener/speech?revision=" + revision;
+  const onset = voiceHostTimeUs();
+  const key = JSON.stringify([listenerId, revision, onset]);
+  t.mock.method(router, "resolveDictation", async () => ({ windowId: "dashboard", target: "draft" }));
+  assert.equal((await post(path, { phase: "start", speechStartUs: onset }, token)).headers.get("x-voice-dictation"), "1");
+  for (let i = 1; i <= 51; i++) router.speechStarted("other-" + i, onset + i);
+  assert.equal(router.hasSpeechOnset(key), true);
+  assert.equal((await post(path, { phase: "preview", speechStartUs: onset, text: "Steve" }, token)).headers.get("x-voice-dictation"), "1");
+  t.mock.timers.tick(5 * 60_000);
+  assert.equal(router.hasSpeechOnset(key), false);
+  assert.equal(router.hasSpeechOnset("other-51"), false);
+  router.speechStarted(key, onset); // A delayed retry cannot revive an expired claim as a session command.
+  const lateFinal = { ...capture("Steve check the build"), words: [], backend: "fluidaudio" as const };
+  assert.equal(await router.accept(lateFinal, { captureKey: key, speechStartHostUs: onset, dictation: null }), false);
+  assert.deepEqual(queued("Steve"), []);
+});
+
+test("an unresponsive browser cannot authorize routing from its last non-editing report", async t => {
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("unresponsive", true));
+  router.openCards.report({ windowId: "unresponsive", focused: true, cards: [] });
+  const publish = registry.emitQuestionEvent.bind(registry);
+  let probed = false;
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") probed = true;
+    else publish(event);
+  });
+  assert.deepEqual(await (await say("Steve check the build")).json(), { accepted: false });
+  assert.ok(probed);
+  assert.deepEqual(queued("Steve"), []);
+  assert.deepEqual(cards, []);
+  assert.deepEqual(await readHeard(), []);
+});
+
+test("a stalled dashboard cannot veto a confirmed editor or authorize session routing", async t => {
+  const { openCards } = registry.voiceRouter!;
+  for (const id of ["foreground", "background"]) t.after(openCards.connect(id, true));
+  const target = randomUUID();
+  let editor: string | undefined = target;
+  let conflict = false;
+  let backgroundProbe = 0;
+  const drafts: string[] = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") {
+      if (event.windowId === "foreground") openCards.acknowledgeDictation(event.windowId, event.sequence, editor);
+      else if (conflict) openCards.acknowledgeDictation(event.windowId, event.sequence, randomUUID());
+      else backgroundProbe = event.sequence;
+    } else {
+      if (event.type === "voice_dictation") {
+        assert.equal(event.windowId, "foreground");
+        assert.equal(event.target, target);
+        drafts.push(event.text);
+      }
+      publish(event);
+    }
+  });
+  assert.deepEqual(await (await say("Steve check the build")).json(), { accepted: true });
+  assert.ok(backgroundProbe > 0);
+  assert.equal(openCards.acknowledgeDictation("background", backgroundProbe, randomUUID()), false);
+  editor = undefined;
+  assert.deepEqual(await (await say("Steve check the logs")).json(), { accepted: false });
+  editor = target;
+  conflict = true;
+  assert.deepEqual(await (await say("Steve run the tests")).json(), { accepted: false });
+  assert.deepEqual(drafts, ["Steve check the build"]);
+  assert.deepEqual(await readHeard(), []);
+  assert.deepEqual(queued("Steve"), []);
+  assert.deepEqual(cards, []);
+});
+
+test("a fresh no-editor probe overrides a stale focused report at speech onset", async t => {
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("dashboard", true));
+  router.openCards.report({ windowId: "dashboard", focused: true, dictationTarget: randomUUID(), cards: [] });
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") {
+      router.openCards.acknowledgeDictation(event.windowId, event.sequence);
+    } else publish(event);
+  });
+
+  const revision = voiceStateStore.directive().revision;
+  const speechStartUs = voiceHostTimeUs();
+  const start = await post("/voice/listener/speech?revision=" + revision, { speechStartUs, phase: "start" }, token);
+  assert.equal(start.headers.get("x-voice-dictation"), null);
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000) + 1),
+  }, body: JSON.stringify(capture("Steve check the build", "after-blur")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.equal(cards.at(-1)?.id, "after-blur");
+  assert.equal(cards.at(-1)?.state, "pending");
+});
+
+for (const failure of ["synchronous", "asynchronous"] as const) {
+  test(`${failure} preview decode failure still delivers the completed message once to its addressed resident`, async () => {
+    voiceStateStore.reset();
+    const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
+    assert.equal(config.status, 200);
+    const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => app.request(url, init));
+    const pcm = Float32Array.of(0.1, 0.2);
+    const attempted = deferred();
+    let previewAttempts = 0;
+    let exhausted = false;
+    await playRecording(client, () => ({
+      get exhausted() { return exhausted; },
+      async next({ observe }) {
+        assert.ok(observe);
+        observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+        await attempted.promise;
+        assert.equal(voiceStateStore.state().transcript?.phase, "audio");
+        assert.deepEqual(queued("Steve"), []);
+        exhausted = true;
+        return { done: false, value: { samples: pcm, onset: 1 } };
+      },
+    }), async samples => {
+      assert.equal(samples, pcm);
+      return { text: "Steve, check the build", tokens: [], durations: [], timestamps: [] };
+    }, () => {
+      previewAttempts++;
+      attempted.resolve();
+      const error = new Error("fixture partial decoder failed");
+      if (failure === "synchronous") throw error;
+      return Promise.reject(error);
+    });
+    assert.equal(previewAttempts, 1);
+    assert.deepEqual(queued("Steve"), ["check the build"]);
+    assert.equal(voiceStateStore.state().transcript?.text, "Steve, check the build");
+  });
+}
+
+test("a rejected transcript request still delivers the completed phrase once to its addressed resident", async () => {
+  voiceStateStore.reset();
+  const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
+  assert.equal(config.status, 200);
+
+  const rejected = deferred();
+  const requests: string[] = [];
+  const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === "/voice/listener/transcript" && JSON.parse(String(init.body)).text === "unfinished") {
+      requests.push("preview rejected");
+      rejected.resolve();
+      return new Response("Preview temporarily unavailable", { status: 503 });
+    }
+    if (path === "/voice/utterances") requests.push("final utterance");
+    return app.request(url, init);
+  });
+  const pcm = Float32Array.of(0.1, 0.2);
+  let exhausted = false;
+  await playRecording(client, () => ({
+    get exhausted() { return exhausted; },
+    async next({ observe }) {
+      assert.ok(observe);
+      observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      await rejected.promise;
+      assert.deepEqual(requests, ["preview rejected"]);
+      assert.deepEqual(queued("Steve"), []);
+      exhausted = true;
+      return { done: false, value: { samples: pcm, onset: 1 } };
+    },
+  }), async () => ({ text: "Steve, check the build", tokens: [], timestamps: [], durations: [] }),
+  async () => ({ text: "unfinished", tokens: [], timestamps: [], durations: [] }));
+
+  assert.deepEqual(requests, ["preview rejected", "final utterance"]);
+  assert.deepEqual(queued("Steve"), ["check the build"]);
 });

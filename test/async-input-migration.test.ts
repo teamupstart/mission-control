@@ -1,15 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // A version-38 database, written before the asynchronous input inbox: the real schema, made in a
 // child process by this build, then wound back to what a version-38 daemon left on disk - the
 // reviews table without `wait_mode`, `meanwhile` and `closed_reason`, holding one open question.
-const home = mkdtempSync(join(tmpdir(), "mission-async-input-migration-"));
+const home = tempDir("mission-async-input-migration-");
 process.env.MISSION_HOME = home;
 execFileSync(process.execPath, ["--import", "tsx", "-e", "await import(process.env.DB_MODULE).then(m => m.openDb())"], {
   env: { ...process.env, DB_MODULE: new URL("../src/server/db.ts", import.meta.url).href }, stdio: "pipe",

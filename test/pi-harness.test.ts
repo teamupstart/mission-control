@@ -3,8 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
 
@@ -29,6 +28,7 @@ import {
 } from "./fixtures/pi-sessions.ts";
 import { observedActivity } from "../src/web/lib/conversation-activity.ts";
 import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // ---- the capability shape: what pi declares vs what it disables ----
 
@@ -115,7 +115,7 @@ function writeSession(dir: string, id: string, createdAt: number, headerId = id)
 }
 
 test("an agent session id binds the matching filename uuid immediately", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const root = tempDir("pi-locate-");
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
@@ -154,7 +154,7 @@ test("preparePiLaunch keeps parser-reserved task prefixes positional", () => {
 });
 
 test("a hookless session declines transcript attribution", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const root = tempDir("pi-locate-");
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
@@ -170,7 +170,7 @@ test("a hookless session declines transcript attribution", () => {
 });
 
 test("a launch-identified session binds its transcript and reads runtime state", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const root = tempDir("pi-locate-");
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
@@ -190,7 +190,7 @@ test("a launch-identified session binds its transcript and reads runtime state",
 });
 
 test("a missing exact match is retried rather than negatively cached", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const root = tempDir("pi-locate-");
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
@@ -207,7 +207,7 @@ test("a missing exact match is retried rather than negatively cached", () => {
 });
 
 test("a newer session file invalidates an exact binding without replacing it", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const root = tempDir("pi-locate-");
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
@@ -234,8 +234,8 @@ test("a managed session's driver-reported transcript is accepted on its header, 
   // cannot belong to another session, so the runtime it came from stopped mattering and the
   // gate is gone. What this test still owns is the managed half - that the exact file the
   // driver was handed resolves, and that one naming a different conversation does not.
-  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
-  const cwd = mkdtempSync(join(tmpdir(), "pi-managed-cwd-"));
+  const root = tempDir("pi-locate-");
+  const cwd = tempDir("pi-managed-cwd-");
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
   const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
@@ -281,7 +281,7 @@ test("pi's session store follows PI_CODING_AGENT_DIR, the way pi's own resolver 
   // constant built from `homedir()` alone reported the wrong directory for every operator
   // who had set it - on both runtimes, silently, as "no transcript for this session".
   const before = process.env.PI_CODING_AGENT_DIR;
-  const root = mkdtempSync(join(tmpdir(), "pi-agent-dir-"));
+  const root = tempDir("pi-agent-dir-");
   try {
     process.env.PI_CODING_AGENT_DIR = root;
     assert.equal(piProjectDir("/repo"), join(root, "sessions", "--repo--"));
@@ -297,7 +297,7 @@ test("pi's session store follows PI_CODING_AGENT_DIR, the way pi's own resolver 
 // ---- messages: parse the verbatim capture ----
 
 test("text turns parse; thinking is dropped; the aborted turn has an interrupt marker", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-transcript-"));
+  const dir = tempDir("pi-transcript-");
   const path = join(dir, "session.jsonl");
   writeFileSync(path, PI_SESSION_JSONL);
   try {
@@ -316,7 +316,7 @@ test("text turns parse; thinking is dropped; the aborted turn has an interrupt m
 });
 
 test("a tool-only assistant turn survives, so its command reaches the activity rail", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-tools-"));
+  const dir = tempDir("pi-tools-");
   const path = join(dir, "session.jsonl");
   writeFileSync(path, PI_TOOL_SESSION_JSONL);
   try {
@@ -423,7 +423,7 @@ test("an unfinished Pi turn stays working, including a new prompt after an inter
 });
 
 test("a reported custom-home transcript requires the exact session header and cwd", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-reported-transcript-"));
+  const root = tempDir("pi-reported-transcript-");
   const path = join(root, "session.jsonl");
   const session = { ...locateSession("pi-hand-run", root, "hand-run-id"), transcriptPath: path };
   const header = (id: string, cwd = root) => writeFileSync(path, JSON.stringify({ type: "session", version: 3, id, cwd }) + "\n");

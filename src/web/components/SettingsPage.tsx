@@ -12,6 +12,7 @@ import type { ResidentProfile } from "@shared/residents.ts";
 const NO_SESSIONS: readonly Session[] = [];
 const NO_RESIDENT_PROFILES: readonly ResidentProfile[] = [];
 import type { ShapingSettings } from "../useShapingSettings.ts";
+import type { ShapingSignInView } from "@shared/shaping.ts";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
@@ -237,6 +238,7 @@ export function SettingsPage({
   onOpenForemanProfile,
   featureFlagsSettings,
   shapingSettings,
+  shapingSignIns,
   reportMutes = [],
   voice = null,
   voiceConfig,
@@ -249,6 +251,8 @@ export function SettingsPage({
   featureFlagsSettings?: FeatureFlagsSettings;
   /** Settings > Task shaping's state, App's because its confirmed config is the event stream's. */
   shapingSettings?: ShapingSettings;
+  /** Shaper sign-in's list, the event stream's, which Settings > Task shaping's marked rows show. */
+  shapingSignIns?: readonly ShapingSignInView[];
   /** `MissionState.voice`, which Settings > Voice's mode line and roster draw. */
   voice?: VoiceState | null;
   voiceConfig: VoiceConfigState;
@@ -647,20 +651,19 @@ export function SettingsPage({
         // link to a row in an unselected family has to move the rail before this page's
         // flash observer can ever find that row in the DOM.
         return (
-          <>
-            <UpdateSettingsPanel />
+          <UpdateSettingsPanel>
             <SetupPanel
               state={setup}
               voice={voice}
               jumpAnchor={unhandledJump?.anchor ?? null}
               jumpRequestId={unhandledJump?.id ?? null}
             />
-          </>
+          </UpdateSettingsPanel>
         );
       case "feature-flags":
         return <FeatureFlagsPanel state={featureFlagsSettings} jumpAnchor={unhandledJump?.anchor} />;
       case "task-shaping":
-        return <TaskShapingPanel state={shapingSettings} />;
+        return <TaskShapingPanel state={shapingSettings} signIns={shapingSignIns} />;
       case "reports":
         return <ReportsSettingsPanel mutes={reportMutes} />;
       case "skills":
@@ -690,6 +693,8 @@ export function SettingsPage({
             sessions={sessions}
             residentProfiles={residentProfiles}
             onNavigate={navigateWithAnchor}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
           />
         );
       case "conductor":

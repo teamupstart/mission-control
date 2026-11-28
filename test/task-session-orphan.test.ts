@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask as baseTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a task row that says `running` long after its agent is gone.
 //
@@ -28,7 +27,7 @@ import type { Task } from "../src/shared/types.ts";
 // existing, confirmed Clean up - the same policy `complete` states ("Mark done must not
 // silently discard unpushed work").
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-orphan-"));
+const home = tempDir("mission-task-orphan-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");

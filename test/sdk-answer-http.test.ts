@@ -1,8 +1,7 @@
 import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // What is at stake: an answer landing on a question nobody was asked.
@@ -19,7 +18,7 @@ import { dirname, join } from "node:path";
 // state conflicts, and its ordering (clear the task's binding BEFORE stopping the driver) is
 // the difference between a task that transfers and a task that silently settles `failed`.
 
-const home = mkdtempSync(join(tmpdir(), "mission-sdk-answer-"));
+const home = tempDir("mission-sdk-answer-");
 process.env.HARNESS_HOME = home;
 const previousClaudeBin = process.env.MISSION_CLAUDE_BIN;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
@@ -27,6 +26,7 @@ await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture
 const { TerminalLaunchError } = await import("../src/server/terminal/launch-error.ts");
 
 import type { RouteDeps } from "../src/server/routes.ts";
+import { tempDir } from "./temp-root.mjs";
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
@@ -204,7 +204,7 @@ function mkApp(
   return buildApp({
     registry,
     reviews: {} as unknown as ReviewManager,
-    tasks: { prepareKilledSessionReturn: () => () => {} } as unknown as TaskManager,
+    tasks: {} as unknown as TaskManager,
     queues: {} as unknown as QueueManager,
     sdkSessions: supervisor,
     handoffDeps,

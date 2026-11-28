@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -36,6 +35,7 @@ import {
   type WorkflowInspectorGateState,
   type WorkflowJson,
 } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a run states its lifecycle in three columns that vary independently, and
 // three subsystems act on them. Every combination these tests admit is one the daemon can be
@@ -603,7 +603,7 @@ test("the sticky gate rides beside a phase detail without becoming it", () => {
 // The two defects the model above exists to close, through the real store.
 // ---------------------------------------------------------------------------
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-lifecycle-"));
+const home = tempDir("mission-workflow-lifecycle-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

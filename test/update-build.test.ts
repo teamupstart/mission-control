@@ -8,7 +8,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -16,7 +15,6 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CANCEL_EXIT_TIMEOUT_MS,
@@ -34,6 +32,7 @@ import {
   parseUpdateProgressLine,
   updatePrepareProgress,
 } from "../src/shared/update.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Whether a pid is gone, waited for rather than sampled.
@@ -65,7 +64,7 @@ async function waitForGone(pid: number, timeoutMs = 5_000): Promise<boolean> {
 function fakeClone(script: string): string {
   // Realpath, because the child reports paths from its own `process.cwd()` and macOS serves
   // the temp directory through a symlink.
-  const clone = realpathSync(mkdtempSync(join(tmpdir(), "mission-stage-")));
+  const clone = realpathSync(tempDir("mission-stage-"));
   mkdirSync(join(clone, "scripts"), { recursive: true });
   writeFileSync(join(clone, "scripts", "install-app.mjs"), script, { encoding: "utf8" });
   return clone;

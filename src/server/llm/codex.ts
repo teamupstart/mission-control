@@ -11,6 +11,7 @@ import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import { validateLlmImages } from "./images.ts";
 import { ProviderFailure } from "./provider-failure.ts";
+import { setAwakeTimeout } from "../host-suspend.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { LlmRunOptions, LlmRunner } from "@shared/llm.ts";
 import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
@@ -371,7 +372,7 @@ export const codexRunner: LlmRunner = {
         const done = (): void => {
           if (settled) return;
           settled = true;
-          clearTimeout(timer);
+          timer.clear();
           opts.signal?.removeEventListener("abort", onAbort);
           live.delete(child);
           cleanupAgentSubprocessEnv(env);
@@ -382,12 +383,13 @@ export const codexRunner: LlmRunner = {
           reject(new Error("codex exec aborted"));
         };
         opts.signal?.addEventListener("abort", onAbort, { once: true });
-        const timer = setTimeout(() => {
+        // Awake time, not wall time: a host that idle-sleeps mid-call must not spend the
+        // call's whole budget while nothing ran (see `host-suspend.ts`).
+        const timer = setAwakeTimeout(() => {
           killTree(child);
           done();
           reject(new Error("codex exec timed out"));
         }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-        timer.unref?.();
         child.stdout.setEncoding("utf8");
         child.stderr.setEncoding("utf8");
         child.stdout.on("data", (d: string) => (out += d));

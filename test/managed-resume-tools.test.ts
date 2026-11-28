@@ -2,16 +2,16 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { managedResumeFixture, writeResumeProcessInventory } from "./helpers/managed-resume-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { meta, mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "managed-resume-"));
+const home = tempDir("managed-resume-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 process.env.MISSION_CODEX_BIN = process.execPath;

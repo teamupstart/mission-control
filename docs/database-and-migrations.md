@@ -339,8 +339,8 @@ unsupported.
 
 ## Terminal dispatch recovery
 
-Schema 63 stores the names missing at terminal launch so discovery can bind the warning to
-the session. Schema 64 records the pinned receipt identifier and its deadline on a dispatching
+Schema 68 stores the names missing at terminal launch so discovery can bind the warning to
+the session. Schema 69 records the pinned receipt identifier and its deadline on a dispatching
 task before the daemon submits the terminal command. Acknowledgement or failure clears that
 field in the same transaction that records the outcome. After an interrupted submission,
 startup uses the receipt to check whether the wrapper could still be running. Existing tasks

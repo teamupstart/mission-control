@@ -78,6 +78,7 @@ import {
   spentInspectorGateCondition,
   spentInspectorGateStatus,
   inspectorGateSentence,
+  localReviewGate,
   submissionRoundLabel,
   submissionStatus,
 } from "../src/web/workflows/run-model.ts";
@@ -2346,4 +2347,30 @@ test("a repair's reused judge pass links to the original round, including throug
   }
   reused.output = { reusedPassAttemptId: "missing" };
   assert.equal(inheritedPasses(run, repair).size, 0);
+});
+
+test("a gate completed on a local review says so and points at the Local Inspector attempt", () => {
+  const head = "c".repeat(40);
+  const tree = "d".repeat(40);
+  const base = gatedDetail([]);
+  const local = {
+    ...base,
+    run: { ...base.run, status: "completed", currentPhase: "complete" },
+    attempts: [attempt("local-attempt", "s1", "inspect", { output: {
+      slot: "inspector", status: "passed", command: null, exitCode: null, output: "", truncatedBytes: 0, artifacts: [],
+      timeoutMs: null, note: "Local Inspector found no unresolved issues.",
+      localInspector: { status: "passed", publicationTree: tree, baseRef: "refs/remotes/origin/main", mergeBase: null,
+        blockingSeverity: "major", findingCount: 0 },
+    } as never })],
+    inspectorGate: { ...base.inspectorGate!, state: { ...base.inspectorGate!.state, waitReason: null, targetHeadSha: head,
+      localReview: { submissionId: "s1", attemptId: "local-attempt", headSha: head, treeOid: tree, baseRef: "refs/remotes/origin/main" } } },
+  } as WorkflowRunDetail;
+  const view = localReviewGate(local);
+  assert.equal(view?.headSha, head);
+  assert.equal(view?.outcome?.note, "Local Inspector found no unresolved issues.");
+  assert.match(inspectorGateSentence(local), /^Reviewed locally: pull request head cccccccccccc has the tree dddddddddddd/);
+  assert.match(inspectorGateSentence(local), /no GitHub review ran and nothing was posted/);
+  // The GitHub path carries no local record, and its sentence is unchanged.
+  assert.equal(localReviewGate(base), null);
+  assert.doesNotMatch(inspectorGateSentence(base), /Reviewed locally/);
 });

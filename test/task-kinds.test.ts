@@ -37,6 +37,8 @@ import {
   TASK_KIND_INFO,
   allowsBacklogAutopilot,
   hasReviewableDiff,
+  isImplementationTaskKind,
+  isShippingTaskKind,
   providerOwnsTaskCompletion,
   taskDefaultWorkflowId,
   taskKindAllowsBacklog,
@@ -184,6 +186,11 @@ test("resident is launched only from a profile: Dispatch does not offer it and i
   assert.equal(taskDefaultWorkflowId("resident", {}), null);
   assert.equal(taskKindBacklogRefusal("resident"), RESIDENT_TASK_REFUSAL);
   assert.equal(taskKindBacklogRefusal("chat"), TASK_KIND_BACKLOG_REFUSAL);
+});
+
+test("implementation and publication handoffs have distinct task-kind eligibility", () => {
+  assert.deepEqual(TASK_KINDS.filter(isImplementationTaskKind), ["ship", "bugfix"]);
+  assert.deepEqual(TASK_KINDS.filter(isShippingTaskKind), ["ship", "bugfix", "document"]);
 });
 
 test("every kind has its own colour, so no two marks can be mistaken for each other", () => {

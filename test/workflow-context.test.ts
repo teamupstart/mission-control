@@ -1,17 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
 import { gitIn, seedGitRepo } from "./helpers/git-fixture.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-context-"));
+const home = tempDir("mission-workflow-context-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -70,6 +71,50 @@ test("a publication checkout revision detects content, inventory, index and HEAD
   execFileSync("git", ["-C", dir, "commit", "-qm", "edit"]);
   assert.notEqual(stamp(), beforeCommit);
   assert.equal(publicationCheckoutRevision(join(home, "absent"), []), null);
+});
+
+test("a publication checkout revision requires the reviewed commit even when two commits share a tree", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "same-tree-publication");
+  seedGitRepo(dir);
+  const reviewed = gitIn(dir, "rev-parse", "HEAD");
+  const stamp = () => publicationCheckoutRevision(dir, [], undefined, reviewed);
+  assert.ok(stamp());
+  gitIn(dir, "commit", "--allow-empty", "-qm", "same content, different commit");
+  assert.notEqual(gitIn(dir, "rev-parse", "HEAD"), reviewed);
+  assert.equal(gitIn(dir, "rev-parse", "HEAD^{tree}"), gitIn(dir, "rev-parse", `${reviewed}^{tree}`));
+  assert.equal(stamp(), null);
+});
+
+test("a publication checkout revision refuses HEAD drift during sampling", async (t) => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "publication-revision-drift");
+  seedGitRepo(dir);
+  assert.ok(publicationCheckoutRevision(dir, []));
+  const children = createRequire(import.meta.url)("node:child_process") as typeof import("node:child_process");
+  const run = children.execFileSync.bind(children);
+  let factsReads = 0;
+  let changed = false;
+  const intercepted = t.mock.method(children, "execFileSync", (...args: Parameters<typeof run>) => {
+    const gitArgs = args[1];
+    if (Array.isArray(gitArgs) && gitArgs.includes("ls-files") && !changed) {
+      assert.equal(factsReads, 1);
+      gitIn(dir, "commit", "--allow-empty", "-qm", "HEAD changed during sampling");
+      changed = true;
+    }
+    const result = run(...args);
+    if (Array.isArray(gitArgs) && gitArgs.includes("--absolute-git-dir")) factsReads++;
+    return result;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(publicationCheckoutRevision(dir, [], performance.now() + 2_000), null);
+  } finally {
+    intercepted.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal(changed, true);
+  assert.equal(factsReads, 2);
 });
 
 test("a clean submodule publication revision refuses tracked or untracked nested edits", async () => {
@@ -768,6 +813,12 @@ test("repository capture fails closed and detects worktree evidence changes", as
   } as WorkflowBinding;
   const captured = await readWorkflowContextRaw(registry, binding);
   assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), false);
+
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const beforeProbe = publicationCheckoutRevision(repo, []);
+  assert.ok(beforeProbe);
+  await readWorkflowEvidenceProbe(registry, binding);
+  assert.equal(publicationCheckoutRevision(repo, []), beforeProbe, "the probe changed its own checkout revision");
 
   writeFileSync(join(repo, "file.txt"), "two\n");
 

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { closeSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { publishNativeAddon } from "../scripts/native-addon-publish.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Publishing a native addon, and the one property that keeps a daemon startable.
@@ -31,7 +31,7 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /** A disposable `dist/native`, with an addon already published into it. */
 function published(bytes = "first build"): { dir: string; output: string } {
-  const dir = mkdtempSync(join(tmpdir(), "mission-native-publish-"));
+  const dir = tempDir("mission-native-publish-");
   const output = join(dir, "addon.node");
   writeFileSync(output, bytes);
   return { dir, output };
@@ -120,7 +120,7 @@ test("every native builder publishes through the one place that knows why", () =
   // Both addons are loaded by the daemon at startup, so both carry the same consequence for
   // getting this wrong. `keep-awake` did not, for as long as it published its own output, and
   // nothing failed until a developer restarted the stack at the wrong moment.
-  for (const script of ["build-state-lock-native.mjs", "build-keep-awake-native.mjs"]) {
+  for (const script of ["build-state-lock-native.mjs", "build-keep-awake-native.mjs", "build-keychain-native.mjs", "build-voice-hardware.mjs"]) {
     const { imports, calls, copies } = publishesThroughTheHelper(script);
     assert.ok(imports, `${script} must import the shared publisher`);
     assert.ok(calls, `${script} must publish through publishNativeAddon`);

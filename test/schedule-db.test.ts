@@ -1,11 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ScheduleDefinition } from "../src/shared/schedules.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the exactly-once ledger for work that costs money. A claim
 // that can run twice files the same agent task twice; a claim that can be lost drops a
@@ -22,7 +22,7 @@ import type { Task } from "../src/shared/types.ts";
 // MISSION_HOME *is* the state dir, so the db lands at <home>/harness.db - the file db.ts
 // opens below. It must be set before anything that resolves it is imported, which is why
 // every server import in this file is dynamic.
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-db-"));
+const home = tempDir("mission-schedule-db-");
 process.env.MISSION_HOME = home;
 
 /**

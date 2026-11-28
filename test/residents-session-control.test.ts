@@ -2,15 +2,13 @@ import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Hono } from "hono";
 
 import type { Persona } from "../src/shared/workflow.ts";
 import type { ResidentLaunchAuthorization } from "../src/shared/session-control-authorization.ts";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Phase 6 of residents: a profile with Control other sessions on gives its run the existing
 // session-control grant only through the operator's desktop Launch click. The click is armed in
@@ -19,7 +17,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // re-applied after a restart only to the same conversation, working directory, work episode and
 // task. Real Registry, TaskManager, store and routes; the dispatcher plays the SDK supervisor.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-control-"));
+const home = tempDir("mission-residents-control-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");
@@ -307,6 +305,24 @@ class GrantRefusingRegistry extends Registry {
     return super.setSessionControlEnabled(id, enabled);
   }
 }
+
+test("the inspector desktop click grants only inspection, including after restore", async () => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "bug-fix-inspector", enabled: true });
+  const { BUILTIN_RESIDENTS } = await import("../src/server/residents/builtin-residents.ts");
+  const h = harness();
+  store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, Date.now());
+  const profile = store.getResidentProfile("builtin:bug-fix-inspector")!;
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run, sessionId } = await launched(h, profile.id, requestId);
+  assert.equal(h.registry.sessionControlEnabled(sessionId, "read"), true);
+  assert.equal(h.registry.sessionControlEnabled(sessionId), false);
+  for (const manager of managers.splice(0)) manager.stop();
+  const after = restart(run);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId, "read"), true);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), false);
+});
 
 test("a Launch click whose grant the Registry refuses answers not granted and records nothing a restart could restore", async () => {
   const registry = new GrantRefusingRegistry();

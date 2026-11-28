@@ -62,9 +62,14 @@ export function nothingPostedLine(
     }
   });
   if (anyPosted) return null;
-  return pr.reviewPosture === "not-allowlisted"
-    ? "Not on the allowlist: nothing on this pull request was posted"
-    : "Dry run: nothing on this pull request was posted";
+  switch (pr.reviewPosture) {
+    case "local":
+      return "Reviewed locally before the pull request opened: nothing on this pull request was posted";
+    case "not-allowlisted":
+      return "Not on the allowlist: nothing on this pull request was posted";
+    default:
+      return "Dry run: nothing on this pull request was posted";
+  }
 }
 
 /**

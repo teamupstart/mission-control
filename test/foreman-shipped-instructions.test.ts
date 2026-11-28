@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: `personas/FOREMAN.md` is the ONE copy of Foreman's shipped standing
 // instructions, read as a file at runtime rather than compiled into the bundle, and
@@ -28,7 +27,7 @@ import { join } from "node:path";
 // else, and an operator who has configured a custom Foreman document has exactly this
 // variable exported - so without these three lines this file would quietly validate their
 // document on their machine and the shipped one in CI, which is the worst available split.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "foreman-shipped-home-"));
+process.env.MISSION_HOME = tempDir("foreman-shipped-home-");
 delete process.env.MISSION_FOREMAN_INSTRUCTIONS;
 delete process.env.FLEET_FOREMAN_INSTRUCTIONS;
 delete process.env.HARNESS_FOREMAN_INSTRUCTIONS;

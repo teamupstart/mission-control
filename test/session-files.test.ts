@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { chmod, mkdir, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   listSessionFiles,
@@ -30,6 +29,7 @@ import {
   type FileBuffer,
   type SessionFilesState,
 } from "../src/web/lib/sessionFiles.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -37,7 +37,7 @@ const PNG = Buffer.from(
 );
 
 async function fixture(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "mission-files-"));
+  const dir = await tempDirAsync("mission-files-");
   execFileSync("git", ["-C", dir, "init", "-q"]);
   return dir;
 }
@@ -294,7 +294,7 @@ test("browser images use the preview byte limit", async (t) => {
 
 test("rejects binary, invalid UTF-8, oversized, traversal, and symlink escape targets", async (t) => {
   const dir = await fixture();
-  const outside = await mkdtemp(path.join(os.tmpdir(), "mission-files-outside-"));
+  const outside = await tempDirAsync("mission-files-outside-");
   t.after(() => Promise.all([rm(dir, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
   await writeFile(path.join(dir, "nul.dat"), Buffer.from([65, 0, 66]));
   await writeFile(path.join(dir, "invalid.txt"), Buffer.from([0xc3, 0x28]));

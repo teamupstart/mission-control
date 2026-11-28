@@ -4,14 +4,12 @@ import {
   chmodSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   canonicalSettingsBackupJson,
@@ -22,8 +20,9 @@ import {
   type SettingsBackupEnvelopeBodyV1,
   type SettingsBackupEnvelopeV1,
 } from "../src/shared/settings-backups.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-settings-backups-"));
+const home = tempDir("mission-settings-backups-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -208,6 +207,7 @@ test("daily capture includes archived operator catalogs and excludes built-ins a
   assert.equal(first.snapshot.appVersion, "1.2.3-test");
   assert.deepEqual(first.snapshot.domains.find((entry) => entry.domain === "inspector")?.payload, {
     enabled: true,
+    localReview: false,
     mode: "live",
     repoAllowlist: [],
     maxCommentsPerRound: 8,

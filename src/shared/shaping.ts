@@ -1,15 +1,19 @@
 import { z } from "zod";
+import { residentMcpLoopbackHost } from "./resident-mcp.ts";
 import { holdsSecretShape } from "./secret-shapes.ts";
 import { taskKindLaunchesHarness } from "./task.ts";
 import { AGENT_TYPES, TASK_KINDS, type TaskKind } from "./types.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import {
+  SHAPING_AUTH_KINDS,
   SHAPING_BUILTINS,
   SHAPING_LIFECYCLE_POINTS,
   SHAPING_ORIGINS,
   SHAPING_OUTCOMES,
   SHAPING_PROMPT_STATES,
   SHAPING_REFERENCE_KINDS,
+  SHAPING_SIGN_IN_STATES,
+  SHAPING_SIGN_IN_STORAGE,
   SHAPING_SKILL_STATES,
   SHAPING_STAGES,
   SHAPING_TRANSPORTS,
@@ -32,6 +36,9 @@ export type ShapingReferenceKind = (typeof SHAPING_REFERENCE_KINDS)[number];
 export type ShapingLifecyclePoint = (typeof SHAPING_LIFECYCLE_POINTS)[number];
 export type ShapingSkillState = (typeof SHAPING_SKILL_STATES)[number];
 export type ShapingPromptState = (typeof SHAPING_PROMPT_STATES)[number];
+export type ShapingAuthKind = (typeof SHAPING_AUTH_KINDS)[number];
+export type ShapingSignInState = (typeof SHAPING_SIGN_IN_STATES)[number];
+export type ShapingSignInStorage = (typeof SHAPING_SIGN_IN_STORAGE)[number];
 
 export const SHAPING_PROTOCOL = 1;
 
@@ -246,6 +253,60 @@ const UrlSchema = z.string().max(2048).refine((value) => {
 }, { message: "A URL is http or https." });
 
 // ---------------------------------------------------------------------------------------------
+// The sign-in marker
+
+/** One scope token (RFC 6749 section 3.3): visible ASCII other than `"` and `\`. */
+const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
+
+/** Sent as written, so there is no default and no fallback to what the server advertises. */
+const SignInScopeSchema = z.string().min(1).max(256).refine(
+  (value) => value.split(" ").every((token) => SCOPE_TOKEN.test(token)),
+  { message: "A scope is one or more scope tokens separated by single spaces. A token is visible ASCII with no \" and no \\." },
+);
+
+/** Why `value` cannot name an authorization server, or null. Form only: sign-in checks the metadata. */
+function issuerProblem(value: string): string | null {
+  let url: URL;
+  try { url = new URL(value); } catch { return "An issuer is a URL."; }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && residentMcpLoopbackHost(url))) {
+    return "An issuer is https, or plain http only to this machine's loopback.";
+  }
+  if (url.username || url.password) return "An issuer cannot carry a user name or password.";
+  if (hasQueryString(value)) return "An issuer cannot carry a query string.";
+  if (value.includes("#")) return "An issuer cannot carry a fragment.";
+  return null;
+}
+
+const SignInIssuerSchema = z.string().max(2048).superRefine((value, ctx) => {
+  const problem = issuerProblem(value);
+  if (problem) ctx.addIssue({ code: "custom", message: problem });
+});
+
+/**
+ * The `auth` marker a remote server may carry (D7): the server needs a sign-in, made in
+ * Settings > Task shaping, and the scope it asks for. It names no value: the token it leads to
+ * lives in the Keychain or in memory, never in a definition. `issuer` names the authorization
+ * server when it is not on the server's own origin (D6).
+ */
+const SignInMarkerSchema = z.strictObject({
+  type: z.enum(SHAPING_AUTH_KINDS),
+  scope: SignInScopeSchema,
+  issuer: SignInIssuerSchema.optional(),
+});
+
+/** With a marker, the sign-in sets `Authorization`, so the definition cannot configure one too. */
+function signInOwnsAuthorization(value: { headers: Record<string, string>; auth?: unknown }, ctx: z.RefinementCtx): void {
+  if (value.auth === undefined) return;
+  for (const name of Object.keys(value.headers)) {
+    if (name.toLowerCase() !== "authorization") continue;
+    ctx.addIssue({
+      code: "custom", path: ["headers", name],
+      message: "This server signs in, and the sign-in sets the authorization header, so the shaper cannot configure one. Remove it, or remove auth.",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Shaper definitions
 
 const CommandTransportSchema = z.strictObject({
@@ -263,7 +324,8 @@ const McpServerSchema = z.discriminatedUnion("type", [
     args: z.array(ArgSchema).max(64).default([]),
     env: z.array(EnvNameSchema).max(32).default([]),
   }),
-  z.strictObject({ type: z.literal("http"), url: UrlSchema, headers: HeadersSchema }),
+  z.strictObject({ type: z.literal("http"), url: UrlSchema, headers: HeadersSchema, auth: SignInMarkerSchema.optional() })
+    .superRefine(signInOwnsAuthorization),
 ]);
 
 /**
@@ -284,7 +346,8 @@ const HttpTransportSchema = z.strictObject({
   type: z.literal("http"),
   url: UrlSchema,
   headers: HeadersSchema,
-});
+  auth: SignInMarkerSchema.optional(),
+}).superRefine(signInOwnsAuthorization);
 
 const RepoRelativePathSchema = z.string().min(1).max(1024)
   .refine((value) => !value.includes("\u0000"), { message: "A path cannot contain NUL." });
@@ -836,6 +899,111 @@ export const ShaperSchema = ShaperObjectSchema
 export type Shaper = z.output<typeof ShaperSchema>;
 
 /**
+ * What one sign-in covers, a connection: the server's URL, the scope and the authorization
+ * server the marker names, `issuer` null when it names none. Two shapers with the same three
+ * values share one sign-in.
+ */
+export interface SignInTarget {
+  url: string;
+  scope: string;
+  issuer: string | null;
+}
+
+/**
+ * The connection a shaper's `auth` marker names, or null for a shaper with no marker. The one
+ * reader of a shaper's sign-in target: the transports, the sign-in service and Settings all ask
+ * here.
+ */
+export function shaperSignInTarget(shaper: Shaper): SignInTarget | null {
+  const transport = shaper.transport;
+  const remote = transport.type === "http" ? transport
+    : transport.type === "mcp" && transport.server.type === "http" ? transport.server
+      : null;
+  if (!remote?.auth) return null;
+  return { url: remote.url, scope: remote.auth.scope, issuer: remote.auth.issuer ?? null };
+}
+
+/**
+ * One connection's sign-in as it leaves the daemon. It never holds a token, a code, a `state`,
+ * a verifier or an authorization URL.
+ */
+export interface ShapingSignInView {
+  /** The connection id the daemon derives from the target. */
+  id: string;
+  url: string;
+  scope: string;
+  issuer: string | null;
+  state: ShapingSignInState;
+  storage: ShapingSignInStorage;
+  /** Epoch milliseconds when the access token expires, or null when none is held. */
+  expiresAt: number | null;
+  /**
+   * While `state` is `pending`, which attempt is pending: the `attempt` of the
+   * `POST /api/shaping/sign-in` reply that started it. Null otherwise. No two attempts of one
+   * daemon share one, so a sign-in that replaces a pending one changes it. A restarted daemon
+   * counts from a new random point, which makes repeating an earlier daemon's number very
+   * unlikely but not impossible. A plain number, not a secret: it opens nothing and the callback
+   * never reads it.
+   */
+  attempt: number | null;
+  /** One of `SIGN_IN_REASONS`, or null when there is nothing to say. */
+  reason: string | null;
+  /** The ids of the known shapers that name this connection. Empty for an unused one. */
+  shapers: string[];
+}
+
+/**
+ * Why a shaper that signs in was not called. Fixed sentences: a reason is shown as written and
+ * never names a value. Each points to Settings > Task shaping, where the sign-in is made.
+ */
+export const SIGN_IN_REASONS = Object.freeze({
+  flagOff: "This shaper signs in to its server, and the Shaper sign-in feature flag (shaper-sign-in) is off, so it was not called. Turn the flag on, then sign in at Settings > Task shaping.",
+  signedOut: "This shaper is not signed in to its server, so it was not called. Sign in at Settings > Task shaping.",
+  renewing: "This shaper's sign-in is being renewed, so it was not called. If it does not recover, sign in again at Settings > Task shaping.",
+  refused: "This shaper's server refused its sign-in, so its reply was not used. The sign-in is being renewed; if it does not recover, sign in again at Settings > Task shaping.",
+  memoryOnly: "This sign-in could not be saved, so it is kept in memory only and a restart will need a new sign-in at Settings > Task shaping.",
+  signInAgain: "The authorization server ended this sign-in, so this shaper is not called until you sign in again at Settings > Task shaping.",
+} as const);
+export type SignInReason = keyof typeof SIGN_IN_REASONS;
+
+/** The most client registrations `app_config` key `shaping.signIn` keeps. */
+export const SHAPING_SIGN_IN_CLIENTS = 16;
+
+/**
+ * One dynamic registration Mission Control made with an authorization server: a public client,
+ * reused only by a sign-in with the same issuer, redirect URI and scope. Not a secret.
+ */
+export const ShapingSignInClientSchema = z.strictObject({
+  issuer: z.string().min(1).max(2048),
+  clientId: z.string().min(1).max(1024),
+  redirectUri: z.string().min(1).max(2048),
+  scope: z.string().min(1).max(256),
+  registeredAt: z.number().nonnegative(),
+});
+export type ShapingSignInClient = z.output<typeof ShapingSignInClientSchema>;
+
+/** The most signed-out connections `app_config` key `shaping.signIn` lists before it fails closed. */
+export const SHAPING_SIGNED_OUT_CONNECTIONS = 64;
+
+/**
+ * `app_config.shaping.signIn`: the client registrations the sign-in service keeps, at most
+ * `SHAPING_SIGN_IN_CLIENTS`, and the connections signed out whose stored record the store has
+ * not yet confirmed removed. Its own key, because `ShapingConfigSchema` drops unknown keys and
+ * an older build would delete it on its next write. It holds no token.
+ *
+ * `signedOut` lists connection ids (`connectionId`), with no time: a listed id's stored record
+ * is never loaded, whenever it was written, until a removal or a later sign-in's write is
+ * confirmed. `signedOutOverflow` is set when a sign-out finds the list full, and then no stored
+ * record is loaded at all until a start lists the store and removes every one.
+ */
+export const ShapingSignInConfigSchema = z.object({
+  clients: z.array(ShapingSignInClientSchema).max(SHAPING_SIGN_IN_CLIENTS).default([]),
+  signedOut: z.array(z.string().regex(/^[0-9a-f]{32}$/)).max(SHAPING_SIGNED_OUT_CONNECTIONS).default([]),
+  signedOutOverflow: z.boolean().default(false),
+}).prefault({});
+export type ShapingSignInConfig = z.output<typeof ShapingSignInConfigSchema>;
+
+/**
  * A manifest in the shapers folder: the strict definition plus whether it starts switched on.
  * Unlike a registered shaper it may name a `./` command, resolved against its own folder.
  */
@@ -1239,6 +1407,12 @@ export interface ShapingReply {
 /** A stored shaper's revision, as `shapingConfigView` reports it: 16 lowercase hex digits. */
 const ShapingRevisionSchema = z.string().regex(/^[0-9a-f]{16}$/, { message: "A revision is 16 hexadecimal digits." });
 
+export const ShapingSettingsIntentSchema = z.object({
+  kind: z.literal("settings"),
+  caller: partialPatch(ShapingCallerObjectSchema).optional(),
+  limits: partialPatch(ShapingLimitsObjectSchema).optional(),
+});
+
 export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /** Create or replace a registered shaper. Only a definition this build understands. */
   z.object({ kind: z.literal("upsert"), shaper: ShaperSchema }),
@@ -1276,11 +1450,7 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
     kind: z.literal("place"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
     expect: ShapingRevisionSchema,
   }),
-  z.object({
-    kind: z.literal("settings"),
-    caller: partialPatch(ShapingCallerObjectSchema).optional(),
-    limits: partialPatch(ShapingLimitsObjectSchema).optional(),
-  }),
+  ShapingSettingsIntentSchema,
 ]);
 export type ShapingIntent = z.infer<typeof ShapingIntentSchema>;
 
@@ -2320,6 +2490,40 @@ export const ShapingTestRequestSchema = z.object({
   agent: z.enum(AGENT_TYPES).optional(),
 });
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
+
+/** `POST /api/shaping/sign-in`: start a sign-in for the shaper with this id. */
+export const ShaperSignInRequestSchema = z.strictObject({ shaper: ShaperIdSchema });
+export type ShaperSignInRequest = z.infer<typeof ShaperSignInRequestSchema>;
+
+/** A connection id, as `ShapingSignInView.id` carries it: 32 lower-case hex digits. */
+export const ShapingSignInIdSchema = z.string().regex(/^[0-9a-f]{32}$/, { message: "A connection id is 32 lower-case hex digits." });
+
+/** `POST /api/shaping/sign-out`: end the sign-in of this connection, pending or held. */
+export const ShaperSignOutRequestSchema = z.strictObject({ connection: ShapingSignInIdSchema });
+export type ShaperSignOutRequest = z.infer<typeof ShaperSignOutRequestSchema>;
+
+/**
+ * What `POST /api/shaping/sign-in` answers. `authorizationUrl` carries the client id, the
+ * `state` and the PKCE challenge for the browser to present, and appears in this reply only:
+ * never in the sign-in list, the event or the snapshot.
+ */
+export interface ShaperSignInReply {
+  authorizationUrl: string;
+  /** Epoch milliseconds when the pending sign-in lapses. */
+  expiresAt: number;
+  /** The connection id the sign-in is for. */
+  connection: string;
+  /**
+   * Which attempt this sign-in is. The sign-in list shows it as the entry's `attempt` for as long
+   * as this attempt is the one pending, so a window can tell its own from one that replaced it.
+   */
+  attempt: number;
+}
+
+/** What `POST /api/shaping/sign-out` answers: the sign-in list after it. */
+export interface ShaperSignOutReply {
+  signIns: ShapingSignInView[];
+}
 
 /**
  * The header a dashboard tab sends with each shaping write: `<window> <sequence> <controls> [<instance>]`.

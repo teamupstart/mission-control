@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { describe, it, before, after, type TestContext } from "node:test";
@@ -17,7 +16,8 @@ import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { setVoiceConfig } from "../src/server/voice/config.ts";
 import { serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
 import { registerVoiceRoutes } from "../src/server/voice/routes.ts";
-import { VOICE_REQUIRED_FLAGS, voiceStateOff } from "../src/shared/voice.ts";
+import { VOICE_LISTENER_PROTOCOL_VERSION, VOICE_REQUIRED_FLAGS, voiceStateOff } from "../src/shared/voice.ts";
+import { tempDir } from "./temp-root.mjs";
 
 async function until(condition: () => boolean, description: string, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -30,34 +30,71 @@ async function until(condition: () => boolean, description: string, timeoutMs = 
 describe("voice listener subprocess protocol and Swift microphone lifecycle", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
   let dir: string;
   before(() => {
-    dir = mkdtempSync(join(tmpdir(), "listener-lifecycle-"));
+    dir = tempDir("listener-lifecycle-");
     writeFileSync(join(dir, "token"), "fixture");
     execFileSync("swiftc", ["-parse-as-library", "-module-cache-path", join(dir, "modules"),
-      "native/voice-listener/Sources/VoiceListener/Listener.swift",
+      "native/voice-listener/Sources/VoiceListener/Listener.swift", "native/voice-listener/Sources/VoiceListener/Playback.swift",
       "native/voice-listener/Tests/Fixtures/LifecycleDevices.swift", "-o", join(dir, "listener")]);
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { sherpa = false, initialCapture = true, roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
+  async function launch(t: TestContext, { sherpa = false, initialCapture = true, roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, holdEndReports = false, holdAudioFetch = false, speechInstance = "", slowLoad = false, held = false, microphone = "granted", daemonProtocol = VOICE_LISTENER_PROTOCOL_VERSION } = {}) {
     const events: string[] = [];
     const diagnostics: string[] = [];
     const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
+    const speechEvents: { path: string; type: string; outcome?: string }[] = [];
+    const transcripts: { phase: string; revision: string | null }[] = [];
+    const audioRequests: string[] = [];
+    const endReports: ServerResponse[] = [];
     const instanceIds = new Set<string | undefined>();
     const modelDir = slowLoad ? join(dir, "slow-load") : dir;
     if (slowLoad) mkdirSync(modelDir);
     const posted: { text: string; revision: string | null }[] = [];
     const captureBounds: { start: unknown; onset: unknown; end: unknown }[] = [];
+    let acknowledgeStart!: () => void;
+    const startAck = new Promise<void>(resolve => { acknowledgeStart = resolve; });
+    t.after(acknowledgeStart);
     const heldAttempts: number[] = [];
+    const speechReports: { phase: string; speechStartUs: number; revision: string | null }[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
     const server = createServer(async (req, res) => {
       const url = new URL(req.url!, "http://localhost");
+      if (speechInstance) {
+        assert.ok(req.headers["x-mission-voice-instance"] === speechInstance);
+        assert.ok(!req.url!.includes(speechInstance));
+        assert.equal(req.headers["x-harness-token"], "fixture");
+      }
+      if (url.pathname.endsWith("/audio")) {
+        audioRequests.push(url.pathname);
+        if (!holdAudioFetch) res.writeHead(404).end();
+        return;
+      }
       instanceIds.add(req.headers["x-voice-listener-id"] as string | undefined);
       if (url.pathname === "/voice/listener/directive") {
         polls.push({ revision: url.searchParams.get("revision"), response: res });
         return;
       }
       let body = "";
-      for await (const chunk of req) body += chunk;
+      try {
+        for await (const chunk of req) body += chunk;
+      } catch (error) {
+        // Revoking capture or stopping the helper can cancel an in-flight preview POST.
+        if (req.readableAborted) return;
+        throw error;
+      }
+      if (url.pathname === "/voice/listener/transcript") {
+        transcripts.push({ phase: JSON.parse(body).phase, revision: url.searchParams.get("revision") });
+        res.end(JSON.stringify({ accepted: true }));
+        return;
+      }
+      if (url.pathname.endsWith("/events")) {
+        const event = JSON.parse(body);
+        speechEvents.push({path: url.pathname, ...event});
+        if (holdEndReports && event.type === "ended") {
+          endReports.push(res);
+          return;
+        }
+      }
       if (url.pathname === "/voice/listener/hello") {
         const hello = JSON.parse(body);
         if (slowLoad && hellos.length === 1 && !hello.modelLoaded) {
@@ -66,6 +103,14 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
           await delay(200);
         }
         hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version, microphone: hello.microphone });
+        res.end(JSON.stringify({ accepted: true, protocol: daemonProtocol }));
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/voice/listener/speech") {
+        const report = JSON.parse(body);
+        speechReports.push({ ...report, revision: url.searchParams.get("revision") });
+        if (report.phase === "start" && (["dropped-segment", "capture-limit", "unfinished-segment"].includes(inputDevice) ||
+            (inputDevice === "stalled-onset" && report.speechStartUs === 625))) await startAck;
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
         if (repeatedHeld && JSON.parse(body).text === "first") {
@@ -94,7 +139,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     const executable = sherpa ? process.execPath : join(dir, "listener");
     const args = sherpa ? ["--import", "tsx", "test/helpers/sherpa-protocol-fixture.ts"] : [];
     const child = spawn(executable, args, { env: {
-      ...process.env, VOICE_FIXTURE_PERMISSION: microphone, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port,
+      ...process.env, ...(speechInstance ? { MISSION_VOICE_LISTENER_INSTANCE: speechInstance } : {}), VOICE_FIXTURE_PERMISSION: microphone, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port,
       MISSION_VOICE_TOKEN_FILE: join(dir, "token"), MISSION_VOICE_MODEL_DIR: modelDir,
     } });
     const lines = createInterface({ input: child.stdout });
@@ -121,10 +166,200 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     const initial = await nextPoll(null);
     if (held) initial.setHeader("x-voice-held-revision", "first");
     apply(initial, "first", initialCapture);
-    return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts };
+    return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds,
+      heldAttempts, audioRequests, speechEvents, endReports, speechReports, transcripts, acknowledgeStart };
   }
 
+  it("the supervised Swift peer authenticates its polls, fetch and reports and acknowledges an unseen stop", async t => {
+    const {nextPoll, speechEvents, events, audioRequests, posted, transcripts, apply} = await launch(t, {speechInstance: crypto.randomUUID()});
+    await until(() => transcripts.some(t => t.phase === "ready" && t.revision === "first"), "initial microphone readiness");
+    const directive = (response: ServerResponse, revision: string, speak: unknown) =>
+      response.end(JSON.stringify({revision, capture: true, roster: [], inputDevice: "built-in", speak}));
+    const missing = crypto.randomUUID();
+    directive(await nextPoll("first"), "unseen-stop", { id: missing, stop: true });
+    const stopped = await nextPoll("unseen-stop");
+    assert.deepEqual(speechEvents, [{path: "/voice/speech/jobs/" + missing + "/events", type: "ended", outcome: "stopped"}]);
+    assert.ok(events.includes("stopped 1"));
+    const id = crypto.randomUUID();
+    directive(stopped, "new-audio", { id, kind: "audio", durationMs: 500 });
+    await until(() => speechEvents.length === 2, "failed audio fetch to be reported");
+    assert.deepEqual(audioRequests, ["/voice/speech/jobs/" + id + "/audio"]);
+    assert.deepEqual(speechEvents[1], {path: "/voice/speech/jobs/" + id + "/events", type: "ended", outcome: "failed"});
+    assert.equal(events.filter(e => e.startsWith("opened ")).length, 1);
+    // Completion invalidates the pending long poll. Only a fresh capture directive opens the mic.
+    await nextPoll("new-audio");
+    apply(await nextPoll(null), "resumed", true);
+    await nextPoll("resumed");
+    await until(() => posted.length > 0, "the fresh capture segment to arrive");
+    assert.deepEqual(posted, [{ text: "fresh", revision: "resumed" }]);
+    await until(() => transcripts.some(t => t.phase === "ready" && t.revision === "resumed"), "resumed microphone readiness");
+    assert.ok(transcripts.every(t => t.revision === "first" || t.revision === "resumed"));
+    assert.equal(events.filter(e => e.startsWith("opened ")).length, 2);
+  });
+
+  it("retries a failed stop confirmation before opening a fresh microphone segment", async t => {
+    const { nextPoll, apply, events, speechEvents, endReports } = await launch(t, {
+      speechInstance: crypto.randomUUID(), holdEndReports: true,
+    });
+    const id = crypto.randomUUID();
+    (await nextPoll("first")).end(JSON.stringify({
+      revision: "stop", capture: true, roster: [], inputDevice: "built-in", speak: { id, stop: true },
+    }));
+    await until(() => endReports.length === 1, "first end report");
+    endReports[0]!.writeHead(503).end();
+    await until(() => endReports.length === 2, "retried end report");
+    const confirmation = {path: "/voice/speech/jobs/" + id + "/events", type: "ended", outcome: "stopped"};
+    assert.deepEqual(speechEvents, [confirmation, confirmation]);
+    assert.ok(events.includes("stopped 1"));
+    assert.deepEqual(events.filter(line => line.startsWith("opened ")), ["opened 1"]);
+    endReports[1]!.end("{}");
+    apply(await nextPoll("stop"), "fresh-capture", true);
+    await nextPoll("fresh-capture");
+    assert.deepEqual(events.filter(line => line.startsWith("opened ")), ["opened 1", "opened 2"]);
+  });
+
+  it("confirms a held job's stop after repeated report failures before resuming capture", async t => {
+    const { nextPoll, apply, audioRequests, speechEvents, endReports, events } = await launch(t, {
+      speechInstance: crypto.randomUUID(), holdAudioFetch: true, holdEndReports: true,
+    });
+    const id = crypto.randomUUID();
+    const directive = { capture: true, roster: [], inputDevice: "built-in" };
+    (await nextPoll("first")).end(JSON.stringify({
+      ...directive, revision: "fetching", speak: { id, kind: "audio", durationMs: 500 },
+    }));
+    await until(() => audioRequests.length === 1, "held job to request its audio");
+    (await nextPoll("fetching")).end(JSON.stringify({
+      ...directive, revision: "stop", speak: { id, stop: true },
+    }));
+
+    for (const [attempt, status] of [503, 500].entries()) {
+      await until(() => endReports.length === attempt + 1, "stop report during outage");
+      endReports[attempt]!.writeHead(status).end();
+    }
+    await until(() => endReports.length === 3, "third stop report after two failures");
+    const confirmation = { path: "/voice/speech/jobs/" + id + "/events", type: "ended", outcome: "stopped" };
+    assert.deepEqual(speechEvents, [confirmation, confirmation, confirmation]);
+    const microphoneEvents = () => events.filter(line => /^(opened|stopped) /.test(line));
+    assert.deepEqual(microphoneEvents(), ["opened 1", "stopped 1"]);
+
+    endReports[2]!.end("{}");
+    const fresh = await nextPoll("stop");
+    assert.deepEqual(microphoneEvents(), ["opened 1", "stopped 1"]);
+    apply(fresh, "fresh-capture", true);
+    await nextPoll("fresh-capture");
+    await until(() => events.includes("opened 2"), "fresh microphone segment");
+    assert.deepEqual(microphoneEvents(), ["opened 1", "stopped 1", "opened 2"]);
+  });
+
+  it("exits with an error and keeps capture closed when the daemon rejects the end report with HTTP 401", async t => {
+    const { nextPoll, apply, audioRequests, endReports, speechEvents, events, diagnostics, child, closed } = await launch(t, {
+      speechInstance: crypto.randomUUID(), holdAudioFetch: true, holdEndReports: true,
+    });
+    const id = crypto.randomUUID();
+    (await nextPoll("first")).end(JSON.stringify({
+      revision: "fetching", capture: false, roster: [], inputDevice: "built-in", speak: { id, kind: "audio", durationMs: 500 },
+    }));
+    await until(() => audioRequests.length === 1, "held job to request audio");
+    // This grant withdraws the held job. Opening a fresh segment requires an accepted end report.
+    apply(await nextPoll("fetching"), "fresh-capture", true);
+    await until(() => endReports.length === 1, "stop confirmation for the withdrawn job");
+    endReports[0]!.writeHead(401).end();
+    await until(() => child.exitCode !== null || child.signalCode !== null, "helper to exit on the nonretryable rejection");
+    assert.deepEqual(await closed, [1, null]);
+    assert.deepEqual(diagnostics, ["Voice listener stopped. Check the daemon, local models and selected input."]);
+    assert.deepEqual(speechEvents, [{ path: "/voice/speech/jobs/" + id + "/events", type: "ended", outcome: "stopped" }]);
+    assert.deepEqual(events.filter(line => /^(opened|stopped|released microphone) /.test(line)), [
+      "opened 1", "stopped 1", "released microphone 1",
+    ]);
+  });
+
+  for (const inputDevice of ["dropped-segment", "capture-limit", "unfinished-segment"]) {
+    it(inputDevice + " waits for start acknowledgment before releasing its original onset", async t => {
+      const { speechReports, posted, nextPoll, apply, acknowledgeStart, events } = await launch(t, { inputDevice });
+      const start = { phase: "start", speechStartUs: 123_456, revision: "first" };
+      await until(() => speechReports.some(report => report.phase === "start"), "speech onset POST");
+      if (inputDevice === "unfinished-segment") {
+        apply(await nextPoll("first"), "muted", false);
+        await until(() => events.includes("stopped 1"), "mute to stop the partial phrase");
+      }
+      await delay(150);
+      assert.deepEqual(speechReports, [start]);
+      acknowledgeStart();
+      await until(() => speechReports.length === 2, "finish for the original onset");
+      assert.deepEqual(speechReports, [start, { ...start, phase: inputDevice === "capture-limit" ? "capture-limit" : "finish" }]);
+      assert.deepEqual(posted, []);
+    });
+  }
+
+  it("uses the 30-second microphone guard and ordinary finish with a 4.1 daemon", async t => {
+    const { events, speechReports, posted, acknowledgeStart } = await launch(t, { inputDevice: "capture-limit", daemonProtocol: "4.1" });
+    const start = { phase: "start", speechStartUs: 123_456, revision: "first" };
+    await until(() => speechReports.length === 1, "legacy capture onset");
+    assert.ok(events.includes("capture limit 30 s"));
+    acknowledgeStart();
+    await until(() => speechReports.length === 2, "legacy overflow settlement");
+    assert.deepEqual(speechReports, [start, { ...start, phase: "finish" }]);
+    assert.deepEqual(posted, []);
+  });
+
+  it("a stalled onset acknowledgment lets the decoded cancel and queued utterance post in spoken order", async t => {
+    const inputDevice = "stalled-onset";
+    const { speechReports, posted, captureBounds, events, nextPoll } = await launch(t, { inputDevice, initialCapture: false });
+    const capture = { capture: true, captureRevision: "same-capture", inputDevice, roster: [] };
+    (await nextPoll("first")).end(JSON.stringify({ ...capture, revision: "before-countdown", endOfSpeechMs: 5000 }));
+    await until(() => speechReports.some(report => report.speechStartUs === 625) && events.includes("decode Cancel."), "recorded onset and decoded cancel");
+    assert.equal(posted.length, 0);
+    (await nextPoll("before-countdown")).end(JSON.stringify({ ...capture, revision: "countdown", endOfSpeechMs: 500 }));
+    // The fixture withholds the first acknowledgment until teardown.
+    await until(() => posted.length === 2, "both transcripts despite the stalled acknowledgment", 3000);
+    assert.deepEqual(posted.map(post => post.text), ["Cancel.", "next"]);
+    assert.deepEqual(speechReports.map(report => report.revision), ["same-capture", "same-capture"]);
+    assert.deepEqual(posted.map(post => post.revision), ["same-capture", "same-capture"]);
+    assert.deepEqual(captureBounds.map(bound => bound.onset), ["625", "1625"]);
+  });
+
+  it("key-up releases only the abandoned onset while the completed hold drains as one message", async t => {
+    const { speechReports, posted, nextPoll, apply } = await launch(t, { held: true, inputDevice: "partial-hold" });
+    await until(() => speechReports.length === 2, "both onset reports");
+    const off = await nextPoll("first");
+    off.setHeader("x-voice-release-revision", "first");
+    off.setHeader("x-voice-release-host-ms", "1000");
+    apply(off, "released", false);
+    await until(() => speechReports.length >= 3 && posted.length === 1, "partial release and the completed transcript");
+    assert.deepEqual(speechReports.filter(r => r.phase === "finish"), [{ phase: "finish", speechStartUs: 626, revision: "first" }]);
+    assert.deepEqual(posted.map(p => p.text), ["completed hold final phrase"]);
+  });
+
+  it("a held phrase past the capture limit reports the limit once for the hold and delivers nothing on release", async t => {
+    const { events, speechReports, posted, nextPoll, apply } = await launch(t, { held: true, inputDevice: "held-capture-limit" });
+    const start = { phase: "start", speechStartUs: 625, revision: "first" };
+    await until(() => speechReports.length === 2, "the hold's onset and its capture-limit report");
+    assert.deepEqual(speechReports, [start, { ...start, phase: "capture-limit" }]);
+    const release = await nextPoll("first");
+    release.setHeader("x-voice-release-revision", "first");
+    release.setHeader("x-voice-release-host-ms", "1000");
+    apply(release, "off", false);
+    await nextPoll("off");
+    await until(() => events.includes("stopped 1"), "release to close the hold");
+    await delay(150);
+    // Neither the first phrase nor any later one is decoded or posted, and the onset is not settled twice.
+    assert.deepEqual(posted, []);
+    assert.ok(!events.some(e => e.startsWith("decode ")));
+    assert.deepEqual(speechReports, [start, { ...start, phase: "capture-limit" }]);
+  });
+
   for (const backend of ["fluidaudio", "sherpa-onnx"]) {
+    it(backend + " retries the identical pause acknowledgement after transient 503s", async t => {
+      const { nextPoll, apply, instanceIds } = await launch(t, { sherpa: backend === "sherpa-onnx", initialCapture: false });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const ack = await nextPoll("first");
+        ack.writeHead(503).end();
+      }
+      apply(await nextPoll("first"), "recovered", false);
+      await nextPoll("recovered");
+      assert.equal(instanceIds.size, 1);
+    });
+
     it(backend + " waits through mute, primes the resumed roster and posts under the new capture revision", async t => {
       const { nextPoll, apply, events, posted, hellos, instanceIds } = await launch(t, {
         sherpa: backend === "sherpa-onnx", initialCapture: false, inputDevice: "two-utterances",
@@ -135,11 +370,44 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       await until(() => posted.length > 0, "fixture transcription to reach the daemon");
       assert.ok(events.includes('prime ["Steve"]'));
       assert.deepEqual(posted[0], { text: "first", revision: "resumed" });
-      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === "4.0"));
+      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === VOICE_LISTENER_PROTOCOL_VERSION));
       assert.equal(instanceIds.size, 1);
       assert.ok([...instanceIds][0]);
     });
   }
+
+  it("applies revised end-of-speech timing to the running Swift microphone listener", async t => {
+    const captureRevision = "automatic-capture";
+    const { events, posted, nextPoll } = await launch(t, { initialCapture: false });
+    let revision = "active";
+    (await nextPoll("first")).end(JSON.stringify({ revision, captureRevision, capture: true, inputDevice: "built-in", roster: [] }));
+    await until(() => events.includes("decode in-flight"), "decode to start before the edit");
+    for (const endOfSpeechMs of [500, 5000]) {
+      const poll = await nextPoll(revision);
+      revision = String(endOfSpeechMs);
+      poll.end(JSON.stringify({ revision, captureRevision, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs }));
+    }
+    const replacement = await nextPoll(revision);
+    await until(() => events.includes("silence interval 5000 ms") && posted.length === 2, "final setting and buffered speech");
+    assert.deepEqual(events.filter(e => /^(opened|stopped) /.test(e)), ["opened 1"]);
+    assert.deepEqual(posted, [{ text: "in-flight", revision: captureRevision }, { text: "buffered", revision: captureRevision }]);
+    assert.deepEqual(events.filter(e => e.startsWith("silence interval")), [
+      "silence interval 2000 ms", "silence interval 500 ms", "silence interval 5000 ms",
+    ]);
+    replacement.end(JSON.stringify({ revision: "resumed", captureRevision: "new-capture", capture: true, inputDevice: "built-in", roster: [] }));
+    await until(() => events.includes("opened 2"), "new capture authorization to open a fresh microphone");
+    assert.deepEqual(events.filter(e => /^(opened|stopped) /.test(e)), ["opened 1", "stopped 1", "opened 2"]);
+  });
+
+  it("rejects an invalid end-of-speech duration before opening the microphone", async t => {
+    const { events, diagnostics, nextPoll, child, closed } = await launch(t, { initialCapture: false });
+    const poll = await nextPoll("first");
+    poll.end(JSON.stringify({ revision: "invalid", capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 0 }));
+    await until(() => child.exitCode !== null, "invalid capture directive to stop the listener");
+    assert.deepEqual(await closed, [1, null]);
+    assert.ok(diagnostics.includes("Voice listener stopped. Check the daemon, local models and selected input."));
+    assert.deepEqual(events.filter(e => e.startsWith("opened ") || e.startsWith("silence interval ")), []);
+  });
 
   it("the managed Swift listener authenticates its daemon before delivering its first hello", async t => {
     const endpointFile = join(dir, "desktop.json");
@@ -228,11 +496,11 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     assert.equal(diagnostics.filter(line => line.includes("terminal app that already has microphone access")).length, 1);
   });
 
-  it("finishes the outstanding loading heartbeat before publishing protocol 4.0 readiness", async (t) => {
+  it("finishes the outstanding loading heartbeat before publishing listener readiness", async (t) => {
     const { hellos } = await launch(t, { slowLoad: true });
     await until(() => hellos.length >= 3, "ready hello and delayed heartbeat");
     assert.deepEqual(hellos.map(h => h.modelLoaded), [false, false, true]);
-    assert.ok(hellos.every(h => h.version === "4.0"));
+    assert.ok(hellos.every(h => h.version === VOICE_LISTENER_PROTOCOL_VERSION));
   });
 
   it("a stopped engine refreshes the directive and reopens the same selection with fresh audio", async (t) => {
@@ -300,7 +568,29 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     assert.deepEqual(primings(), [first, replacement]);
   });
 
-  it("delivers every phrase in a hold in order only after confirmed release", async t => {
+  it("opens the Swift microphone only between dedicated key-down and key-up directives", async t => {
+    const { events, posted, nextPoll, apply } = await launch(t, { initialCapture: false });
+    const lifecycle = () => events.filter(e => /^(opened|stopped) /.test(e));
+    let idle = await nextPoll("first");
+    assert.deepEqual(lifecycle(), []);
+    for (const n of [1, 2]) {
+      const held = "held-" + n;
+      idle.setHeader("x-voice-held-revision", held);
+      apply(idle, held, true);
+      const release = await nextPoll(held);
+      assert.equal(lifecycle().at(-1), "opened " + n);
+      assert.equal(posted.some(p => p.revision === held), false);
+      release.setHeader("x-voice-release-revision", held);
+      release.setHeader("x-voice-release-host-ms", "1000");
+      apply(release, "idle-" + n, false);
+      idle = await nextPoll("idle-" + n);
+      await until(() => posted.some(p => p.revision === held), "held audio delivered on release");
+      assert.equal(lifecycle().at(-1), "stopped " + n);
+    }
+    assert.deepEqual(lifecycle(), ["opened 1", "stopped 1", "opened 2", "stopped 2"]);
+  });
+
+  it("delivers every phrase of a hold in order as one message only after confirmed release", async t => {
     const { events, posted, captureBounds, nextPoll, apply } = await launch(t, { held: true });
     await until(() => events.includes("holding audio"), "held microphone");
     const release = await nextPoll("first");
@@ -308,9 +598,12 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     release.setHeader("x-voice-release-revision", "first");
     release.setHeader("x-voice-release-host-ms", "1000");
     apply(release, "off", false);
-    await until(() => posted.length === 5, "complete phrases and tail");
-    assert.deepEqual(posted, ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(text => ({ text, revision: "first" })));
-    assert.deepEqual(captureBounds, posted.map(() => ({ start: "125", onset: "625", end: "1" })));
+    await until(() => posted.length === 1, "the hold's one message");
+    // Each phrase decodes on its own; a pause inside the hold never splits the message it joins.
+    assert.deepEqual(events.filter(e => e.startsWith("decode ")),
+      ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(label => "decode " + label));
+    assert.deepEqual(posted, [{ text: "phrase 1 phrase 2 phrase 3 phrase 4 final phrase", revision: "first" }]);
+    assert.deepEqual(captureBounds, [{ start: "125", onset: "625", end: "1" }]);
     assert.ok(events.indexOf("stopped 1") < events.indexOf("decode phrase 1"));
   });
 
@@ -341,11 +634,12 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     second.setHeader("x-voice-held-revision", "second");
     second.setHeader("x-voice-draining-revisions", "first");
     apply(second, "second", true);
-    await until(() => posted.length === 2, "previous hold to finish while recording the next");
-    assert.deepEqual(posted.map(p => [p.revision, p.text]), [["first", "first hold"], ["first", "final phrase"]]);
+    await until(() => posted.length === 1, "previous hold to finish while recording the next");
+    assert.deepEqual(posted.map(p => [p.revision, p.text]), [["first", "first hold final phrase"]]);
     keyUp(await nextPoll("second"), "second", "off-again");
-    await until(() => posted.length === 7, "second hold to drain");
-    assert.deepEqual(posted.slice(2).map(p => p.revision), Array(5).fill("second"));
+    await until(() => posted.length === 2, "second hold to drain");
+    // Each hold is its own message.
+    assert.deepEqual(posted.slice(1).map(p => [p.revision, p.text]), [["second", "phrase 1 phrase 2 phrase 3 phrase 4 final phrase"]]);
   });
 
   it("rechecks a combined release and press before opening a second exclusive microphone", async t => {
@@ -364,9 +658,9 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     refresh.setHeader("x-voice-held-revision", "second");
     refresh.setHeader("x-voice-draining-revisions", "first");
     apply(refresh, "second", true);
-    await until(() => posted.length === 2, "first hold to finish during the second capture");
+    await until(() => posted.length === 1, "first hold to finish during the second capture");
     assert.ok(events.indexOf("opened 2") > events.indexOf("stopped 1"));
-    assert.deepEqual(posted.map(p => p.text), ["first hold", "final phrase"]);
+    assert.deepEqual(posted.map(p => p.text), ["first hold final phrase"]);
     assert.ok(!events.includes("overlapping microphones"));
   });
 

@@ -1,8 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the difference between "we were not told" and "it cost nothing".
 //
@@ -13,7 +12,7 @@ import { join } from "node:path";
 // window, so a writer that replaced the whole row would have each metric erase the other's
 // figures on arrival, and the ledger would hold only whichever landed last.
 
-const home = mkdtempSync(join(tmpdir(), "mission-ledger-"));
+const home = tempDir("mission-ledger-");
 process.env.MISSION_HOME = home;
 
 const {

@@ -1,9 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the LLM config is the one blob two PROCESSES read - the daemon resolves
 // its background jobs from it, and the Foreman worker reads the runner off a route backed by
@@ -23,7 +23,7 @@ import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 //
 // Real db, so the round-trip through zod's defaults is exercised rather than mocked.
 
-const home = mkdtempSync(join(tmpdir(), "mission-llm-cfg-"));
+const home = tempDir("mission-llm-cfg-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

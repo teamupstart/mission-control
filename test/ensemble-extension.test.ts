@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: the whole architectural promise of the ensemble kernel is that a genuinely
@@ -19,7 +19,7 @@ import { join } from "node:path";
  * contract would be incomplete - so the negative half of the proof lives in ensemble-extension-contract.test.ts.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-ext-"));
+const home = tempDir("mission-ensemble-ext-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

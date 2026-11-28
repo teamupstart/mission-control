@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { systemTempDir } from "../test/temp-root.mjs";
 
 export const E2E_MAX_WORKERS = 4;
 
@@ -60,7 +60,9 @@ export function defaultE2eLeasePort(): number {
 }
 
 export function defaultE2eLeaseMetadataPath(): string {
-  return join(tmpdir(), `mission-control-e2e-${userIdentity()}.json`);
+  // The machine temp dir, not this run's private root: the lease is shared by every run on
+  // the host, which is the point of it.
+  return join(systemTempDir(), `mission-control-e2e-${userIdentity()}.json`);
 }
 
 export function assertE2eWorkerLimit(workers: number): void {
@@ -108,7 +110,11 @@ async function publishOwner(metadataPath: string, owner: E2eLeaseOwner): Promise
 }
 
 async function tryListen(port: number, token: string): Promise<Server | null> {
-  const server = createServer((socket) => socket.end(`${LEASE_PROTOCOL}${token}\n`));
+  const server = createServer((socket) => {
+    // A waiter can disconnect during the write or reset after reading the reply.
+    socket.on("error", (error) => console.warn("[e2e] host lease probe socket failed:", error));
+    socket.end(`${LEASE_PROTOCOL}${token}\n`);
+  });
   return await new Promise((resolve, reject) => {
     server.once("error", (error) => {
       if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") resolve(null);

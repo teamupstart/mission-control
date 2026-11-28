@@ -1,3 +1,4 @@
+import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
 /**
  * Which terminal backends can open a window on a checkout RIGHT NOW, and doing it.
  *
@@ -351,6 +352,8 @@ export async function launchTerminal(
   spec: TerminalLaunchSpec,
   deps: TerminalTargetDeps = defaultTerminalTargetDeps,
 ): Promise<TerminalLaunchOutcome> {
+  using reservation = reserveWorktreeUse([spec.cwd]);
+  if (!reservation) return { ok: false, label: backend, error: "automatic cleanup currently owns this checkout", status: 409 };
   const view = terminalTargetViews(deps).find((v) => v.id === backend);
   if (!view) return { ok: false, label: backend, error: "no such terminal", status: 404 };
   if (view.unavailable) {

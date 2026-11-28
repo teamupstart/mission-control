@@ -9,7 +9,9 @@ obligation:
    **Open dossier**. Nothing else in that run moves until it is answered.
 2. **Questions from agents** - every pending [review](sessions.md#review-channel-mcp), grouped by the
    session that raised it and **answered right here**: the same card the per-session review
-   modal draws, diff/plan/question and option menus included. A member of an ensemble carries
+   modal draws, diff/plan/question and option menus included. A checkout path in a question links
+   here exactly as it does in that modal: clicking it closes the inbox and opens the file in the
+   session's Files tab, and the question stays pending. A member of an ensemble carries
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
 3. **Session control requests** - with the preview enabled, each request shows who asked and why.
@@ -87,7 +89,7 @@ wherever the inbox and its alerts name one: alert titles (the toast and the Away
 the inbox's row headers, a snoozed question's row, the review modal's header, and a line at the
 head of each question card. The first of these that is set wins:
 
-1. a call sign or a resident's reference name (reserved for voice, not set yet);
+1. a call sign or a resident's reference name while voice is enabled;
 2. a resident's profile name, drawn in its board colour;
 3. the task title;
 4. the session name;
@@ -102,6 +104,15 @@ The inbox's sections follow one fixed order, `INBOX_SECTION_ORDER` in
 `src/web/lib/attention.ts`, whatever order the fold derives them in. Later sections are inserted at
 fixed places in it rather than appended. **Reports** is its last entry, directly after **Stuck
 finalizations**, so the inbox's own **Snoozed** heading always comes right after it.
+
+### Answering questions by voice
+
+With voice enabled, the foot of an open report or Stuck row lists the phrases for its
+available controls. Plan forms show ordinal badges and option letters. Voice selections
+stay in the draft until Submit, and an unanswered decision is marked when a spoken submit
+is refused. See [answering questions](voice.md#answer-a-question-by-voice),
+[filling plan forms](voice.md#fill-a-plan-form-by-voice), and
+[spoken inbox actions](voice.md#act-on-an-inbox-card-by-voice).
 
 ### Agent reports
 
@@ -315,6 +326,53 @@ questions are not owed yet, so they are not in the **to answer** count. The topb
 a separate **snoozed** figure, which also opens the inbox, so they can be reached when nothing
 else is waiting.
 
+### Unified split inbox (preview)
+
+With **Unified split inbox** (`inbox-split`) on in **Settings > Feature flags**, the inbox is one
+list with a detail pane beside it. Every question, permission request, parked menu, halt, stuck
+session and report is its own row: a session with two questions is two rows, marked **1 of 2**
+and **2 of 2**, and each report is its own row with a dot while it is unread. The selected row
+opens in the pane with the same card and controls the stacked inbox draws, so answering, **Mark
+read**, **Accept**, **Nudge** and the rest work exactly as described above.
+
+- **Moving on.** When the open row is settled and leaves the list (you answered it, accepted it,
+  marked it read or dismissed it), the row after it opens on its own and the pane says so. With
+  nothing after it, the row before it opens.
+- **Moving around.** Click a row, or press **J** for the next row and **K** for the previous one
+  (not while typing in a field). The arrow keys move through the list when it has focus.
+  **Previous** and **Next** in the pane do the same, and **Up next** lists the next two rows.
+- **Tabs.** **All**, **To answer** (everything owed, including rows that open elsewhere), **To
+  read** (reports) and **Snoozed**, each with its count.
+- **Reports opened from a notification.** A report the inbox already lists, or an earlier version
+  of one it lists, opens in its own row under **Reports**: that row is selected and shows the
+  latest version, and it is listed on **All** and **To read** like any report (choosing it from
+  another tab switches to **All**). A report the inbox does not list (already read, unlisted, or
+  from a muted agent) is listed first instead, under **Opened from a notification**, on every tab
+  but Snoozed. While such a report is still loading, or if it could not be loaded, a line above the
+  tabs says so and the list carries on without it.
+- **Rows that open elsewhere.** Decisions, Pipeline lifecycle, Waiting on you and Stuck
+  finalizations are settled on another page, so they are grouped under **Opens elsewhere**,
+  marked ↗, and their pane shows what the inbox knows with the button that goes there.
+- **Parked menus are answered in the pane.** A session parked on a terminal menu shows the menu's
+  numbered options in the pane, the same prompt the review modal draws.
+- **Plan forms keep every control.** A managed plan's final bundle shows **Approve all future
+  bundles for this task** beside **Submit** in the pane, as it does in the review modal, and
+  checking it while approving grants the same standing approval (see
+  [managed plans](managed-plans.md)). It appears only on a final bundle bound to a task; a
+  bundle already approved by a standing approval asks only its remaining questions, without it.
+  `e2e/specs/inbox-split-standing-approval.spec.ts` covers this.
+- **Dismiss narrows to one question.** A question row's **Dismiss** in the pane hides that one
+  question, because a row's dismissal is kept per question.
+- **Reports stay in step.** Selecting a report opens it on screen, the same open report a voice
+  command acts on, and selecting another row closes it. **Mark all read** sits beside the
+  **Reports** heading.
+- **Narrow windows.** Below 800 px wide the list and the pane stack: the list fills the inbox,
+  choosing a row shows its pane, and **‹ Inbox** goes back.
+
+Turning the flag off brings back the stacked inbox at once, in every open window. Nothing is
+stored by the split view itself. `e2e/specs/inbox-split.spec.ts` covers selecting, moving on after
+an answer and a **Mark read**, **J**, the tabs, the narrow layout and the flag turning off.
+
 ### Dismiss a row without resolving it
 
 Most rows have a **Dismiss** button. Session control requests stay visible until answered or withdrawn,
@@ -464,6 +522,11 @@ in ~10 minutes; a session idle ~20 minutes with a task or queue still open again
 (the "died with work unfinished" case); a session idle that long with a **workflow run
 parked on it**; and a Foreman escalation nobody answered. A stuck session is
 attention-level, so it breaks through even while you're away.
+
+While an open workflow owns the next move, its session is exempt from stall detection. Idle
+sessions under active review appear under **Held by a workflow**. A run parked on its session
+for a repair turn or a pushed head can still raise **Workflow run parked** after the idle
+threshold.
 
 A resident's standing task stays open between iterations and does not count as unfinished
 work. Its scheduled waits therefore do not produce a Stuck row. An open queue, a parked

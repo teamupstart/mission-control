@@ -54,6 +54,7 @@ export const RepoIndexConfigSchema = z.object({
 });
 
 export const RepoIndexConfigPatchSchema = partialPatch(RepoIndexConfigSchema);
+export const RepoIndexUpdateSchema = RepoIndexConfigPatchSchema.extend({ revision: z.string().max(80) });
 
 export type RepoIndexConfig = z.infer<typeof RepoIndexConfigSchema>;
 export type RepoIndexConfigPatch = z.infer<typeof RepoIndexConfigPatchSchema>;
@@ -77,6 +78,7 @@ export interface IndexedDirectoryView {
 }
 
 export interface RepoIndexView {
+  revision: string;
   directories: IndexedDirectoryView[];
   managedBy: "config" | "environment";
   environmentVariable: string | null;

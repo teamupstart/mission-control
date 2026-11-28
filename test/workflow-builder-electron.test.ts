@@ -1,12 +1,12 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -31,13 +31,13 @@ function runElectronFixture(args: string[]): string {
   const electron = require("electron") as string;
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const userData = mkdtempSync(join(tmpdir(), "mission-workflow-browser-"));
+  const userData = tempDir("mission-workflow-browser-");
   try {
-    return execFileSync(electron, [
+    return execFileSync(...electronGuiCommand(electron, [
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       ...args,
-    ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+    ]), { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
   } finally {
     rmSync(userData, { force: true, recursive: true });
   }
@@ -234,7 +234,7 @@ test("published workflow nodes stay within the visible React Flow graph", () => 
 });
 
 test("editable workflow canvas remains mounted with default node statuses", () => {
-  const fixtureDir = mkdtempSync(join(tmpdir(), "mission-workflow-canvas-"));
+  const fixtureDir = tempDir("mission-workflow-canvas-");
   const bundlePath = join(fixtureDir, "canvas.js");
   const htmlPath = join(fixtureDir, "index.html");
   let output: string;

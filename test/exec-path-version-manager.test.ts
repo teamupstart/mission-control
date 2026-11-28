@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-version-manager-path-"));
+const home = tempDir("mission-version-manager-path-");
 process.env.HARNESS_HOME = join(home, "state");
 
 test("configured mise, relocated asdf, and relocated Volta shims survive login-shell failure", async () => {

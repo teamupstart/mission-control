@@ -839,9 +839,14 @@ export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPill
   };
 }
 
+/** Kinds with an implementation handoff. */
+export function isImplementationTaskKind(kind: TaskKind | null | undefined): boolean {
+  return kind === "ship" || kind === "bugfix";
+}
+
 /** Kinds that defer publication and share PR follow-through and ship recovery. */
 export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
-  return kind === "ship" || kind === "bugfix" || kind === "document";
+  return isImplementationTaskKind(kind) || kind === "document";
 }
 
 /**

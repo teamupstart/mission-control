@@ -5,13 +5,11 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,6 +36,7 @@ import {
   writeFakeConductor,
   type FakeConductor,
 } from "./conductor.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -271,7 +270,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   // resolved cwd for a session. The transcript path is derived from that cwd, so an
   // unresolved fixture path and the daemon's own view would disagree by a prefix and the
   // conversation would silently never be found.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "mc-e2e-")));
+  const home = realpathSync(tempDir("mc-e2e-"));
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
@@ -286,6 +285,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     extraEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY === "1";
   const codexOnDaemonPathOnly = extraEnv.MC_E2E_CODEX_ON_DAEMON_PATH_ONLY === "1";
   const gitFetchRefRace = extraEnv.MC_E2E_GIT_FETCH_REF_RACE === "1";
+  const gitCheckHandBackTimeout = extraEnv.MC_E2E_GIT_CHECK_HAND_BACK_TIMEOUT === "1";
   const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
@@ -293,18 +293,29 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   const gitFetchRefRaceMarker = join(home, "git-fetch-ref-race");
-  if (gitFetchRefRace) {
+  if (gitFetchRefRace || gitCheckHandBackTimeout) {
     const fakeGit = join(home, "bin", "git");
     mkdirSync(dirname(fakeGit), { recursive: true });
     writeFileSync(
       fakeGit,
       [
         "#!/usr/bin/env node",
-        "const { existsSync, unlinkSync } = require('node:fs');",
+        "const { existsSync, readFileSync, unlinkSync, writeFileSync } = require('node:fs');",
         "const { spawnSync } = require('node:child_process');",
         `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
         `const realPath = ${JSON.stringify(process.env.PATH ?? "")};`,
         "const args = process.argv.slice(2);",
+        ...(gitCheckHandBackTimeout ? [
+          `const stalled = ${JSON.stringify(join(home, "git-check-hand-back-stalled"))};`,
+          "const reviews = process.env.MC_E2E_RECORD_DIR + '/coderabbit.jsonl';",
+          "if (args.slice(2).join(' ') === 'ls-remote --symref origin HEAD' && !existsSync(stalled)",
+          "    && existsSync(reviews) && readFileSync(reviews, 'utf8').includes('\"args\":[\"review\"')) {",
+          "  writeFileSync(stalled, '', { flag: 'wx' });",
+          // Leave the probe unanswered until the daemon's real 30-second deadline.
+          "  setInterval(() => {}, 1000);",
+          "  return;",
+          "}",
+        ] : []),
         "if (args[0] === '-C' && args[2] === 'fetch' && args[3] === 'origin' && existsSync(marker)) {",
         "  unlinkSync(marker);",
         "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
@@ -431,7 +442,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     PATH:
       conductorNodeVersion === undefined
         ? [
-            ...(gitFetchRefRace ? [join(home, "bin")] : []),
+            ...(gitFetchRefRace || gitCheckHandBackTimeout ? [join(home, "bin")] : []),
             ...(codexOnDaemonPathOnly ? [daemonPathBin] : []),
             process.env.PATH ?? "",
           ].filter(Boolean).join(delimiter)
@@ -547,6 +558,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // unsafe, because the dashboard's Kill and Reset controls would then act on them.
     // 0 switches passive discovery off entirely.
     MISSION_POLL_MS: "0",
+    // Shaper sign-in keeps its fake tokens in daemon memory, so no browser run ever writes an
+    // item to the developer's login Keychain.
+    MISSION_SHAPER_SIGN_IN_STORE: "memory",
     // A fake agent answers instantly, so the dispatch settle windows are pure latency here.
     MISSION_DISPATCH_SETTLE_MS: "0",
     // The same reasoning for the workflow sweep, which is what advances a session action

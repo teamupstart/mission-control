@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import os, { tmpdir } from 'node:os';
+import os, {  } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { startBinaryEnrollment } from '../src/main/binary-enrollment.ts';
 import { ExecutableLocator, executableLocator } from '../src/server/executables/locator.ts';
 import { inspectBundle } from '../scripts/install-staged-app.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(t: test.TestContext, channel: 'stable' | 'alpha', exitCode: number, location: 'copied' | 'personal' | 'personal-alias' | 'translocated' | 'mounted-image' = 'copied') {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'binary-enrollment-')));
+  const root = realpathSync(tempDir('binary-enrollment-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const home = join(root, 'home');
   mkdirSync(join(home, 'Applications'), {recursive: true});

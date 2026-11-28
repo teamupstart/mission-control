@@ -1,9 +1,14 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { BUG_FIX_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { appendFileSync, mkdtempSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Session, Task } from "../src/shared/types.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The whole reported failure, end to end, at the seams a person actually feels it:
 // a dispatched ship session is launched, the composed prompt comes back through
@@ -29,11 +34,13 @@ import type { Session, Task } from "../src/shared/types.ts";
 // pre-fix path is reachable from HEAD by nulling that one column, and it is asserted
 // to fail at exactly the step the operator saw it fail at.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatched-launch-workflow-"));
+const home = tempDir("mission-dispatched-launch-workflow-");
 process.env.MISSION_HOME = home;
+process.env.MISSION_GOAL_POLL_MS = "10";
+process.env.MISSION_GOAL_REFRESH_MS = "0";
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, getSessionGoal } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -53,6 +60,8 @@ const { processPromptedWrapup } = await import("../src/server/foreman/worker.ts"
 const { ForemanClient } = await import("../src/server/foreman/client.ts");
 const { ForemanConfigSchema } = await import("../src/shared/protocol.ts");
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const { startGoalRefiner } = await import("../src/server/goal/refiner.ts");
+const { sampleCheckoutBoundary } = await import("../src/server/workflows/repository-artifact/seal.ts");
 
 /** The operator's own request. Everything else in the delivered prompt is the platform's. */
 const INTENT = "Look at the current sessions. None of them were submitted to their pipelines.";
@@ -209,7 +218,7 @@ interface Dispatched {
  * its native id (which moves the marker), and only then is the operator's own request
  * captured as prompt revision one under that native key.
  */
-function dispatch(slug: string, taskOverrides: Partial<Task> = {}): Dispatched {
+function dispatch(slug: string, taskOverrides: Partial<Task> = {}, seedGoal = true, triggerMode: "foreman_complete" | "manual" = "foreman_complete"): Dispatched {
   const db = openDb();
   const registry = new Registry();
   const queues = new QueueManager(registry);
@@ -236,10 +245,10 @@ function dispatch(slug: string, taskOverrides: Partial<Task> = {}): Dispatched {
     id: registrationId,
     agent: "claude",
     name: slug,
-    cwd: "/repo",
+    cwd: task.worktreePath!,
     gitBranch: "feature",
-    gitRoot: "/repo",
-    repoRoot: "/repo",
+    gitRoot: task.worktreePath,
+    repoRoot: task.repoRoot,
   });
   registry.bindLaunchedAgentSession(registrationId, "claude", noteKey);
   registry.captureAcceptedPrompt(registrationId, task.intent, noteKey, 2);
@@ -248,7 +257,7 @@ function dispatch(slug: string, taskOverrides: Partial<Task> = {}): Dispatched {
   // What the refiner writes for a first prompt it could classify. Tier 2 is a model call,
   // so its OUTPUT is seeded rather than its call - the reconciler's own behaviour is
   // goal-refiner.test.ts's subject, and faking the call would not make this test say more.
-  registry.upsertGoal(registrationId, {
+  if (seedGoal) registry.upsertGoal(registrationId, {
     objective: task.intent,
     text: task.intent,
     focus: task.intent,
@@ -262,14 +271,15 @@ function dispatch(slug: string, taskOverrides: Partial<Task> = {}): Dispatched {
 
   const bindingId = workflows.store.insertBinding({
     id: `binding-${slug}`,
-    workflowVersionId: "v",
+    workflowVersionId: task.workflowId === BUG_FIX_REVIEW_WORKFLOW_ID
+      ? workflows.store.getWorkflow(task.workflowId)!.currentVersionId! : "v",
     noteKey,
     sessionId: registrationId,
     sessionAgent: "claude",
     sessionName: slug,
-    sessionCwd: "/repo",
-    sessionRepoRoot: "/repo",
-    triggerMode: "foreman_complete",
+    sessionCwd: task.worktreePath,
+    sessionRepoRoot: task.repoRoot,
+    triggerMode,
     deliveryMode: "preview",
     maxRepairRounds: 2,
     now: 1,
@@ -298,10 +308,10 @@ function workAndPark(registry: InstanceType<typeof Registry>, noteKey: string, a
   });
 }
 
-function submitEcho(registry: InstanceType<typeof Registry>, noteKey: string, echoed: string, at: number): void {
+function submitEcho(registry: InstanceType<typeof Registry>, noteKey: string, echoed: string, at: number, transcriptPath: string | null = null): void {
   registry.applyHook({
     agent: "claude", event: "UserPromptSubmit", sessionId: noteKey, cwd: "/repo",
-    transcriptPath: null, env: {}, prompt: echoed, ts: at,
+    transcriptPath, env: {}, prompt: echoed, ts: at,
   });
 }
 
@@ -320,7 +330,7 @@ function wrapupDecision(
   });
 }
 
-async function claim(d: Dispatched, generation: number) {
+async function claim(d: Dispatched, generation: number, expectedContinuationPacket?: string) {
   const intent = resolvedSessionIntent(d.registry.getGoal(d.sessionId));
   assert.ok(intent, "a claim cannot be built without a resolved intent");
   const body = promptedCompletionClaim({
@@ -330,6 +340,7 @@ async function claim(d: Dispatched, generation: number) {
     headSha: "abc",
     transcriptAnchor: 1,
     summary: "The requested change is implemented and verified.",
+    expectedContinuationPacket,
   });
   return await d.app.request(`/api/sessions/${d.sessionId}/workflow-completion`, {
     method: "POST",
@@ -720,4 +731,835 @@ for (const boundary of ["HTTP claim", "store transaction"] as const) {
       assert.equal(queue.promptedDirectHandoff, null);
     });
   }
+}
+
+const MOCKUP_OBJECTIVE = "Create mockups of alternatives for displaying conversation pills when they wrap.";
+const IMPLEMENTATION_OBJECTIVE = "Implement counts on section headings in the conversation Idle rail when its pills wrap.";
+const REPLACEMENT_OBJECTIVE = "Implement heading counts only for collapsed sections in the conversation Idle rail.";
+const DESIGN_SELECTION = "lets go forward with counts on section headings, that is it, 100%";
+
+const INITIAL_RESTRICTIONS = new Map([
+  ["no PR omitted marker", `${DESIGN_SELECTION}. Do not submit this for review or open a PR.`],
+  ["embedded no PR", "Implement counts on section headings, but do not open a PR."],
+  ["comma-separated no PR", "Implement counts on section headings, no PR"],
+  ["do not make a pull request", "Implement counts on section headings. Do not make a pull request."],
+  ["no PR yet", "Implement counts on section headings. Do not open a PR yet."],
+  ["no PR until approval", "Implement counts on section headings. Do not open a PR until I approve."],
+  ["no PR for this task", "Implement counts on section headings. Do not open a PR for this task."],
+]);
+const INITIAL_SELECTIONS = new Map([
+  ...INITIAL_RESTRICTIONS,
+  ["preference only", "Counts on section headings is my favorite."],
+  ["ambiguous", "Counts, maybe? I am not sure what to do next."],
+  ["delegates PR", `${DESIGN_SELECTION}. Don’t open a PR, let the bound Workflow open it.`],
+]);
+const FOLLOWUP_RESTRICTIONS = new Map([
+  ["no PR as steering", "Do not open a PR."],
+  ["do not submit a PR", "Do not submit a PR."],
+  ["no PR for this change", "Do not open a PR for this change."],
+  ["no PR for this work", "Do not open a PR for this work."],
+  ["no PR for this implementation", "Do not open a pull request for this implementation."],
+  ["no PR for this feature", "Implement the selected design. Do not open a PR for this feature."],
+  ["no PR for this feature branch", "Do not open a PR for this feature branch."],
+  ["do not submit this as a PR", "Implement the design. Don’t submit this as a PR."],
+  ["combined release misses deliverable", "Do not open a PR."],
+  ["combined release rewrites unrelated text", "Do not open a PR."],
+  ["explicit stop", "Stop here."],
+  ["stop working on this", "Stop working on this."],
+  ["stop working on this task", "Stop working on this task."],
+  ["stop work on this", "Stop work on this."],
+  ["stop this task", "Stop this task."],
+  ["stop the task", "Stop the task."],
+  ["no PR for this", "Do not open a PR for this."],
+  ["do not submit for review", "Do not submit this for review."],
+  ["do not file a PR", "Do not file a PR."],
+  ["no PR without approval", "Do not create a pull request without my approval."],
+  ["combined stop and no PR", "Stop here and don't open a PR."],
+  ["delegation requires approval", "Do not open a PR until I approve, then let the bound workflow open it."],
+  ["full-length contract", "Do not open a PR without my approval."],
+  ["model contextual hold", "Leave publication with me until I review it."],
+]);
+
+for (const scenario of [
+  ...INITIAL_SELECTIONS.keys(),
+  ...FOLLOWUP_RESTRICTIONS.keys(),
+  "implementation", "hold survives replacement", "legacy hold survives replacement",
+  "release from legacy hold", "release judged unclear", "release invents deliverable",
+  "unclear restriction survives replacement", "artifact diff", "stale verdict", "recovery",
+]) {
+  test(`mockup exploration through the goal model and prompted worker: ${scenario}`, async (t) => {
+    const slug = `mockup-transition-${scenario.replaceAll(" ", "-")}`;
+    const d = dispatch(slug, { title: MOCKUP_OBJECTIVE, intent: MOCKUP_OBJECTIVE, kind: "bugfix", workflowId: "w" }, false);
+    const now = Date.now() - 30_000;
+    const transcriptPath = join(home, `${slug}.jsonl`);
+    const selection = INITIAL_SELECTIONS.get(scenario) ?? DESIGN_SELECTION;
+    const unclearRestriction = scenario === "unclear restriction survives replacement";
+    const legacyRelease = scenario === "release from legacy hold";
+    const legacyHold = scenario === "legacy hold survives replacement";
+    const unclearRelease = scenario === "release judged unclear";
+    const releaseInventsDeliverable = scenario === "release invents deliverable";
+    const releaseAfterReplacement = scenario === "hold survives replacement" || unclearRelease || releaseInventsDeliverable;
+    const replaceWhileHeld = releaseAfterReplacement || unclearRestriction || legacyHold;
+    const contextualHold = scenario === "model contextual hold";
+    const fullLengthContract = scenario === "full-length contract";
+    const releaseWithoutReplacement = legacyRelease || contextualHold;
+    const unrelatedRewrite = scenario === "combined release rewrites unrelated text";
+    const combinedRelease = scenario === "combined release misses deliverable" || unrelatedRewrite;
+    const followupRestriction = FOLLOWUP_RESTRICTIONS.get(scenario)
+      ?? (replaceWhileHeld || legacyRelease ? "Do not open a PR." : null);
+    let instruction = selection;
+    let revision = 2;
+    const readGoal = () => d.registry.getGoal(d.sessionId);
+    const recordTranscript = (turns: Array<["user" | "assistant", string]>) => {
+      writeFileSync(transcriptPath, turns.map(([role, content], index) => JSON.stringify({
+        type: role,
+        uuid: String(index),
+        timestamp: new Date(now + index).toISOString(),
+        message: { role, content },
+      })).join("\n") + "\n");
+    };
+
+    const modelPrompts: string[] = [];
+    const verifyPrompts: string[] = [];
+    let refiner: ReturnType<typeof startGoalRefiner> | undefined;
+    t.after(() => refiner?.());
+    t.after(configureClaudeRunnerTransport(() => "sdk", {
+      executable: async () => "/fake/bin/claude",
+      env: () => ({ PATH: "/usr/bin" }),
+      query: async ({ prompt, options }) => {
+        assert.ok(typeof prompt === "string");
+        assert.deepEqual(options.tools, []);
+        let reply: object;
+        if (prompt.includes("## The specific unresolved instruction to classify now")) {
+          modelPrompts.push(prompt);
+          const initial = readGoal()?.promptRevision === 1;
+          if (!initial) {
+            assert.ok(prompt.includes(instruction));
+            assert.ok(prompt.includes("[assistant] The mockups are ready. One option puts counts on section headings."));
+          }
+          // At the provider seam, replay the installed policy's observed steer response
+          // unless the actual goal prompt teaches the new deliverable distinction.
+          const teachesTransition = prompt.includes("If exploration was the whole objective");
+          const unclear = scenario === "ambiguous" || (unclearRelease && revision === 5)
+            || (unclearRestriction && prompt.includes("\nDo not open a PR.\n"));
+          const replace = !initial && teachesTransition
+            && !unclear && scenario !== "preference only"
+            && !(followupRestriction && revision === 3)
+            && !(releaseWithoutReplacement && revision === 4)
+            && !(releaseAfterReplacement && !releaseInventsDeliverable && revision === 5)
+            && !(combinedRelease && !unrelatedRewrite && revision === 4)
+            && (scenario !== "recovery" || revision === 3);
+          const addsContextualHold = contextualHold && revision === 3;
+          const objective = addsContextualHold
+            ? `${IMPLEMENTATION_OBJECTIVE}\nAutomatic handoff: operator only`
+            : releaseInventsDeliverable && revision === 5
+            ? "Replace the Idle rail with a search bar."
+            : unrelatedRewrite && revision === 4
+            ? `${IMPLEMENTATION_OBJECTIVE} Run focused tests.`
+            : replace
+            ? (revision >= 4 ? REPLACEMENT_OBJECTIVE : IMPLEMENTATION_OBJECTIVE) + (scenario === "no PR omitted marker"
+              ? "\nDo not submit this for review or open a PR."
+              : "")
+            : readGoal()?.objective ?? MOCKUP_OBJECTIVE;
+          reply = {
+            relationship: initial ? "initial" : unclear ? "unclear" : replace ? "replace" : "steer",
+            objective, goal: objective.split("\n")[0],
+            focus: initial ? MOCKUP_OBJECTIVE : instruction,
+            reason: "Reconciled against the operator's instruction",
+          };
+        } else {
+          verifyPrompts.push(prompt);
+          if (scenario === "stale verdict") {
+            refiner?.();
+            submitEcho(d.registry, d.noteKey, "Stop here. Do not submit the work.", now + 8, transcriptPath);
+          }
+          reply = { complete: true, confidence: 1, gaps: [], resolved: [], summary: "The requested counts are implemented and verified." };
+        }
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { type: "result", subtype: "success", is_error: false,
+              result: JSON.stringify(reply), structured_output: reply };
+          },
+        };
+      },
+    }));
+
+    const client = new ForemanClient();
+    const writes: string[] = [];
+    t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      if (request.method !== "GET") writes.push(path);
+      request.headers.set("host", "127.0.0.1:7317");
+      return d.app.request(request);
+    });
+    let implemented = false;
+    const diffRead = t.mock.method(client, "diff", async () => {
+      const path = implemented && scenario !== "artifact diff" ? "src/web/idle-rail.tsx" : "docs/mockups/idle-rail.html";
+      return {
+        ok: true, error: null, base: "main", baseSha: "base", headSha: "abc",
+        repoRoot: "/repo", branch: "feature", filesChanged: 1, insertions: 1, deletions: 0,
+        patch: `diff --git a/${path} b/${path}\n+++ b/${path}\n+Section heading count\n`, truncated: false,
+      };
+    });
+    t.mock.method(client, "transcriptSize", async () => 1);
+    t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
+    t.mock.method(client, "instructions", async () => "");
+    const cfg = ForemanConfigSchema.parse({
+      enabled: true, mode: "live", repoAllowlist: ["/repo"],
+      wrapup: "pr", wrapupTriggers: ["prompted"], skipReviewArtifactWrapup: true,
+    });
+    const tick = async () => {
+      const session = d.registry.getSession(d.sessionId)!;
+      return processPromptedWrapup(client, cfg, session, [session], d.registry.getQueue(d.sessionId), new Set());
+    };
+    const runs = () => openDb().prepare("SELECT id FROM workflow_runs WHERE binding_id = ?")
+      .all(d.bindingId).map((row) => row.id);
+    const waitForRevision = async (revision: number) => {
+      const until = Date.now() + 4000;
+      while (readGoal()?.resolvedPromptRevision !== revision && Date.now() < until) await delay(10);
+      assert.equal(readGoal()?.resolvedPromptRevision, revision, "the real goal refiner settled the revision");
+    };
+
+    const offered: ["assistant", string] = ["assistant", "The mockups are ready. One option puts counts on section headings."];
+    recordTranscript([["user", MOCKUP_OBJECTIVE], offered]);
+    submitEcho(d.registry, d.noteKey, d.echoed, now, transcriptPath);
+    workAndPark(d.registry, d.noteKey, now + 1);
+    refiner = startGoalRefiner(d.registry);
+    await waitForRevision(1);
+    assert.equal(await tick(), true);
+    assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "retired");
+    assert.equal(verifyPrompts.length, 0);
+    assert.equal(diffRead.mock.callCount(), 0, "artifact-only retirement occurs before evidence collection");
+    assert.deepEqual(runs(), []);
+
+    refiner();
+    recordTranscript([["user", MOCKUP_OBJECTIVE], offered, ["user", selection], ["assistant", "Counts are implemented in the product."]]);
+    implemented = true;
+    submitEcho(d.registry, d.noteKey, selection, now + 4, transcriptPath);
+    workAndPark(d.registry, d.noteKey, now + 5);
+    assert.equal(await tick(), false, "unreconciled instructions cannot consume the new generation");
+    refiner = startGoalRefiner(d.registry);
+    await waitForRevision(2);
+    if (scenario === "recovery") {
+      assert.equal(await tick(), true, "simulate the old artifact retirement");
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.generation, 2);
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "retired");
+      assert.equal(await tick(), false, "the consumed generation never reopens");
+      assert.deepEqual(runs(), []);
+
+      revision = 3;
+      instruction = "The requested deliverable is the product implementation of counts on section headings. Verify the existing change and hand it to the bound workflow.";
+      recordTranscript([["user", MOCKUP_OBJECTIVE], offered, ["user", selection], ["user", instruction]]);
+      submitEcho(d.registry, d.noteKey, instruction, now + 9, transcriptPath);
+      workAndPark(d.registry, d.noteKey, now + 10);
+      await waitForRevision(3);
+    }
+    const fullObjective = `${IMPLEMENTATION_OBJECTIVE}\nRequirements: ${"x".repeat(3890)}`;
+    if (followupRestriction) {
+      assert.equal(resolvedSessionIntent(readGoal())?.objective, IMPLEMENTATION_OBJECTIVE);
+      if (fullLengthContract) d.registry.upsertGoal(d.sessionId, { objective: fullObjective });
+      revision = 3;
+      instruction = followupRestriction;
+      recordTranscript([["user", MOCKUP_OBJECTIVE], offered, ["user", selection], ["user", instruction]]);
+      submitEcho(d.registry, d.noteKey, instruction, now + 9, transcriptPath);
+      workAndPark(d.registry, d.noteKey, now + 10);
+      await waitForRevision(3);
+    }
+    if (legacyHold || legacyRelease) {
+      const legacyObjective = `${IMPLEMENTATION_OBJECTIVE}\nDo not open a PR.`;
+      d.registry.upsertGoal(d.sessionId, { objective: legacyObjective });
+      assert.equal(resolvedSessionIntent(readGoal())?.objective, legacyObjective);
+      assert.equal(await tick(), false, "a settled markerless objective must hold before reconciliation");
+      assert.equal(verifyPrompts.length, 0);
+      assert.deepEqual(runs(), []);
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedConsumedGeneration, 1);
+    }
+    if (replaceWhileHeld) {
+      if (unclearRestriction) {
+        assert.equal(readGoal()?.relationship, "unclear");
+        assert.equal(resolvedSessionIntent(readGoal()), null);
+        assert.equal(await tick(), false);
+        assert.equal(verifyPrompts.length, 0);
+        assert.equal(d.registry.getQueue(d.sessionId)?.promptedConsumedGeneration, 1);
+      }
+      if (!legacyHold) assert.ok(readGoal()?.objective?.includes("Automatic handoff: operator only"));
+      revision = 4;
+      instruction = "Change the implementation to count only collapsed sections.";
+      recordTranscript([["user", MOCKUP_OBJECTIVE], offered, ["user", selection], ["user", "Do not open a PR."], ["user", instruction]]);
+      submitEcho(d.registry, d.noteKey, instruction, now + 12, transcriptPath);
+      workAndPark(d.registry, d.noteKey, now + 13);
+      await waitForRevision(4);
+    }
+    assert.equal(modelPrompts.length, revision + Number(unclearRestriction));
+    assert.equal(readGoal()?.openingPrompt, MOCKUP_OBJECTIVE);
+
+    if (scenario === "ambiguous") {
+      assert.equal(resolvedSessionIntent(readGoal()), null);
+    } else if (scenario === "preference only") {
+      assert.equal(resolvedSessionIntent(readGoal())?.objective, MOCKUP_OBJECTIVE);
+    } else {
+      const authorized = resolvedSessionIntent(readGoal());
+      assert.equal(authorized?.episodeKey, `intent:${replaceWhileHeld ? 4 : followupRestriction ? 3 : 2}:${revision}`);
+      assert.equal(authorized?.objective.split("\n")[0], replaceWhileHeld ? REPLACEMENT_OBJECTIVE : IMPLEMENTATION_OBJECTIVE);
+      const expectsHold = followupRestriction || INITIAL_RESTRICTIONS.has(scenario);
+      if (expectsHold && !legacyRelease) {
+        assert.ok(authorized?.objective.split("\n").includes("Automatic handoff: operator only"));
+      }
+      if (fullLengthContract) assert.ok(authorized?.objective.startsWith(fullObjective + "\n"));
+    }
+
+    writes.length = 0;
+    const claimed = ["implementation", "delegates PR", "recovery"].includes(scenario);
+    const retired = scenario === "preference only" || scenario === "artifact diff";
+    assert.equal(await tick(), claimed || retired);
+    if (claimed || scenario === "stale verdict") {
+      assert.equal(verifyPrompts.length, 1);
+      assert.ok(verifyPrompts[0]?.includes(IMPLEMENTATION_OBJECTIVE));
+      assert.ok(verifyPrompts[0]?.includes("src/web/idle-rail.tsx"));
+      assert.ok(verifyPrompts[0]?.includes("focused tests and verification"));
+    } else {
+      assert.equal(verifyPrompts.length, 0);
+      assert.equal(diffRead.mock.callCount(), scenario === "artifact diff" ? 1 : 0);
+    }
+    const completion = d.registry.getQueue(d.sessionId)?.promptedDecision;
+    if (claimed) {
+      assert.equal(completion?.outcome, "workflow_claimed");
+      assert.equal(completion?.generation, revision);
+      assert.equal(await tick(), false, "repeated worker tick cannot verify or claim again");
+      assert.equal(verifyPrompts.length, 1);
+      const run = d.workflows.store.latestRunForBinding(d.bindingId);
+      assert.ok(run);
+      assert.deepEqual(runs(), [run.id]);
+      const submissions = d.workflows.store.listSubmissions(run.id);
+      assert.equal(submissions.length, 1);
+      assert.equal(submissions[0]?.triggerSource, "foreman");
+      assert.ok(JSON.stringify(submissions[0]?.context).includes(IMPLEMENTATION_OBJECTIVE));
+      assert.deepEqual(writes, [`/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`]);
+    } else {
+      assert.deepEqual(runs(), []);
+      if (retired) {
+        assert.equal(completion?.outcome, "retired");
+        assert.equal(completion?.generation, 2);
+      } else {
+        assert.equal(completion?.generation, 1, "the new generation was not consumed");
+        assert.deepEqual(writes, []);
+      }
+    }
+    if (combinedRelease) {
+      const held = resolvedSessionIntent(readGoal());
+      revision = 4;
+      instruction = "Resume automatic handoff. Change the implementation to count only collapsed sections.";
+      submitEcho(d.registry, d.noteKey, instruction, now + 12, transcriptPath);
+      workAndPark(d.registry, d.noteKey, now + 13);
+      await waitForRevision(4);
+      const current = resolvedSessionIntent(readGoal());
+      if (unrelatedRewrite) {
+        assert.equal(current?.objective.split("\n")[0], `${IMPLEMENTATION_OBJECTIVE} Run focused tests.`);
+        assert.ok(current?.objective.split("\n").includes("Automatic handoff: operator only"));
+      } else {
+        assert.equal(current?.objective, held?.objective);
+      }
+      assert.equal(await tick(), false);
+      assert.equal(verifyPrompts.length, 0);
+      assert.deepEqual(writes, []);
+      assert.deepEqual(runs(), []);
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedConsumedGeneration, 1);
+    }
+    if (releaseAfterReplacement || releaseWithoutReplacement) {
+      const expectedObjective = releaseWithoutReplacement ? IMPLEMENTATION_OBJECTIVE : REPLACEMENT_OBJECTIVE;
+      const deliverableUpdatedAt = readGoal()?.deliverableUpdatedAt;
+      assert.ok(deliverableUpdatedAt);
+      revision = releaseWithoutReplacement ? 4 : 5;
+      instruction = "Resume automatic handoff.";
+      submitEcho(d.registry, d.noteKey, instruction, now + 15, transcriptPath);
+      workAndPark(d.registry, d.noteKey, now + 16);
+      await waitForRevision(revision);
+      assert.equal(resolvedSessionIntent(readGoal())?.objective, expectedObjective);
+      assert.equal(readGoal()?.text, expectedObjective);
+      assert.ok(readGoal()?.handoffReleasedAt);
+      assert.equal(getSessionGoal(d.noteKey)?.handoffReleasedAt, readGoal()?.handoffReleasedAt);
+      assert.equal(readGoal()?.deliverableUpdatedAt, deliverableUpdatedAt);
+      assert.equal(getSessionGoal(d.noteKey)?.deliverableUpdatedAt, deliverableUpdatedAt);
+      assert.equal(await tick(), true);
+      assert.equal(verifyPrompts.length, 1);
+      assert.ok(verifyPrompts[0]?.includes(expectedObjective));
+      assert.equal(await tick(), false);
+      assert.equal(verifyPrompts.length, 1);
+      assert.equal(runs().length, 1);
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.generation, revision);
+    }
+  });
+}
+
+const receiptExcludedCheckouts = ["unborn HEAD", "embedded checkout", "skip-worktree entry", "gitlink"] as const;
+
+for (const boundary of [
+  "standards hold", "unverified hold", "manual", "clean handoff", "claim race",
+  "historical packet", "reserved packet", "stale proof", "unreadable proof", "split registration",
+  "transaction image race", "transaction text race", "transaction packet race", "removed binding",
+  "transaction already-read source race", "transaction budget exhausted",
+  "transaction tracked-file race", "transaction head race",
+  "registration drift", "omitted existing claim", "documentation task", "multi-repository task",
+  ...receiptExcludedCheckouts,
+] as const) {
+  test(`registered 18-item packet at the 1:3 to 1:4 continuation: ${boundary}`, async (t) => {
+    const repo = mkdtempSync(join(home, "packet-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args]);
+    git("init", "-q");
+    writeFileSync(join(repo, ".gitignore"), "*.png\n*.log\n");
+    const unregisteredPath = join(repo, "unregistered.txt");
+    writeFileSync(unregisteredPath, "original\n");
+    git("add", ".gitignore", "unregistered.txt");
+    if (boundary !== "unborn HEAD") {
+      git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
+    }
+    git("update-index", "--assume-unchanged", ".gitignore", "unregistered.txt");
+    writeFileSync(join(repo, "change.ts"), "export const repaired = true;\n");
+    if (boundary === "embedded checkout") {
+      git("init", "-q", "nested");
+      git("-C", "nested", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "--allow-empty", "-qm", "nested fixture");
+    } else if (boundary === "skip-worktree entry") {
+      git("update-index", "--no-assume-unchanged", "unregistered.txt");
+      git("update-index", "--skip-worktree", "unregistered.txt");
+      assert.equal(git("ls-files", "-v", "unregistered.txt").toString().trim(), "S unregistered.txt");
+    } else if (boundary === "gitlink") {
+      git("update-index", "--add", "--cacheinfo", `160000,${git("rev-parse", "HEAD").toString().trim()},nested`);
+    }
+    const excludedCheckout = receiptExcludedCheckouts.some(shape => shape === boundary);
+    if (excludedCheckout) {
+      // Each fixture is readable by the general sampler. Only the continuation policy excludes it.
+      assert.match(await sampleCheckoutBoundary(repo, AbortSignal.timeout(10_000)), /^[a-f0-9]{64}$/);
+    }
+    const extraRepo = boundary === "multi-repository task" ? mkdtempSync(join(home, "packet-extra-")) : null;
+    if (extraRepo) {
+      execFileSync("git", ["-C", extraRepo, "init", "-q"]);
+      execFileSync("git", ["-C", extraRepo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "--allow-empty", "-qm", "extra fixture"]);
+    }
+    const d = dispatch(`evidence-continuation-${boundary.replaceAll(" ", "-")}`, {
+      kind: boundary === "documentation task" ? "document" : "bugfix",
+      workflowId: BUG_FIX_REVIEW_WORKFLOW_ID, repoRoot: repo, worktreePath: repo,
+      extraRepos: extraRepo ? [{
+        repoRoot: extraRepo, worktreePath: extraRepo, branch: "feature", provider: null, worktreeLeaseId: null,
+        baseSha: execFileSync("git", ["-C", extraRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+        prUrl: null, prState: null, mergedAt: null,
+      }] : [],
+      intent: "Implement the repair and pass the full suite",
+    }, true, boundary === "manual" ? "manual" : "foreman_complete");
+    const now = Date.now() - 45_000;
+    const prompts: string[] = [];
+    t.after(configureClaudeRunnerTransport(() => "sdk", {
+      executable: async () => "/fake/bin/claude", env: () => ({ PATH: "/usr/bin" }),
+      query: async ({ prompt }) => {
+        assert.equal(typeof prompt, "string");
+        const refining = String(prompt).includes("## The specific unresolved instruction to classify now");
+        if (!refining) prompts.push(String(prompt));
+        const reply = refining
+          ? { relationship: "steer", objective: "Implement the repair and pass the full suite",
+              goal: "Implement the repair", focus: "Continue", reason: "The objective and acceptance criteria are unchanged." }
+          : boundary === "unverified hold" ? { complete: true, confidence: 1, summary: "Full verification is still missing.", resolved: [],
+              gaps: [{ id: "full-verification", kind: "unverified", severity: "blocking", path: "", detail: "Full suite unconfirmed", fix: "Verify the full suite." }] }
+          : boundary !== "standards hold" ? { complete: true, confidence: 1, summary: "The requested work passed.", resolved: [], gaps: [] }
+          : { complete: false, confidence: 1, summary: "The required full suite has unresolved failures.", resolved: [],
+              gaps: [{ id: "full-suite", kind: "standards", severity: "blocking", path: "", detail: "55 full-suite failures remain", fix: "Repair and verify." }] };
+        return { async *[Symbol.asyncIterator]() {
+          yield { type: "result", subtype: "success", is_error: false, result: JSON.stringify(reply), structured_output: reply };
+        } };
+      },
+    }));
+    const transcript = join(home, "packet-transcript.jsonl");
+    writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "opening", message: { role: "user", content: "Implement the repair" } }) + "\n");
+    const hook = (event: "UserPromptSubmit" | "Stop" | "PreToolUse", ts: number, prompt?: string, source?: string) =>
+      d.registry.applyHook({ agent: "claude", sessionId: d.noteKey, cwd: repo, env: {}, transcriptPath: transcript,
+        event, ts, prompt, source, ...(event === "PreToolUse" ? { toolName: "Edit" } : {}) });
+    const stop = startGoalRefiner(d.registry);
+    t.after(stop);
+    async function waitForRevision(n: number) {
+      const deadline = Date.now() + 5000;
+      while (d.registry.getGoal(d.sessionId)?.resolvedPromptRevision !== n && Date.now() < deadline) await delay(10);
+      assert.equal(d.registry.getGoal(d.sessionId)?.resolvedPromptRevision, n);
+    }
+    for (const revision of [2, 3]) {
+      hook("UserPromptSubmit", now + revision, "continue");
+      await waitForRevision(revision);
+    }
+    for (let i = 0; i < 7; i++) {
+      hook("PreToolUse", now + 10 + 2 * i);
+      hook("Stop", now + 11 + 2 * i);
+    }
+    const repositoryScope = "repo-01" as const;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    const images = Array.from({ length: 8 }, (_, i) => {
+      const path = `image-${i}.png`;
+      writeFileSync(join(repo, path), png);
+      return { kind: "agent" as const, path, clientItemId: `image-${i}`, caption: "Fixture rendering", repositoryScope };
+    });
+    writeFileSync(join(repo, "verification.log"), "Focused tests passed\n");
+    const commandOutputs = Array.from({ length: 9 }, (_, i) => ({
+      kind: "command" as const, clientItemId: `check-${i}`, command: "verify", exitCode: 0,
+      output: "focused verification passed", caption: "Focused verification", repositoryScope,
+    }));
+    const packet = {
+      images, commandOutputs,
+      artifacts: [{ kind: "text", path: "verification.log", clientItemId: "test-log", caption: "Test log", repositoryScope }],
+      coverage: Array.from({ length: 5 }, (_, i) => ({ clientCriterionId: `criterion-${i}`, criterion: `Focused criterion ${i}`,
+        proofClass: "focused_execution" as const, repositoryScope, links: [{ clientItemId: `check-${i}`, role: "execution" as const }] })),
+    } satisfies Parameters<typeof d.workflows.stageAgentEvidence>[1];
+    const register = (input = packet) => d.workflows.stageAgentEvidence(d.sessionId, input);
+    const receipt = () => d.workflows.store.continuationReceipt(d.noteKey, "intent:1:3", realpathSync(repo));
+    const receiptIneligible = excludedCheckout || boundary === "registration drift" || boundary === "documentation task" ||
+      boundary === "multi-repository task";
+    let registered;
+    if (boundary === "split registration") {
+      const first = await register({
+        images: images.slice(0, 4), commandOutputs: commandOutputs.slice(0, 2),
+        artifacts: [], coverage: packet.coverage.slice(0, 2),
+      });
+      assert.equal(first.images.length, 4);
+      assert.equal(first.artifacts.length, 2);
+      assert.equal(first.coverage?.length, 2);
+      assert.ok(d.workflows.store.continuationReceipt(d.noteKey, "intent:1:3", realpathSync(repo)),
+        "the initial registration has a receipt covering its own packet");
+      registered = await register({
+        images: images.slice(4), commandOutputs: commandOutputs.slice(2),
+        // Supply all claims so only the missing first-call items can refuse a new receipt.
+        artifacts: packet.artifacts, coverage: packet.coverage,
+      });
+      assert.ok(registered.generation > first.generation, "the second registration expands the staged packet");
+    } else if (boundary === "omitted existing claim") {
+      await register({ ...packet, images: images.slice(0, -1) });
+      const original = receipt();
+      assert.ok(original);
+      registered = await register({ ...packet, coverage: packet.coverage.slice(0, -1) });
+      const after = receipt();
+      if (after) assert.deepEqual(after, original, "the expanded packet cannot earn a receipt without all existing claims");
+    } else if (boundary === "registration drift") {
+      const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+      const open = fs.openSync.bind(fs);
+      const evidencePath = join(realpathSync(repo), images[0]!.path);
+      let changed = false;
+      const intercepted = t.mock.method(fs, "openSync", (...args: Parameters<typeof open>) => {
+        if (!changed && args[0] === evidencePath) {
+          changed = true;
+          // The first digest has returned. This source open precedes the second digest.
+          writeFileSync(join(repo, "change.ts"), "export const repaired = false;\n");
+        }
+        return open(...args);
+      });
+      syncBuiltinESMExports();
+      try {
+        registered = await register();
+      } finally {
+        intercepted.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.equal(changed, true, "the checkout changed during source inspection");
+    } else {
+      registered = await register();
+    }
+    if (receiptIneligible) assert.equal(receipt(), null);
+    assert.equal(registered.artifacts.length, 10);
+    assert.equal(registered.images.length, 8);
+    assert.equal(registered.coverage?.length, 5);
+    assert.ok([...registered.artifacts, ...registered.images].every(item => item.episodeKey === "intent:1:3"));
+    if (boundary === "historical packet") {
+      openDb().prepare("UPDATE workflow_evidence_owners SET continuation_checkout = NULL, continuation_packet = NULL WHERE note_key = ?").run(d.noteKey);
+    }
+    // The resident's raw row carries these native fields. The prompt hook, rather than
+    // the metadata-filtered transcript reader, feeds the accepted instruction to the refiner.
+    const scheduled = boundary !== "manual";
+    appendFileSync(transcript, JSON.stringify({ type: "user", uuid: "followup", isMeta: scheduled,
+      promptSource: scheduled ? "system" : "sdk", turnOrigin: scheduled ? "scheduled" : "sdk",
+      ...(scheduled ? { wakeupSource: "loop_wakeup" } : {}), message: { role: "user", content: "continue" } }) + "\n");
+    hook("UserPromptSubmit", now + 40, "continue", scheduled ? "loop_wakeup" : "sdk");
+    assert.equal(resolvedSessionIntent(d.registry.getGoal(d.sessionId)), null);
+    hook("Stop", now + 42);
+    await waitForRevision(4);
+    const logPath = join(repo, "verification.log");
+    if (boundary === "stale proof") writeFileSync(logPath, "Focused tests failed\n");
+    // The Git-ignored path remains in the packet, but the file cannot be reopened.
+    if (boundary === "unreadable proof") unlinkSync(logPath);
+    if (boundary === "manual" || boundary === "removed binding") {
+      const before = await d.workflows.completionEvidence(d.sessionId);
+      assert.equal(before?.continuation?.status, "revalidated");
+      const expectedPacket = before.continuation.packet;
+      const queue = d.registry.getQueue(d.sessionId);
+      if (boundary === "manual") {
+        const manual = await claim(d, 8, expectedPacket);
+        assert.equal(manual.status, 200);
+        assert.deepEqual(await manual.json(), { claimed: false, reason: "manual_trigger" });
+        const assess = d.workflows.completionEvidence.bind(d.workflows);
+        t.mock.method(d.workflows, "completionEvidence", async (sessionId: string) => {
+          const evidence = await assess(sessionId);
+          assert.equal(evidence?.continuation?.status, "revalidated");
+          writeFileSync(logPath, "Focused tests failed\n");
+          return evidence;
+        }, { times: 1 });
+      } else {
+        d.workflows.archiveBinding(d.bindingId);
+      }
+      const refused = await claim(d, 8, expectedPacket);
+      assert.equal(refused.status, 409);
+      const result = await refused.json() as { error: string };
+      assert.equal(result.error, boundary === "manual"
+        ? "Continuation evidence changed before handoff" : "Continuation evidence binding changed");
+      assert.deepEqual(d.registry.getQueue(d.sessionId), queue);
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      if (boundary === "removed binding") return;
+      writeFileSync(logPath, "Focused tests passed\n");
+    }
+    const budgetExhausted = boundary === "transaction budget exhausted";
+    const rejectsInTransaction = budgetExhausted || boundary === "transaction image race" || boundary === "transaction text race" ||
+      boundary === "transaction packet race" || boundary === "transaction tracked-file race" ||
+      boundary === "transaction head race" || boundary === "transaction already-read source race";
+    let reachedClaimTransaction = false;
+    let changedCheckedSource = false;
+    let matchedAfterDeadline: boolean | undefined;
+    if (rejectsInTransaction) {
+      const store = d.workflows.store;
+      const claimInStore = store.claimForemanCompletions.bind(store);
+      t.mock.method(store, "claimForemanCompletions", (...args: Parameters<typeof claimInStore>) => {
+        reachedClaimTransaction = true;
+        if (budgetExhausted) {
+          const [inputs, remainingMs] = args;
+          assert.equal(inputs.length, 1);
+          const [input] = inputs;
+          const stillMatches = input?.continuationStillMatches;
+          assert.ok(input && stillMatches);
+          assert.ok(remainingMs !== undefined && remainingMs > 0);
+          const transactionStart = performance.now();
+          let monotonic = transactionStart;
+          const clock = t.mock.method(performance, "now", () => monotonic);
+          try {
+            return claimInStore([{
+              ...input,
+              continuationStillMatches: (deadline) => {
+                assert.equal(deadline, transactionStart + remainingMs);
+                // Spend the remaining budget after the store sets its deadline.
+                monotonic = deadline;
+                matchedAfterDeadline = stillMatches(deadline);
+                return matchedAfterDeadline;
+              },
+            }], remainingMs);
+          } finally {
+            clock.mock.restore();
+          }
+        }
+        if (boundary === "transaction already-read source race") {
+          const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+          const open = fs.openSync.bind(fs);
+          const root = realpathSync(repo);
+          const imagePath = join(root, images[0]!.path);
+          let openedImage = false;
+          const intercepted = t.mock.method(fs, "openSync", (...openArgs: Parameters<typeof open>) => {
+            if (openArgs[0] === imagePath) openedImage = true;
+            if (openArgs[0] === join(root, "verification.log") && !changedCheckedSource) {
+              assert.equal(openedImage, true, "the image was read before the later text source");
+              const changed = Buffer.from(png);
+              changed[changed.length - 1] = changed.at(-1)! ^ 1;
+              writeFileSync(imagePath, changed);
+              // Keep the checkout inventory fixed and make the file identity change deterministic.
+              utimesSync(imagePath, 1, 1);
+              changedCheckedSource = true;
+            }
+            return open(...openArgs);
+          });
+          syncBuiltinESMExports();
+          try {
+            return claimInStore(...args);
+          } finally {
+            intercepted.mock.restore();
+            syncBuiltinESMExports();
+          }
+        }
+        // The manager finished async validation. Change the source or the ledger before
+        // the real transaction runs its comparison. The byte edits preserve file length.
+        if (boundary === "transaction image race") {
+          const changed = Buffer.from(png);
+          changed[changed.length - 1] = changed.at(-1)! ^ 1;
+          writeFileSync(join(repo, images[0]!.path), changed);
+        } else if (boundary === "transaction text race") {
+          writeFileSync(logPath, "Focused tests failed\n");
+        } else if (boundary === "transaction tracked-file race") {
+          writeFileSync(unregisteredPath, "modified\n");
+        } else if (boundary === "transaction head race") {
+          git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit",
+            "--allow-empty", "-qm", "changed HEAD after validation");
+        } else {
+          store.removeWorkflowEvidenceCoverage(d.noteKey, packet.coverage[0]!.clientCriterionId);
+        }
+        return claimInStore(...args);
+      });
+    }
+    let reservedSubmissionId: string | undefined;
+    if (boundary === "reserved packet") {
+      const store = d.workflows.store;
+      const root = realpathSync(repo);
+      assert.ok(store.continuationReceipt(d.noteKey, "intent:1:3", root));
+      // A sibling can reserve this conversation's proof without creating a run on
+      // Foreman's binding. That isolates the receipt guard from the existing-run guard.
+      const sibling = store.insertBinding({
+        ...store.getBinding(d.bindingId)!,
+        id: "continuation-reserving-binding", sessionId: d.sessionId, repoRoot: repo,
+        triggerMode: "manual", now: now + 43,
+      });
+      const triggerKey = "continuation-reservation-fixture";
+      const { submission } = store.createInitialSubmission({
+        id: "continuation-reserving-run", binding: sibling, intent: FIXTURE_RUN_INTENT,
+        triggerSource: "manual", triggerKey, now: now + 44,
+      }, {
+        id: "continuation-reserved-submission", triggerSource: "manual", triggerKey,
+        context: {}, evidence: {}, now: now + 44,
+      });
+      reservedSubmissionId = submission.id;
+      store.archiveBindingAndCancel(sibling.id, now + 45);
+      assert.equal(store.activeBindingForNote(d.noteKey)?.id, d.bindingId);
+      assert.equal(store.latestRunForBinding(d.bindingId), null);
+      assert.equal(store.listReservedWorkflowEvidence(submission.id).length, 18);
+      assert.equal(store.listSubmissionCoverage(submission.id).length, 5);
+      assert.equal(store.continuationReceipt(d.noteKey, "intent:1:3", root), null);
+    }
+    const client = new ForemanClient();
+    let capturedClaim: Request | undefined;
+    t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
+      const request = new Request(input, init);
+      request.headers.set("host", "127.0.0.1:7317");
+      if (request.url.endsWith("/workflow-completion")) {
+        capturedClaim = request.clone();
+        if (boundary === "claim race") writeFileSync(join(repo, images[0]!.path), Buffer.concat([png, Buffer.from([1])]));
+      }
+      return d.app.request(request);
+    });
+    t.mock.method(client, "diff", async () => ({ ok: true, headSha: boundary === "unborn HEAD" ? null : git("rev-parse", "HEAD").toString().trim(),
+      filesChanged: 1, insertions: 1, deletions: 0, truncated: false, patch: "diff --git a/change.ts b/change.ts\n+export const repaired = true;" }));
+    t.mock.method(client, "transcriptSize", async () => 1);
+    t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
+    t.mock.method(client, "instructions", async () => "");
+    const cfg = ForemanConfigSchema.parse({ enabled: true, mode: "dry-run", wrapup: "pr", wrapupTriggers: ["prompted"] });
+    const tick = () => {
+      const session = d.registry.getSession(d.sessionId)!;
+      return processPromptedWrapup(client, cfg, session, [session], d.registry.getQueue(session.id), new Set());
+    };
+    assert.equal(await tick(), boundary !== "claim race" && !rejectsInTransaction);
+    if (boundary === "historical packet" || boundary === "reserved packet" ||
+        boundary === "stale proof" || boundary === "unreadable proof" || boundary === "split registration" ||
+        boundary === "omitted existing claim" || receiptIneligible) {
+      assert.equal(prompts.length, 1);
+      const prompt = prompts[0]!;
+      assert.match(prompt, /18 registered items belong to another or unknown intent episode and are excluded/);
+      assert.doesNotMatch(prompt, /No evidence is registered for this work|Fixture rendering|Test log/);
+      const stale = /The checkout or evidence files no longer match the registration/;
+      const unavailable = /Mission Control could not verify the checkout or read the registered files/;
+      assert.equal(stale.test(prompt), boundary === "stale proof", "stale requires an observed mismatch");
+      assert.equal(unavailable.test(prompt), boundary === "unreadable proof", "an unreadable source has its own status");
+      const decision = d.registry.getQueue(d.sessionId)?.promptedDecision;
+      assert.equal(decision?.generation, 8);
+      assert.equal(decision.episodeKey, "intent:1:4");
+      assert.equal(decision.outcome, "held", "the clean verifier answer cannot supply current-contract proof");
+      assert.equal(decision.gaps[0]?.id, "workflow-evidence-current-contract");
+      assert.equal(capturedClaim, undefined);
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      if (reservedSubmissionId) {
+        assert.equal(d.workflows.store.listReservedWorkflowEvidence(reservedSubmissionId).length, 18);
+        return;
+      }
+      assert.deepEqual(d.workflows.stagedEvidence(d.bindingId), registered);
+      if (boundary !== "historical packet") return;
+      assert.equal(await tick(), false, "the held generation stays consumed");
+      // A normal, newly verified registration on a later work cycle is the recovery
+      // available to historical packets that never recorded their registration-time HEAD.
+      hook("PreToolUse", now + 45);
+      const fresh = await register();
+      assert.equal(fresh.generation, registered.generation);
+      assert.ok([...fresh.images, ...fresh.artifacts].every(item => item.episodeKey === "intent:1:4"));
+      hook("Stop", now + 46);
+      assert.equal(await tick(), true);
+      assert.ok(d.workflows.store.latestRunForBinding(d.bindingId));
+      return;
+    }
+    assert.match(prompts.join("\n"), /18 evidence items are registered for this work/);
+    if (boundary === "claim race" || rejectsInTransaction) {
+      assert.ok(capturedClaim);
+      assert.equal(reachedClaimTransaction, rejectsInTransaction);
+      assert.equal(changedCheckedSource, boundary === "transaction already-read source race");
+      assert.equal(matchedAfterDeadline, budgetExhausted ? false : undefined);
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedConsumedGeneration, null);
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      if (rejectsInTransaction && boundary !== "transaction packet race") {
+        assert.deepEqual(d.workflows.stagedEvidence(d.bindingId), registered);
+      }
+      return;
+    }
+    if (boundary === "unverified hold") {
+      assert.equal(capturedClaim, undefined, "the preceding packet cannot unlock the same-episode verification fallback");
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "held");
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      return;
+    }
+    if (boundary === "clean handoff") {
+      const run = d.workflows.store.latestRunForBinding(d.bindingId);
+      assert.ok(run);
+      assert.ok(capturedClaim);
+      assert.equal(await tick(), false);
+      assert.equal((await d.workflows.completionEvidence(d.sessionId))?.continuation, undefined);
+      const replay = await d.app.request(capturedClaim);
+      const body = await replay.json();
+      assert.equal(body.state, "already_claimed", JSON.stringify(body));
+      assert.equal(body.runId, run.id);
+      return;
+    }
+    if (boundary === "manual") {
+      assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision?.outcome, "asked");
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      return;
+    }
+    const decision = d.registry.getQueue(d.sessionId)?.promptedDecision;
+    assert.equal(decision?.generation, 8);
+    assert.equal(decision.episodeKey, "intent:1:4");
+    assert.equal(decision.outcome, "held");
+    assert.equal(decision.gaps[0]?.kind, "standards");
+    assert.equal(await tick(), false);
+    assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+    assert.deepEqual(d.workflows.stagedEvidence(d.bindingId), registered);
+    const assessment = () => d.workflows.completionEvidence(d.sessionId).then(result => result?.continuation?.status);
+    assert.equal(await assessment(), "revalidated");
+    const restarted = new Registry();
+    restarted.registerSdkSession({ id: d.sessionId, agent: "claude", name: "restarted", cwd: repo,
+      gitBranch: "feature", gitRoot: repo, repoRoot: repo });
+    restarted.bindLaunchedAgentSession(d.sessionId, "claude", d.noteKey);
+    const reader = mkWorkflows(restarted, new PersonaManager(restarted), new QueueManager(restarted));
+    assert.equal((await reader.completionEvidence(d.sessionId))?.continuation?.status, "revalidated");
+    assert.deepEqual(restarted.getQueue(d.sessionId)?.promptedDecision, decision);
+    writeFileSync(join(repo, "verification.log"), "Focused tests FAILED\n");
+    assert.equal(await assessment(), "stale");
+    writeFileSync(join(repo, "verification.log"), "Focused tests passed\n");
+    writeFileSync(join(repo, "change.ts"), "export const repaired = false;\n");
+    assert.equal(await assessment(), "stale");
+    writeFileSync(join(repo, "change.ts"), "export const repaired = true;\n");
+    assert.equal(await assessment(), "revalidated");
+    writeFileSync(join(repo, ".gitignore"), "*.png\n*.log\n# raw bytes changed\n");
+    assert.equal(await assessment(), "stale", "even a tracked file hidden from git status must match");
+    writeFileSync(join(repo, ".gitignore"), "*.png\n*.log\n");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "different HEAD");
+    assert.equal(await assessment(), "stale");
+    const settled = d.registry.getGoal(d.sessionId)!;
+    for (const changed of [
+      { relationship: "amend" as const }, { relationship: "replace" as const },
+      { relationship: "unclear" as const }, { objectiveVersion: settled.objectiveVersion + 1 },
+      { objective: settled.objective + " and add another requirement" },
+      { objective: settled.objective + "\nAutomatic handoff: operator only" },
+      { prompt: "continue and release the handoff" }, { handoffReleasedAt: now },
+    ]) {
+      d.registry.upsertGoal(d.sessionId, changed);
+      assert.equal(await assessment(), undefined, JSON.stringify(changed));
+      // A release stamp is monotonic. Exercise that case last.
+      if ("handoffReleasedAt" in changed) break;
+      d.registry.upsertGoal(d.sessionId, settled);
+    }
+    hook("UserPromptSubmit", now + 50, "continue and add another feature");
+    await waitForRevision(5);
+    assert.equal(await assessment(), undefined);
+  });
 }

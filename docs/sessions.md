@@ -2126,12 +2126,26 @@ stored objective's length limit is not shortened to fit. Like any amendment that
 check, it is treated as steering: the objective and its version stay as they were, the drawer
 shows the relationship as **steering** with a rationale that starts "Treated as steering:",
 the instruction reaches the next Workflow run as steering context, and the daemon log records
-which rule failed without quoting the objective. The classifier is also told that a reply
-picking one of the options a session offered is steering. That is guidance to the model, not
-a guarantee: if it still calls the pick an amendment and the amendment passes the check, the
-amendment is accepted; if it fails the check, it is treated as steering as above. An effective
-amendment or replacement updates the Goal and advances its objective version, while steering
-changes only the latest focus.
+which rule failed without quoting the objective. A choice within an already authorized outcome
+is steering. If the objective was to explore mockups and the operator authorizes implementing
+the selected design, the implementation becomes the new completion contract. The opening
+request remains in the Goal history. A preference alone leaves the exploration objective in
+place. If the selection leaves implementation authority ambiguous, reconciliation holds
+automatic wrap-up for a human clarification. An effective amendment or replacement updates the
+Goal and advances its objective version, while steering changes only the latest focus.
+
+The reconciler carries forward requirements for review, evidence and publication that still
+apply. An explicit instruction to stop or reserve review or publication for the operator
+records an operator-only handoff in the objective. Foreman leaves automatic completion pending
+across later changes to the objective. A chat task with no explicit Workflow is still
+retired under a hold. A Scout or a review artifact is still retired only while its
+safeguard under **Settings → Foreman → Safety** is on; see
+[the completion safeguards](foreman.md#registered-proof-after-a-continuation). With the
+safeguards on, a recurring mission whose run writes a report under a no-PR instruction
+concludes. With a safeguard off, that class of work is ordinary work and the hold keeps it
+pending. A turn that requests both release and a deliverable change keeps the hold. Once the
+Goal reflects the intended work, send **Resume automatic handoff** as its own message to lift
+the restriction and let Foreman evaluate the next completed work cycle.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;
@@ -2148,7 +2162,8 @@ under the relationship, and the Goal line's hover names it. Pressing it records 
 instruction as steering, oldest first, with the rationale "Accepted by you: the current
 objective is the completion contract." An instruction whose text was lost before it could be
 stored is recorded as "(not captured)". An `unclear` verdict with nothing left pending records
-its own instruction the same way. The relationship becomes **steer**, the latest revision
+its own instruction the same way. A pending instruction that changes handoff authority must
+reconcile before acceptance can confirm an eligible Goal. The relationship becomes **steer**, the latest revision
 counts as resolved, and Foreman judges completion against the objective on its next tick,
 which can claim a bound Workflow. A run frozen afterwards carries those instructions as
 steering. It confirms the contract and never rewrites it: the objective, its version, the
@@ -2891,9 +2906,9 @@ The MCP tools are:
   with the same label (compared ignoring case and surrounding spaces), since the answer
   comes back as the chosen label. The tool returns `Not asked: <reason>` as an error, and
   nothing waits on the human
-- `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
-  explicitly asks for a Mission Control product report, prepare a public GitHub issue and
-  **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
+- `report_product_issue(type, title, details, attachmentUploadIds?, expectedTarget?)` - prepare a draft when the user
+  requests a Mission Control report. Launching the built-in Bug Fix Inspector is a standing request
+  for drafts on that run's first and scheduled passes. For each issue, **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
   and safe environment summary. The only publishing choice is **Submit public issue**; Dismiss
   and any non-human or malformed answer publish nothing. `attachmentUploadIds` may contain up to
   five unique daemon-issued image locators, never filesystem paths; screenshots require `gh`
@@ -3567,8 +3582,9 @@ your decision is a `request_input` question; that half of the description never 
   naming the error code, never reported as missing. Opening the document records the first open, like opening the report, and does
   not mark it read.
 - **Publish as scout.** The inbox card also offers **Publish as scout**, which saves the
-  document to the [scout archive](archives.md#how-a-report-produces-one). Nothing is archived
-  unless you press it. The card then reads **Published** with **Open archive**, which opens the
+  document, with the files it links to beside it that were stored when the report was posted, to
+  the [scout archive](archives.md#how-a-report-produces-one). A link to a file that was not
+  stored is unlinked and listed as missing evidence. Nothing is archived unless you press it. The card then reads **Published** with **Open archive**, which opens the
   archive on the Scouts page; a document the archive refuses (a script, say) lists every problem
   on the card and publishes nothing. Pressing it again returns the same archive. If that archive
   is deleted or leaves the library, the card offers **Publish as scout** again; see

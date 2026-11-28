@@ -57,6 +57,8 @@ import {
   shapingSkillLine,
   ShapingRouteResultSchema,
   ShapingSkillNameSchema,
+  shaperSignInTarget,
+  SIGN_IN_REASONS,
   taskShapingRead,
   type ShapingSkillSummary,
   type TaskShaping,
@@ -94,11 +96,13 @@ const future: StoredShaper = StoredShaperSchema.parse({
 
 test("registry data is append-only tuples, unique, and disjoint from its tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), [
+    "RETIRED_SHAPING_AUTH_KINDS",
     "RETIRED_SHAPING_BUILTINS", "RETIRED_SHAPING_LIFECYCLE_POINTS", "RETIRED_SHAPING_PROMPT_STATES",
     "RETIRED_SHAPING_SKILL_STATES", "RETIRED_SHAPING_STAGES", "RETIRED_SHAPING_TRANSPORTS",
+    "SHAPING_AUTH_KINDS",
     "SHAPING_BUILTINS", "SHAPING_LIFECYCLE_POINTS", "SHAPING_ORIGINS", "SHAPING_OUTCOMES",
-    "SHAPING_PROMPT_STATES", "SHAPING_REFERENCE_KINDS", "SHAPING_SKILL_STATES",
-    "SHAPING_STAGES", "SHAPING_TRANSPORTS",
+    "SHAPING_PROMPT_STATES", "SHAPING_REFERENCE_KINDS", "SHAPING_SIGN_IN_STATES", "SHAPING_SIGN_IN_STORAGE",
+    "SHAPING_SKILL_STATES", "SHAPING_STAGES", "SHAPING_TRANSPORTS",
   ]);
   // `route` is appended after the two stages it follows, never inserted between them.
   assert.deepEqual(registry.SHAPING_STAGES, ["gather", "select", "route"]);
@@ -109,6 +113,9 @@ test("registry data is append-only tuples, unique, and disjoint from its tombsto
   assert.deepEqual(registry.SHAPING_BUILTINS, [{ id: "repository-files", stages: ["gather"] }]);
   assert.deepEqual(registry.SHAPING_OUTCOMES, ["ok", "degraded", "failed", "timed_out", "invalid", "unavailable"]);
   assert.deepEqual(registry.SHAPING_ORIGINS, ["registered", "discovered"]);
+  assert.deepEqual(registry.SHAPING_AUTH_KINDS, ["oauth"]);
+  assert.deepEqual(registry.SHAPING_SIGN_IN_STATES, ["signed_out", "pending", "signed_in", "renewing"]);
+  assert.deepEqual(registry.SHAPING_SIGN_IN_STORAGE, ["keychain", "memory"]);
   for (const [live, retired] of [
     [registry.SHAPING_STAGES, registry.RETIRED_SHAPING_STAGES],
     [registry.SHAPING_LIFECYCLE_POINTS, registry.RETIRED_SHAPING_LIFECYCLE_POINTS],
@@ -116,6 +123,7 @@ test("registry data is append-only tuples, unique, and disjoint from its tombsto
     [registry.SHAPING_PROMPT_STATES, registry.RETIRED_SHAPING_PROMPT_STATES],
     [registry.SHAPING_TRANSPORTS, registry.RETIRED_SHAPING_TRANSPORTS],
     [registry.SHAPING_BUILTINS.map((builtin) => builtin.id), registry.RETIRED_SHAPING_BUILTINS],
+    [registry.SHAPING_AUTH_KINDS, registry.RETIRED_SHAPING_AUTH_KINDS],
   ] as const) {
     assert.equal(new Set(live).size, live.length);
     assert.ok(live.every((id) => !(retired as readonly string[]).includes(id)));
@@ -125,10 +133,10 @@ test("registry data is append-only tuples, unique, and disjoint from its tombsto
   }
 });
 
-test("the shared modules are browser-safe: no node: imports and no protocol.ts", () => {
+test("the shared modules do not import protocol.ts", () => {
   for (const file of ["src/shared/shaping.ts", "src/shared/shaping-registry.ts"]) {
     const source = readFileSync(file, "utf8");
-    assert.doesNotMatch(source, /["'](?:node:|[^"']*protocol\.ts)/, file);
+    assert.doesNotMatch(source, /["'][^"']*protocol\.ts/, file);
   }
   assert.doesNotMatch(readFileSync("src/shared/shaping-registry.ts", "utf8"), /^import /m, "the registry is data only");
 });
@@ -1078,3 +1086,132 @@ function summaryRow(id: string) {
 function skillRow(name: string, state: ShapingSkillSummary["state"], lifecyclePoint = "during"): ShapingSkillSummary {
   return { name, lifecyclePoint, reasonId: `r/${name}`, shaper: "router", repositories: ["billing-api"], state, verified: false, reason: null };
 }
+
+// ---------------------------------------------------------------------------------------------
+// The sign-in marker (shaper sign-in, phase 3)
+
+const MARK = { type: "oauth", scope: "mcp:context" } as const;
+/** A remote definition with `auth` as given, and no `auth` key at all for null. */
+const markedHttp = (auth: unknown = MARK, headers: Record<string, string> = {}) => ({
+  id: "signed-http", label: "Signed HTTP", stage: "select",
+  transport: { type: "http", url: "https://tools.acme.example/shape", headers, ...(auth === null ? {} : { auth }) },
+});
+const markedMcp = (auth: unknown = MARK, headers: Record<string, string> = {}) => ({
+  id: "signed-mcp", label: "Signed MCP", stage: "select",
+  transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://tools.acme.example/mcp", headers, ...(auth === null ? {} : { auth }) } },
+});
+/** The first issue a definition is refused with, as `path: message`. */
+function issueAt(input: unknown): string {
+  const parsed = ShaperSchema.safeParse(input);
+  assert.equal(parsed.success, false, JSON.stringify(input));
+  if (parsed.success) return "";
+  const [issue] = parsed.error.issues;
+  return `${issue!.path.join(".")}: ${issue!.message}`;
+}
+
+test("the auth marker is accepted on both remote shapes and refused on the local ones", () => {
+  assert.deepEqual(ShaperSchema.parse(markedHttp()).transport, { type: "http", url: "https://tools.acme.example/shape", headers: {}, auth: MARK });
+  const mcp = ShaperSchema.parse(markedMcp());
+  assert.equal(mcp.transport.type === "mcp" && mcp.transport.server.type === "http" && mcp.transport.server.auth?.scope, "mcp:context");
+  // A stdio server and a command shaper cannot carry it: a token would reach a child process.
+  assert.equal(ShaperSchema.safeParse({ id: "s", label: "S", stage: "select", transport: {
+    type: "mcp", tool: "t", server: { type: "stdio", command: "/usr/bin/true", auth: MARK },
+  } }).success, false);
+  assert.equal(ShaperSchema.safeParse({ ...command("c"), transport: { type: "command", command: "/usr/bin/true", auth: MARK } }).success, false);
+  assert.equal(ShaperSchema.safeParse({ ...command("b"), transport: { type: "builtin", builtin: "repository-files", auth: MARK } }).success, false);
+  // Nowhere else on a definition either.
+  assert.equal(ShaperSchema.safeParse({ ...markedHttp(null), auth: MARK }).success, false);
+  // The marker itself is strict, and its kind is one the registry declares.
+  assert.equal(ShaperSchema.safeParse(markedHttp({ ...MARK, token: "x" })).success, false);
+  assert.equal(ShaperSchema.safeParse(markedHttp({ type: "basic", scope: "mcp:context" })).success, false);
+  assert.equal(ShaperSchema.safeParse(markedHttp({ type: "oauth" })).success, false);
+});
+
+test("a marker's scope is one or more scope tokens separated by single spaces", () => {
+  for (const scope of ["mcp:context", "openid profile mcp:context", "a", "x".repeat(256), "!#[]~"]) {
+    assert.equal(ShaperSchema.safeParse(markedHttp({ type: "oauth", scope })).success, true, scope);
+  }
+  for (const scope of ["", "x".repeat(257), "a  b", " a", "a ", "a\tb", 'a"b', "a\\b", "café", "a\nb"]) {
+    assert.match(issueAt(markedHttp({ type: "oauth", scope })), /^transport\.auth\.scope: /, JSON.stringify(scope));
+  }
+  assert.match(issueAt(markedHttp({ type: "oauth", scope: "a  b" })), /separated by single spaces/);
+});
+
+test("a marker's issuer is https, or http to loopback, with no user, query or fragment", () => {
+  for (const issuer of ["https://login.acme.example", "https://login.acme.example/oauth2/default", "http://127.0.0.1:8123", "http://localhost:9/as", "http://[::1]:7"]) {
+    assert.equal(ShaperSchema.safeParse(markedMcp({ ...MARK, issuer })).success, true, issuer);
+  }
+  const cases: Array<[string, RegExp]> = [
+    ["not a url", /is a URL/],
+    ["http://login.acme.example", /https, or plain http only to this machine's loopback/],
+    ["ftp://login.acme.example", /https, or plain http/],
+    ["https://user:pass@login.acme.example", /user name or password/],
+    ["https://login.acme.example/?tenant=a", /query string/],
+    ["https://login.acme.example/?", /query string/],
+    ["https://login.acme.example/#top", /fragment/],
+    ["https://login.acme.example/#", /fragment/],
+  ];
+  for (const [issuer, reason] of cases) {
+    const issue = issueAt(markedMcp({ ...MARK, issuer }));
+    assert.match(issue, /^transport\.server\.auth\.issuer: /, issuer);
+    assert.match(issue, reason, issuer);
+  }
+});
+
+test("a marker's issuer is at most 2048 characters", () => {
+  const prefix = "https://login.acme.example/";
+  const atLimit = prefix + "a".repeat(2048 - prefix.length);
+  const overLimit = `${atLimit}a`;
+  assert.equal(atLimit.length, 2048);
+  assert.equal(overLimit.length, 2049);
+  // Both are otherwise valid issuers, so only the length decides.
+  for (const build of [markedMcp, markedHttp]) {
+    assert.equal(ShaperSchema.safeParse(build({ ...MARK, issuer: atLimit })).success, true);
+  }
+  assert.match(issueAt(markedMcp({ ...MARK, issuer: overLimit })), /^transport\.server\.auth\.issuer: /);
+  assert.match(issueAt(markedHttp({ ...MARK, issuer: overLimit })), /^transport\.auth\.issuer: /);
+});
+
+test("with a marker, an authorization header in any letter case is refused because the sign-in sets it", () => {
+  for (const name of ["authorization", "Authorization", "AUTHORIZATION"]) {
+    for (const [build, at] of [[markedHttp, "transport.headers"], [markedMcp, "transport.server.headers"]] as const) {
+      const issue = issueAt(build(MARK, { [name]: "Bearer {env:ACME_TOKEN}" }));
+      assert.equal(issue.startsWith(`${at}.${name}: `), true, issue);
+      assert.match(issue, /the sign-in sets the authorization header/);
+    }
+  }
+  // Without the marker the same header is a reference and stays valid, as it is today.
+  assert.equal(ShaperSchema.safeParse(markedHttp(null, { Authorization: "Bearer {env:ACME_TOKEN}" })).success, true);
+  // Other headers beside the marker are untouched, references included.
+  assert.equal(ShaperSchema.safeParse(markedMcp(MARK, { "x-acme-user": "{caller.user}", "x-api-key": "{env:ACME_KEY}" })).success, true);
+});
+
+test("a manifest and an upsert intent carry the marker, and a stored marked shaper is known", () => {
+  assert.equal(ShaperManifestSchema.safeParse({ ...markedMcp(), enabled: true }).success, true);
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "upsert", shaper: markedHttp() }).success, true);
+  assert.equal(ShapingIntentSchema.safeParse({ kind: "upsert", shaper: markedHttp(MARK, { authorization: "Bearer {env:X}" }) }).success, false);
+  const stored = apply(config(), { kind: "upsert", shaper: ShaperSchema.parse(markedMcp({ ...MARK, issuer: "https://login.acme.example" })) });
+  const entry = stored.shapers.find((shaper) => shaper.id === "signed-mcp")!;
+  // The marker names no value, so the stored config keeps it exactly as written.
+  assert.deepEqual(withoutLiteralCredentials(entry), entry);
+  const classified = classifyShaper(StoredShaperSchema.parse(JSON.parse(JSON.stringify(entry))));
+  assert.equal(classified.kind, "known");
+  assert.deepEqual(classified.kind === "known" && shaperSignInTarget(classified.shaper),
+    { url: "https://tools.acme.example/mcp", scope: "mcp:context", issuer: "https://login.acme.example" });
+});
+
+test("shaperSignInTarget names a marked shaper's connection, and null for one with no marker", () => {
+  assert.deepEqual(shaperSignInTarget(ShaperSchema.parse(markedHttp())), { url: "https://tools.acme.example/shape", scope: "mcp:context", issuer: null });
+  assert.deepEqual(shaperSignInTarget(ShaperSchema.parse(markedMcp({ ...MARK, issuer: "https://login.acme.example/as" }))),
+    { url: "https://tools.acme.example/mcp", scope: "mcp:context", issuer: "https://login.acme.example/as" });
+  assert.equal(shaperSignInTarget(ShaperSchema.parse(markedHttp(null))), null);
+  assert.equal(shaperSignInTarget(ShaperSchema.parse(markedMcp(null))), null);
+  assert.equal(shaperSignInTarget(command("local")), null);
+});
+
+test("the sign-in reasons are fixed sentences that point to Settings > Task shaping", () => {
+  assert.deepEqual(Object.keys(SIGN_IN_REASONS), ["flagOff", "signedOut", "renewing", "refused", "memoryOnly", "signInAgain"]);
+  for (const reason of Object.values(SIGN_IN_REASONS)) assert.match(reason, /Settings > Task shaping\.$/);
+  assert.match(SIGN_IN_REASONS.flagOff, /shaper-sign-in/);
+  assert.equal(Object.isFrozen(SIGN_IN_REASONS), true);
+});

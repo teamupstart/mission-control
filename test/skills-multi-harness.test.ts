@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
@@ -10,6 +10,7 @@ import { AGENT_TYPES } from "../src/shared/types.ts";
 import type { SkillCatalogEntry } from "../src/shared/types.ts";
 import type { Catalog } from "../src/server/skills/catalog.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a harness can DECLARE skills and still never receive one.
 //
@@ -25,7 +26,7 @@ import type { SkillsConfig } from "../src/shared/protocol.ts";
 // than swallowed by the other's success, and that uninstall leaves as widely as install
 // arrived.
 
-const home = mkdtempSync(join(tmpdir(), "mission-skills-multi-"));
+const home = tempDir("mission-skills-multi-");
 const claudeSkills = join(home, "claude-skills");
 const codexSkills = join(home, "codex-skills");
 // pi declares a skills dir too, so it MUST be pinned here as well - the reconcile folds over

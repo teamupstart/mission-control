@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { Locator, Page } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -44,7 +45,7 @@ async function tasks(page: Page, daemon: DaemonHandle): Promise<Task[]> {
 
 test("a swept issue arrives waiting on its blocker, and a not-planned blocker can be resolved", async ({ page, daemon }) => {
   upstream(daemon, { state: "OPEN", stateReason: "" });
-  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: { sources: [{
+  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: { revision: await taskSourcesRevision(page, daemon), sources: [{
     id: "s", kind: "github-issues", label: "Relations", repoRoot: daemon.repo, enabled: false,
     config: { repo: "acme/demo" },
   }] } })).ok()).toBe(true);
@@ -109,7 +110,7 @@ test("a swept issue arrives waiting on its blocker, and a not-planned blocker ca
 
 test("a blocker closed as completed releases the swept task", async ({ page, daemon }) => {
   upstream(daemon, { state: "OPEN", stateReason: "" });
-  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: { sources: [{
+  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: { revision: await taskSourcesRevision(page, daemon), sources: [{
     id: "s", kind: "github-issues", repoRoot: daemon.repo, enabled: false, config: { repo: "acme/demo" },
   }] } })).ok()).toBe(true);
   await page.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });

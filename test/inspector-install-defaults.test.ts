@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, beforeEach, test } from "node:test";
 import { inspectorPosture } from "../src/shared/inspector.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-inspector-install-"));
+const root = tempDir("mission-inspector-install-");
 const home = join(root, "state");
 const path = join(home, "harness.db");
 process.env.MISSION_HOME = home;

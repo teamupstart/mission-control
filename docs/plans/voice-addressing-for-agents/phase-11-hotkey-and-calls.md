@@ -77,8 +77,14 @@ keep-awake addon is.
   capture a chord and see it saved; a reported `hotkeyError` shows the warning; a reported call
   turns the mode line at the top of Voice settings (Phase 1's) to auto-muted, and a reported
   hold to push-to-talk.
-- Manual check on a Mac, recorded in the pull request: tap from another app; join a call and see
-  auto-mute; hold to talk; leave the call.
+- For the physical check, start the built desktop app with Voice enabled and confirm the daemon
+  reports `cmd+ctrl+alt+v` as registered. With Zoom focused in a real call, verify the mode
+  reads **Muted for a call**, including while Zoom is muted. Tap Control+Command+Option+V
+  twice to observe **Muted** and then **Muted for a call**. Hold for two seconds to observe
+  **Push to talk**, release to return to **Muted for a call**, and leave to return to
+  **Listening**. Retain the daemon mode transitions with the operator's account of the run.
+  The earlier Control+Option+M trial observed input start and stop with no key edges. S5
+  supplies the fallback chord's physical press/release evidence.
 
 ## 8. Merge and exit criteria
 

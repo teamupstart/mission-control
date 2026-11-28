@@ -1,18 +1,25 @@
 # Feature flags
 
 The flag core stores one set of operator choices for this machine. The registry includes
-[Agent environment](configuration.md#agent-environment), [Resident active hours](residents.md#active-hours),
+[Agent environment](configuration.md#agent-environment),
+[Bug Fix Inspector](residents.md#built-in-residents),
+[Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
+[Shaper sign-in](task-shaping.md#a-shaper-that-signs-in) (`shaper-sign-in`),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
 [Fold the drawer's Profiles](residents.md#the-residents-drawer),
+[Resident names on cards](residents.md#finding-a-resident) (`resident-card-names`),
 [Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
 [File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
 [MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
 [Awaiting background work](sessions.md#sessions-awaiting-a-background-process-preview) (`session-awaiting`),
 [Reports and inbox upgrades](attention-and-alerts.md#one-name-for-an-agent) (`inbox`),
+[Unified split inbox](attention-and-alerts.md#unified-split-inbox-preview) (`inbox-split`),
 [Stalled section in Idle](attention-and-alerts.md#stuck-rows) (`idle-stalled`),
-[Voice addressing](voice.md) (`voice`) and
+[Voice addressing](voice.md) (`voice`),
+[Voice first-preview hold](voice.md#first-preview-hold-preview) (`voice-first-preview-hold`),
+[Voice prefix recovery](voice.md#prefix-recovery-preview) (`voice-prefix-recovery`) and
 [Markdown questions](sessions.md#markdown-questions-preview) (`markdown-questions`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 
@@ -36,6 +43,21 @@ existing dashboard API. See [Recurring missions](recurring-missions.md#creating-
 `test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
 creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
+**Reclaim orphaned task worktrees** (`orphaned-worktree-reclaim`) lets automatic worktree
+retention return two classes it otherwise holds for ever: disposable task checkouts Git no
+longer recognizes, and tasks whose terminal home can be proved absent. It is its own flag rather
+than an extension of `seven-day-worktree-cleanup`, because that flag only chooses the retention
+window and turning it off still enforces cleanup; a new class of unattended deletion needs an
+off switch of its own. Its session policy is protected: a session can read it but not change it.
+`MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` evaluates both classes from read-only evidence
+whatever the flag says. See [Orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
+
+**Local Inspector** (`local-inspector`) exposes the pre-PR workflow stage, its Command tuning
+and the Local review setting in GitHub Inspector. It uses the repository workload independently
+of the Persona repository access preview. Turning the flag off hides its authoring controls
+and skips the stage when a saved workflow reaches it. See
+[Local Inspector Command](workflows.md#local-inspector-command-preview).
+
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
@@ -44,10 +66,10 @@ in every open window, with no Save button or restart. A refused write rolls back
 inline error. Preview features are off until enabled individually or through the master switch.
 With no preview declared the panel shows its empty state instead of a list.
 
-**Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
-a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
-answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
-route answers 404 and the `home-dispatch-v1` health capability is absent.
+**Headless mode** (`headless-mode`) enables the Claude Code session control preview. It ships off
+until chosen. [Setup and doctor](headless-mode.md) enable the flag, install the mod, and report
+problems. `mctl setup --off` disables the flag without uninstalling the mod. With it off, every
+`/dispatch/*` route answers 404 and the `home-dispatch-v1` health capability is absent.
 
 **Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
 task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
@@ -70,12 +92,12 @@ off keeps individually enabled flags on. **Advanced** starts collapsed and conta
 that are on by default, with a count of those switched off. A filter matching only Advanced
 opens it. Settings search can toggle individual flags; the master result opens its panel.
 
-Switching on **Alpha updates** in **Settings > Setup > Application updates** also switches on
+Switching on **Alpha updates** at the top of **Settings → Setup** also switches on
 Enable all, so an alpha operator gets every current and future preview feature by default. It is
 the same write as the master switch without "Turn them on too": flags you switched off stay off.
 Switching alpha off changes no flag, and you can still switch Enable all or any flag off while
 on alpha. Alpha is saved first and stays on if that write fails, because the alpha
-switch must keep working while the daemon is down; the Application updates section then says
+switch must keep working while the daemon is down. The message below the checkbox says
 Enable all could not be switched on and offers **Retry**. That failure survives moving between
 Settings categories, and a pending write never locks the alpha switch. A write that gets no
 answer within 10 seconds counts as failed, so Retry is never stuck behind a stalled request.
@@ -177,22 +199,41 @@ Do not skip the default-on release: it gives operators a way to disable a proble
 feature becomes permanent. Removing a flag makes the feature unconditional by deleting its
 gates, not by resolving an unknown id as on.
 
+Session settings through MCP starts as an opt-in preview. Even with all previews enabled, the
+operator must turn on **Allow sessions to access Mission Control settings** in **Settings > Trust**
+in the desktop app. Trust starts off when there is no saved choice and remains independent of the
+rollout flag, including after the flag retires.
+
+A permitted session can change individual flags whose registry entries allow session writes.
+For example, setting `featureFlags.idle-rail-section-counts` to `true` updates every open
+dashboard. Enable all, override resets, workstation capture flags and flags that confer
+authority require an operator. Each new feature flag declares its session policy in the
+[flag registry](../src/shared/feature-flag-registry.ts).
+
 ## Shipped flags
 
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
+| `seven-day-worktree-cleanup` | preview | Seven-day task worktree retention. Off uses the configured window | [Worktrees and checks](worktrees-and-checks.md#task-worktree-retention) |
+| `orphaned-worktree-reclaim` | preview | Automatic retention of disposable task checkouts Git no longer recognizes, after archiving their local-only files, and of tasks whose terminal home is proved absent. Off holds both classes as before | [Worktrees and checks](worktrees-and-checks.md#orphaned-task-checkouts) |
 | `background-reasoning-effort` | preview | Per-call effort settings for background jobs, Foreman and GitHub Inspector. Turning it off suspends the saved overrides for new calls | [Models](models.md#reasoning-effort-for-background-work) |
+| `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
+| `session-settings-mcp` | preview | Let registered sessions find, read and change supported settings | [Discover and edit typed settings](skills-and-settings.md#discover-and-edit-typed-settings) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
+| `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called, the sign-in routes (`/api/shaping/sign-in`, its callback and `/api/shaping/sign-out`), `signIns` in `GET /api/shaping`, and the `shaping_sign_ins` event and snapshot field. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until calls use the sign-in in a later release. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |
+| `resident-card-names` | preview | The Resident name with call sign checkboxes in Settings > Display and the profile name they add to a resident's Board card beside its call sign. Off, the card shows the call sign alone and the stored styles are kept | [Residents](residents.md#finding-a-resident) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the inbox Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |
 | `session-awaiting` | preview | `report_awaiting`'s `/mcp/awaiting` route, the card's deadline track, Idle's Awaiting section, the rail mark and the Conversation band. Switching it off ends every standing wait | [Sessions](sessions.md#sessions-awaiting-a-background-process-preview) |
 | `inbox` | preview | Agent reports (`post_report`, the inbox's Reports section with its Mark all read and each report's Mute, the top bar's to read figure, and Settings > Reports with the report guidance and the muted agents), the inbox's Stuck section and `POST /api/sessions/:id/inbox-message`, and the one naming rule on alert titles, inbox row headers, the review modal header and question cards | [Agent reports](attention-and-alerts.md#agent-reports), [Stuck rows](attention-and-alerts.md#stuck-rows), [One name for an agent](attention-and-alerts.md#one-name-for-an-agent) |
+| `inbox-split` | preview | The attention inbox's list-and-pane layout: its tabs, one row per question and report, the detail pane drawing each row's existing card, moving on to the next row when the open one is settled, J and K, and the stacked layout below 800 px. Off, the stacked inbox is drawn as before. It stores nothing of its own | [Unified split inbox](attention-and-alerts.md#unified-split-inbox-preview) |
 | `idle-stalled` | preview | Idle's Stalled section on the Board and the Console rail, its head count, the card's fact sheet and fixes, and removing the two idle stall rules from the inbox's Stuck section. It also opens `POST /api/sessions/:id/inbox-message`, which the `inbox` flag opens too. Switching it off returns those stalls to the inbox's Stuck section while the `inbox` preview is on (with `inbox` off there is no Stuck section, so they appear in neither); dismissals carry over | [Stuck rows](attention-and-alerts.md#stuck-rows), [UI](ui.md) |
 | `voice` | preview | Every voice route (`/api/voice/*` and `/voice/*`, listed in [Voice addressing](voice.md#routes)), the `voice_state`, `voice_roster`, and `voice_card` events, the `voice` and `voiceCards` reconnect snapshot fields, the speech model manager, the Settings > Voice category with its roster, the **Call sign** field under Dispatch > Advanced, the **Reference name** field on a resident profile, and the Setup panel's Voice family. A call sign or reference name already saved is kept while the flag is off, and the task and profile routes accept one either way, but it names an agent (in the inbox, cards, alerts, the Away digest and report authors) only while the flag is on. Voice needs `async-input`, `inbox` and `filed-plan-decisions` too; with any of them off it reads as unavailable, and the Setup family's Voice previews row turns them on | [Voice addressing](voice.md) |
+| `voice-first-preview-hold` | preview | The `firstPreviewVoicedMs` field of the Always-on listener directive, which makes the macOS listener hold a phrase's first live words, in the transcript overlay and a focused editor's dictation preview, until it holds 300 ms of voiced audio. Final decoding, routing, delivery, Push-to-talk and the overlay's expiry are unchanged. Turning it off or on is a live directive edit that keeps the open microphone | [Voice addressing](voice.md#first-preview-hold-preview) |
 | `markdown-questions` | preview | Markdown rendering of a `request_input` question's body on the review card, in the attention inbox and in the conversation's question entries. The agent-facing rule asking for Markdown `context` is not gated | [Sessions](sessions.md#markdown-questions-preview) |
 
 `test/feature-flags.test.ts` checks every shipped definition against the id rules.
@@ -210,6 +251,9 @@ switching the flag off brings back the plain paragraph.
 reaches the inbox and the to read figure, opening it changes no figure, Mark read clears it, a
 replacement shows once with its note, the session never turns amber, and nothing shows with the
 flag off.
+`e2e/specs/inbox-split.spec.ts` checks the unified split inbox: one row per question and report,
+the selected row's card in the pane, the next row opening after an answer and a Mark read, J,
+the tabs, the stacked layout below 800 px, and the stacked inbox returning with the flag off.
 `e2e/specs/inbox-stuck.spec.ts` checks the Stuck section: a stalled session's row, its count in
 **to answer**, Continue reaching the agent, Mark done opening the Complete dialog, the row leaving when the session works,
 Dismiss holding across a reload, and a queue-only row without Mark done.

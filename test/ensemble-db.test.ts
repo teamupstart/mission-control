@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this phase is the only migration boundary for the whole ensemble family.
@@ -19,7 +19,7 @@ import { join } from "node:path";
 
 // MISSION_HOME *is* the state dir, so the db lands at <home>/harness.db. It has to be set
 // before anything that resolves it is imported, which is why the server import is dynamic.
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-db-"));
+const home = tempDir("mission-ensemble-db-");
 process.env.MISSION_HOME = home;
 
 function seedPreFeatureDb(): void {

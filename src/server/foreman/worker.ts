@@ -29,6 +29,7 @@ import type {
   PromptedCompletionGap,
   PromptedDirectHandoffKind,
   ReviewItem,
+  SessionIntentGuard,
   Session,
   SessionDiff,
   SessionQueue,
@@ -73,7 +74,7 @@ import type { ReviewContext, Verdict } from "./verdict.ts";
 import { cheapActionOf, classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
-import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { continuationSource, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
@@ -87,6 +88,7 @@ import {
 import type { QueueConfig } from "./queue-machine.ts";
 import {
   PromptedFailureTracker,
+  PromptedHoldLog,
   decidePromptedWrapup,
   planPromptedWrapup,
   promptedVerificationHistory,
@@ -261,6 +263,21 @@ const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
 /** Consecutive prompted-wrap-up attempts that got nowhere - see PromptedFailureTracker. */
 const promptedFailures = new PromptedFailureTracker();
+/** One pending-handoff line per held generation; see `PromptedHoldLog`. */
+const promptedHolds = new PromptedHoldLog();
+
+/** Log a held generation once, and forget holds that no longer exist. */
+function notePromptedHold(session: Session, live: readonly Session[], candidate: PromptedCandidate): void {
+  promptedHolds.retainOnly(new Set(live.map((s) => s.agentSessionId ?? s.id)));
+  const cycle = session.workCycle;
+  if (!cycle) return;
+  if (candidate.kind !== "skip" || !candidate.operatorHold) {
+    promptedHolds.forget(cycle.logicalKey);
+    return;
+  }
+  if (!promptedHolds.shouldLog(cycle.logicalKey, cycle.generation)) return;
+  log(`${session.name}: prompted automatic wrap-up pending - ${candidate.why}; send Resume automatic handoff to release it`);
+}
 
 /** Pre-claim reviewer failures are not recovery sends, so bound them separately. */
 const SHIP_RECOVERY_REVIEW_FAILURE_CAP = 3;
@@ -1375,7 +1392,9 @@ async function resolveShipRecoveryCandidate(
   const diff = await client.diff(session.id).catch(() => null);
   if (!diff?.ok) return null;
 
+  const previous = continuationSource(goal);
   const input = {
+    earlierContinuationEvidence: Boolean(previous && [...evidence.images, ...evidence.artifacts].some(item => item.episodeKey === previous)),
     session,
     queue,
     episodeKey: resolvedSessionIntent(goal)?.episodeKey ?? null,
@@ -1985,7 +2004,9 @@ async function processTarget(
   }
 
   const qcfg = queueConfig(cfg);
-  const intent = await client.goal(fresh.id).catch(() => null);
+  const goalRead = await client.goal(fresh.id).then((goal) => ({ goal }), () => null);
+  const intent = goalRead?.goal ?? null;
+  const actions = queueActions(client, cfg, resolvedSessionIntent(intent));
 
   const action = decideQueueTick({
     session: fresh,
@@ -2011,6 +2032,9 @@ async function processTarget(
     return true;
   }
 
+  if (!goalRead && (action.kind === "ask-wrapup" || action.kind === "skip-wrapup" || action.kind === "auto-wrapup")) {
+    return false;
+  }
   if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
     const completionIntent = action.kind === "auto-wrapup"
       ? action.intentGuard
@@ -2037,7 +2061,7 @@ async function processTarget(
       });
       if (block) {
         const outcome = await applyQueueAction(
-          queueActions(client, cfg),
+          actions,
           fresh,
           { kind: "skip-wrapup", queue: action.queue, reason: block.reason },
           qcfg,
@@ -2069,7 +2093,7 @@ async function processTarget(
         // so direct shipping must not race it on the same branch. Degrade to the Ship it?
         // card and let the operator choose which path owns the completion.
         const outcome = await applyQueueAction(
-          queueActions(client, cfg),
+          actions,
           fresh,
           { kind: "ask-wrapup", queue: action.queue },
           qcfg,
@@ -2087,7 +2111,7 @@ async function processTarget(
   ) return false;
 
   const outcome = await applyQueueAction(
-    queueActions(client, cfg),
+    actions,
     fresh,
     action,
     qcfg,
@@ -2126,20 +2150,27 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
   };
 }
 
+function revalidatedPacket(staged: WorkflowSessionEvidenceList, episodeKey: string) {
+  const result = staged.continuation;
+  return result?.status === "revalidated" && result.episodeKey === episodeKey ? result : null;
+}
+
 /** Compare the admitted registration, including identity and bytes, across a verifier call.
  * Ignore capture timestamps: reserving the same proof does not change what was judged.
  * Other episodes and coverage-only edits are not inputs to this completion verifier.
  */
 function promptedEvidenceSnapshot(evidence: WorkflowSessionEvidenceList, episodeKey: string): string {
+  const packet = revalidatedPacket(evidence, episodeKey);
   const items = [...evidence.images, ...evidence.artifacts]
-    .filter(item => item.episodeKey === episodeKey)
+    .filter(item => item.episodeKey === episodeKey || (packet && item.episodeKey === packet.sourceEpisode))
     .sort((a, b) => a.id.localeCompare(b.id))
     .map(({ updatedAt: _updatedAt, ...item }) => item);
-  return JSON.stringify(items);
+  const excludedCount = items.length === 0 ? evidence.images.length + evidence.artifacts.length : 0;
+  return JSON.stringify([evidence.continuation, excludedCount, items]);
 }
 
 /**
- * Admit only evidence registered under the intent episode being verified.
+ * Admit current-episode evidence and an explicitly revalidated continuation packet.
  *
  * A missing stamp is a legacy row, not proof of current work. The split between metadata and
  * content mirrors the prompt's trust fence: only the former may render above it.
@@ -2148,9 +2179,12 @@ function promptedRegisteredEvidence(
   staged: WorkflowSessionEvidenceList,
   episodeKey: string,
 ): RegisteredEvidenceInput {
+  const packet = revalidatedPacket(staged, episodeKey);
+  const admitted = (item: { episodeKey: string | null }) => item.episodeKey === episodeKey ||
+    (packet && item.episodeKey === packet.sourceEpisode);
   const items: Array<{ id: string; item: RegisteredEvidenceItem }> = [
     ...staged.images
-      .filter((item) => item.episodeKey === episodeKey)
+      .filter(admitted)
       .map((item) => ({
         id: item.id,
         item: {
@@ -2168,7 +2202,7 @@ function promptedRegisteredEvidence(
         },
       })),
     ...staged.artifacts
-      .filter((item) => item.episodeKey === episodeKey)
+      .filter(admitted)
       .map((item) => ({
         id: item.id,
         item: {
@@ -2188,6 +2222,8 @@ function promptedRegisteredEvidence(
   ].sort((a, b) => a.item.metadata.createdAt - b.item.metadata.createdAt || a.id.localeCompare(b.id));
   return {
     registrationEligible: staged.registrationEligible,
+    excludedCount: staged.images.length + staged.artifacts.length - items.length,
+    continuationStatus: staged.continuation?.episodeKey === episodeKey ? staged.continuation.status : undefined,
     items: items.map(({ item }) => item), totalCount: items.length, truncated: false,
   };
 }
@@ -2285,6 +2321,7 @@ export async function processPromptedWrapup(
     cfg: pcfg,
     now: Date.now(),
   });
+  notePromptedHold(session, live, candidate);
   if (candidate.kind === "skip") return false;
   if (candidate.kind === "retire") {
     const current = await refreshPromptedCandidate(client, pcfg, candidate);
@@ -2332,7 +2369,7 @@ export async function processPromptedWrapup(
       () => ({ ok: false as const, value: null }),
     ),
     completionContract
-      ? client.workflowEvidence(session.id).then(
+      ? client.workflowEvidence(session.id, true).then(
         (value) => ({ ok: true as const, value }),
         () => ({ ok: false as const, value: null }),
       )
@@ -2514,7 +2551,7 @@ export async function processPromptedWrapup(
   // A workflow can be attached or removed while the verifier runs. Do not consume a verdict
   // judged against an evidence obligation that no longer applies (or has just become due).
   if (registeredEvidence) {
-    const freshEvidence = await client.workflowEvidence(current.session.id).catch(() => null);
+    const freshEvidence = await client.workflowEvidence(current.session.id, true).catch(() => null);
     if (!freshEvidence || freshEvidence.registrationEligible !== registeredEvidence.registrationEligible) {
       log(`${session.name}: prompted wrap-up held - workflow evidence eligibility changed or is unavailable`);
       return false;
@@ -2526,6 +2563,15 @@ export async function processPromptedWrapup(
     }
   }
 
+  // A clean model answer cannot turn excluded registrations into completion proof.
+  if (registeredEvidence?.registrationEligible && registeredEvidence.excludedCount &&
+      registeredEvidence.totalCount === 0 && !result.verdict.gaps.some(gap => gap.severity === "blocking")) {
+    result.verdict.complete = false;
+    result.verdict.summary = "Earlier registrations require verified evidence for the current completion contract.";
+    result.verdict.gaps.push({ id: "workflow-evidence-current-contract", severity: "blocking", kind: "unverified",
+      path: "", detail: "Registered evidence could not be validated for the current contract.",
+      fix: "Check the current checkout and register the verified packet through submit_workflow_evidence." });
+  }
   const blockingGaps = result.verdict.gaps.filter((gap) => gap.severity === "blocking");
   const trackedDecisionGaps = reconcileGaps(
     verificationHistory.priorGaps,
@@ -2537,6 +2583,9 @@ export async function processPromptedWrapup(
     && registeredEvidence
     && registeredEvidence.registrationEligible
     && registeredEvidence.totalCount > 0
+    // A revalidated prior packet can support an ordinary clean verdict. Only registration
+    // in this episode authorizes the separate fallback for still-unverified work.
+    && registeredEvidence.continuationStatus !== "revalidated"
     && blockingGaps.length > 0
     && blockingGaps.every((gap) => gap.kind === "unverified"),
   );
@@ -2557,6 +2606,8 @@ export async function processPromptedWrapup(
         headSha: diff.headSha,
         transcriptAnchor,
         summary: claimSummary,
+        ...(evidenceRead.value?.continuation?.status === "revalidated"
+          ? { expectedContinuationPacket: evidenceRead.value.continuation.packet } : {}),
         ...(planPublication ? { expectedPlanPublication: planPublication } : {}),
       }),
     );
@@ -2579,6 +2630,10 @@ export async function processPromptedWrapup(
       }));
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
+    }
+    if (registeredEvidence?.continuationStatus === "revalidated" && claim.result.reason === "no_binding") {
+      log(`${session.name}: prompted wrap-up held - the workflow owning the revalidated evidence could not claim it`);
+      return false;
     }
     if (planPublication?.owner === "workflow" && claim.result.reason === "no_binding") {
       log(`${session.name}: prompted wrap-up held - the plan workflow was removed before its claim`);
@@ -2817,7 +2872,7 @@ function queueItemContext(item: WorkItem | null): ReviewInput["queueItem"] {
 }
 
 /** The daemon surface the apply layer needs, bound to this client. */
-function queueActions(client: ForemanClient, _cfg: ForemanConfig): QueueActions {
+function queueActions(client: ForemanClient, _cfg: ForemanConfig, expectedIntent?: SessionIntentGuard | null): QueueActions {
   return {
     sessions: () => client.sessions(),
     getConfig: () => client.getConfig(),
@@ -2826,7 +2881,7 @@ function queueActions(client: ForemanClient, _cfg: ForemanConfig): QueueActions 
     inject: (id, text) => client.inject(id, text),
     markSent: (sid, iid, sha, anchor) => client.markSent(sid, iid, sha, anchor),
     recoverItem: (sid, iid) => client.recoverItem(sid, iid),
-    markWrapupAsked: (id) => client.markWrapupAsked(id),
+    markWrapupAsked: (id, retire) => client.markWrapupAsked(id, { expectedIntent, retire }),
     setWrapupAnswer: (id, answer) => client.setWrapupAnswer(id, answer),
     captureScope: (s) => captureScope(client, s),
     holdsLease: () => isLeader,

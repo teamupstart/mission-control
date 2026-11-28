@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -24,6 +23,7 @@ import type { SetupDeps } from "../src/server/setup/types.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 import { ACLI_TIMEOUT_MS } from "../src/server/task-sources/jira-acli.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /** What `acli jira auth status` prints when signed in, with the account address it carries. */
 const ACLI_SIGNED_IN = "✓ Authenticated\n  Site: example.atlassian.net\n  Email: operator@example.invalid\n  Authentication Type: oauth\n";
@@ -209,6 +209,45 @@ test("missing, needs-setup, and unknown stay distinct", async () => {
   assert.deepEqual(plugin, { state: "unknown", why: "Claude Code's plugin record could not be read.", evidence: "EACCES" });
 });
 
+test("gh auth names a token the login shell sets but the desktop launch did not inherit", async () => {
+  const loggedOut = async () => stubRun({ stdout: "", stderr: "You are not logged into any GitHub hosts. To log in, run: gh auth login", code: 1 });
+  const asked: string[][] = [];
+  const shellSets = (set: string[]) => async (names: readonly string[]) => {
+    asked.push([...names]);
+    return set.filter((name) => names.includes(name));
+  };
+  const hinted = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames: shellSets(["GITHUB_TOKEN"]) });
+  assert.equal(hinted.state, "needs-setup");
+  assert.equal(
+    hinted.state === "needs-setup" && hinted.why,
+    "The GitHub CLI is installed but is not authenticated to github.com. Your login shell sets GITHUB_TOKEN, but Mission Control was not started from that shell, so the gh it runs cannot see it. Store the login in gh itself: in a terminal, run `env -u GITHUB_TOKEN gh auth login`, then press Re-check.",
+  );
+  assert.deepEqual(asked, [["GH_TOKEN", "GITHUB_TOKEN"]]);
+
+  const both = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames: shellSets(["GH_TOKEN", "GITHUB_TOKEN"]) });
+  assert.match(both.state === "needs-setup" ? both.why : "", /sets GH_TOKEN and GITHUB_TOKEN.*cannot see them.*`env -u GH_TOKEN -u GITHUB_TOKEN gh auth login`/);
+
+  // A token the daemon already has, under either name, is one gh rejected rather than the
+  // launch gap, so the login shell is not asked. Unsetting only the shell's name would leave
+  // the daemon's token in place.
+  for (const processEnv of [{ GH_TOKEN: "x", GITHUB_TOKEN: "y" }, { GH_TOKEN: "x" }, { GITHUB_TOKEN: "y" }]) {
+    asked.length = 0;
+    const inherited = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => processEnv, loginShellVariableNames: shellSets(["GH_TOKEN", "GITHUB_TOKEN"]) });
+    assert.equal(inherited.state === "needs-setup" && inherited.why, "The GitHub CLI is installed but is not authenticated to github.com.", JSON.stringify(processEnv));
+    assert.deepEqual(asked, [], JSON.stringify(processEnv));
+  }
+
+  for (const loginShellVariableNames of [shellSets([]), async () => { throw new Error("login shell failed"); }]) {
+    const plain = await probe("gh-auth", { runCommand: loggedOut, processEnv: () => ({}), loginShellVariableNames });
+    assert.equal(plain.state === "needs-setup" && plain.why, "The GitHub CLI is installed but is not authenticated to github.com.");
+  }
+
+  // A signed-in gh never consults the login shell.
+  asked.length = 0;
+  assert.equal((await probe("gh-auth", { processEnv: () => ({}), loginShellVariableNames: shellSets(["GITHUB_TOKEN"]) })).state, "satisfied");
+  assert.deepEqual(asked, []);
+});
+
 test("an unsupported Herdr host is actionable without probing installation", async () => {
   let installationProbes = 0;
   const status = await probe("herdr", {
@@ -362,7 +401,7 @@ test("an outdated GitHub CLI reports needs-setup, and a current one stays satisf
 });
 
 test("a schema-invalid Claude plugin record is unknown rather than missing", async () => {
-  const pluginsDir = mkdtempSync(join(tmpdir(), "mission-setup-plugins-"));
+  const pluginsDir = tempDir("mission-setup-plugins-");
   try {
     writeFileSync(
       join(pluginsDir, "installed_plugins.json"),

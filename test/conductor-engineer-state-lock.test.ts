@@ -1,14 +1,14 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
   conductorEngineerStatePath,
   writeFakeConductor,
 } from "../e2e/fixtures/conductor.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The e2e fake provider CLI keeps its Engineer state in one json file, and every mutation is
 // a read-modify-write from a SEPARATE short-lived process. Two of those at once used to
@@ -31,7 +31,7 @@ import {
 // under test is a template literal that becomes a standalone script - the concurrency only
 // exists once it is two processes, and a unit test of the source string could not see it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-engineer-lock-"));
+const home = tempDir("mission-engineer-lock-");
 const fake = writeFakeConductor(home);
 const statePath = conductorEngineerStatePath(home);
 const lockPath = `${statePath}.lock`;

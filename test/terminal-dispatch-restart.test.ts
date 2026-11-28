@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -12,7 +12,7 @@ import { launchFailureOutcome, newLaunchFailure, UNKNOWN_TERMINAL_GUIDANCE, type
 import { mkTask } from "./helpers/session-fixture.ts";
 import { originAndCloneAt } from "./helpers/git-fixture.ts";
 
-const dir = mkdtempSync(join(tmpdir(), "terminal-restart-test-"));
+const dir = tempDir("terminal-restart-test-");
 process.env.MISSION_HOME = dir;
 after(() => rmSync(dir, { recursive: true, force: true }));
 const { Registry } = await import("../src/server/registry.ts");

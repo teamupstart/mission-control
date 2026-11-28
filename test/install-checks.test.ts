@@ -5,10 +5,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { stableNodePath, transientCheckoutRoot } from "../hooks/install-checks.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * A scratch dir, realpath'd up front: macOS's tmpdir sits behind a symlink
@@ -16,7 +16,7 @@ import { stableNodePath, transientCheckoutRoot } from "../hooks/install-checks.m
  * through that symlink would all read as aliases by accident.
  */
 function withTempDir(fn: (dir: string) => void): void {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "install-checks-")));
+  const dir = realpathSync(tempDir("install-checks-"));
   try {
     fn(dir);
   } finally {

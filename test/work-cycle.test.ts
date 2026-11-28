@@ -1,13 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { AgentType } from "@shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-work-cycle-"));
+const home = tempDir("mission-work-cycle-");
 process.env.MISSION_HOME = home;
 
 const { completeWorkCycle, hooksEverSeen, markWorkCycleActive, openDb, workCycleFor } = await import("../src/server/db.ts");

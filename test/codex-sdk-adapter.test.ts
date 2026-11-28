@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -21,6 +20,7 @@ import type { AppServerTransport } from "../src/server/harness/codex/app-server/
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
 import { CodexSubagents } from "../src/server/harness/codex/subagents.ts";
 import { CompactionError } from "../src/server/harness/compaction.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this adapter is the only thing standing between `codex app-server` and
 // every surface in the app, and three of its decisions are the difference between an
@@ -201,7 +201,7 @@ async function launch(
 const settle = () => new Promise((r) => setTimeout(r, 5));
 
 test("a resumed resident retains its measured native backstop after the catalog disappears", async t => {
-  const home = mkdtempSync(join(tmpdir(), "codex-resident-backstop-"));
+  const home = tempDir("codex-resident-backstop-");
   const previous = process.env.CODEX_HOME;
   process.env.CODEX_HOME = home;
   t.after(() => { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; rmSync(home, { recursive: true, force: true }); });

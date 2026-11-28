@@ -4,9 +4,62 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
 import { test, expect } from "../fixtures/test.ts";
-import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
+import { beListener, enableVoice, reportVoiceHold, voiceToken } from "../fixtures/voice.ts";
 import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
+
+test("Push-to-talk indicators show hold and release guidance with or without the status line", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  try {
+    await openVoiceTab(page, "On screen", daemon.baseURL);
+    await page.getByRole("checkbox", { name: "Floating button" }).check();
+    await page.getByRole("checkbox", { name: "Status line" }).uncheck();
+    await openVoiceTab(page, "Listening");
+    await page.getByRole("combobox", { name: "Listening mode" }).selectOption("push-to-talk");
+    await expect(page.getByRole("checkbox", { name: "Auto-mute on calls" })).toBeDisabled();
+    const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+    await page.goto(daemon.baseURL);
+    const indicator = page.locator(".app > .vi-floating");
+    const report = (held: boolean) => reportVoiceHold(daemon, state, held);
+    for (const held of [false, true, false]) {
+      await report(held);
+      await expect(indicator.getByText(held ? "Listening while held" : "Waiting for hotkey", { exact: true })).toBeVisible();
+      if (held) await expect(indicator.getByText("Release to finish")).toBeVisible();
+      else {
+        await expect(indicator.getByText(/^Hold .* to talk$/)).toBeVisible();
+        await expect(indicator.locator("kbd")).toHaveText("⌘⌃⌥V");
+      }
+      await expect(page.locator("button.vi")).toHaveCount(0);
+      if (process.env.MC_E2E_EVIDENCE) {
+        const dir = artifactsDir("voice-floating-hold");
+        mkdirSync(dir, { recursive: true });
+        await indicator.screenshot({ path: join(dir, held ? "held.png" : "waiting.png") });
+      }
+    }
+    await openVoiceTab(page, "On screen", daemon.baseURL);
+    await page.getByRole("checkbox", { name: "Status line" }).check();
+    await page.getByRole("checkbox", { name: "Top-bar segment" }).check();
+    await report(false);
+    const status = page.locator(".app > .vi-status-line");
+    await expect(status.locator("kbd")).toHaveText("⌘⌃⌥V");
+    const topbar = page.locator(".pulse .vi-topbar");
+    await topbar.focus();
+    await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" })).toBeVisible();
+    await expect(topbar).toHaveRole("status");
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("voice-floating-hold");
+      await status.screenshot({ path: join(dir, "status-shortcut.png") });
+      await page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" }).screenshot({ path: join(dir, "compact-shortcut.png") });
+    }
+    await report(true);
+    await expect(topbar).toHaveAccessibleDescription("Release to finish");
+    await report(false);
+  } finally {
+    listener.stop();
+  }
+});
 
 test("five selected indicators follow the daemon and advertise only a registered chord", async ({ dashboard: page, context, daemon }) => {
   const root = artifactsDir("voice-window");
@@ -51,6 +104,7 @@ test("five selected indicators follow the daemon and advertise only a registered
     await status.click();
     await expect(peer.locator("button.vi-status-line")).toHaveAccessibleName("Voice: muted. Unmute");
     await status.click();
+    await openVoiceTab(page, "On screen");
     const settings = page.getByRole("group", { name: "In the window" });
     await expect(settings.getByRole("checkbox", { name: "Status line" })).toBeChecked();
     for (const name of ["Top-bar segment", "Floating button", "Edge light", "Composer microphone"]) {
@@ -60,22 +114,24 @@ test("five selected indicators follow the daemon and advertise only a registered
     await expect(page.locator("button.vi .kb-hint")).toHaveCount(0);
     await expect(status).not.toContainText("⌃");
     const report = (hotkeyError: unknown, callActive = false, pushToTalk = false) => page.request.post(daemon.baseURL + "/voice/shell-report", {
-      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m", hotkeyError, callActive, pushToTalk, reportedAtHostUs: voiceHostTimeUs() },
+      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "cmd+ctrl+alt+v", hotkeyError, callActive, pushToTalk, reportedAtHostUs: voiceHostTimeUs() },
     });
     expect((await report(null)).ok()).toBe(true);
-    await expect(status.locator("kbd")).toHaveText("⌃⌥M");
+    await expect(status.locator("kbd")).toHaveText("⌘⌃⌥V");
     await expect(status).toContainText("Click to mute");
-    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk during call auto-mute");
     await status.click();
     await expect(status).toContainText("Click to unmute");
-    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk during call auto-mute");
     if (capture) await status.screenshot({ path: join(capture, "muted-shortcut.png") });
     await status.click();
     expect((await report(null, true)).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
-    await expect(status).toContainText("Hold ⌃⌥M to talk");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
     expect((await report(null, true, true)).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: talk. Mute");
+    expect((await report({ reason: "Replacement refused", chordInForce: "cmd+ctrl+alt+v" }, true)).ok()).toBe(true);
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
     expect((await report({ reason: "Already in use", chordInForce: null })).ok()).toBe(true);
     await expect(status.locator("kbd")).toHaveCount(0);
     if (capture) {
@@ -149,10 +205,11 @@ test("five selected indicators follow the daemon and advertise only a registered
       if (capture) await page.screenshot({ path: join(capture, "flag-off.png") });
     });
     expect((await toggle(true)).ok()).toBe(true);
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "On screen", daemon.baseURL);
     for (const box of await settings.getByRole("checkbox").all()) await box.uncheck();
     await expect(page.locator("button.vi")).toHaveCount(0);
     await page.reload();
+    await openVoiceTab(page, "On screen");
     await expect(settings.getByRole("checkbox", { checked: true })).toHaveCount(0);
   } finally { listener.stop(); }
 });
@@ -164,7 +221,7 @@ test("a 320 px status line keeps its mode and mute action inside the window with
   try {
     const report = await page.request.post(daemon.baseURL + "/voice/shell-report", {
       headers: { "x-harness-token": voiceToken(daemon) },
-      data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m" },
+      data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "cmd+ctrl+alt+v" },
     });
     expect(report.ok()).toBe(true);
     await expect(status.locator("kbd")).toBeVisible();
@@ -179,7 +236,7 @@ test("a 320 px status line keeps its mode and mute action inside the window with
       expect(await status.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
       expect((await status.boundingBox())?.height).toBe(26);
       await status.focus();
-      await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌃⌥M to talk" })).toBeVisible();
+      await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" })).toBeVisible();
       if (word === "Listening") await status.click();
     }
     await page.mouse.move(1, 1);
@@ -191,7 +248,7 @@ test("a 320 px status line keeps its mode and mute action inside the window with
     }
     await page.setViewportSize({ width: 720, height: 640 });
     await expect(status.locator("kbd")).toBeVisible();
-    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk during call auto-mute");
   } finally { listener.stop(); }
 });
 
@@ -202,27 +259,27 @@ test("a changed voice shortcut stays hidden in both windows until the shell conf
   const keycap = status.locator("kbd");
   const report = (registeredHotkey?: string) => page.request.post(daemon.baseURL + "/voice/shell-report", {
     headers: { "x-harness-token": voiceToken(daemon) },
-    data: { capabilities: { hotkey: { available: true } }, callActive: true, registeredHotkey },
+    data: { capabilities: { hotkey: { available: true } }, callActive: true, registeredHotkey, reportedAtHostUs: voiceHostTimeUs() },
   });
   try {
     expect((await report()).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
     await expect(keycap).toHaveCount(0, { timeout: 3000 });
-    expect((await report("ctrl+alt+m")).ok()).toBe(true);
-    await expect(status).toContainText("Hold ⌃⌥M to talk");
+    expect((await report("cmd+ctrl+alt+v")).ok()).toBe(true);
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
 
     const peer = await context.newPage();
     const oldConfig = await (await page.request.get(daemon.baseURL + "/api/voice/config")).json();
     await peer.route("**/api/voice/config", route => route.fulfill({ json: oldConfig }));
     await peer.goto(daemon.baseURL);
     const peerStatus = peer.locator("button.vi-status-line");
-    await expect(peerStatus.locator("kbd")).toHaveText("⌃⌥M");
+    await expect(peerStatus.locator("kbd")).toHaveText("⌘⌃⌥V");
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { hotkey: "ctrl+alt+k" } })).ok()).toBe(true);
     await expect(peerStatus.locator("kbd")).toHaveCount(0, { timeout: 3000 });
     await expect(keycap).toHaveCount(0, { timeout: 10_000 });
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
     await expect(status).toContainText("Click to mute");
-    expect((await report("ctrl+alt+m")).ok()).toBe(true);
+    expect((await report("cmd+ctrl+alt+v")).ok()).toBe(true);
     await expect(keycap).toHaveCount(0);
     let capture: string | undefined;
     if (process.env.MC_E2E_EVIDENCE) {
@@ -441,8 +498,12 @@ for (const outcome of ["refusal", "timeout"] as const) {
     const listener = await beListener(daemon);
     try {
       const peer = await context.newPage();
-      await peer.goto(daemon.baseURL + "/#/settings/voice");
+      await openVoiceTab(peer, "On screen", daemon.baseURL);
       if (outcome === "refusal") await peer.getByRole("checkbox", { name: "Floating button" }).check();
+      // Finish loading the peer's settings before starting the mute request's five-second deadline.
+      const peerStatus = peer.getByRole("checkbox", { name: "Status line" });
+      await expect(peerStatus).toBeChecked();
+      await peerStatus.click({ trial: true });
       const floating = page.locator("button.vi-floating");
       await expect(floating).toHaveCount(outcome === "refusal" ? 1 : 0);
       const status = page.locator("button.vi-status-line");
@@ -451,7 +512,7 @@ for (const outcome of ["refusal", "timeout"] as const) {
       await page.route("**/api/voice/mute", route => held.resolve(route), { times: 1 });
       await status.click();
       const request = await held.promise;
-      await peer.getByRole("checkbox", { name: "Status line" }).uncheck();
+      await peerStatus.uncheck();
       await expect(status).toHaveCount(0);
       await expect(page.getByRole("status").filter({ hasText: "Muting voice…" })).toBeVisible();
       if (outcome === "refusal") {
@@ -487,6 +548,7 @@ test("two windows selecting different indicators preserve both choices in the da
   const peer = await context.newPage();
   const settings = daemon.baseURL + "/#/settings/voice";
   await Promise.all([page.goto(settings), peer.goto(settings)]);
+  for (const window of [page, peer]) await openVoiceTab(window, "On screen");
   for (const window of [page, peer]) {
     await expect(window.getByRole("checkbox", { name: "Status line" })).toBeChecked();
     await expect(window.getByRole("checkbox", { name: "Floating button" })).not.toBeChecked();
@@ -501,6 +563,7 @@ test("two windows selecting different indicators preserve both choices in the da
     return config.voice.indicators.sort();
   }).toEqual(["edge", "floating", "status-line"]);
   await page.reload();
+  await openVoiceTab(page, "On screen");
   for (const name of ["Edge light", "Floating button", "Status line"]) {
     await expect(page.getByRole("checkbox", { name })).toBeChecked();
   }
@@ -516,6 +579,7 @@ test("startup reconciles a peer's indicator edit after a local save overtakes hy
   const settings = daemon.baseURL + "/#/settings/voice";
   const peer = await context.newPage();
   await peer.goto(settings);
+  await openVoiceTab(peer, "On screen");
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let reads = 0;
@@ -528,6 +592,7 @@ test("startup reconciles a peer's indicator edit after a local save overtakes hy
   });
   try {
     await page.goto(settings);
+    await openVoiceTab(page, "On screen");
     await started.promise;
     const edge = page.getByRole("checkbox", { name: "Edge light" });
     const floating = peer.getByRole("checkbox", { name: "Floating button" });
@@ -559,6 +624,7 @@ test("an older peer event cannot undo an acknowledged indicator selection", asyn
   const settings = daemon.baseURL + "/#/settings/voice";
   const peer = await context.newPage();
   await Promise.all([peer.goto(settings), page.goto(settings)]);
+  for (const window of [page, peer]) await openVoiceTab(window, "On screen");
   const edge = page.getByRole("checkbox", { name: "Edge light" });
   const floating = page.getByRole("checkbox", { name: "Floating button" });
   const peerFloating = peer.getByRole("checkbox", { name: "Floating button" });
@@ -596,6 +662,7 @@ test("a delayed indicator acknowledgement keeps the newer two-window configurati
   const settings = daemon.baseURL + "/#/settings/voice";
   const peer = await context.newPage();
   await peer.goto(settings);
+  await openVoiceTab(peer, "On screen");
   const releaseRead = Promise.withResolvers<void>();
   const releaseSave = Promise.withResolvers<void>();
   const saved = Promise.withResolvers<string[]>();
@@ -610,6 +677,7 @@ test("a delayed indicator acknowledgement keeps the newer two-window configurati
     await route.fulfill({ response });
   });
   await page.goto(settings);
+  await openVoiceTab(page, "On screen");
   const edge = page.getByRole("checkbox", { name: "Edge light" });
   const floating = page.getByRole("checkbox", { name: "Floating button" });
   await edge.check();
@@ -638,6 +706,7 @@ test("a streamed and acknowledged indicator save unlocks every choice during a s
     page.waitForResponse("**/api/ui/config"),
     page.goto(daemon.baseURL + "/#/settings/voice"),
   ]);
+  await openVoiceTab(page, "On screen");
   const group = page.getByRole("group", { name: "In the window" });
   const edge = group.getByRole("checkbox", { name: "Edge light" });
   await expect(edge).toBeEnabled();
@@ -718,6 +787,7 @@ for (const failure of ["unavailable", "stalled"] as const) {
     try {
       await page.goto(daemon.baseURL + "/#/settings/voice");
       await snapshotReady.promise;
+      await openVoiceTab(page, "On screen");
       const edge = page.getByRole("checkbox", { name: "Edge light" });
       await edge.check();
       await saved.promise;
@@ -742,20 +812,22 @@ for (const failure of ["unavailable", "stalled"] as const) {
 
 test("indicator labels and captions match neighboring Voice settings and the history table matches variant E", async ({ dashboard: page, context, daemon }) => {
   await enableVoice(daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Listening", daemon.baseURL);
   const group = page.getByRole("group", { name: "In the window" });
   const typography = (locator: Locator) => locator.evaluate(element => {
     const style = getComputedStyle(element);
     return { size: style.fontSize, weight: style.fontWeight, family: style.fontFamily };
   });
-  const label = page.getByText("Auto-mute during calls", { exact: true });
+  const label = page.locator('[data-anchor="voice/auto-mute"] .kb-row-label');
   const description = page.locator('[data-anchor="voice/auto-mute"] .kb-row-desc');
   const sampleCaption = group.locator(".vi-sample").filter({ has: page.locator(".vi-floating") }).first();
   const history = page.getByRole("region", { name: "Recently heard" });
-  const option = await typography(group.getByText("Status line", { exact: true }));
+  // The neighbouring row is on Listening, the indicators on On screen, the table on Recently heard.
   const reference = await typography(label);
-  const caption = await typography(sampleCaption.getByText("Listening", { exact: true }).last());
   const referenceCaption = await typography(description);
+  await openVoiceTab(page, "On screen");
+  const option = await typography(group.getByText("Status line", { exact: true }));
+  const caption = await typography(sampleCaption.getByText("Listening", { exact: true }).last());
   expect(option).toEqual(reference);
   expect(caption).toEqual(referenceCaption);
   const mock = await context.newPage();
@@ -763,6 +835,7 @@ test("indicator labels and captions match neighboring Voice settings and the his
   const referenceTable = mock.locator("#e .rh-dialog").first();
   const tableSizes = (panel: Locator) => Promise.all([".rh-dialog-head strong", ".rh-table", ".rh-table th"].map(async selector =>
     (await typography(panel.locator(selector).first())).size));
+  await openVoiceTab(page, "Recently heard");
   const actual = await tableSizes(history);
   const approved = await tableSizes(referenceTable);
   expect(actual).toEqual(approved);
@@ -774,9 +847,9 @@ test("indicator labels and captions match neighboring Voice settings and the his
     const root = artifactsDir("voice-window");
     mkdirSync(root, { recursive: true });
     const dir = mkdtempSync(join(root, "settings-type-"));
+    await openVoiceTab(page, "On screen");
     await group.scrollIntoViewIfNeeded();
     await group.screenshot({ path: join(dir, "indicators.png") });
-    await page.getByText("Plan forms by voice", { exact: true }).first().scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(dir, "in-context.png") });
   }
 });
@@ -821,7 +894,7 @@ test("the 720 by 480 dashboard keeps the last console row above its bottom statu
 
 test("a failed indicator save shows an alert and restores the previous selection and top bar", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "On screen", daemon.baseURL);
   const settings = page.getByRole("group", { name: "In the window" });
   const statusLine = settings.getByRole("checkbox", { name: "Status line" });
   const topbar = settings.getByRole("checkbox", { name: "Top-bar segment" });
@@ -855,6 +928,7 @@ test("a timed-out indicator write that commits after the first refresh reaches b
   const url = daemon.baseURL + "/#/settings/voice";
   const peer = await context.newPage();
   await Promise.all([page.waitForResponse("**/api/ui/config"), page.goto(url), peer.goto(url)]);
+  for (const window of [page, peer]) await openVoiceTab(window, "On screen");
   const edge = page.getByRole("checkbox", { name: "Edge light" });
   const peerEdge = peer.getByRole("checkbox", { name: "Edge light" });
   await expect(peerEdge).toBeVisible();
@@ -881,7 +955,7 @@ test("a timed-out indicator write that commits after the first refresh reaches b
 for (const applied of [false, true]) {
   test(`a stalled indicator save unlocks all five choices and reconciles a write the daemon ${applied ? "applied" : "did not receive"}`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "On screen", daemon.baseURL);
     const settings = page.getByRole("group", { name: "In the window" });
     const edge = settings.getByRole("checkbox", { name: "Edge light" });
     const alert = settings.getByRole("alert");
@@ -939,7 +1013,7 @@ test("the Action Bar fallback keeps its visible typing prompt and draft alongsid
       kind: "ship", agent: "claude", runtime: "sdk", workflowId: null, callSign: "Will",
     } });
     expect(task.ok(), await task.text()).toBe(true);
-    await page.goto(dev.origin + "/#/settings/voice");
+    await openVoiceTab(page, "On screen", dev.origin);
     const selection = page.getByRole("checkbox", { name: "Composer microphone" });
     await selection.check();
     await expect(selection).toBeEnabled();
@@ -976,7 +1050,7 @@ test("failed window mute controls share one alert without moving the header, fle
   await enableVoice(daemon);
   const listener = await beListener(daemon);
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "On screen", daemon.baseURL);
     for (const name of ["Edge light", "Floating button", "Top-bar segment"]) {
       await page.getByRole("checkbox", { name }).check();
     }

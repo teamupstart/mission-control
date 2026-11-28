@@ -4,18 +4,41 @@
 // Browser-safe: no `node:` import may reach this module. The daemon stores the config and
 // computes the state with these schemas and `voiceMode`, the dashboard draws both, the shell
 // follows the state, and a listener sends the hello, so none of them can disagree about what a
-// field means or which mode a set of facts produces. Later phases read and write the config
-// fields declared here and add none; a phase that needs a new capability id adds it to
+// field means or which mode a set of facts produces. A phase that needs a new capability id adds it to
 // `VOICE_CAPABILITY_IDS` below.
 
+import { SpeechVoiceSchema, SpeechHelloSchema, SpeakDirectiveSchema, type VoiceSpeechState } from "./voice-speech.ts";
 import { z } from "zod";
 import { ASYNC_INPUT_FLAG, FILED_PLAN_DECISIONS_FLAG } from "./async-input.ts";
 import { INBOX_FLAG } from "./inbox.ts";
 import type { SpokenName } from "./voice-names.ts";
 import { boundedRecord } from "./zod-shapes.ts";
+import { SeparatorWordSchema, VOICE_SEPARATOR_DEFAULT } from "./voice-separator.ts";
 
 /** The preview flag for voice addressing. */
 export const VOICE_FLAG = "voice" as const;
+
+/**
+ * The preview flag for the Always-on first-preview hold: a phrase shows no live words until it
+ * holds `VOICE_FIRST_PREVIEW_VOICED_MS` of voiced audio. It changes only what the live preview
+ * shows; final decoding, routing and delivery are the same with it on or off.
+ */
+export const VOICE_FIRST_PREVIEW_HOLD_FLAG = "voice-first-preview-hold" as const;
+
+/**
+ * The preview flag for prefix recovery: an utterance the opening-name rule dropped gets a
+ * bounded second look past one or two stray leading words ("Um, Steve, check the build."). It
+ * routes a clear exact call sign after known filler, asks on an unsure card when the address is
+ * plausible, and leaves everything else dropped. Routes that work with it off never change.
+ */
+export const VOICE_PREFIX_RECOVERY_FLAG = "voice-prefix-recovery" as const;
+
+/**
+ * Voiced audio an Always-on phrase must hold before its first live preview, while
+ * `VOICE_FIRST_PREVIEW_HOLD_FLAG` is on. 300 ms is the knee the phantom-filler scout measured:
+ * most of the false previews gone, for no measured median latency to the first correct preview.
+ */
+export const VOICE_FIRST_PREVIEW_VOICED_MS = 300;
 
 /**
  * The flags voice depends on. A flag cannot require another, so voice reads as unavailable
@@ -42,6 +65,9 @@ export type VoiceBackend = (typeof VOICE_BACKENDS)[number];
 export const VOICE_BACKEND_CHOICES = ["auto", ...VOICE_BACKENDS] as const;
 export type VoiceBackendChoice = (typeof VOICE_BACKEND_CHOICES)[number];
 
+export const VOICE_END_OF_SPEECH_MS = [500, 800, 1000, 1500, 2000, 3000, 5000] as const;
+const EndOfSpeechMsSchema = z.literal(VOICE_END_OF_SPEECH_MS);
+
 /** The bounds on the cancel window's length, in whole seconds. */
 export const VOICE_CANCEL_WINDOW_SECONDS = { min: 1, max: 30 } as const;
 
@@ -66,6 +92,21 @@ const CancelWindowSchema = z.object({
   seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max).default(4),
 }).prefault({});
 
+const TranscriptStyle = z.enum(["card", "capsule"]);
+const TranscriptCorner = z.enum(["bottom-right", "bottom-left"]);
+export const TranscriptSampleSchema = z.discriminatedUnion("phase", [
+  z.object({ phase: z.literal("ready") }),
+  z.object({ phase: z.literal("audio"), onset: z.int().nonnegative() }),
+  z.object({ phase: z.literal("words"), onset: z.int().nonnegative(), text: z.string().trim().min(1).max(4096), final: z.literal(true).optional() }),
+]);
+export type TranscriptSample = z.infer<typeof TranscriptSampleSchema>;
+export const TRANSCRIPT_WORD_LIMIT = 100;
+const TranscriptWords = z.int().min(1).max(TRANSCRIPT_WORD_LIMIT);
+export function transcriptTail(text: string, limit = TRANSCRIPT_WORD_LIMIT): string {
+  return text.trim().split(/\s+/u).slice(-limit).join(" ");
+}
+const ListeningModeSchema = z.enum(["always-on", "push-to-talk"]);
+
 /**
  * Voice settings, the `voice` app-config entry. Every field contract A names, with its default.
  *
@@ -74,17 +115,28 @@ const CancelWindowSchema = z.object({
  * is strict, so a bad write is a 400 rather than a stored default.
  */
 export const VoiceConfigSchema = z.object({
-  /** Mute, by the tray, the hotkey or the dashboard. Operational: a restore leaves it alone. */
+  listeningMode: ListeningModeSchema.default("always-on"),
+  /** Manual mute in Always-on mode. Operational: a restore leaves it alone. */
   muted: z.boolean().default(false),
   /**
-   * The system-wide mute hotkey, as a chord in the format `chordFromEvent` produces, or null for
-   * none. Nothing registers it before Phase 11, and nothing names it before the shell reports
-   * the `hotkey` capability.
+   * Shared system-wide shortcut for manual mute or held capture, or null for none.
    */
-  hotkey: ChordSchema.nullable().default("ctrl+alt+m"),
+  hotkey: ChordSchema.nullable().default("cmd+ctrl+alt+v"),
   autoMuteDuringCalls: z.boolean().default(true),
+  showTranscript: z.boolean().default(true),
+  transcriptWords: TranscriptWords.default(20),
+  transcriptStyle: TranscriptStyle.default("card"),
+  transcriptCorner: TranscriptCorner.default("bottom-right"),
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
+  endOfSpeechMs: EndOfSpeechMsSchema.default(2000),
+  /** The standalone word that splits one Always-on capture into separate messages. */
+  separatorWord: SeparatorWordSchema.default(VOICE_SEPARATOR_DEFAULT).catch(VOICE_SEPARATOR_DEFAULT),
+  speech: z.object({
+    voice: SpeechVoiceSchema.nullable().default(null),
+    /** Whether a listener that can play speech may speak samples and questions aloud. */
+    playback: z.boolean().default(true),
+  }).prefault({}),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE).default("show"),
   /** Whether speech may fill a plan-decision form. Voice stays on elsewhere when this is off. */
   planFormsByVoice: z.boolean().default(true),
@@ -103,13 +155,21 @@ export const VOICE_CONFIG_DEFAULTS: VoiceConfig = Object.freeze(VoiceConfigSchem
  * switch in one window and a length in another commute.
  */
 export const VoiceConfigPatchSchema = z.object({
+  listeningMode: ListeningModeSchema,
   muted: z.boolean(),
   hotkey: ChordSchema.nullable(),
   autoMuteDuringCalls: z.boolean(),
+  showTranscript: z.boolean(),
+  transcriptWords: TranscriptWords,
+  transcriptStyle: TranscriptStyle,
+  transcriptCorner: TranscriptCorner,
+  endOfSpeechMs: EndOfSpeechMsSchema,
+  separatorWord: SeparatorWordSchema,
   cancelWindow: z.object({
     enabled: z.boolean(),
     seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max),
   }).partial().strict(),
+  speech: z.object({ voice: SpeechVoiceSchema.nullable(), playback: z.boolean() }).partial().strict(),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE),
   planFormsByVoice: z.boolean(),
   inputDevice: z.string().trim().min(1).max(VOICE_LIMITS.deviceIdChars),
@@ -138,12 +198,16 @@ export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPat
   return VoiceConfigSchema.parse({
     ...config,
     ...patch,
+    speech: { ...config.speech, ...patch.speech },
     cancelWindow: { ...config.cancelWindow, ...patch.cancelWindow },
   });
 }
 
 /** `POST /api/voice/mute`. */
-export const VoiceMuteRequestSchema = z.object({ muted: z.boolean() }).strict();
+export const VoiceMuteRequestSchema = z.union([
+  z.object({ muted: z.boolean() }).strict(),
+  z.object({ toggle: z.literal(true) }).strict(),
+]);
 
 /** Where a routed message's confirmation card appears (Phases 6 and 12). */
 export const VOICE_CONFIRMATION_PLACEMENTS = ["pill", "toast", "popover"] as const;
@@ -190,18 +254,61 @@ export const VoiceUiConfigPatchSchema = z.object({
 
 // ---- contract B: the state ----
 
-export const VOICE_MODES = ["off", "unavailable", "listening", "muted", "auto-muted", "push-to-talk"] as const;
+export const VOICE_MODES = ["off", "unavailable", "listening", "muted", "auto-muted", "push-to-talk", "waiting-for-key"] as const;
 export type VoiceMode = (typeof VOICE_MODES)[number];
+
+export function awaitingVoiceHold(mode: VoiceMode): boolean {
+  return mode === "auto-muted" || mode === "waiting-for-key";
+}
 
 export function voiceCaptures(mode: VoiceMode): boolean {
   return mode === "listening" || mode === "push-to-talk";
 }
 
+/**
+ * Whether cards title agents by the names a person says to them: while Always-on listens, and in
+ * Push-to-talk between holds as well as during one, since the next hold may address any of them.
+ * A hold during an Always-on call auto-mute also reads `push-to-talk`, but only the dedicated mode
+ * carries a `pushToTalkSession`: muted, auto-muted (even while that hold is down), unavailable and
+ * off keep the ordinary names.
+ */
+export function voiceCardsShowSpokenNames(state: Pick<VoiceState, "mode" | "pushToTalkSession"> | null | undefined): boolean {
+  return state?.mode === "listening" || state?.mode === "waiting-for-key" ||
+    (state?.mode === "push-to-talk" && !!state.pushToTalkSession);
+}
+
+/**
+ * How a session card shows its call sign while voice can hear it (`voiceCardsShowSpokenNames`):
+ * `title` in the dedicated Push-to-talk mode, waiting for the shortcut or held, where the call
+ * sign replaces the title because the next hold may address any card; `element` while
+ * Always-on listens, where the card keeps the session's title and draws the call sign beside it
+ * in the operator's `callSignCardStyle`; null otherwise. Resident cards are not affected.
+ */
+export type VoiceCardCallSignMode = "title" | "element";
+
+export function voiceCardCallSignMode(state: Pick<VoiceState, "mode" | "pushToTalkSession"> | null | undefined): VoiceCardCallSignMode | null {
+  if (!voiceCardsShowSpokenNames(state)) return null;
+  return state?.mode === "listening" ? "element" : "title";
+}
+
 export const VoiceListenerDirectiveSchema = z.object({
+  speak: SpeakDirectiveSchema.nullable().default(null),
   capture: z.boolean(),
   roster: z.array(z.string()),
   inputDevice: z.string(),
+  endOfSpeechMs: EndOfSpeechMsSchema.optional(),
+  /**
+   * The Always-on separator word, present only for automatic capture. The daemon splits at it;
+   * a listener must not rewrite it into a spoken name when it opens a capture.
+   */
+  separator: z.string().min(1).optional(),
+  /**
+   * Voiced milliseconds an Always-on phrase must hold before its first live preview, present only
+   * while `VOICE_FIRST_PREVIEW_HOLD_FLAG` is on. A listener that ignores it previews as before.
+   */
+  firstPreviewVoicedMs: z.number().int().positive().optional(),
   pauseMs: z.number().nullable().optional(),
+  captureRevision: z.string().min(1).optional(),
   revision: z.string().min(1),
 });
 export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema>;
@@ -214,7 +321,7 @@ export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema
  * - `model`: the listener's hello says no model is loaded;
  * - `microphone`: a hello or a shell report says access is denied.
  */
-export const VOICE_UNAVAILABLE_REASONS = ["flags", "listener", "model", "microphone"] as const;
+export const VOICE_UNAVAILABLE_REASONS = ["flags", "listener", "model", "microphone", "shortcut"] as const;
 export type VoiceUnavailableReason = (typeof VOICE_UNAVAILABLE_REASONS)[number];
 
 /** What the shell, or the daemon for `listener`, can say is or is not available. */
@@ -229,14 +336,21 @@ export const VOICE_CAPABILITY_IDS = [
 ] as const;
 export type VoiceCapabilityId = (typeof VOICE_CAPABILITY_IDS)[number];
 
+export const VOICE_SPEECH_STOP_UNCONFIRMED = "speech_stop_unconfirmed";
+
 export interface VoiceCapability {
   available: boolean;
   /** Why it is not available, when it is not; null when it is. */
   reason: string | null;
+  /** Daemon-owned reason for a specific recovery action. The reason text is for display. */
+  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED | "speech_playback_off" | "speech_playback_unsupported" | "speech_voice_unavailable";
 }
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
 export type VoiceCapabilities = Partial<Record<VoiceCapabilityId, VoiceCapability>>;
+
+/** A failed sample is unavailable until the next poll. Its preference is still editable. */
+export const VOICE_CALL_POLL_RETRY = "Retrying microphone check. ";
 
 export const VOICE_MODEL_STATUSES = ["missing", "downloading", "verifying", "ready", "failed"] as const;
 export type VoiceModelStatus = (typeof VOICE_MODEL_STATUSES)[number];
@@ -286,6 +400,8 @@ export const VOICE_MODEL_STATE_NONE: VoiceModelState = Object.freeze({
 export interface VoiceHotkeyError {
   reason: string;
   chordInForce: string | null;
+  /** Set only when this refusal came from an attempt to register a proposed shortcut. */
+  trialId?: string;
 }
 
 /**
@@ -293,8 +409,14 @@ export interface VoiceHotkeyError {
  * follow it.
  */
 export interface VoiceState {
-  /** Manual mute can also be set while the mode reads unavailable. */
+  transcript?: { style: VoiceConfig["transcriptStyle"]; corner: VoiceConfig["transcriptCorner"];
+    phase: TranscriptSample["phase"]; text: string };
+  /** Present only in dedicated push-to-talk. The desktop echoes this generation on each edge. */
+  pushToTalkSession?: string;
+  /** Saved manual mute for Always-on, including while unavailable. */
   muted?: boolean;
+  planFormsByVoice?: boolean;
+  speech: VoiceSpeechState;
   mode: VoiceMode;
   /** Orders mode transitions within one daemon across HTTP replies and the event stream.
    * Absent on the off state and on snapshots from older daemons. */
@@ -305,6 +427,15 @@ export interface VoiceState {
   capabilities: VoiceCapabilities;
   /** The persisted shortcut, observed in the same snapshot as the shell's registration. */
   configuredHotkey: string | null;
+  /** A replacement to try while the persisted shortcut remains the fallback. */
+  pendingHotkey?: string;
+  pendingHotkeyId?: string;
+  /** The desktop missed the confirmation deadline for this replacement. */
+  expiredHotkey?: string;
+  /** A focused Settings recorder is waiting for the desktop to release its reservation. */
+  recordingHotkey?: true;
+  recordingHotkeyId?: string;
+  recordingHotkeyReady?: true;
   /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
   registeredHotkey: string | null;
   /** From the latest shell report; null with no report. */
@@ -329,11 +460,14 @@ export const VOICE_HELLO_LAPSE_MS = 30_000;
 export const VOICE_HELLO_INTERVAL_MS = 10_000;
 /** A shell report older than this no longer counts: its capabilities are absent again. */
 export const VOICE_SHELL_REPORT_LAPSE_MS = 15_000;
+/** Bound a missing physical key-up to the native listener’s two-minute audio buffer. */
+export const VOICE_MAX_HOLD_MS = 120_000;
 
 /** What `voiceMode` decides from. */
 export interface VoiceModeInputs {
   /** The `voice` flag. */
   enabled: boolean;
+  listeningMode?: VoiceConfig["listeningMode"];
   reasons: readonly VoiceUnavailableReason[];
   muted: boolean;
   /** Another app holds the microphone, from a live shell report. */
@@ -351,6 +485,7 @@ export interface VoiceModeInputs {
 export function voiceMode(inputs: VoiceModeInputs): VoiceMode {
   if (!inputs.enabled) return "off";
   if (inputs.reasons.length > 0) return "unavailable";
+  if (inputs.listeningMode === "push-to-talk") return inputs.pushToTalk ? "push-to-talk" : "waiting-for-key";
   if (inputs.muted) return "muted";
   if (inputs.callActive && inputs.autoMuteDuringCalls) return inputs.pushToTalk ? "push-to-talk" : "auto-muted";
   return "listening";
@@ -360,6 +495,8 @@ export function voiceMode(inputs: VoiceModeInputs): VoiceMode {
 export interface VoiceReasonInputs {
   /** Whether each required flag is on. */
   requiredFlagsOn: boolean;
+  /** An unresolved playback failure makes even a live listener unavailable. */
+  listenerFailure?: boolean;
   /** The latest accepted hello, if it has not lapsed. */
   hello: Pick<VoiceListenerHello, "modelLoaded" | "microphone"> | null;
   /** The latest shell report's microphone permission, if the report has not lapsed. */
@@ -370,8 +507,8 @@ export interface VoiceReasonInputs {
 export function voiceUnavailableReasons(inputs: VoiceReasonInputs): VoiceUnavailableReason[] {
   const reasons: VoiceUnavailableReason[] = [];
   if (!inputs.requiredFlagsOn) reasons.push("flags");
-  if (!inputs.hello) reasons.push("listener");
-  else if (!inputs.hello.modelLoaded) reasons.push("model");
+  if (!inputs.hello || inputs.listenerFailure) reasons.push("listener");
+  if (inputs.hello && !inputs.hello.modelLoaded) reasons.push("model");
   if (inputs.hello?.microphone === "denied" || inputs.shellMicrophone === "denied") reasons.push("microphone");
   return reasons;
 }
@@ -382,6 +519,7 @@ export const VOICE_REASON_TEXT: Record<VoiceUnavailableReason, string> = {
   listener: "no listener is running",
   model: "no speech model is loaded",
   microphone: "microphone access is denied",
+  shortcut: "the desktop has no confirmed push-to-talk shortcut",
 };
 
 /** How each mode reads to a person. */
@@ -391,6 +529,7 @@ export const VOICE_MODE_LABEL: Record<VoiceMode, string> = {
   listening: "Listening",
   muted: "Muted",
   "auto-muted": "Muted for a call",
+  "waiting-for-key": "Waiting for hotkey",
   "push-to-talk": "Push to talk",
 };
 
@@ -406,19 +545,32 @@ export function canonicalVoiceState(state: VoiceState): string {
   const capabilities: Record<string, VoiceCapability> = {};
   for (const id of VOICE_CAPABILITY_IDS) {
     const entry = state.capabilities[id];
-    if (entry) capabilities[id] = { available: entry.available, reason: entry.reason };
+    if (entry) capabilities[id] = { available: entry.available, reason: entry.reason, code: entry.code };
   }
+  const { voice, reason, catalog, model, job, lastAudition } = state.speech;
+  const entries = (voices: typeof catalog.system) => voices.map(v => [v.id, v.name, v.detail]);
   return JSON.stringify([
     state.mode,
+    state.transcript,
     state.modeVersion?.source,
     state.modeVersion?.revision,
     state.muted ?? false,
+    state.pushToTalkSession,
+    state.planFormsByVoice ?? true,
     state.reasons,
     capabilities,
     state.configuredHotkey,
+    state.pendingHotkey,
+    state.pendingHotkeyId,
+    state.expiredHotkey,
+    state.recordingHotkey,
+    state.recordingHotkeyId,
+    state.recordingHotkeyReady,
     state.registeredHotkey,
-    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
+    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce, state.hotkeyError.trialId] : null,
     canonicalVoiceModel(state.model),
+    voice && [voice.engine, voice.id], reason, job && [job.id, job.purpose, job.state, job.cardId],
+    entries(catalog.neural), entries(catalog.system), canonicalVoiceModel(model), lastAudition && [lastAudition.id, lastAudition.state],
   ]);
 }
 
@@ -441,27 +593,33 @@ function canonicalVoiceModel(model: VoiceModelState): unknown[] {
  */
 export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
   return JSON.stringify(roster.map((entry) => [
-    entry.key, entry.name, entry.kind, entry.taskId, entry.sessionId, entry.role, entry.colorId, entry.agent, entry.state,
+    entry.key, entry.name, entry.kind, entry.taskId, entry.sessionId, entry.role, entry.colorId, entry.agent, entry.state, entry.isReferenceName,
   ]));
 }
 
 /** The state with the flag off: what every follower is told when voice is switched off. */
 export function voiceStateOff(): VoiceState {
-  return { mode: "off", reasons: [], capabilities: {}, configuredHotkey: null, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
+  return { mode: "off", speech: { voice: null, reason: "Voice is off.", job: null, lastAudition: null, catalog: { neural: [], system: [] }, model: { ...VOICE_MODEL_STATE_NONE } }, reasons: [], capabilities: {}, configuredHotkey: null, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
 }
 
 // ---- the listener's hello and the shell's report ----
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
-export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
+// 4.1 adds in-place timing edits. At 4.2 both peers support long FluidAudio captures.
+export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.2`;
+export const VOICE_RECORDING_ID_HEADER = "x-voice-recording-id";
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
+/** A capture-only listener's process and the byte it must lock before opening the microphone. */
+export const VOICE_CAPTURE_PID_HEADER = "x-voice-capture-pid";
+export const VOICE_CAPTURE_LOCK_HEADER = "x-voice-capture-lock";
 /** Response headers on the capture-off directive for an explicit push-to-talk key release. */
 export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
 export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";
 export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-end-host-ms";
 export const VOICE_CAPTURE_START_HEADER = "x-voice-capture-start-host-us";
 export const VOICE_SPEECH_START_HEADER = "x-voice-speech-start-host-us";
+export const VOICE_FOCUS_UNCONFIRMED_HEADER = "x-voice-focus-unconfirmed";
 export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
 export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
 export const VoiceListenerIdSchema = z.uuid();
@@ -483,11 +641,13 @@ export type VoiceInputDevice = z.infer<typeof VoiceInputDeviceSchema>;
  * the listener protocol version, `major.minor`; only its major is compared.
  */
 export const VoiceListenerHelloSchema = z.object({
+  speech: SpeechHelloSchema.optional(),
   backend: z.enum(VOICE_BACKENDS),
   version: z.string().regex(/^\d+(\.\d+){0,2}$/).max(VOICE_LIMITS.versionChars),
   devices: z.array(VoiceInputDeviceSchema).max(VOICE_LIMITS.devices),
   modelLoaded: z.boolean(),
   primingAvailable: z.boolean().optional(),
+  reportsSpeechOnset: z.literal(true).optional(),
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS),
 });
 export type VoiceListenerHello = z.infer<typeof VoiceListenerHelloSchema>;
@@ -498,6 +658,8 @@ export function voiceProtocolMajor(version: string): number {
 }
 
 const VoiceCapabilityReportSchema = z.object({
+  /** The hotkey producer released its reservation for this recorder. */
+  recordingId: z.uuid().optional(),
   available: z.boolean(),
   reason: z.string().max(VOICE_LIMITS.reasonChars).nullable().default(null),
 });
@@ -507,6 +669,7 @@ const VoiceCapabilityReportSchema = z.object({
  * refused, so a newer shell's report still lands on an older daemon.
  */
 export const VoiceShellReportSchema = z.object({
+  pushToTalkSession: z.uuid().optional(),
   capabilities: boundedRecord(z.string().min(1).max(64), VoiceCapabilityReportSchema, 32).default({}),
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS).nullable().default(null),
   callActive: z.boolean().default(false),
@@ -523,6 +686,7 @@ export const VoiceShellReportSchema = z.object({
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),
+    trialId: z.uuid().optional(),
   }).nullable().default(null),
 });
 export type VoiceShellReport = z.infer<typeof VoiceShellReportSchema>;

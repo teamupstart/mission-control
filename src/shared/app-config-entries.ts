@@ -1,5 +1,6 @@
+import { SESSION_SETTINGS_ACCESS } from "./session-settings-metadata.ts";
 import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
-import { ShapingConfigSchema } from "./shaping.ts";
+import { ShapingConfigSchema, ShapingSignInConfigSchema } from "./shaping.ts";
 import { VoiceConfigSchema, type VoiceConfig } from "./voice.ts";
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
@@ -257,6 +258,7 @@ const standingFields = {
 } satisfies Record<keyof StandingInstructionsConfig, AppConfigValueClass>;
 
 const inspectorFields = {
+  localReview: "setting",
   runner: "setting",
   enabled: "setting",
   mode: "setting",
@@ -293,6 +295,8 @@ const uiFields = {
   taskKindHeader: "setting",
   taskKindCard: "setting",
   backgroundAgentsStyle: "setting",
+  callSignCardStyle: "setting",
+  residentCardNameStyles: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",
@@ -326,9 +330,17 @@ const uiFields = {
  */
 const voiceFields = {
   muted: "operational",
+  listeningMode: "setting",
   hotkey: "setting",
   autoMuteDuringCalls: "setting",
+  endOfSpeechMs: "setting",
+  separatorWord: "setting",
+  showTranscript: "setting",
+  transcriptStyle: "setting",
+  transcriptCorner: "setting",
+  transcriptWords: "setting",
   cancelWindow: "setting",
+  speech: "setting",
   whenUnsure: "setting",
   planFormsByVoice: "setting",
   inputDevice: "setting",
@@ -406,6 +418,14 @@ export const APP_CONFIG_ENTRIES = {
   // refuses each on write, so the value stays in the daemon's environment and out of snapshots.
   shaping: { ...wholeEntry("shaping", ShapingConfigSchema, "setting", "shaping"), optionalInSnapshot: true },
   /**
+   * Shaper sign-in's client registrations (`src/server/shaping/sign-in/service.ts`): issuer,
+   * client id, redirect URI, scope and registration time, at most 16. No token, no secret.
+   * `operational` with no backup domain: a registration names this daemon's loopback redirect
+   * URI, and a settings snapshot restored onto another installation must not hand it clients
+   * registered for another port and state home.
+   */
+  shapingSignIn: wholeEntry("shaping.signIn", ShapingSignInConfigSchema, "operational", null),
+  /**
    * Voice settings (contract A of the voice plan), behind the `voice` preview flag. Every field
    * later phases read is declared here from the start, so none of them changes this entry.
    */
@@ -448,6 +468,8 @@ export const APP_CONFIG_ENTRIES = {
   shipping: fieldsEntry("shipping", ShippingConfigSchema, "shipping", shippingFields),
   pipelines: fieldsEntry("pipelines", PipelinesConfigSchema, "pipelines", pipelinesFields),
   ui: fieldsEntry("ui", UiConfigSchema, "ui", uiFields, "ui"),
+  // Installation consent stays outside settings snapshots, so a restore cannot undo revocation.
+  sessionSettingsAccess: wholeEntry(SESSION_SETTINGS_ACCESS.key, z.boolean(), "operational", null),
   foremanLease: wholeEntry("foreman.lease", ForemanLeaseSchema, "operational", null),
   // This records what one operator has already seen about this machine. Restoring it from
   // another installation could suppress a new break or resurrect a reminder already handled.

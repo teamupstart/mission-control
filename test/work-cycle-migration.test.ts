@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-work-cycle-migration-"));
+const home = tempDir("mission-work-cycle-migration-");
 process.env.MISSION_HOME = home;
 
 // A pre-feature database with the hook-only table already populated. Opening it through

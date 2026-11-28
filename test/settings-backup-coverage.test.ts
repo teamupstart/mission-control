@@ -133,9 +133,13 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "reports",
       "residents.mcpServers",
       "residents.skillSources",
+      "sessionSettings.access",
       "setup.banner",
       // Task shaping's registered shapers and settings, edited in Settings > Task shaping.
       "shaping",
+      // Shaper sign-in's client registrations. `operational` with NO backup domain: they name
+      // this daemon's loopback redirect URI, and they hold no token.
+      "shaping.signIn",
       "shipping",
       "skills",
       // When each storage warning's occurrence began. `operational`, never restored: it dates
@@ -211,6 +215,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.foremanLease.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.sessionSettingsAccess.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.sessionSettingsAccess.backupDomain, null);
   assert.equal(APP_CONFIG_ENTRIES.backlogPlan.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costTelemetryEnabledAt.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");
@@ -218,6 +224,13 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.backupDomain, null);
   assert.equal(APP_CONFIG_ENTRIES.keepAwake.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.keepAwake.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.shapingSignIn.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.shapingSignIn.backupDomain, null);
+  assert.equal(
+    SETTINGS_CONFIG_BACKUP_ENTRIES.some((entry) => entry.key === "shaping.signIn"),
+    false,
+    "a settings backup must never capture or restore shaper sign-in's client registrations",
+  );
   assert.equal(
     SETTINGS_CONFIG_BACKUP_ENTRIES.some((entry) => entry.key === "keepAwake"),
     false,
@@ -225,10 +238,18 @@ test("the initial app_config key and value-class partition is pinned", () => {
   );
   assert.deepEqual(APP_CONFIG_ENTRIES.voice.classification.fields, {
     muted: "operational",
+    listeningMode: "setting",
     hotkey: "setting",
     autoMuteDuringCalls: "setting",
+    endOfSpeechMs: "setting",
+    separatorWord: "setting",
+    showTranscript: "setting",
+    transcriptStyle: "setting",
+    transcriptCorner: "setting",
+    transcriptWords: "setting",
     cancelWindow: "setting",
     whenUnsure: "setting",
+    speech: "setting",
     planFormsByVoice: "setting",
     inputDevice: "setting",
     decisionProvider: "setting",

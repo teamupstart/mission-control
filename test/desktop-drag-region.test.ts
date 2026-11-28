@@ -155,7 +155,7 @@ test("the desktop shell still makes the topbar the draggable title bar", () => {
   const dragRules = ALL.filter((r) => /-webkit-app-region:\s*drag\b/.test(r.body));
   assert.deepEqual(
     dragRules.flatMap((r) => r.selectors),
-    [".is-desktop .topbar"],
+    [".is-desktop .topbar", ".is-desktop .app > .vi-edge-line ~ header.topbar::before"],
     "the drag region moved or multiplied; the covered list below is scoped to the topbar",
   );
 });

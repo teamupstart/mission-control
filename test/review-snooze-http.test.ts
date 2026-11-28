@@ -1,11 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { decisionLead, formatResponse } from "../src/shared/review-item.ts";
 
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-review-snooze-http-"));
+process.env.MISSION_HOME = tempDir("mission-review-snooze-http-");
 
 const { insertReview, openDb, snoozeReviewRow } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -17,6 +14,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 openDb();
 const TOKEN = ensureToken();

@@ -4,14 +4,12 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readlinkSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -19,8 +17,9 @@ import {
   ensureElectronFramework,
   restoreElectronPayload,
 } from "../scripts/ensure-electron-framework.mjs";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-electron-install-"));
+const root = tempDir("mission-electron-install-");
 after(() => rmSync(root, { recursive: true, force: true }));
 
 const frameworkDir = join(
@@ -47,7 +46,10 @@ test("both published Electron test commands run both preflights in order", () =>
     pretest.startsWith(preflight),
     `pretest must run both Electron preflights first, in order: ${pretest}`,
   );
-  assert.equal(packageJson.scripts["pretest:electron"], preflight);
+  // Both runs then sweep the temp roots of crashed earlier runs (docs/test-temp-dirs.md).
+  const sweep = "node scripts/sweep-test-temp.mjs";
+  assert.equal(packageJson.scripts["pretest:electron"], `${preflight} && ${sweep}`);
+  assert.ok(pretest.endsWith(` && ${sweep}`), `pretest must end by sweeping dead test temp roots: ${pretest}`);
 });
 
 test("the macOS pretest restores a missing Electron framework link", () => {
@@ -62,7 +64,7 @@ test("the macOS pretest restores a missing Electron framework link", () => {
 });
 
 test("the macOS pretest restores a missing current-version link", () => {
-  const copiedRoot = mkdtempSync(join(tmpdir(), "mission-electron-current-"));
+  const copiedRoot = tempDir("mission-electron-current-");
   const copiedFramework = join(
     copiedRoot,
     "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework",
@@ -87,7 +89,7 @@ test("the macOS pretest restores a missing current-version link", () => {
 });
 
 test("the pretest does not invent a framework payload or change other platforms", () => {
-  const incomplete = mkdtempSync(join(tmpdir(), "mission-electron-incomplete-"));
+  const incomplete = tempDir("mission-electron-incomplete-");
   try {
     assert.equal(ensureElectronFramework(incomplete, "linux"), "not-applicable");
     assert.throws(
@@ -108,7 +110,7 @@ test("the pretest does not invent a framework payload or change other platforms"
  * that state routinely, which is how the same failure arrived from a different slot twice.
  */
 test("the incomplete-payload error names a repair that actually works", () => {
-  const incomplete = mkdtempSync(join(tmpdir(), "mission-electron-advice-"));
+  const incomplete = tempDir("mission-electron-advice-");
   try {
     assert.throws(() => ensureElectronFramework(incomplete, "darwin"), (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -130,7 +132,7 @@ test("the incomplete-payload error names a repair that actually works", () => {
 });
 
 test("payload presence is reported per platform, and healing is refused without a package", () => {
-  const empty = mkdtempSync(join(tmpdir(), "mission-electron-empty-"));
+  const empty = tempDir("mission-electron-empty-");
   try {
     // Non-darwin has no framework to guard, so it is vacuously present and nothing is spawned.
     assert.equal(electronPayloadPresent(empty, "linux"), true);
@@ -158,7 +160,7 @@ test("a complete payload is reported present and needs no healing", () => {
 
 test("the pretest refuses every unexpected resolving framework entry", () => {
   for (const kind of ["file", "directory", "symlink"] as const) {
-    const corruptRoot = mkdtempSync(join(tmpdir(), `mission-electron-${kind}-`));
+    const corruptRoot = tempDir(`mission-electron-${kind}-`);
     const corruptFramework = join(
       corruptRoot,
       "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework",

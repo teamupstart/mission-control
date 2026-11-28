@@ -1,12 +1,11 @@
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-snooze-"));
+const home = tempDir("mission-review-snooze-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -37,6 +36,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager, ReviewResolutionError, SnoozeActorRefusal } = await import("../src/server/reviews.ts");
 const { reviewToolResult } = await import("../src/shared/review-item.ts");
 import type { PlanDecision } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const HOUR = 60 * 60_000;
 const linter: PlanDecision[] = [

@@ -1,10 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a topbar reading "8 reviews" over a fleet with nothing to review.
 //
@@ -29,7 +28,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // reloads every pending row the file has written so far, and a bare "nothing is pending"
 // assertion would be answering for its neighbours.
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-orphan-"));
+const home = tempDir("mission-review-orphan-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");

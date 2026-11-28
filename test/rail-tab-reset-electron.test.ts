@@ -1,12 +1,12 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Leaving the conversation rail's Agents tab is remembered.
@@ -37,8 +37,8 @@ let result: { errors: string[]; steps: Record<string, Step>; clock: { before: st
 
 before(() => {
   assertElectronGuiLaunchAllowed();
-  const dir = mkdtempSync(join(tmpdir(), "mission-rail-tab-reset-"));
-  const userData = mkdtempSync(join(tmpdir(), "mission-rail-tab-reset-profile-"));
+  const dir = tempDir("mission-rail-tab-reset-");
+  const userData = tempDir("mission-rail-tab-reset-profile-");
   try {
     const bundle = join(dir, "rail.js");
     execFileSync(require.resolve("esbuild/bin/esbuild"), [
@@ -55,12 +55,12 @@ before(() => {
     const electron = require("electron") as string;
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
-    const output = execFileSync(electron, [
+    const output = execFileSync(...electronGuiCommand(electron, [
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/rail-tab-reset-browser.cjs", import.meta.url)),
       html,
-    ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+    ]), { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
     result = JSON.parse(output.trim()) as typeof result;
   } finally {
     rmSync(dir, { force: true, recursive: true });

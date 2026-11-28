@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { distributionInput, resolveDistributionTag } from '../scripts/distribution-input.mjs';
@@ -10,6 +9,7 @@ import { DISTRIBUTION_OUTPUT, distributionMetadata } from '../scripts/distributi
 import { distributionCredentials, distributionBuilderConfig } from '../scripts/package-distribution.mjs';
 import { APPROVED_DEVELOPER_TEAM_ID, binaryPublisherPolicy } from '../src/shared/binary-publisher-policy.mjs';
 import { BINARY_BUNDLE_ID, BINARY_REPO } from '../src/shared/binary-distribution.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 const versions = {packageVersion: '1.26.0', lockVersion: '1.26.0', lockPackageVersion: '1.26.0'};
 const commit = 'a'.repeat(40);
@@ -58,7 +58,7 @@ test('stable provenance reads only the canonical tag namespace and peels annotat
 });
 
 test('the trusted CLI verifies a separate candidate checkout as data without executing its verifier', (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'mission-distribution-input-'));
+  const root = tempDir('mission-distribution-input-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const source = join(root, 'source'), output = join(root, 'output');
   mkdirSync(join(source, 'scripts'), {recursive: true});
@@ -202,6 +202,13 @@ test('stable distribution is gated by exactly the CI jobs that also gate main', 
   }
   assert.match(ci.concurrency.group, /github\.event_name/, 'a dispatch on a tag must not cancel that tag\'s push run');
   assert.match(ci.concurrency.group, /github\.ref/);
+});
+
+test('both macOS package jobs select Xcode with Swift 6.2 support for the voice listener', () => {
+  for (const workflow of ['distribution.yml', 'ci.yml']) {
+    const job = parseWorkflow(workflow).jobs.package;
+    assert.equal(job.env?.DEVELOPER_DIR, '/Applications/Xcode_26.3.app/Contents/Developer', workflow);
+  }
 });
 
 test('the developer dmg builds on the signing producer image, and tag CI still checks versions', () => {

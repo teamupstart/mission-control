@@ -1,14 +1,15 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-runtime-transfer-"));
+const home = tempDir("mission-runtime-transfer-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);
@@ -54,6 +55,21 @@ for (const stopStarted of [false, true]) for (const leaseState of ["revoked", "c
     assert.deepEqual(f.counts(), { launches: 1, stops: 1, injections: 0 });
   });
 }
+
+test("terminal transfer refuses a checkout reserved by cleanup before preparing a successor", async (t) => {
+  const f = transferFixture(t);
+  t.after(() => { openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run(f.source.id); });
+  using cleanup = reserveWorktreeCleanup([f.source.cwd!]);
+  assert.ok(cleanup);
+  const result = await f.transfers.run(f.source, f.supervisor, {
+    ...f.deps,
+    prepare: async () => assert.fail("cleanup must refuse the transfer before preparation"),
+  });
+  assert.deepEqual(result, { ok: false, error: "Automatic cleanup currently owns this checkout" });
+  assert.deepEqual(f.counts(), { launches: 0, stops: 0, injections: 0 });
+  assert.equal(transferForSource(f.source.id), null);
+  assert.equal(f.registry.getTask(f.task!.id)?.sessionId, f.source.id);
+});
 
 test("a resident never continues in a terminal: the handoff is refused before anything stops or launches", async (t) => {
   const f = transferFixture(t);

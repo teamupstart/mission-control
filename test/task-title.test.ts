@@ -1,18 +1,18 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkEmuHandle } from "./helpers/session-fixture.ts";
 import { terminalResourceId } from "../src/shared/pane.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Drives the REAL create path against a fake `claude`: a real spawn, a real envelope, the
 // real parse ladder, the real registry write. Everything is pinned before importing the
 // modules that read it at load time.
-const home = mkdtempSync(join(tmpdir(), "mission-title-"));
+const home = tempDir("mission-title-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 
@@ -20,7 +20,7 @@ process.env.MISSION_HOME = home;
 // module load, so a test cannot swap binaries afterwards (see goal-refiner.test.ts for the
 // bug that taught us this). It also records every invocation, which is how the
 // "an explicit title costs nothing" case below is proved rather than assumed.
-const bin = mkdtempSync(join(tmpdir(), "fake-claude-"));
+const bin = tempDir("fake-claude-");
 const modeFile = join(bin, "mode");
 const callsFile = join(bin, "calls");
 const releaseFile = join(bin, "release");

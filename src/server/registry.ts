@@ -1,3 +1,5 @@
+import { noteWorktreeUse } from "./worktrees/use-reservation.ts";
+import { explicitHandoffRestriction, isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./goal/handoff-restrictions.ts";
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -6,12 +8,13 @@ import type { VoiceCard } from "@shared/voice-routing.ts";
 import { canonicalVoiceRoster, canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { voiceStateStore } from "./voice/state.ts";
-import { storedVoiceIndicators, voiceIndicatorVersion } from "./ui-config.ts";
+import { storedVoiceUi, voiceIndicatorVersion } from "./ui-config.ts";
 import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
-import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
+import { canonicalJson, type ShapingConfigView, type ShapingSignInView } from "@shared/shaping.ts";
 import { getShapingConfig } from "./shaping/index.ts";
 import { daemonShapingView } from "./shaping/revisions.ts";
+import { shaperSignInEnabled, shaperSignIns } from "./shaping/sign-in/index.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { judgeLatePrompt, judgeTurn, recordAutomatedDelivery, recordPersonDelivery } from "./awaiting-attribution.ts";
@@ -123,7 +126,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { agentActive, hasBlocker, isAwaiting, reportBucket } from "@shared/session.ts";
-import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, hasOperatorHandoffHold, isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
@@ -190,6 +193,7 @@ import {
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
 // because it runs per session per sweep.
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
+import type { SessionGrantScope } from "@shared/residents.ts";
 import { listLiveResidentProfiles, listOpenResidentRuns } from "./residents/store.ts";
 // The Line's fold. Pure and input-driven (see `line-summary.ts`), so this import brings no
 // store with it: everything it reads is gathered by `lineSummaryNow` below.
@@ -561,6 +565,8 @@ export type PrMatch = {
 };
 
 export type PrObservation = {
+  observedAt: number;
+  checks: PrChecks | null;
   url: string;
   branch: string | null;
   agentSessionId: string | null;
@@ -688,6 +694,7 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  */
 // feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
 // shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
+// Nor is shaping_sign_ins: whether a shaper is signed in is no stage figure.
 // voice_state is not one: whether voice is listening is no stage figure. Nor is voice_roster:
 // who answers to a name is folded from the task and session frames above, never on its own.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
@@ -1075,7 +1082,7 @@ export class Registry extends EventEmitter {
   private workflowReset: ((noteKey: string) => void) | null = null;
   private checkWorkflowReset: ((noteKey: string) => string | null) | null = null;
   /** Explicit grants, bounded by live sessions and never persisted. */
-  private sessionControlGrants = new Map<string, string>();
+  private sessionControlGrants = new Map<string, { identity: string; scope: SessionGrantScope }>();
   /**
    * Each session's pending ask for a grant, keyed by session id. `SessionControlRequests` is
    * the only writer; the registry only decorates it onto every session it emits, as it does
@@ -1323,6 +1330,13 @@ export class Registry extends EventEmitter {
    */
   private lastShaping: string | null | undefined = undefined;
   /**
+   * The last `shaping_sign_ins` frame, as canonical JSON. Starts as the empty list, which is what
+   * a window holds before any frame and while a flag is off, so a daemon that starts with a flag
+   * off sends nothing, and switching one off sends one clearing frame only when a non-empty list
+   * was sent last.
+   */
+  private lastShapingSignIns: string = canonicalJson([]);
+  /**
    * The last `voice_state` frame, canonical. Starts as the `off` state, so a daemon that starts
    * with the `voice` flag off sends nothing, and switching it off sends exactly one frame.
    */
@@ -1450,6 +1464,15 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "session_transfers", page, ...(changed ? { changed: transferSummary(changed) } : {}) });
   }
 
+  /** Daemon inventory includes exited cards through their linger and hidden discoveries. */
+  worktreeSessionInventory(): { sessions: readonly Session[]; hiddenCwds: ReadonlySet<string> } {
+    return { sessions: [...this.sessions.values()], hiddenCwds: this.hiddenCwds };
+  }
+
+  sdkLaunchTaskId(sessionId: string): string | null {
+    return this.sdkLaunchTasks.get(sessionId)?.taskId ?? null;
+  }
+
   snapshot(): {
     sessionTransfers: SessionTransferPage;
     sessions: Session[];
@@ -1476,17 +1499,20 @@ export class Registry extends EventEmitter {
     lineSummary: LineSummary;
     featureFlags: FeatureFlagsConfig;
     shaping?: ShapingConfigView;
+    shapingSignIns?: ShapingSignInView[];
     voice?: VoiceState;
+    voiceConfirmation?: import("@shared/voice.ts").VoiceConfirmationPlacement;
     voiceIndicators?: string[];
     voiceIndicatorVersion?: ReturnType<typeof voiceIndicatorVersion>;
     voiceCards?: VoiceCard[];
+    voiceAnswers?: import("@shared/voice-answers.ts").VoiceAnswer[];
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
     storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
-    const indicators = featureEnabled(VOICE_FLAG) ? storedVoiceIndicators() : undefined;
+    const voiceUi = featureEnabled(VOICE_FLAG) ? storedVoiceUi() : undefined;
     return {
       sessionTransfers: sessionTransferPage(),
       sessions: [...this.sessions.values()].map(sessionShapingForReads),
@@ -1530,10 +1556,13 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: with it off nothing reads the stored shapers, and no
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
+      // Behind both flags, like the sign-in routes. The list never holds a token or a link.
+      ...(shaperSignInEnabled() ? { shapingSignIns: shaperSignIns.view() } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
-      ...(indicators ? {
+      ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
-        voiceIndicators: indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators),
+        voiceAnswers: this.voiceRouter?.activeAnswers() ?? [],
+        voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
@@ -1637,7 +1666,7 @@ export class Registry extends EventEmitter {
     const voiceWasOn = this.lastFeatureFlags && resolveFeatureFlag(VOICE_FLAG, this.lastFeatureFlags);
     this.lastFeatureFlags = { ...config, overrides: { ...config.overrides } };
     this.emitEvent({ type: "feature_flags", config });
-    if (!voiceWasOn && resolveFeatureFlag(VOICE_FLAG, config)) this.emitVoiceIndicators(storedVoiceIndicators());
+    if (!voiceWasOn && resolveFeatureFlag(VOICE_FLAG, config)) this.emitVoiceIndicators(storedVoiceUi().indicators);
     if (shapingWasOn === false && resolveFeatureFlag("task-shaping", config)) this.republishShaping();
   }
 
@@ -1668,6 +1697,18 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "shaping_config", config });
   }
 
+  /**
+   * Publish shaper sign-in's list, suppressing a frame that restates the last one. Only the caller
+   * knows whether both flags are on, so it decides when to send the empty list;
+   * `wireShapingSignInEvents` is that caller.
+   */
+  emitShapingSignIns(signIns: ShapingSignInView[]): void {
+    const key = canonicalJson(signIns);
+    if (this.lastShapingSignIns === key) return;
+    this.lastShapingSignIns = key;
+    this.emitEvent({ type: "shaping_sign_ins", signIns });
+  }
+
   voiceRouter?: VoiceRouter;
 
   voiceHold(sessionId: string): boolean {
@@ -1679,8 +1720,26 @@ export class Registry extends EventEmitter {
     return hasDeliveredSpokenHold(noteKeyFor(session));
   }
 
+  emitUiSkinChanged(): void {
+    this.emitEvent({ type: "ui_skin_changed" });
+  }
+
+  emitSettingsConfigChanged(domain: import("@shared/session-settings-metadata.ts").SettingsRefreshDomain): void {
+    this.emitEvent({ type: "settings_config_changed", domain });
+  }
+
+  emitSessionSettingsAccessChanged(): void {
+    this.emitEvent({ type: "session_settings_access_changed" });
+  }
+
   emitVoiceIndicators(indicators: string[]): void {
-    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+    if (!featureEnabled(VOICE_FLAG)) return;
+    const selection = { confirmation: storedVoiceUi().confirmation, indicators };
+    this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
+  }
+
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_dictation_probe" | "voice_dictation" | "voice_form_fill" | "voice_form_submit" | "voice_inbox_action" | "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 
   emitVoiceCard(card: VoiceCard): void {
@@ -1695,6 +1754,7 @@ export class Registry extends EventEmitter {
    */
   emitVoiceState(state: VoiceState): void {
     if (state.mode === "off") this.voiceRouter?.clearActionsAndHistory();
+    if (state.planFormsByVoice === false) this.voiceRouter?.forms.clear();
     const key = canonicalVoiceState(state);
     if (key === this.lastVoice) return;
     this.lastVoice = key;
@@ -1853,22 +1913,22 @@ export class Registry extends EventEmitter {
   }
 
   /** Grants never survive a daemon restart, reset, or replacement work episode. */
-  sessionControlEnabled(id: string): boolean {
+  sessionControlEnabled(id: string, required: SessionGrantScope = "control"): boolean {
     const grant = this.sessionControlGrants.get(id);
     if (!grant) return false;
-    const valid = grant === this.sessionControlIdentity(id);
+    const valid = grant.identity === this.sessionControlIdentity(id);
     if (!valid) this.sessionControlGrants.delete(id);
-    return valid;
+    return valid && (required === "read" || grant.scope === "control");
   }
 
-  setSessionControlEnabled(id: string, enabled: boolean): boolean {
+  setSessionControlEnabled(id: string, enabled: boolean, scope: SessionGrantScope = "control"): boolean {
     const session = this.sessions.get(id);
     if (!session || session.state === "exited" || session.state === "stopping") return false;
     const identity = this.sessionControlIdentity(id);
     if (enabled && !identity) return false;
-    if (enabled) this.sessionControlGrants.set(id, identity!);
+    if (enabled) this.sessionControlGrants.set(id, { identity: identity!, scope });
     else this.sessionControlGrants.delete(id);
-    const next = { ...session, sessionControlEnabled: enabled };
+    const next = { ...session, sessionControlEnabled: enabled && scope === "control", sessionInspectionOnly: enabled && scope === "read" };
     this.sessions.set(id, next);
     this.emitSession(next);
     return true;
@@ -2413,6 +2473,7 @@ export class Registry extends EventEmitter {
       console.error(`[registry] could not judge the wait of session ${s.id}:`, err);
     }
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
+    s.sessionInspectionOnly = !s.sessionControlEnabled && this.sessionControlEnabled(s.id, "read");
     s.sessionControlRequest = this.sessionControlRequests.get(s.id) ?? null;
     s.pause = this.sessionPauses.get(s.id) ?? null;
     s.resumedAt = this.sessionResumes.get(s.id) ?? null;
@@ -2983,6 +3044,7 @@ export class Registry extends EventEmitter {
     terminals: readonly TerminalEnumeration[] = [],
     hiddenCwds: ReadonlySet<string> = new Set<string>(),
   ): void {
+    noteWorktreeUse([...hiddenCwds].filter((cwd) => !this.hiddenCwds.has(cwd)));
     this.hiddenCwds = hiddenCwds;
     this.terminalInventory = terminals;
     this.verifiedLaunchesSinceDiscovery.clear();
@@ -3163,6 +3225,7 @@ export class Registry extends EventEmitter {
       // Resolved below with note/goal, once the overlay may have supplied the binding
       // that decides the key.
       foremanInvite: null,
+      sessionInspectionOnly: prev?.sessionInspectionOnly ?? false,
       sessionControlEnabled: prev?.sessionControlEnabled ?? false,
       sessionControlRequest: this.sessionControlRequests.get(d.syntheticId) ?? null,
       // Daemon-owned like the grant above: a sweep carries the manager's answer, and an
@@ -6295,7 +6358,13 @@ export class Registry extends EventEmitter {
    */
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
-      if (skip.has(id) || !taskHasRepository(s.task ?? {})) continue;
+      if (skip.has(id)) {
+        // Keep the association for its existing readers. A failed poll supplies no CI witness.
+        const prior = this.prObservations.get(id);
+        if (prior?.checks) this.prObservations.set(id, { ...prior, checks: null });
+        continue;
+      }
+      if (!taskHasRepository(s.task ?? {})) continue;
       let match = found.get(id) ?? null;
       const currentEpisode = sessionWorkEpisodeFor(id);
       if (
@@ -6351,6 +6420,7 @@ export class Registry extends EventEmitter {
       const checkDetails = match?.checkDetails ?? null;
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
+          observedAt: at, checks,
           url: match.url,
           branch: match.branch,
           agentSessionId: match.agentSessionId,
@@ -7818,18 +7888,27 @@ export class Registry extends EventEmitter {
 
   /** Make the whole committed batch visible before synchronous listeners can answer any member. */
   upsertReviews(reviews: ReviewItem[]): void {
-    for (const review of reviews) this.reviews.set(review.id, review);
+    for (const review of reviews) this.storeReview(review);
     for (const review of reviews) {
       if (this.reviews.get(review.id) === review) this.publishReview(review);
     }
   }
 
   upsertReview(review: ReviewItem): void {
-    this.reviews.set(review.id, review);
+    this.storeReview(review);
     this.publishReview(review);
   }
 
+  private storeReview(review: ReviewItem): void {
+    const previous = this.reviews.get(review.id);
+    this.reviews.set(review.id, review);
+    if (this.voiceRouter && review.kind === "input" && featureEnabled(VOICE_FLAG)) {
+      this.voiceRouter.observeQuestion(review, previous);
+    }
+  }
+
   private publishReview(review: ReviewItem): void {
+    if (review.status !== "pending") this.voiceRouter?.reviewSettled(review.id);
     this.emitEvent({ type: "review_upsert", review });
     this.refreshPendingCount(review.sessionId);
     // A pending question for the operator must never sit behind a declared wait: the session
@@ -7926,9 +8005,8 @@ export class Registry extends EventEmitter {
   /**
    * Every review this daemon holds for one session, settled ones included.
    *
-   * A read for the one caller that must see an ANSWER rather than an open question: a
-   * session-configured workflow Command is accepted only when its operator picked that exact
-   * argv on one of this session's `request_input` cards (`workflows/commands.ts`).
+   * Workflow commands read the operator's answer. Voice routing also needs questions
+   * that settled after the operator started speaking.
    */
   reviewsFor(sessionId: string): ReviewItem[] {
     const out: ReviewItem[] = [];
@@ -11037,6 +11115,10 @@ export class Registry extends EventEmitter {
     if (!text) return null;
     const raw = clampPrompt(text);
     const prev = this.getGoal(id);
+    const releasesHandoff = isStandaloneHandoffRelease(raw);
+    if (releasesHandoff && (!prev || isHandoffReleaseOnlyGoal(prev))) {
+      return this.mergeGoal(id, { handoffReleasedAt: now }, now);
+    }
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
     // An `unclear` verdict resolved its revision without incorporating it anywhere, and this
@@ -11046,9 +11128,12 @@ export class Registry extends EventEmitter {
     const unclearHead = prev && prev.relationship === "unclear" && prev.prompt &&
       prev.promptRevision >= 1 && prev.resolvedPromptRevision === prev.promptRevision &&
       prev.pendingPrompts.length === 0
-      ? { revision: prev.promptRevision, prompt: prev.prompt }
+      ? { revision: prev.promptRevision, prompt: prev.prompt,
+          ...(prev.latestPromptAcceptedAt === undefined ? {} : { acceptedAt: prev.latestPromptAcceptedAt }) }
       : null;
     return this.mergeGoal(id, {
+      ...(releasesHandoff ? { handoffReleasedAt: now } : {}),
+      latestPromptAcceptedAt: now,
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
@@ -11057,7 +11142,7 @@ export class Registry extends EventEmitter {
       ...(unclearHead ? { resolvedPromptRevision: unclearHead.revision - 1 } : {}),
       pendingPrompts: [
         ...(unclearHead ? [unclearHead] : prev?.pendingPrompts ?? []),
-        { revision, prompt: raw },
+        { revision, prompt: raw, acceptedAt: now },
       ],
       ...(firstObjective
         ? {
@@ -11116,8 +11201,8 @@ export class Registry extends EventEmitter {
     if (!session) return null;
     // An `unclear` verdict while newer instructions already wait is this instruction's last
     // chance to be kept: the next resolution replaces the goal's `prompt`, and nothing else
-    // holds its text. Keep it as steering, which never changes the objective (the refiner's
-    // unclear patch already carries the current objective and version). A final `unclear`,
+    // holds its text. Keep it as steering without adopting a different deliverable.
+    // The patch can already carry an explicit operator handoff restriction. A final `unclear`,
     // with nothing newer queued, still pauses wrap-up; capture re-queues it if a newer
     // instruction arrives later.
     if (patch.relationship === "unclear" && (patch.pendingPrompts?.length ?? 0) > 0) {
@@ -11138,7 +11223,11 @@ export class Registry extends EventEmitter {
       ? { revision, instruction: clampPrompt(instruction.trim()), relationship: "steer",
           rationale: (patch.rationale ?? "").slice(0, WORKFLOW_STEERING_LIMITS.rationale), timestamp: now }
       : undefined;
-    return this.mergeGoal(id, patch, now, steering);
+    const goal = this.getGoal(id);
+    const acceptedAt = goal?.pendingPrompts.find((p) => p.revision === revision)?.acceptedAt;
+    // Legacy prompts may lack a capture time. Keep the prior
+    // deliverable cutoff rather than treating the later model write as a new instruction.
+    return this.mergeGoal(id, patch, now, steering, acceptedAt ?? goal?.deliverableUpdatedAt ?? goal?.updatedAt);
   }
 
   /**
@@ -11160,7 +11249,7 @@ export class Registry extends EventEmitter {
   acceptGoalObjective(
     id: string,
     now = Date.now(),
-  ): { accepted: true; goal: SessionGoal } | { accepted: false } | null {
+  ): { accepted: true; goal: SessionGoal } | { accepted: false; reason?: "handoff_pending" } | null {
     const goal = this.getGoal(id);
     if (!goal) return null;
     if (!goal.objective?.trim()) return { accepted: false };
@@ -11177,6 +11266,13 @@ export class Registry extends EventEmitter {
     const accepted = pending.length > 0
       ? pending
       : [{ revision: goal.promptRevision, prompt: goal.prompt }];
+    const held = hasOperatorHandoffHold(goal.objective) || explicitHandoffRestriction(goal.objective);
+    // Acceptance cannot change the contract. Leave authority-changing instructions
+    // pending for reconciliation so the previous objective cannot ship in the meantime.
+    if (accepted.some(({ prompt }) => prompt &&
+      (isStandaloneHandoffRelease(prompt) || (!held && explicitHandoffRestriction(prompt))))) {
+      return { accepted: false, reason: "handoff_pending" };
+    }
     const notes: WorkflowSteeringNote[] = accepted.map((p) => ({
       revision: p.revision,
       instruction: p.prompt?.trim() ? clampPrompt(p.prompt.trim()) : "(not captured)",
@@ -11210,9 +11306,10 @@ export class Registry extends EventEmitter {
   /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
   private mergeGoal(
     id: string,
-    patch: SetGoal & { openingPrompt?: string },
+    patch: SetGoal & { openingPrompt?: string; handoffReleasedAt?: number; latestPromptAcceptedAt?: number },
     now: number,
     steering?: WorkflowSteeringNote | WorkflowSteeringNote[],
+    acceptedAt = now,
   ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
@@ -11221,6 +11318,11 @@ export class Registry extends EventEmitter {
     const text = patch.text !== undefined ? patch.text : prev?.text ?? null;
     const objective = patch.objective !== undefined ? patch.objective : prev?.objective ?? null;
     const changed = text !== (prev?.text ?? null) || objective !== (prev?.objective ?? null);
+    const handoffReleasedAt = patch.handoffReleasedAt ?? prev?.handoffReleasedAt;
+    const latestPromptAcceptedAt = patch.latestPromptAcceptedAt
+      ?? (patch.prompt === undefined || patch.prompt === prev?.prompt ? prev?.latestPromptAcceptedAt : undefined);
+    const deliverableChanged = objective !== (prev?.objective ?? null)
+      && withoutHandoffRestrictions(objective ?? "") !== withoutHandoffRestrictions(prev?.objective ?? "");
     const next: SessionGoal = {
       noteKey: key,
       text,
@@ -11246,6 +11348,9 @@ export class Registry extends EventEmitter {
         patch.pendingPrompts !== undefined
           ? patch.pendingPrompts
           : prev?.pendingPrompts ?? [],
+      ...(handoffReleasedAt === undefined ? {} : { handoffReleasedAt }),
+      ...(latestPromptAcceptedAt === undefined ? {} : { latestPromptAcceptedAt }),
+      deliverableUpdatedAt: deliverableChanged ? acceptedAt : prev?.deliverableUpdatedAt ?? prev?.updatedAt ?? now,
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
     if (Array.isArray(steering)) upsertSessionGoalWithSteeringNotes(next, steering);
@@ -12762,6 +12867,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   launchWorkUnitId: byValue,
   missingEnvironment: byJson,
   sessionControlEnabled: byValue,
+  sessionInspectionOnly: byValue,
   // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.
   sessionControlRequest: byJson,
   // Nested and moves on its own, like `blocker`: a declaration, a wake or a clear changes

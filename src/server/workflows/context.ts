@@ -1077,7 +1077,8 @@ async function readRepositoryWorkEvidence(cwd: string | null, stackBase?: StackD
   if (!diff.ok) {
     throw new Error(`Could not capture repository diff: ${diff.error ?? "unknown error"}`);
   }
-  const statusResult = await run("git", ["-C", cwd!, "status", "--porcelain=v1"], {
+  // A probe must not refresh the index or change its directory by taking an optional lock.
+  const statusResult = await run("git", ["--no-optional-locks", "-C", cwd!, "status", "--porcelain=v1"], {
     timeoutMs: 15_000,
   });
   if (statusResult.code !== 0) {

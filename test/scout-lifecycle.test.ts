@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import test, { after, beforeEach } from "node:test";
@@ -17,6 +16,7 @@ import type { Session, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
 import type { ArchiveSubject } from "../src/server/archives/task-gateway.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Where the archive meets the task lifecycle.
@@ -34,7 +34,7 @@ import type { ArchiveSubject } from "../src/server/archives/task-gateway.ts";
  * failure between two subsystems and a stubbed one proves only that the stub was called.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-lifecycle-"));
+const home = tempDir("mission-scout-lifecycle-");
 process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
 // These tests fake agent shutdown and exercise real archive/worktree cleanup. Do not let an

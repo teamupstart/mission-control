@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { enableVoice, sendHello } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -488,7 +489,9 @@ test("a fifth pulse segment, to read, still never stacks the bar while rungs rem
 test("the edge mute tab leaves busy title-bar controls clickable on one row", async ({ dashboard, daemon }) => {
   await busyFleet(dashboard, daemon);
   await enableVoice(daemon);
-  await dashboard.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(dashboard, "On screen", daemon.baseURL);
+  await dashboard.getByRole("checkbox", { name: "Status line" }).uncheck();
+  await expect(dashboard.locator("button.vi-status-line")).toHaveCount(0);
   await dashboard.getByRole("checkbox", { name: "Top-bar segment" }).check();
   await dashboard.getByRole("checkbox", { name: "Edge light" }).check();
   const edge = dashboard.locator("button.vi-edge");
@@ -520,6 +523,21 @@ test("the edge mute tab leaves busy title-bar controls clickable on one row", as
     mkdirSync(root, { recursive: true });
     await dashboard.locator("header.topbar").screenshot({ path: join(mkdtempSync(join(root, "edge-")), "narrow-topbar.png") });
   }
+  // Chromium's synthetic clicks bypass the native window drag hit test.
+  // Check that the desktop drag surface starts below the entire edge button.
+  const header = dashboard.locator("header.topbar");
+  await expect(header).toHaveCSS("app-region", "no-drag");
+  const dragTop = await header.evaluate(bar => {
+    const surface = getComputedStyle(bar, "::before");
+    if (surface.getPropertyValue("app-region") !== "drag") throw new Error("Missing title-bar drag surface");
+    return bar.getBoundingClientRect().top + parseFloat(surface.top);
+  });
+  const tab = (await edge.boundingBox())!;
+  expect(dragTop).toBeGreaterThanOrEqual(tab.y + tab.height);
+  await edge.click();
+  await expect(edge).toHaveAccessibleName("Voice: muted. Unmute");
+  await edge.click();
+  await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
   const library = dashboard.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: /Library/ });
   await library.click({ position: { x: 8, y: 3 } });
   await expect(library).toHaveAttribute("aria-current", "page");
@@ -542,6 +560,6 @@ test("the edge mute tab leaves busy title-bar controls clickable on one row", as
       clip: { x: 0, y: 0, width: 720, height: Math.ceil(bounds.y + bounds.height) + 5 } });
   }
   await edge.click();
-  await expect(dashboard.locator("button.vi-status-line")).toHaveAccessibleName("Voice: muted. Unmute");
+  await expect(bar.getByRole("button", { name: "Voice: muted. Unmute" })).toBeVisible();
   await expect(alert).toHaveCount(0);
 });

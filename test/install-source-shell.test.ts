@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { parseArgs } from "../scripts/install-app.mjs";
 import { CANONICAL_REPO, validateReceipt } from "../src/shared/install-receipt-schema.mjs";
 import { inspectUpdateRuntime } from "../src/main/update-runtime.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const shell = readFileSync(join(root, "scripts/install-source.sh"), "utf8");
@@ -15,7 +15,7 @@ const commit = "a".repeat(40);
 // Exercise the real Bash and Node installers and real bundle copy/receipt writes. Only
 // external downloads, prerequisite probes, and expensive package production are fixtures.
 function fixture(t: test.TestContext, fail = "") {
-  const directory = mkdtempSync(join(tmpdir(), "mission-shell-install-"));
+  const directory = tempDir("mission-shell-install-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const bin = join(directory, "bin");
   const scratch = join(directory, "temporary files");

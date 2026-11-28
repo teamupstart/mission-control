@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { helperArgv, helperStopFile } from "./fixtures/fake-shaper-helper.mjs";
@@ -14,9 +13,10 @@ import {
 } from "../src/server/shaping/transports/command.ts";
 import { scrubResolved } from "../src/server/shaping/references.ts";
 import type { ShaperOf, TransportContext } from "../src/server/shaping/transports/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
-const scratch = mkdtempSync(join(tmpdir(), "shaping-command-"));
+const scratch = tempDir("shaping-command-");
 const worktree = join(scratch, "worktree");
 mkdirSync(worktree);
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -303,7 +303,7 @@ const until = async (done: () => boolean, ms = 10_000): Promise<boolean> => {
  * prove.
  */
 const bypassesDirectoryPermissions = ((): boolean => {
-  const probe = mkdtempSync(join(tmpdir(), "shaping-permission-probe-"));
+  const probe = tempDir("shaping-permission-probe-");
   const locked = join(probe, "locked");
   mkdirSync(locked);
   writeFileSync(join(locked, "file"), "");
@@ -334,7 +334,7 @@ test("a selector that locks a directory still answers; cleanup changes no permis
 }, async (t) => {
   const warnings: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => warnings.push(args));
-  const outside = mkdtempSync(join(tmpdir(), "shaping-outside-"));
+  const outside = tempDir("shaping-outside-");
   chmodSync(outside, 0o500);
   let cwd = "";
   try {

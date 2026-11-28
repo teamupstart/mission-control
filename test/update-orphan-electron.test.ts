@@ -2,19 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { captureUpdateProcessOwners } from '../scripts/update-process-owners.mjs';
 import { parseAppProcesses, realMacAppOps, waitForBundleExit } from '../scripts/mac-app-lifecycle.mjs';
 import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
+import { tempDir } from "./temp-root.mjs";
+import { acquireElectronStartupSlot, releaseAfterStartup } from "./helpers/electron-startup-slot.mjs";
 
 test('a real orphaned Electron utility is identified and reaped without its former desktop or a check lease', {
   skip: process.platform !== 'darwin', timeout: 120_000,
 }, async () => {
-  const root = mkdtempSync(join(tmpdir(), 'mc-update-orphan-'));
+  const root = tempDir('mc-update-orphan-');
   const bundle = join(root, 'Fixture.app');
   const userDataDirectory = join(root, 'Application Support/Fixture');
   const electron = createRequire(import.meta.url)('electron') as string;
@@ -34,7 +35,9 @@ test('a real orphaned Electron utility is identified and reaped without its form
   `);
   const env = {...process.env};
   delete env.ELECTRON_RUN_AS_NODE;
+  const releaseStartup = await acquireElectronStartupSlot();
   const desktop = spawn(join(bundle, 'Contents/MacOS/Electron'), [mainPath], {env, stdio: ['ignore', 'ignore', 'pipe']});
+  releaseAfterStartup(desktop, releaseStartup);
   const exited = once(desktop, 'exit');
   let stderr = '';
   desktop.stderr.on('data', chunk => { stderr += chunk; });

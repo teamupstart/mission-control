@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, cpSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import { archiveKey } from "../src/shared/archives.ts";
 import { validReportHtml, writeScoutBundle } from "./helpers/archive-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Discovery: the loop that makes the filesystem the library and SQLite a cache of it.
@@ -15,7 +15,7 @@ import { validReportHtml, writeScoutBundle } from "./helpers/archive-fixture.ts"
  * both call.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-recon-"));
+const home = tempDir("mission-scout-recon-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

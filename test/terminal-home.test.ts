@@ -1,3 +1,4 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -88,6 +89,16 @@ test("a multiplexer wins the axis, and the emulator is not consulted at all", as
 
   assert.deepEqual(chosen.map((b) => b.id), ["tmux"]);
   assert.equal(tabs, 0);
+});
+
+test("terminal home launch refuses a checkout reserved by cleanup before spawning", async () => {
+  const machine = deps(fakeMultiplexer({
+    sessions: sessions({ spawnDetached: async () => assert.fail("cleanup must prevent a spawn") }),
+  }), fakeEmulator());
+  using cleanup = reserveWorktreeCleanup([SPEC.cwd]);
+  assert.ok(cleanup);
+  assert.deepEqual(await launchHome(SPEC, machine),
+    { ok: false, error: "automatic cleanup currently owns this checkout" });
 });
 
 test("an unknown home launch never falls through to another backend", async () => {

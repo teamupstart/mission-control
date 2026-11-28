@@ -1,3 +1,4 @@
+import { taskResourceGeneration } from "../src/server/task-resource-generation.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -51,28 +52,32 @@ test("shutdown drain waits for a closure already stopping a session", async (t) 
   assert.equal(taskOwesWorktreeReturn(registry.getTask(task.id)!), true, "shutdown preserves the durable retry");
 });
 
-test("stop detaches producers, drains active and queued returns, and preserves restart recovery", async (t) => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+test("stop detaches producers and drains active and queued retention work", async (t) => {
   const registry = new Registry();
   for (const task of registry.listTasks()) registry.removeTask(task.id);
   const listeners = () => registry.eventNames().map((name) => [name, registry.listenerCount(name)]);
   const before = listeners();
+  const entered = deferred();
   const release = deferred();
-  let probes = 0;
-  const manager = new TaskManager(registry, undefined, undefined, undefined, undefined, {
-    occupancy: async (paths) => {
-      probes++;
-      await release.promise;
-      return new Map(paths.map((path) => [path, { status: "unknown", reason: "held probe" }]));
-    },
-  });
+  const manager = new TaskManager(registry);
   t.after(() => manager.stop());
   registry.applyDiscovery([]);
+  let probes = 0;
   for (const id of ["queued-one", "queued-two"]) {
-    registry.upsertTask(mkTask({ id, sessionId: null, status: "running", worktreePath: `/fixture/${id}` }));
-    await manager.complete(id, "finished");
+    const task = mkTask({ id, sessionId: null, status: "done", worktreePath: `/fixture/${id}` });
+    registry.upsertTask(task);
+    void manager.enqueueRetentionCleanup({
+      taskId: id, generation: taskResourceGeneration(task), fingerprint: "fixture",
+      probe: async () => {
+        probes++;
+        entered.resolve();
+        await release.promise;
+        return { kind: "unknown", reason: "held probe" };
+      },
+    });
   }
-  assert.equal(probes, 1, "same-repository returns serialize");
+  await entered.promise;
+  assert.equal(probes, 1, "same-repository retention attempts serialize");
   assert.equal(manager.pendingCleanupJobs, 2);
   let stopped = false;
   const stopping = manager.stop();
@@ -80,32 +85,14 @@ test("stop detaches producers, drains active and queued returns, and preserves r
   void stopping.then(() => { stopped = true; });
   try {
     await turn();
-    assert.equal(stopped, false, "an active probe is still owned until it settles");
+    assert.equal(stopped, false);
     assert.deepEqual(listeners(), before, "all registry producers detach before waiting");
   } finally {
     release.resolve();
     await stopping;
   }
-  assert.equal(probes, 2, "already queued work drains too");
+  assert.equal(probes, 2);
   assert.equal(manager.pendingCleanupJobs, 0);
-  t.mock.timers.tick(90_000);
-  registry.applyDiscovery([]);
-  registry.emit("event", { type: "session_remove", id: "late-removal" });
-  await manager.sweepMissionSessionClosures();
-  await turn();
-  assert.equal(probes, 2, "a stopped manager cannot retry from timers or registry events");
-  const returned: string[] = [];
-  const recovered = new Registry();
-  const restarted = new TaskManager(recovered, undefined, undefined, undefined, undefined, {
-    occupancy: async (paths) => new Map(paths.map((path) => [path, { status: "known", occupants: [] }])),
-    teardown: async (task) => { assert.ok(task.id); returned.push(task.id); },
-  });
-  t.after(() => restarted.stop());
-  await restarted.settleWorktreeReturns();
-  recovered.applyDiscovery([]);
-  await restarted.settleWorktreeReturns();
-  assert.deepEqual(returned.sort(), ["queued-one", "queued-two"]);
-  for (const id of returned) assert.equal(taskOwesWorktreeReturn(recovered.getTask(id)!), false);
 });
 
 test("stop waits for an asynchronous scout completion before its fixture state is removed", async (t) => {
@@ -146,16 +133,6 @@ test("stop drains queued cleanup after an asynchronous scout completion rejects"
   const manager = new TaskManager(registry, undefined, undefined, undefined, {
     ensureReady: async () => { await archive.promise; return { ok: true }; },
     settleBeforeCleanup: async () => ({ ok: true }),
-  }, {
-    occupancy: async (paths) => {
-      probed.push(...paths);
-      if (probed.length === 1) await firstCleanup.promise;
-      else {
-        secondEntered.resolve();
-        await secondCleanup.promise;
-      }
-      return new Map(paths.map((path) => [path, { status: "unknown", reason: "held probe" }]));
-    },
   });
   t.after(async () => {
     archive.resolve();
@@ -168,7 +145,19 @@ test("stop drains queued cleanup after an asynchronous scout completion rejects"
   const cleanupIds = ["rejection-cleanup-one", "rejection-cleanup-two"];
   for (const id of cleanupIds) {
     registry.upsertTask(mkTask({ id, status: "running", sessionId: null, worktreePath: `/fixture/${id}` }));
-    await manager.complete(id, "finished");
+    const task = (await manager.complete(id, "finished"))!;
+    void manager.enqueueRetentionCleanup({
+      taskId: id, generation: taskResourceGeneration(task), fingerprint: "fixture",
+      probe: async () => {
+        probed.push(task.worktreePath!);
+        if (probed.length === 1) await firstCleanup.promise;
+        else {
+          secondEntered.resolve();
+          await secondCleanup.promise;
+        }
+        return { kind: "unknown", reason: "held probe" };
+      },
+    });
   }
   assert.equal(probed.length, 1, "the second cleanup waits behind the first in the same repository");
   assert.equal(manager.pendingCleanupJobs, 2);

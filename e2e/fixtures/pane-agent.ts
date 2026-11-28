@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -8,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { expect } from "@playwright/test";
 
 import type { DaemonHandle } from "./daemon.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * An idle, hook-instrumented agent that holds no task resources: the one kind of session
@@ -51,7 +51,7 @@ export interface PaneAgent {
 }
 
 /**
- * Start one pane agent in `daemon.repo`.
+ * Start one pane agent in the fixture checkout (`daemon.repo` by default).
  *
  * `turns: true` runs it in whole-turn mode (`PANE_AGENT_TURNS`): bracketed paste is honoured,
  * each submission's text is logged for `turns()`, and each turn is reported through
@@ -63,9 +63,10 @@ export interface PaneAgent {
  * in place, keeping the id. The session name is unique per run, so a parallel worker's pane or
  * a stray from an earlier run is never this one.
  */
-export function startPaneAgent(daemon: DaemonHandle, opts: { prefix?: string; turns?: boolean } = {}): PaneAgent {
+export function startPaneAgent(daemon: DaemonHandle, opts: { prefix?: string; turns?: boolean; cwd?: string } = {}): PaneAgent {
   const prefix = opts.prefix ?? "mc-e2e-pane";
-  const dir = mkdtempSync(join(tmpdir(), `${prefix}-`));
+  const cwd = opts.cwd ?? daemon.repo;
+  const dir = tempDir(`${prefix}-`);
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   // argv0's basename is what `harnessOf` matches, so the link's name is the whole disguise.
@@ -79,14 +80,14 @@ export function startPaneAgent(daemon: DaemonHandle, opts: { prefix?: string; tu
   const run = (paneId: string) => [
     "env",
     ...(log ? [`PANE_AGENT_TURNS=${log}`] : []),
-    join(bin, "claude"), agent, daemon.baseURL, token, paneId, daemon.repo, dir,
+    join(bin, "claude"), agent, daemon.baseURL, token, paneId, cwd, dir,
   ].map(quote).join(" ");
   const tmux = (args: string[]) => execFileSync("tmux", args, { encoding: "utf8", stdio: "pipe" });
   let id: string;
   try {
-    tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", daemon.repo, run("%0")]);
+    tmux(["new-session", "-d", "-s", name, "-x", "120", "-y", "40", "-c", cwd, run("%0")]);
     id = tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).trim();
-    tmux(["respawn-pane", "-k", "-t", id, "-c", daemon.repo, run(id)]);
+    tmux(["respawn-pane", "-k", "-t", id, "-c", cwd, run(id)]);
   } catch (error) {
     // A half-started agent is never handed back, so nothing else would ever stop it. By name:
     // nothing has renamed the session yet, and the pane id may be the step that failed.

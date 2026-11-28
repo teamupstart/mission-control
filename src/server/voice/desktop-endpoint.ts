@@ -6,8 +6,8 @@ import type { RequestListener } from "node:http";
 import { checkToken } from "../auth.ts";
 import { HOST } from "../../shared/harness-runtime.mjs";
 
-const routes = new Set(["/events", "/api/voice/mute", "/voice/shell-report",
-  "/voice/listener/hello", "/voice/listener/directive", "/voice/utterances"]);
+const routes = new Set(["/events", "/api/voice/mute", "/api/voice/speech/stop", "/voice/listener/supervised", "/voice/shell-report",
+  "/voice/listener/hello", "/voice/listener/speech", "/voice/listener/transcript", "/voice/listener/directive", "/voice/utterances"]);
 
 export const DESKTOP_VOICE_DAEMON_STOPPING = Symbol("desktop voice daemon stopping");
 
@@ -34,7 +34,8 @@ export async function serveDesktopVoice(
   const server = createServer({ key: identity.private, cert: identity.cert }, (req, res) => {
     const token = req.headers["x-harness-token"];
     if (typeof token !== "string" || !checkToken(token)) return void res.writeHead(403).end();
-    if (!routes.has(req.url?.split("?", 1)[0] ?? "")) return void res.writeHead(404).end();
+    const path = req.url?.split("?", 1)[0] ?? "";
+    if (!routes.has(path) && !/^\/voice\/speech\/jobs\/[a-f0-9-]{36}\/(audio|events)$/iu.test(path)) return void res.writeHead(404).end();
     handle(req, res);
   });
   const temp = file + "." + randomUUID();

@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A terminal session's background sub-agents, from its hooks.
 //
@@ -14,7 +14,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // and the registry, which applies them to terminal sessions only and leaves an SDK session's
 // summary to its driver.
 
-const home = mkdtempSync(join(tmpdir(), "mission-hook-subagents-"));
+const home = tempDir("mission-hook-subagents-");
 process.env.MISSION_HOME = home;
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

@@ -234,8 +234,8 @@ sending recovery gaps.
 Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
 and captions remain inside the untrusted evidence fence. Evidence from an older work
-generation remains usable within the same intent episode, while legacy unstamped evidence and
-evidence from another episode are excluded. For an eligible binding, a zero count explicitly leaves
+generation remains usable within the same intent episode. Unstamped evidence is excluded.
+Stamped evidence from an earlier episode requires the continuation revalidation described below. For an eligible binding, a zero count explicitly leaves
 the evidence-registration clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
 the items cover what the task requested. If the implementation is complete and every blocking gap
 only says verification proof is unavailable, registered same-episode evidence lets Foreman claim a
@@ -255,6 +255,34 @@ registration-only gaps and summaries after unbinding, while retaining implementa
 gaps. Only complete, standalone registration statements are omitted; compound or unrecognized
 legacy prose is retained for normal verification. If registration was the only gap, recovery asks
 the session to recheck the task and report completion.
+
+### Registered proof after a continuation
+
+Foreman reports how many registered items it excluded when their intent episode differs
+from the current one. Their captions and locators stay outside the verifier's evidence.
+A missing registration, an earlier registration, an unreadable source and a changed
+checkout or file have different meanings for completion.
+
+For a single-checkout ship or bugfix task awaiting its first submission, a complete
+agent registration can record a receipt for its issued checkout, task, binding, objective,
+items and criterion links. Mission Control compares the full HEAD, index and Git-visible
+worktree contents across registration using the bounded repository snapshot reader. Sparse,
+nested, unborn or unreadable checkouts use normal fresh registration. For the immediately following revision only, it
+can revalidate that packet when the accepted instruction was exactly `continue` and the
+refiner recorded it as steering on the same objective. It compares the receipt, reopens
+the scoped file sources and verifies their bytes. The daemon samples the checkout revision
+before validating the exact digest for a claim. Inside the completion transaction, it
+reopens the evidence files and compares the checkout revision again within the existing
+budget. A changed HEAD, index or Git-visible file prevents the claim before reservation.
+The original stamps, coverage, work generation and ownership stay on
+the registration. Normal verification, blocking standards findings and workflow gates apply.
+
+For an already-held generation, inspect the staged items and the hold's other findings.
+An older registration without a checkout receipt requires fresh verification and normal
+registration of the verified items and criterion links. Use the existing ids for identical
+proof. A normal recovery turn or the next authorized author turn supplies a new settled
+generation for Foreman to assess. The original hold remains in history and its delivery
+budget still applies. Manual bindings continue to require manual submission.
 
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,
@@ -363,6 +391,31 @@ finished work never reaches an automatic completion action:
 
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
+A retirement takes no handoff action, so it also applies when the Goal records an
+[operator-only handoff](sessions.md#goal). The hold keeps an otherwise eligible completion pending.
+
+When you authorize implementing a selected mockup, the reconciled [Goal](sessions.md#goal)
+describes the product change. Foreman applies the same artifact-only diff safeguard and then
+verifies the implementation before claiming the bound Workflow. A drained work queue uses
+the current Goal to decide what is eligible for handoff. The completed items and task title
+supply the contract when there is no Goal. A pending or ambiguous Goal pauses the drain decision.
+Items delivered after the operator's latest deliverable instruction still contribute artifact-only
+requirements, even if the Goal is reconciled after the item. A standalone release lifts item
+restrictions on publication while preserving those requirements, including when the queue has no Goal.
+An automatic retry keeps the first delivery time for an item's instruction.
+Guarded drain writes use a dedicated daemon route. A worker connected to an older daemon
+receives a missing-route error and leaves the drain untouched. Desktop updates stop the owned
+worker and daemon before switching bundles. See [desktop updates](desktop-and-packaging.md#updates-from-the-installed-app).
+
+To recover a prompted completion that Foreman already retired as a review artifact, first check the
+session's completion entry in `foreman.log` for the retired generation and artifact reason. Verify
+that the session still owns the checkout, the intended Foreman-complete binding has no submission,
+and no PR or direct shipping handoff already owns the work. Send a new human instruction naming
+the selected design and making the product implementation the deliverable, and ask the agent to
+check the existing change and prepare it for the bound Workflow. Once the new Goal resolves and
+the turn settles, Foreman verifies the new generation with the ordinary evidence and review
+requirements. The earlier retirement stays recorded in the log. Use this recovery only for a
+confirmed misclassification and honor any outstanding stop or no-PR instruction.
 
 **A `chat` task with no explicit Workflow always stays human-ended.** Foreman may recognize
 its completion boundary, but it retires that automatic pass without offering or sending a

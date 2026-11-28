@@ -1,3 +1,5 @@
+import { canonicalWorktreePath } from "../worktrees/path.ts";
+import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
 import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
 import { launchAgentEnvironment } from "../agent-environment.ts";
 import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
@@ -8,7 +10,7 @@ import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "
 import { randomUUID } from "node:crypto";
 import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
 import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
 import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -119,21 +121,25 @@ function requiresInstalledMissionTools(agent: AgentType, taskId: string | null):
   return taskId !== null && capabilitiesFor(agent).missionTools?.mechanism === "installed-extension";
 }
 
+function missionToolCaller(sessionId: string) {
+  return { sessionId, locator: sessionScoutCredentialLocator(sessionId) };
+}
+
 /** Bind one launch-scoped MCP process to the SDK session Mission Control registered. */
 function missionMcpForSession(
   descriptor: MissionMcpDescriptor | null,
   sessionId: string,
 ): MissionMcpDescriptor | null {
-  return descriptor
-    ? {
-        ...descriptor,
-        env: {
-          ...descriptor.env,
-          [MISSION_SESSION_ID_ENV]: sessionId,
-          [SCOUT_SESSION_LOCATOR_ENV]: sessionScoutCredentialLocator(sessionId),
-        },
-      }
-    : null;
+  if (!descriptor) return null;
+  const caller = missionToolCaller(sessionId);
+  return {
+    ...descriptor,
+    env: {
+      ...descriptor.env,
+      [MISSION_SESSION_ID_ENV]: caller.sessionId,
+      [SCOUT_SESSION_LOCATOR_ENV]: caller.locator,
+    },
+  };
 }
 
 /** The block a pair with an out-of-band channel carries there, or `""` for one without. */
@@ -558,6 +564,9 @@ export class SdkSupervisor {
     gitRoot?: string | null;
     repoRoot?: string | null;
   }): Promise<Session> {
+    const extraDirs = (input.extraDirs ?? []).map((path) => canonicalWorktreePath(resolve(input.cwd, path)));
+    using reservation = reserveWorktreeUse([input.cwd, ...extraDirs]);
+    if (!reservation) throw new Error("automatic cleanup currently owns this checkout");
     if (this.shuttingDown) throw new Error("the SDK supervisor is shutting down");
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
@@ -594,8 +603,10 @@ export class SdkSupervisor {
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
         ...(requiresInstalledMissionTools(input.agent, input.taskId) ? { missionToolsRequired: true } : {}),
+        ...(capabilitiesFor(input.agent).missionTools?.mechanism === "installed-extension"
+          ? { missionToolCaller: missionToolCaller(id) } : {}),
         residentMcp: input.residentMcp ?? null,
-        extraDirs: input.extraDirs ?? [],
+        extraDirs,
         standingInstructions: outOfBandStanding,
         // What to send instead if that channel turns out to be unusable. Composed by the
         // DISPATCHER, which is the only place that can put the block in the same slot the
@@ -646,6 +657,7 @@ export class SdkSupervisor {
         launchPresentation: input.launchPresentation,
         durable: {
           taskId: input.taskId,
+          extraDirs,
           model: input.model,
           effort: input.effort,
           advisorModel: input.advisorModel,
@@ -714,6 +726,7 @@ export class SdkSupervisor {
      */
     durable: {
       taskId: string | null;
+      extraDirs?: readonly string[];
       model: string | null;
       effort: ThinkingLevel | null;
       advisorModel?: AdvisorChoice | null;
@@ -766,6 +779,7 @@ export class SdkSupervisor {
       agent: registration.agent,
       agentSessionId: durable.agentSessionId ?? null,
       cwd: registration.cwd,
+      extraDirs: durable.extraDirs,
       taskId: durable.taskId,
       model: durable.model,
       effort: durable.effort,
@@ -1653,13 +1667,19 @@ export class SdkSupervisor {
     ownerTaskId: string | null = null,
     workUnitId: string | null = this.restoreWorkUnitId(row, ownerTaskId),
   ): Promise<void> {
+    if (row.extraDirs === null) throw new ResumeDeferred("additional checkout grants could not be read");
+    const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    // Older task-backed rows reconstruct the launch grants once and record them on adoption.
+    const extraDirs = row.extraDirs ?? (task?.extraRepos ?? [])
+      .flatMap((entry) => entry.worktreePath ? [entry.worktreePath] : []);
+    using reservation = reserveWorktreeUse([row.cwd, ...extraDirs]);
+    if (!reservation) throw new ResumeDeferred("automatic cleanup currently owns this checkout");
     if (!row.agent) throw new Error("its harness is not one this build knows");
     const spec = sdkFor(row.agent);
     if (!spec) throw new Error(`${row.agent} has no embedded driver in this build`);
     if (!row.agentSessionId) {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
-    const task = row.taskId ? this.registry.getTask(row.taskId) : null;
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;
@@ -1783,17 +1803,12 @@ export class SdkSupervisor {
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
         ...(requiresInstalledMissionTools(row.agent, row.taskId) ? { missionToolsRequired: true } : {}),
+        ...(capabilitiesFor(row.agent).missionTools?.mechanism === "installed-extension"
+          ? { missionToolCaller: missionToolCaller(row.id) } : {}),
         // A resident's MCP set comes from its run's snapshot, never from native configuration,
         // so a restart resumes exactly the servers it launched with.
         residentMcp: task ? this.residentMcp?.(task) ?? null : null,
-        // Rebuilt from the task row rather than remembered on the session row, because the
-        // task is where the repo set durably lives - and this grant can only be made at
-        // launch, so a resumed multi-repo session that omitted it would come back able to
-        // read its secondary worktrees and unable to write to them, which is the failure
-        // nobody would attribute to a daemon restart.
-        extraDirs: (task?.extraRepos ?? [])
-          .map((entry) => entry.worktreePath)
-          .filter((p): p is string => p !== null),
+        extraDirs,
         // Replayed from THIS session's launch snapshot, never re-resolved. A daemon restart
         // ends the process that carried the operator's text, so a resume that omitted it
         // would quietly drop a rule the session had been running under - but re-reading live
@@ -1855,6 +1870,7 @@ export class SdkSupervisor {
         stateHome,
         durable: {
           taskId: row.taskId,
+          extraDirs,
           model: row.model,
           effort: row.effort,
           advisorModel: row.advisorModel,

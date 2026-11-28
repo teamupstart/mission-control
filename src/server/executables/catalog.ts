@@ -154,6 +154,10 @@ export const FIXED_OS_EXECUTABLES = {
   // The macOS binary-install bootstrap uses the OS-provided Bash before daemon startup.
   bash: "/bin/bash",
   osascript: "/usr/bin/osascript",
+  // The launcher certifies an OS-confined voice process. PATH overrides cannot supply its sandbox.
+  macProcessStatus: "/bin/ps",
+  sandboxExec: "/usr/bin/sandbox-exec",
+  bubblewrap: "/usr/bin/bwrap",
   // Launch Services, which is the only thing that can hand a launch to an app bundle and reveal
   // an instance that is already running rather than starting a second one. Not searched, and
   // deliberately not overridable: the desktop shell uses it before `app.whenReady()`, so there
@@ -167,6 +171,9 @@ export const FIXED_OS_EXECUTABLES = {
   // platform's own: `-c` is macOS clonefile, so a PATH that put GNU `cp` first would turn the
   // clone into a refusal or something else.
   cp: "/bin/cp",
+  // Recursive deletes of operator trees (`util/remove-tree.ts`). Pinned because it is the
+  // platform's, with no asar layer, and both platforms ship it here.
+  rm: "/bin/rm",
   // `ARG_MAX`, read once so a launch-argument turn one is budgeted against the platform's
   // combined argument-and-environment limit. POSIX names the utility; both platforms ship it here.
   getconf: "/usr/bin/getconf",

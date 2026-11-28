@@ -1,10 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `instrumented` vs `hooksSeen`: a freshness window vs an installation fact.
 //
@@ -14,7 +13,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // as `instrumented: false`. Anything that reads that as "the integrations aren't
 // installed" fires on the most ordinary state the work queue has.
 
-const home = mkdtempSync(join(tmpdir(), "mission-hooks-seen-"));
+const home = tempDir("mission-hooks-seen-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

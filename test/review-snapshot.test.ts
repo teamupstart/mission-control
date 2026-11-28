@@ -1,8 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import {
@@ -12,13 +11,14 @@ import {
   REVIEW_SNAPSHOT_RETENTION_MS,
   reviewSnapshotRef,
 } from "../src/server/git/review-snapshot.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a ship task submits its work to a workflow BEFORE committing it. Commands
 // and CodeRabbit run in a lease pinned to one commit, so without a snapshot they reviewed the
 // base the task started from - or, for CodeRabbit, refused to run at all. The snapshot must
 // hold exactly what was submitted, and capturing it must not touch the checkout.
 
-const tmp = mkdtempSync(join(tmpdir(), "mission-review-snapshot-"));
+const tmp = tempDir("mission-review-snapshot-");
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
 function git(dir: string, ...args: string[]): string {

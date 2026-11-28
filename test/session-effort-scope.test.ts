@@ -1,15 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
 import type { PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import { meta, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The launch default is persisted in SQLite, so isolate it before importing either
 // config module. This proves a successful live write does not wander through that door.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-effort-scope-"));
+process.env.MISSION_HOME = tempDir("mission-effort-scope-");
 
 const { openDb } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchEffort } = await import("../src/server/harnesses.ts");

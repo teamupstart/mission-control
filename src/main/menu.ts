@@ -44,6 +44,14 @@ export function installAppMenu(handlers: AppMenuHandlers): void {
  */
 export function setRendererOwnsNumberRow(owns: boolean): void {
   if (state.rendererOwnsNumberRow === owns) return;
-  state = { rendererOwnsNumberRow: owns };
+  state = { ...state, rendererOwnsNumberRow: owns };
+  build();
+}
+
+export function setVoiceConfirmationFocus(focus: () => void, visible: boolean): void {
+  if (!visible && state.focusVoiceConfirmation !== focus) return;
+  const next = visible ? focus : undefined;
+  if (next === state.focusVoiceConfirmation) return;
+  state = { ...state, focusVoiceConfirmation: next };
   build();
 }

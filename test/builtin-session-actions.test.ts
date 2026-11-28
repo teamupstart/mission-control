@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PULL_REQUEST_SKILL } from "../src/shared/skills.ts";
 import {
@@ -9,13 +8,14 @@ import {
   sessionActionDescriptionFromMarkdown,
   sessionActionNameFromMarkdown,
 } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a built-in SessionAction is app data, so "every build serves exactly the
 // document it was made from" has to be true rather than aspirational. The prompt is delivered
 // verbatim into an operator's session, so a generated module that had drifted from its source
 // would type a version of the instruction nobody wrote - and no test elsewhere would notice.
 
-const home = mkdtempSync(join(tmpdir(), "mission-builtin-session-actions-"));
+const home = tempDir("mission-builtin-session-actions-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const root = resolve(import.meta.dirname, "..");

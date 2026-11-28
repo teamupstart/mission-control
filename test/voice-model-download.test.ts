@@ -5,17 +5,17 @@
 // pointed at the fixture server the way `MISSION_VOICE_MODEL_BASE_URL` points the daemon.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { gzipSync } from "node:zlib";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, afterEach, before, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-model-"));
+const home = tempDir("mission-voice-model-");
 process.env.HARNESS_HOME = home;
-const { VoiceModelManager, voiceModelManifestsFromEnv, voiceModelBaseUrlFromEnv } = await import("../src/server/voice/models.ts");
+const { VoiceModelManager, speechModelManifests, voiceModelManifestsFromEnv, voiceModelBaseUrlFromEnv } = await import("../src/server/voice/models.ts");
 const { VoiceStateStore } = await import("../src/server/voice/state.ts");
 const { registerVoiceRoutes } = await import("../src/server/voice/routes.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
@@ -158,15 +158,16 @@ interface Harness {
 }
 
 function harness(options: {
-  root?: string; manifest?: VoiceModelManifest | null; stallMs?: number; backend?: VoiceBackend; progressEveryMs?: number;
+  namespace?: "speech"; root?: string; manifest?: VoiceModelManifest | null; stallMs?: number; backend?: VoiceBackend; progressEveryMs?: number;
   removeDir?: (path: string) => Promise<void>;
 } = {}): Harness {
-  const root = options.root ?? mkdtempSync(join(tmpdir(), "mission-voice-models-"));
+  const root = options.root ?? tempDir("mission-voice-models-");
   let current: VoiceModelManifest | null = options.manifest === undefined ? manifest("r1") : options.manifest;
   const active = { on: true };
   const backend = options.backend ?? "fluidaudio";
   const manager = new VoiceModelManager({
     root: () => root,
+    namespace: options.namespace,
     active: () => active.on,
     backend: () => backend,
     manifests: () => ({ fluidaudio: backend === "fluidaudio" ? current : null, "sherpa-onnx": backend === "sherpa-onnx" ? current : null }),
@@ -180,7 +181,7 @@ function harness(options: {
   return {
     manager,
     root,
-    dir: (revision = current?.revision ?? "r1") => join(root, backend, revision),
+    dir: (revision = current?.revision ?? "r1") => join(root, options.namespace ?? backend, revision),
     published,
     setManifest: (next) => { current = next; },
     active,
@@ -592,7 +593,7 @@ test("turning the flag off mid-download stops it, and the next Download resumes 
 
 test("the environment overrides: a manifest file in the same shape, and only an http(s) base URL", () => {
   assert.equal(voiceModelManifestsFromEnv(undefined), VOICE_MODELS);
-  const dir = mkdtempSync(join(tmpdir(), "mission-voice-manifest-"));
+  const dir = tempDir("mission-voice-manifest-");
   const path = join(dir, "manifest.json");
   writeFileSync(path, JSON.stringify({ fluidaudio: manifest("fixture-r1") }));
   const loaded = voiceModelManifestsFromEnv(path);
@@ -611,7 +612,7 @@ test("the environment overrides: a manifest file in the same shape, and only an 
 });
 
 test("an explicit launcher override verifies the alternate revision without switching Setup", async t => {
-  const root = mkdtempSync(join(tmpdir(), "voice-launch-model-"));
+  const root = tempDir("voice-launch-model-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const alternate = manifest("alternate");
   const manager = new VoiceModelManager({
@@ -689,3 +690,62 @@ test("the download routes start, refuse and cancel, and answer 404 with the flag
   setFlag("voice", false);
 });
 
+
+test("speech downloads only by POST, cancels independently, and verifies downloads and existing files", async t => {
+  const recognition = harness();
+  const options = { root: recognition.root, namespace: "speech", backend: "sherpa-onnx" } as const;
+  const speech = harness(options);
+  t.after(() => rmSync(recognition.root, { recursive: true, force: true }));
+  const app = new Hono();
+  const store = new VoiceStateStore({ now: Date.now, enabled: flags.featureEnabled, config: () => VOICE_CONFIG_DEFAULTS });
+  registerVoiceRoutes(app, store, recognition.manager, speech.manager);
+  const path = "/api/voice/speech/model/download";
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  for (const method of ["POST", "DELETE"]) assert.equal((await app.request(path, { method })).status, 404);
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  speech.manager.sync();
+  assert.equal(server.requests.length, 0);
+  const download = () => app.request(path, { method: "POST" });
+  server.behavior.set("vocab.json", "hold");
+  assert.equal((await download()).status, 202);
+  await until(speech.manager, state => state.doneBytes > FILES[0]!.body.length);
+  assert.equal((await app.request(path, { method: "DELETE" })).status, 200);
+  assert.equal(existsSync(speech.dir()), false);
+  server.behavior.set("vocab.json", "corrupt");
+  await download();
+  await speech.manager.idle();
+  assert.equal(speech.manager.state().status, "failed");
+  server.behavior.clear();
+  await download();
+  await speech.manager.idle();
+  assert.equal(speech.manager.state().directory, join(recognition.root, "speech", "r1"));
+  assert.equal(recognition.manager.state().status, "missing");
+  const restart = harness(options);
+  restart.manager.sync();
+  assert.equal(restart.manager.state().status, "verifying");
+  await restart.manager.idle();
+  assert.equal(restart.manager.state().status, "ready");
+  writeFileSync(join(speech.dir(), FILES[0]!.path), Buffer.alloc(FILES[0]!.body.length));
+  await restart.manager.stop();
+  restart.manager.sync();
+  await restart.manager.idle();
+  assert.equal(restart.manager.state().status, "failed");
+});
+
+test("speech model verification and downloads require a supported helper platform", () => {
+  for (const platform of ["darwin", "linux"]) for (const arch of ["x64", "arm64"]) {
+    assert.ok(speechModelManifests(platform, arch)["sherpa-onnx"]);
+  }
+  for (const [platform, arch] of [["win32", "x64"], ["darwin", "ia32"], ["linux", "arm"]] as const) {
+    const manager = new VoiceModelManager({
+      root: () => assert.fail("unsupported hosts must not inspect the disk"),
+      active: () => true, backend: () => "sherpa-onnx", namespace: "speech",
+      manifests: () => speechModelManifests(platform, arch), baseUrl: () => null,
+      fetch: () => assert.fail("unsupported hosts must not download weights"),
+    });
+    manager.sync();
+    assert.equal(manager.state().revision, null);
+    assert.equal(manager.state().status, "missing");
+    assert.equal(manager.download().ok, false);
+  }
+});

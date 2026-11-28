@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "@shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // "Discovered" is not "ready", and a successful tmux write is not a delivered prompt.
 //
@@ -21,7 +20,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // hook (proof the agent can read) and the `working` transition (proof it actually did). Pi's
 // native launch-message path is pinned separately below and never writes turn one to the pane.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-readiness-"));
+const home = tempDir("mission-dispatch-readiness-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_DISPATCH_ACCEPT_MS = "10";
 

@@ -1,7 +1,8 @@
+import { newRequestId } from "./request-id.ts";
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
-import type { VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
-import { api, fetchUiConfig } from "./api.ts";
+import type { VoiceConfirmationPlacement, VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
+import { api, fetchUiConfig, fetchUiSkin } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
 
@@ -22,7 +23,7 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
  * Deliberately not polled, unlike `useHarnesses` / `useForeman`: those hooks are alive
  * only while a rarely-opened modal is, whereas this one is alive for the life of the app,
  * and a request every 4s forever to notice an edit made in a second dashboard tab is a
- * bad trade. Voice indicator edits arrive through their own bounded event.
+ * bad trade. Skin invalidations and voice indicator edits arrive through bounded events.
  */
 
 /**
@@ -49,6 +50,69 @@ const listeners = new Set<() => void>();
 let hydrated = false;
 let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
 const writeGeneration = new Map<keyof UiConfig, number>();
+let confirmedSkin = current.skin;
+let skinReadGeneration = 0;
+let skinRefreshPending = false;
+const SKIN_REQUEST_TIMEOUT_MS = 5_000;
+const SKIN_RETRY_MS = 1_000;
+const SKIN_MAX_RETRY_MS = 30_000;
+let skinRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSkinWrites = 0;
+let skinWriteTail = Promise.resolve();
+/**
+ * Resident name with call sign writes, saved in the order they were made, like skin writes. Each
+ * checkbox sends the whole style list it rebuilt from the last one drawn, and the daemon parses
+ * each body before it writes, so two overlapping requests could store the earlier list over the
+ * later one: Subtitle then Expanding chip would keep only the subtitle after a reload.
+ */
+let residentCardNameWriteTail = Promise.resolve();
+
+/** Fetch just the skin into the live store after a daemon invalidation or reconnect. */
+export async function refreshUiSkin(): Promise<void> {
+  if (skinRetryTimer !== null) clearTimeout(skinRetryTimer);
+  skinRetryTimer = null;
+  const generation = ++skinReadGeneration;
+  skinRefreshPending = true;
+  await readUiSkin(generation, SKIN_RETRY_MS);
+}
+
+async function readUiSkin(generation: number, delay: number): Promise<void> {
+  if (!hydrated || pendingSkinWrites > 0) return;
+  const view = await fetchUiSkin(AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS));
+  if (generation !== skinReadGeneration) return;
+  if (!view || !isSkinId(view.skin)) {
+    skinRetryTimer = setTimeout(() => {
+      skinRetryTimer = null;
+      if (generation === skinReadGeneration) void readUiSkin(generation, Math.min(delay * 2, SKIN_MAX_RETRY_MS));
+    }, delay);
+    return;
+  }
+  skinRefreshPending = false;
+  confirmedSkin = view.skin;
+  if (current.skin !== confirmedSkin) commit({ ...current, skin: confirmedSkin });
+}
+
+let preferenceRevision = 0;
+let preferencesPending = false;
+let preferenceWritesPending = 0;
+let preferenceRetry: ReturnType<typeof setTimeout> | undefined;
+
+/** Reconcile ordinary preferences without disturbing skin and voice's ordered stores. */
+export async function refreshUiPreferences(delay = 1_000): Promise<void> {
+  clearTimeout(preferenceRetry);
+  const revision = ++preferenceRevision;
+  preferencesPending = true;
+  if (!hydrated || preferenceWritesPending) return;
+  const view = await fetchUiConfig(AbortSignal.timeout(5_000));
+  if (revision !== preferenceRevision) return;
+  if (!view) {
+    preferenceRetry = setTimeout(() => void refreshUiPreferences(Math.min(delay * 2, 30_000)), delay);
+    return;
+  }
+  preferencesPending = false;
+  const { skin: _skin, voice: _voice, ...preferences } = view.config;
+  commit({ ...current, ...preferences });
+}
 
 export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
 export const UI_CONFIG_HYDRATE_MAX_RETRY_MS = 30_000;
@@ -70,12 +134,17 @@ function commit(next: UiConfig): void {
  * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
  * so the record it draws from stays whole.
  */
-function applyHydratedConfig({ config, voiceIndicatorVersion }: UiConfigView, indicatorsAtRead: string[]): void {
+function applyHydratedConfig(
+  { config, voiceIndicatorVersion }: UiConfigView, indicatorsAtRead: string[], skinGenerationAtRead: number,
+): void {
+  // A stream invalidation or an optimistic write may already have superseded this read.
+  if (!pendingSkinWrites && skinGenerationAtRead === skinReadGeneration) confirmedSkin = config.skin;
+  else config = { ...config, skin: current.skin };
   const voice = config.voice ?? current.voice;
   const overlap = current.voice.indicators !== indicatorsAtRead;
   if (config.voice && (overlap || !acceptIndicatorVersion(voiceIndicatorVersion))) {
     // The snapshot may predate our save or include a peer's later edit.
-    commit({ ...config, voice: { ...voice, indicators: current.voice.indicators } });
+    commit({ ...config, voice: current.voice });
     if (overlap) void reconcileVoiceIndicators();
     return;
   }
@@ -113,6 +182,7 @@ function retryHydration(): void {
 export async function hydrateUiConfig(): Promise<void> {
   if (hydrated) return;
   const indicatorsAtRead = current.voice.indicators;
+  const skinGenerationAtRead = skinReadGeneration;
   const view = await fetchUiConfig();
   if (!view) {
     retryHydration();
@@ -130,19 +200,22 @@ export async function hydrateUiConfig(): Promise<void> {
       // adopted profile predates every announced tour, so it is owed each of them once.
       // Legacy storage never held `voice`: `coerce` filled its default, and a patch naming it is
       // refused while the voice flag is off, which would fail the whole adoption.
-      const { voice: _filledDefault, ...adopted } = legacy;
+      // Nor did it hold a skin. Leave the current skin alone if a session chose it during hydration.
+      const { voice: _filledDefault, skin: _legacySkin, ...adopted } = legacy;
       if (!await updateUiConfig({ ...adopted, guidedTour: false, announcedTours: [] })) {
         retryHydration();
         return;
       }
     } else {
-      applyHydratedConfig(view, indicatorsAtRead);
+      applyHydratedConfig(view, indicatorsAtRead, skinGenerationAtRead);
     }
   } else {
-    applyHydratedConfig(view, indicatorsAtRead);
+    applyHydratedConfig(view, indicatorsAtRead, skinGenerationAtRead);
   }
   hydrated = true;
   emit();
+  if (skinRefreshPending) void refreshUiSkin();
+  if (preferencesPending) void refreshUiPreferences();
 }
 
 /**
@@ -159,8 +232,35 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     writeGeneration.set(key, generation);
     generations.set(key, generation);
   }
+  const changesPreferences = Object.keys(patch).some(key => key !== "skin" && key !== "voice");
+  if (changesPreferences) {
+    preferenceWritesPending++;
+    preferenceRevision++;
+  }
+  const skin = patch.skin;
+  if (skin !== undefined) {
+    pendingSkinWrites++;
+    skinReadGeneration++;
+  }
   commit(optimistic);
-  const res = await api.setUiConfig(patch);
+  // Serialize skin writes from this window so rapid clicks save in the order they were made, and
+  // resident name style writes for the same reason. A failed resident name write still releases
+  // the next one.
+  const residentCardNames = skin === undefined && patch.residentCardNameStyles !== undefined;
+  const request = skin !== undefined
+    ? skinWriteTail.then(() => api.setUiConfig(patch, AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS)))
+    : residentCardNames
+      ? residentCardNameWriteTail.then(() => api.setUiConfig(patch))
+      : api.setUiConfig(patch);
+  if (skin !== undefined) skinWriteTail = request.then(() => {});
+  if (residentCardNames) residentCardNameWriteTail = request.then(() => {}, () => {});
+  const res = await request;
+  if (skin !== undefined) {
+    pendingSkinWrites--;
+    if (res.ok) confirmedSkin = skin;
+    if (!pendingSkinWrites && (skinRefreshPending || !res.ok)) void refreshUiSkin();
+  }
+  if (changesPreferences && --preferenceWritesPending === 0 && preferencesPending) void refreshUiPreferences();
   if (!res.ok) {
     // A later optimistic patch, including one setting this field to the same value, may have
     // already superseded this request. Roll back only fields this request still owns, never
@@ -169,7 +269,7 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     for (const field of Object.keys(patch) as Array<keyof UiConfigPatch>) {
       const key = field as keyof UiConfig;
       if (writeGeneration.get(key) === generations.get(key) && Object.is(current[key], optimistic[key])) {
-        Object.assign(rollback, { [key]: before[key] });
+        Object.assign(rollback, { [key]: key === "skin" ? confirmedSkin : before[key] });
       }
     }
     commit(rollback);
@@ -181,8 +281,8 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
 /**
  * Re-read `announcedTours` from the daemon and adopt it, for the one automatic decision that
  * must not act on a stale copy: opening the startup picker on account of a new-tour
- * announcement. Preferences do not live-sync between windows, so a window that waited behind a
- * dialog can still hold a record another window has since announced the tour into.
+ * announcement. A window that waited behind a dialog can still hold an announcement state
+ * another window has since updated.
  *
  * Only this field is adopted, and not when a write of it from this window began meanwhile -
  * that write is newer than the read. Resolves to whether the daemon answered.
@@ -216,12 +316,15 @@ function acceptIndicatorVersion(next?: VoiceRevision, fromStream = false): boole
 }
 
 /** A committed selection from the daemon's ordered stream, including its reconnect snapshot. */
-export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision): void {
-  if (!acceptIndicatorVersion(version, true)) return;
+export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision, confirmation = current.voice.confirmation): void {
+  if (acceptIndicatorVersion(version, true)) commitVoiceSelection(indicators, confirmation);
+}
+
+function commitVoiceSelection(indicators: string[], confirmation = current.voice.confirmation) {
   indicatorReadGeneration++;
   clearTimeout(indicatorRetryTimer);
   indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
-  commit({ ...current, voice: { ...current.voice, indicators } });
+  commit({ ...current, voice: { ...current.voice, confirmation, indicators } });
 }
 
 /** Retry a failed or superseded read without keeping the settings controls disabled. */
@@ -234,12 +337,50 @@ async function reconcileVoiceIndicators(): Promise<void> {
   if (view && (!view.config.voice || current.voice.indicators === atRead)) {
     indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
     if (view.config.voice && acceptIndicatorVersion(view.voiceIndicatorVersion)) {
-      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators } });
+      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators, confirmation: view.config.voice.confirmation } });
     }
     return;
   }
   indicatorRetryTimer = setTimeout(() => void reconcileVoiceIndicators(), indicatorRetryDelay);
   indicatorRetryDelay = Math.min(indicatorRetryDelay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
+}
+
+let placementAttempt = 0;
+const unconfirmedPlacementWrites = new Set<string>();
+/** Apply the confirmed pair before the radio group releases its saving state. */
+export async function updateVoicePlacement(placement: VoiceConfirmationPlacement): Promise<boolean> {
+  const attempt = ++placementAttempt;
+  const writeId = newRequestId();
+  const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
+  const expected = latestIndicatorVersion ?? (await fetchUiConfig(deadline))?.voiceIndicatorVersion;
+  if (!expected) return false;
+  let result = await api.setVoicePlacement(placement, expected, writeId, deadline);
+  // A lost reply may be the only reason our revision is stale. Retry this new
+  // operator choice once against that committed write, keeping the same timeout.
+  if (attempt === placementAttempt && !deadline.aborted && result.status === 409 && result.writeId &&
+      unconfirmedPlacementWrites.has(result.writeId) && result.voiceIndicatorVersion?.source === expected.source) {
+    result = await api.setVoicePlacement(placement, result.voiceIndicatorVersion, writeId, deadline);
+  }
+  if (attempt !== placementAttempt) return false;
+  if (!result.ok) {
+    if (result.status === undefined) unconfirmedPlacementWrites.add(writeId);
+    if (result.status === 409 && result.indicators && result.confirmation && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
+      unconfirmedPlacementWrites.clear();
+      commitVoiceSelection(result.indicators, result.confirmation);
+      return false;
+    }
+    // The daemon may have committed a write whose response was lost.
+    void reconcileVoiceIndicators();
+    return false;
+  }
+  unconfirmedPlacementWrites.clear();
+  if (result.indicators && result.confirmation) {
+    if (acceptIndicatorVersion(result.voiceIndicatorVersion)) commitVoiceSelection(result.indicators, result.confirmation);
+  } else {
+    // Older daemons acknowledged the write without returning the committed selection.
+    await reconcileVoiceIndicators();
+  }
+  return true;
 }
 
 /** Persist one checkbox. Overlapping snapshots are reconciled against the daemon. */
@@ -255,7 +396,7 @@ export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolea
   if (!result.ok || !result.indicators) return "failed";
   const overlap = current.voice.indicators !== atWrite;
   if ((!overlap || result.voiceIndicatorVersion) && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
-    commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
+    commitVoiceSelection(result.indicators, result.confirmation);
   }
   if (overlap) {
     // The write is confirmed. Refresh the overlapping selection without holding the checkboxes.

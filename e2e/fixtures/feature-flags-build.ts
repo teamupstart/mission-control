@@ -1,14 +1,14 @@
 import { build as bundle } from "esbuild";
 import { build as buildWeb } from "vite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /** Real daemon and dashboard, with only registry data substituted. No product test hook. */
 export async function buildFeatureFlags() {
   const root = fileURLToPath(new URL("../..", import.meta.url));
-  const webDir = mkdtempSync(join(tmpdir(), "mission-flags-panel-"));
+  const webDir = tempDir("mission-flags-panel-");
   const daemonBundle = join(root, "dist/server", `e2e-flags-${process.pid}-${Date.now()}.mjs`);
   const fixture = join(root, "e2e/fixtures/feature-flag-registry.ts");
   const cleanup = () => {

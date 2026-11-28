@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-sse-initial-"));
+const home = tempDir("mission-sse-initial-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { Registry } = await import("../src/server/registry.ts");

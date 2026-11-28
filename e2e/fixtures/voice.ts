@@ -1,19 +1,26 @@
+import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
+import { fixtureVoiceSupervisor } from "../../test/helpers/voice-supervisor.ts";
 import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type ServerResponse } from "node:http";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createTlsServer } from "node:https";
+import { setTimeout as delay } from "node:timers/promises";
+import { VOICE_INSTANCE_HEADER } from "../../src/shared/voice-speech.ts";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureSplitAnswer } from "./voice-split-answer.ts";
 
 import {
+  VOICE_FLAG,
   VOICE_LISTENER_PROTOCOL_VERSION,
   VOICE_LISTENER_ID_HEADER,
   type VoiceListenerDirective,
   type VoiceListenerHello,
+  type VoiceState,
 } from "../../src/shared/voice.ts";
 import type { VoiceModelManifest } from "../../src/shared/voice-models.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 interface VoiceDaemon {
   home: string;
@@ -43,6 +50,89 @@ export const LISTENER_HELLO: VoiceListenerHello = {
 
 export function voiceToken(daemon: VoiceDaemon): string {
   return readFileSync(join(daemon.home, "token"), "utf8").trim();
+}
+
+/**
+ * Report the desktop shortcut's current state to the daemon without a native keyboard. `keyAt`
+ * dates the key event; a repeat that keeps it is the same hold or release, not a new one.
+ */
+export async function reportVoiceHold(
+  daemon: VoiceDaemon, state: VoiceState, held: boolean, keyAt = voiceHostTimeUs(),
+): Promise<void> {
+  const response = await fetch(daemon.baseURL + "/voice/shell-report", {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+    body: JSON.stringify({
+      registeredHotkey: state.configuredHotkey, pushToTalkSession: state.pushToTalkSession,
+      capabilities: { hotkey: { available: true } }, reportedAtHostUs: Math.max(keyAt, voiceHostTimeUs()), pushToTalk: held,
+      ...(held ? { pushToTalkPressedAtHostUs: keyAt } : { pushToTalkReleasedAtHostUs: keyAt }),
+    }),
+  });
+  if (!response.ok) throw new VoiceShortcutReportError(response.status, await response.text());
+  await response.body?.cancel();
+}
+
+class VoiceShortcutReportError extends Error {
+  constructor(readonly status: number, readonly reply: string) {
+    super(`Voice shortcut report failed: ${status} ${reply}`);
+  }
+}
+
+/** The `voice` flag's refusal (`requireFeature`): the daemon takes no report until it is back on. */
+function refusedWhileVoiceOff(error: unknown): boolean {
+  if (!(error instanceof VoiceShortcutReportError) || error.status !== 404) return false;
+  try {
+    return (JSON.parse(error.reply) as { feature?: unknown }).feature === VOICE_FLAG;
+  } catch {
+    return false;
+  }
+}
+
+export interface VoiceShortcut {
+  /** Press (`true`) or release the shortcut, optionally under a newer Push-to-talk session. */
+  set(held: boolean, state?: VoiceState): Promise<void>;
+  /** Stop reporting. The daemon reads the shortcut as unconfirmed once the last report lapses. */
+  stop(): void;
+}
+
+/**
+ * Be the desktop shortcut: report it released now, then repeat the latest key state inside the
+ * shell report's lapse until stopped, as the desktop does, so a spec can hold a mode for longer
+ * than `VOICE_SHELL_REPORT_LAPSE_MS`. Stop it in the test's teardown.
+ */
+export async function beVoiceShortcut(daemon: VoiceDaemon, state: VoiceState): Promise<VoiceShortcut> {
+  let current = { state, held: false, keyAt: voiceHostTimeUs() };
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (stopped) return;
+    const { state, held, keyAt } = current;
+    void reportVoiceHold(daemon, state, held, keyAt).catch((error: unknown) => {
+      // Two refusals are expected: a spec may switch the `voice` flag off while the shortcut
+      // stands, and a report still in flight at `stop()` can meet the daemon's teardown.
+      if (stopped || refusedWhileVoiceOff(error)) return;
+      stopped = true;
+      clearInterval(timer);
+      // Left unhandled: Playwright fails the running test with it, so the cause is reported
+      // rather than the mode lapse the daemon reads once the last report expires.
+      throw new Error("A repeated Voice shortcut report failed", { cause: error });
+    });
+  }, 5000);
+  const shortcut: VoiceShortcut = {
+    async set(held, next = current.state) {
+      current = { state: next, held, keyAt: voiceHostTimeUs() };
+      await reportVoiceHold(daemon, next, held, current.keyAt);
+    },
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
+  try {
+    await shortcut.set(false);
+  } catch (error) {
+    shortcut.stop();
+    throw error;
+  }
+  return shortcut;
 }
 
 /** Send one hello. Resolves to the daemon's HTTP status. */
@@ -100,6 +190,37 @@ async function postUtterance(daemon: VoiceDaemon, utterance: VoiceUtterance): Pr
   }
 }
 
+/** End detection and transcription may finish after the countdown on any card surface. */
+export async function startSpeech(daemon: VoiceDaemon) {
+  const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+  const directive = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
+  const { revision } = await directive.json() as VoiceListenerDirective;
+  const speechStartUs = voiceHostTimeUs();
+  const capturedAt = Date.now();
+  const query = "?revision=" + encodeURIComponent(revision);
+  const start = await fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+    method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "start" }),
+  });
+  if (!(await start.json()).accepted) throw new Error("Listener speech onset refused");
+  return {
+    limit: () => fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+      method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "capture-limit" }),
+    }),
+    preview: (text: string) => fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+      method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "preview", text }),
+    }),
+    finish: (text: string, id = crypto.randomUUID(), endHostMs = Math.ceil(voiceHostTimeUs() / 1000)) => fetch(daemon.baseURL + "/voice/utterances" + query, { method: "POST",
+      headers: { ...headers, "x-voice-capture-start-host-us": String(speechStartUs),
+        "x-voice-speech-start-host-us": String(speechStartUs), "x-voice-capture-end-host-ms": String(endHostMs) },
+      body: JSON.stringify({ id, text, capturedAt, backend: LISTENER_HELLO.backend }) }),
+  };
+}
+
+export async function startSpokenCancel(daemon: VoiceDaemon) {
+  const speech = await startSpeech(daemon);
+  return () => speech.finish("Cancel.");
+}
+
 const lastCapturePost = new Map<string, Promise<Response>>();
 
 /** Post in capture order so a cancel or pick cannot overtake the utterance it acts on. */
@@ -151,7 +272,7 @@ export interface ModelServer {
  * The daemon reads both variables at launch, so start this before the daemon (as a fixture the
  * `daemonEnv` option depends on) and keep it for the test's life.
  */
-export async function startModelServer(): Promise<ModelServer> {
+export async function startModelServer(options: { tls?: { key: string; cert: string } } = {}): Promise<ModelServer> {
   const files = [
     { file: "Encoder.mlmodelc/weights/weight.bin", body: randomBytes(4 * 1024 * 1024) },
     { file: "Encoder.mlmodelc/coremldata.bin", body: randomBytes(600) },
@@ -163,7 +284,7 @@ export async function startModelServer(): Promise<ModelServer> {
   const requests: string[] = [];
   const open = new Set<ServerResponse>();
   const prefix = `/${MODEL_REPOSITORY}/resolve/${MODEL_COMMIT}/`;
-  const server = createServer((request, response) => {
+  const handle = (request: IncomingMessage, response: ServerResponse): void => {
     const file = (request.url ?? "").startsWith(prefix) ? request.url!.slice(prefix.length) : "";
     const entry = files.find((candidate) => candidate.file === file);
     if (!entry) {
@@ -188,9 +309,12 @@ export async function startModelServer(): Promise<ModelServer> {
       return;
     }
     response.end(entry.body);
-  });
+  };
+  // With `tls`, the stand-in is served over HTTPS with the given chain, so a spec can decide which
+  // roots the daemon has to trust to reach it.
+  const server = options.tls ? createTlsServer(options.tls, handle) : createServer(handle);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const origin = `${options.tls ? "https" : "http"}://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const manifest: VoiceModelManifest = {
     revision: "parakeet-e2e-fixture",
     label: "Parakeet fixture",
@@ -202,7 +326,7 @@ export async function startModelServer(): Promise<ModelServer> {
       sha256: createHash("sha256").update(entry.body).digest("hex"),
     })),
   };
-  const dir = mkdtempSync(join(tmpdir(), "mission-e2e-voice-model-"));
+  const dir = tempDir("mission-e2e-voice-model-");
   const manifestPath = join(dir, "manifest.json");
   writeFileSync(manifestPath, JSON.stringify({ fluidaudio: manifest, "sherpa-onnx": manifest }));
   return {
@@ -309,4 +433,135 @@ export async function enableVoice(daemon: VoiceDaemon): Promise<void> {
     });
     if (!response.ok) throw new Error(`Could not enable ${id}: ${response.status}`);
   }
+}
+
+/** A supervised player that follows the same long poll as a real listener. */
+export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boolean; holdPlayback?: boolean; ignoreStop?: boolean; audio?: boolean; systemVoices?: NonNullable<VoiceListenerHello["speech"]>["systemVoices"] } = {}) {
+  const supervisor = fixtureVoiceSupervisor("dev");
+  const { instance } = supervisor;
+  const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon),
+    [VOICE_LISTENER_ID_HEADER]: crypto.randomUUID(), [VOICE_INSTANCE_HEADER]: instance };
+  const controller = new AbortController();
+  const post = (path: string, body: unknown, signal = controller.signal) => fetch(daemon.baseURL + path, { method: "POST", headers, body: JSON.stringify(body), signal });
+  const accepted = async (request: Promise<Response>) => {
+    const response = await request;
+    await response.body?.cancel();
+    return response.ok;
+  };
+  const supervise = (state: "started" | "exited") => accepted(fetch(daemon.baseURL + "/voice/listener/supervised", {
+    method: "POST", headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon), ...supervisor.headers(state) },
+    body: JSON.stringify({ instance, state }), signal: AbortSignal.timeout(5000),
+  }));
+  const hello = () => accepted(post("/voice/listener/hello", { ...LISTENER_HELLO, speech: { audio: options.audio ?? true,
+    systemVoices: options.systemVoices ?? [{ id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" }] } }, AbortSignal.any([controller.signal, AbortSignal.timeout(5000)])));
+  try {
+    if (!await supervise("started")) throw new Error("Fixture supervisor could not announce the listener.");
+    if (!await hello()) throw new Error("Fixture listener hello was refused.");
+  } catch (error) {
+    controller.abort();
+    await supervise("exited").catch(() => {});
+    throw error;
+  }
+  const heartbeat = setInterval(() => void hello().catch(() => {}), HELLO_EVERY_MS);
+  const read = (revision?: string) => fetch(daemon.baseURL + "/voice/listener/directive" +
+    (revision ? "?revision=" + encodeURIComponent(revision) : ""), { headers, signal: controller.signal });
+  const poll = async () => {
+    const response = await read();
+    if (!response.ok) throw new Error("Directive status " + response.status);
+    return await response.json() as VoiceListenerDirective;
+  };
+  let current: string | null = null;
+  let playing = false;
+  let capturing = false;
+  const event = async (type: "started" | "ended", outcome?: "finished" | "stopped" | "failed") => {
+    if (!current) throw new Error("Fixture has no speech job.");
+    const id = current;
+    const response = await post("/voice/speech/jobs/" + id + "/events", { type, outcome });
+    if (response.ok) return true;
+    if (type === "started" && response.status === 409) {
+      const { speak } = await response.json();
+      if (speak?.stop === true && speak.id === id) return false;
+    }
+    throw new Error("Speech report refused.");
+  };
+  const start = async () => {
+    if (capturing) throw new Error("Playback offered before capture paused.");
+    const accepted = await event("started");
+    if (accepted) playing = true;
+    return accepted;
+  };
+  const end = async (outcome: "finished" | "stopped" | "failed" = "finished") => {
+    playing = false;
+    await event("ended", outcome);
+    current = null;
+  };
+  async function follow() {
+    let revision: string | undefined;
+    while (!controller.signal.aborted) {
+      const response = await read(revision);
+      if (response.status === 404 || response.status === 409) {
+        // With voice off or another process holding the capture lease there is no long poll.
+        await response.body?.cancel();
+        revision = undefined;
+        await delay(100, undefined, { signal: controller.signal });
+        continue;
+      }
+      if (!response.ok) throw new Error("Directive status " + response.status);
+      const directive = await response.json() as VoiceListenerDirective;
+      capturing = directive.capture;
+      if (capturing && playing) throw new Error("Capture resumed during playback.");
+      revision = directive.revision;
+      const speak = directive.speak;
+      if (!speak) continue;
+      current = speak.id;
+      if ("stop" in speak) {
+        if (!options.ignoreStop) await end("stopped");
+      } else if (!playing && !options.delayStart) {
+        if (speak.kind === "audio") {
+          const audio = await fetch(daemon.baseURL + "/voice/speech/jobs/" + speak.id + "/audio", { headers, signal: controller.signal });
+          if (!audio.ok) continue; // Stop may have raced the audio fetch.
+          await audio.arrayBuffer();
+        }
+        if (await start() && !options.holdPlayback) await end();
+      }
+    }
+  }
+  let failure: unknown;
+  const following = follow().catch(error => { if (!controller.signal.aborted) failure = error; });
+  return {
+    poll, start, end, get playing() { return playing; }, get capturing() { return capturing; },
+    async say(text: string) {
+      const { revision } = await poll();
+      return post("/voice/utterances?revision=" + encodeURIComponent(revision), {
+        id: crypto.randomUUID(), text, backend: LISTENER_HELLO.backend, capturedAt: Date.now(),
+      });
+    },
+    async exit() {
+      clearInterval(heartbeat);
+      controller.abort();
+      await following;
+      playing = false;
+      if (!await supervise("exited")) throw new Error("Fixture supervisor could not confirm exit.");
+      if (failure) throw failure;
+    },
+  };
+}
+
+/** Post a capture observation under the fixture listener's current grant. */
+export async function transcriptSample(daemon: VoiceDaemon, sample: import("../../src/shared/voice.ts").TranscriptSample) {
+  const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+  const directive = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
+  const { revision } = await directive.json() as VoiceListenerDirective;
+  const response = await fetch(daemon.baseURL + "/voice/listener/transcript?revision=" + encodeURIComponent(revision), {
+    method: "POST", headers, body: JSON.stringify(sample),
+  });
+  return (await response.json()).accepted;
+}
+
+/** Read the directive the fixture listener is served now, as a listener's poll without a revision does. */
+export async function listenerDirective(daemon: VoiceDaemon): Promise<VoiceListenerDirective> {
+  const headers = { "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+  const response = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
+  if (!response.ok) throw new Error(`The listener directive answered ${response.status}`);
+  return await response.json() as VoiceListenerDirective;
 }

@@ -1,9 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What this proves is IDEMPOTENCY, not an upgrade path, and the distinction is the point: a
 // NEW table needs no `migrate()` entry, because the schema literal runs on every open, before
@@ -11,7 +10,7 @@ import { join } from "node:path";
 // its partial unique index, which is NOT in the literal (its predicate is derived from a
 // TypeScript tuple) and so is the one piece an "it's all in the CREATE" reading would miss.
 
-const home = mkdtempSync(join(tmpdir(), "mission-file-comments-migration-"));
+const home = tempDir("mission-file-comments-migration-");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

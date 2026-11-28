@@ -3,17 +3,23 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+// Second, for the same reason: it adds the system certificate store to the default TLS roots
+// before any later import can open a connection. See system-trust-startup.ts.
+import "./system-trust-startup.ts";
 import { reconcileTerminalEnvironmentHandoffs, stopTerminalEnvironmentHandoffs } from "./terminal/environment-handoff.ts";
 import { unseenReportsNote } from "@shared/reports.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
-import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { BUG_FIX_INSPECTOR_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
+import { startShaperSignIns } from "./shaping/sign-in/index.ts";
+import { wireShapingSignInEvents } from "./shaping/sign-in/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
+import { allocateCallSign } from "./voice/call-sign-allocation.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
-import { onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { onUiSkinChanged, onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
@@ -61,11 +67,7 @@ import { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
-import {
-  defaultRetentionCleanupDeps,
-  defaultRetentionObserverDeps,
-  TaskWorktreeRetentionObserver,
-} from "./task-worktree-retention.ts";
+import { createDaemonRetentionObserver } from "./task-worktree-retention.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
@@ -108,7 +110,7 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { ResidentManager } from "./residents/manager.ts";
 import { BUILTIN_RESIDENTS } from "./residents/builtin-residents.ts";
-import { reconcileBuiltinResidentProfiles } from "./residents/store.ts";
+import { listLiveResidentProfiles, reconcileBuiltinResidentProfiles } from "./residents/store.ts";
 import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
@@ -239,7 +241,15 @@ try {
 }
 const registry = new Registry();
 // One bridge for every writer, including settings restore and daemon listeners.
-const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+let inspectorAvailable = featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+const stopFeatureFlags = onFeatureFlagsChanged((config) => {
+  registry.emitFeatureFlags(config);
+  const available = featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+  if (available !== inspectorAvailable) {
+    inspectorAvailable = available;
+    registry.replaceResidentProfiles(listLiveResidentProfiles());
+  }
+});
 // A declared wait holds idle automation, so it must not outlive the preview that draws it on the
 // card: switching the preview off ends every wait, and a daemon starting with it off keeps none.
 const endAwaitingsWhenOff = (): void => {
@@ -256,6 +266,8 @@ const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
 const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// And shaper sign-in's list, behind both its flags. It never carries a token or a link.
+const stopShapingSignIns = wireShapingSignInEvents((signIns) => registry.emitShapingSignIns(signIns));
 // Who can be addressed by voice, read from the Registry's own catalogs and frames. Wired before
 // the voice state, which reads its roster from it on its first publish.
 const voiceNames = new VoiceNameRegistry(registry, {
@@ -268,6 +280,7 @@ const voiceNames = new VoiceNameRegistry(registry, {
 const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));
 // The voice state reaches open windows and the shell the same way, behind its flag.
 const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+const stopUiSkin = onUiSkinChanged(() => registry.emitUiSkinChanged());
 const stopVoiceIndicators = onVoiceIndicatorsChanged((indicators) => registry.emitVoiceIndicators(indicators));
 // The shapers folder is read at start, and again at every shaping run: never watched.
 if (featureEnabled("task-shaping")) void announceShaperFolder();
@@ -372,6 +385,10 @@ tasks.useMergeQuestions({
   },
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
+// A task dispatched without a call sign takes a distinctive one as it launches, whatever the
+// `voice` flag says, so the name is already stable when voice is turned on: chosen against the
+// roster (computed with the flag off too) and every unfinished task's name, inside the claim.
+tasks.useCallSignAllocation((task) => allocateCallSign(task, voiceNames.roster(), registry.listTasks()));
 const queues = new QueueManager(registry);
 // Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
 // or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,
@@ -557,6 +574,9 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// Shaper sign-in: held tokens and their background refresh. It starts once this process wins
+// the port, because a refresh spends a single-use refresh token.
+let stopShaperSignIns = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
 // and the backup loop's startup prune seeds it.
 // The state directory's measured size and its volume's free space. `storageHealth` is assigned
@@ -695,33 +715,16 @@ setLlmSpendSink((report) => {
   if (recordSpendReport(report).kind === "recorded") registry.applyAutomationUsage();
 });
 let stopPoller = () => {};
-// The durable worktree activity clock. Non-destructive by construction: it records when each
-// terminal task's checkouts last changed in a way Git can see, and the 30-day deadline that
-// implies, and it reclaims nothing - see `task-worktree-retention.ts`.
-//
-// Started behind the discovery gate rather than here-and-now, and the ordering is the contract:
-// `onSessionsObserved` is the first COMPLETED sweep, which is when session/task reconciliation
-// has settled who owns which worktree. A pass before it would seed windows against ownership
-// that is still being rebuilt. Registered AFTER the TaskManager and workflow twins above so
-// their reconstruction runs first, exactly as ensemble recovery does.
-const retentionObserver = new TaskWorktreeRetentionObserver({
-  listTasks: () => registry.listTasks(),
-  ...defaultRetentionObserverDeps,
-  cleanup: {
-    ...defaultRetentionCleanupDeps,
-    // The single destructive capability, and it is `TaskManager`'s own guarded, queued entry
-    // rather than a provider or the allocator. Everything the sweep can delete, it deletes by
-    // asking the class that owns the task lifecycle to run its existing reclaim core.
-    reclaim: (request) => tasks.enqueueRetentionCleanup(request),
-    refreshSummary: (taskId) => registry.refreshTaskAutomaticCleanup(taskId),
-  },
-});
+// First completed discovery establishes session ownership. TaskManager, workflow and
+// ensemble recovery register before retention, so their reconciliation starts first.
+const retentionObserver = createDaemonRetentionObserver(registry, tasks);
 registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
+  localReview: (prKey, head) => workflows.localReviewMatch(prKey, head),
 });
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 // Whether each live session has been corrected by its human, which is half of whether the
@@ -1002,6 +1005,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
   }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
+  // After the shaping events are wired at module load. With either flag off it reads nothing.
+  stopShaperSignIns = startShaperSignIns();
   // The first walk waits out startup's own disk work; then one every six hours, and the free
   // space every minute, which is cheap and is what a low-space warning needs to be timely.
   stopStorageUsage = storageUsage.start({
@@ -1171,14 +1176,17 @@ async function shutdown(): Promise<void> {
   stopAutomatedDeliveries();
   stopPersonDeliveries();
   stopShapingConfig();
+  stopShapingSignIns();
   registry.voiceRouter?.reset();
   stopDesktopVoice();
   stopVoiceState();
+  stopUiSkin();
   stopVoiceIndicators();
   stopVoiceNames();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();
+  await stopShaperSignIns();
   stopStorageUsage();
   stopSettingsBackups();
   stopPoller();

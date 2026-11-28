@@ -1,13 +1,13 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 import type { EnsembleSummary } from "../src/shared/ensemble.ts";
 import type { PaneDialog, ReviewItem, ServerEvent, Session, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: the FLEET and the RUN agreeing about a blocked member.
@@ -36,7 +36,7 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
  *     as ready.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-needs-input-"));
+const home = tempDir("mission-ensemble-needs-input-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

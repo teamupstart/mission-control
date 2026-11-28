@@ -1,3 +1,4 @@
+import { reserveWorktreeUse } from "./worktrees/use-reservation.ts";
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
 import type { ResidentMcpLaunch } from "./harness/types.ts";
 import { withWorkUnit, workUnitEnv } from "./agent-work-unit.ts";
@@ -64,6 +65,7 @@ import type { Persona } from "@shared/workflow.ts";
 import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
+import { isolatedGitEnvironment } from "./git/worktree-tree.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelContribution, systemPromptAppendArgs } from "./ask-channel.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
@@ -421,6 +423,12 @@ export class Dispatcher {
        */
       persona?: PersonaLookup;
       /**
+       * The call sign a task launching without one takes (`allocateCallSign`), or null to leave
+       * it unnamed. Asked inside the synchronous claim below, so simultaneous launches each read
+       * the names the ones before them took. Absent, no task is named.
+       */
+      assignCallSign?: (task: Task) => string | null;
+      /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
        * A seam only so a focused test can prove the ORDERING - that a base failure happens
@@ -474,6 +482,8 @@ export class Dispatcher {
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
     const task = this.registry.getTask(taskId);
     if (!task) return;
+    using worktreeUse = reserveWorktreeUse(taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []));
+    if (!worktreeUse) return;
     // This attempt's identity, for the shaping commit: a later dispatch of the same task
     // replaces it, and an attempt that is no longer current never writes the record.
     const attempt = Symbol(taskId);
@@ -542,8 +552,13 @@ export class Dispatcher {
       discardTerminalReceipt(receipt);
     };
     noteDispatchStarted(taskId);
+    // A task dispatched without a call sign takes one now, in the same write that claims it, so
+    // nothing can launch between the choice and the row that holds it. Kept by every later
+    // attempt: the row already has it.
+    const assignedCallSign = this.deps.assignCallSign?.(this.registry.getTask(taskId) ?? task) ?? null;
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
+      ...(assignedCallSign ? { callSign: assignedCallSign } : {}),
       status: "dispatching",
       error: null,
       // A new attempt: whatever the last one failed of is no longer this task's state, and a
@@ -602,6 +617,7 @@ export class Dispatcher {
       const runtime = taskKindForcedRuntime(task.kind)
         ?? (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       const missionTools = capabilitiesFor(task.agent).missionTools;
+      // oxlint-disable-next-line repository/agent-comparison -- Managed Pi is the only runtime that uses this launch path.
       const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
       const configured = resolveAgentBin(task.agent);
       const agentBin = await resolveBinPath(configured);
@@ -941,6 +957,7 @@ export class Dispatcher {
         // started and we merely discovered. It returns nothing rather than half its flags on
         // ANY failure - a missing bundle, an unwritable state dir - and says why, and the
         // launch is then refused below with that reason; see `askChannelContribution`.
+        // oxlint-disable-next-line repository/agent-comparison -- This dispatch adapter assembles Codex launch instructions.
         const codexLaunch = task.agent === "codex"
           ? await prepareCodexLaunch(
               getHarnessesConfig().autoModeOnDispatch,
@@ -1002,6 +1019,7 @@ export class Dispatcher {
       const sdkSessionId = runtime === "sdk" && shapingOn ? newSdkSessionId() : null;
       // Pi's memory pointer, read once: the budget below and the launch message after shaping
       // must prefix the same text, even if the checkout gains an index while shapers run.
+      // oxlint-disable-next-line repository/agent-comparison -- Pi needs an explicit repository memory pointer.
       const piHasMemory = task.agent === "pi" && hasRepoMemory(wt.path);
       // Task shaping, the one awaited call before turn one is built. With the flag off it does
       // nothing at all, and with no shaper that applies it adds nothing, so either launch is
@@ -1105,6 +1123,7 @@ export class Dispatcher {
       // needs it to build the argv, and the launch marker needs to fingerprint the exact
       // text that argv carries. Recomposing it at the second site is how the two answers
       // drift apart.
+      // oxlint-disable-next-line repository/agent-comparison -- Pi consumes memory through the launch prompt.
       const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent, piHasMemory) : null;
       const piLaunch = piText !== null
         ? preparePiLaunch(piText)
@@ -2063,6 +2082,7 @@ export class Dispatcher {
       return;
     }
 
+    // oxlint-disable-next-line repository/agent-comparison -- This dispatch path validates Claude advisor mode.
     if (task.agent !== "claude") {
       throw new Error(
         "Terminal Pipeline launches are Claude-only; choose Claude or switch the Pipelines launch runtime to Agent SDK",
@@ -2669,6 +2689,7 @@ export class Dispatcher {
   ): Promise<LaunchShaping> {
     const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
     const variants = [unshapedTurnOne(standingPrefix), ...(!standingPrefix && standing.text ? [unshapedTurnOne(standing.text)] : [])];
+    // oxlint-disable-next-line repository/agent-comparison -- Pi terminal input may be delivered at launch.
     const launchArgument = delivery.path === "launch-argument" && provisioned.agent === "pi" && launch.terminal;
     const carried = launchArgument
       // Composed exactly as the terminal arm composes Pi's launch message below.
@@ -3413,6 +3434,11 @@ export async function teardownWorktree(
   manager?: WorktreeManager,
   /** Automatic lifecycle policy, checked before home cleanup and each destructive provider boundary. */
   beforeReturn?: (path: string) => Promise<string | null>,
+  /**
+   * Automatic retention's two narrow extensions, supplied only by `reclaimForRetention` while
+   * orphaned-checkout reclaim is enabled. Every other caller keeps the rules above unchanged.
+   */
+  extensions: TeardownExtensions = {},
 ): Promise<void> {
   // Every tree the task holds, primary first. Each is attempted even if an earlier one
   // failed, and the failures are reported together: stopping at the first would leave the
@@ -3455,7 +3481,7 @@ export async function teardownWorktree(
       // A refused close is harmless only when the recorded resource is proved absent.
       // Keep the checkout when the terminal is live or its identity cannot be checked.
       const alive = await homeAlive(task.homeName, configuredTerminalDeps, task.homeBackend ?? null, task.terminalResourceId ?? null);
-      if (alive !== false) {
+      if (alive !== false && !(await extensions.homeAbsent?.())) {
         throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
       }
     }
@@ -3481,7 +3507,7 @@ export async function teardownWorktree(
   const failures: string[] = [];
   const reclaimed: string[] = [];
   for (const tree of trees) {
-    await teardownOneWorktree(tree, legacy, manager, beforeReturn).then(
+    await teardownOneWorktree(tree, legacy, manager, beforeReturn, extensions.unregistered).then(
       () => {
         if (tree.worktreePath) reclaimed.push(tree.worktreePath);
       },
@@ -3494,6 +3520,19 @@ export async function teardownWorktree(
   // back. Without it a partial failure reads as a total one and the row goes on naming
   // worktrees that no longer exist - see `releasedTaskResources`.
   if (failures.length > 0) throw new WorktreeTeardownError(failures.join("; "), reclaimed);
+}
+
+/** See `teardownWorktree`'s `extensions`. */
+export interface TeardownExtensions {
+  /**
+   * A disposable Git checkout Git no longer knows cannot be removed by `git worktree remove`.
+   * Called after `beforeReturn` passes; `removed`/`absent` means the exact slot directory is
+   * gone and the tree counts as released, `registered` hands it back to the ordinary path.
+   * Throws to refuse, and the tree keeps its record.
+   */
+  unregistered?: (path: string) => Promise<"removed" | "absent" | "registered">;
+  /** A refused home close is harmless when this positively proves the home absent. */
+  homeAbsent?: () => Promise<boolean>;
 }
 
 /**
@@ -3598,12 +3637,15 @@ async function teardownOneWorktree(
   legacy: LegacyTreehouseService,
   manager?: WorktreeManager,
   beforeReturn?: (path: string) => Promise<string | null>,
+  unregistered?: TeardownExtensions["unregistered"],
 ): Promise<void> {
   if (!task.worktreePath) return;
   // Read once so every provider check and diagnostic names the same requested path.
   const worktreePath = task.worktreePath;
   const blocked = await beforeReturn?.(worktreePath);
   if (blocked) throw new Error(blocked);
+  if (beforeReturn && unregistered && task.provider === "git" &&
+      (await unregistered(worktreePath)) !== "registered") return;
 
   if (task.provider === "mission") {
     if (!manager) throw new Error("native worktree manager is unavailable");
@@ -3639,7 +3681,7 @@ async function teardownOneWorktree(
       position: task.position,
       path: worktreePath,
       leaseId: task.worktreeLeaseId,
-    });
+    }, beforeReturn ? () => beforeReturn(worktreePath) : undefined);
     if (returned.outcome !== "returned") {
       throw new Error(
         `legacy Treehouse cleanup refused for ${task.repoRoot} at ${worktreePath} ` +
@@ -3648,13 +3690,16 @@ async function teardownOneWorktree(
     }
     return;
   }
-  const removed = await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
+  const removeOptions = beforeReturn ? ["--"] : ["--force"];
+  const removed = await run("git", ["-C", task.repoRoot, "worktree", "remove", ...removeOptions, worktreePath], {
+    env: beforeReturn ? isolatedGitEnvironment() : undefined,
     // Native worktree removal carries the same minute-long budget. Keep fallback teardown
     // aligned so host contention cannot turn a completed archive capture into a false reclaim
     // failure while preserving the bounded, fail-closed outcome when git never answers.
     timeoutMs: 60_000,
   });
-  if (removed.code !== 0) {
+  if (removed.code !== 0 || removed.outcomeUnknown || removed.overflowed) {
+    if (beforeReturn) throw new Error("automatic Git worktree removal could not be confirmed");
     // Same budget as the dispatch preflight, and for the same reason: on the 4s default a
     // loaded machine turned "the tree is already gone, nothing to reclaim" into a spurious
     // reclaim failure. A non-zero `code` here already covers `outcomeUnknown` (a killed
@@ -3669,7 +3714,7 @@ async function teardownOneWorktree(
   }
   // Our git-fallback trees sit on a throwaway `harness/…` branch; drop it so a
   // retry of the same task can recreate it. Never touch a non-harness branch.
-  if (task.branch && task.branch.startsWith("harness/")) {
+  if (!beforeReturn && task.branch && task.branch.startsWith("harness/")) {
     const deleted = await run("git", ["-C", task.repoRoot, "branch", "-D", task.branch], {
       timeoutMs: 15000,
     });

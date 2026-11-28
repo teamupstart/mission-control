@@ -2,14 +2,14 @@ import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, originAndCloneAt, seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-cleanup-"));
+const home = tempDir("mission-dispatch-cleanup-");
 process.env.HARNESS_HOME = home;
 // A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
 // Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`

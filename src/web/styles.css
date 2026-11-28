@@ -7308,17 +7308,19 @@ a.btn {
 .storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
 .storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .storage-problem-list li.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
-/* Storage is one category with five tabs. The tab strip sits on the pane's measure, and each
+/* Storage and Voice are each one category with five tabs. The tab strip sits on the pane's measure, and each
    tab's bands stack with the same air as two settings sections. */
 .storage-panel { display: grid; gap: 0; }
-.storage-tabs {
+.storage-tabs,
+.settings-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
   margin: 0 0 16px;
   border-bottom: 1px solid var(--border-soft);
 }
-.storage-tab {
+.storage-tab,
+.settings-tab {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -7334,8 +7336,8 @@ a.btn {
   cursor: pointer;
   white-space: nowrap;
 }
-.storage-tab:hover { color: var(--fg); }
-.storage-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
+.storage-tab:hover, .settings-tab:hover { color: var(--fg); }
+.storage-tab.is-active, .settings-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
 .storage-tab small { font-family: var(--mono); font-size: 10.5px; font-weight: 500; color: var(--dim); }
 .storage-tab small.storage-green { color: var(--idle); }
 .storage-tab-dot {
@@ -8278,6 +8280,247 @@ a.btn {
 }
 .report-entry-status {
   font-weight: 600;
+}
+
+/* ---- unified split inbox (`inbox-split` preview) ----
+
+   The attention inbox as a list and a detail pane. The modal takes a fixed height so the list and
+   the pane scroll on their own while the head and the tabs stay put. Every band here draws its
+   own divider or background to the border, so each is a `.modal-bleed` with its own padding.
+   Below 800 px the two panes stack and the pane gains a back button. */
+.inbox-split-root {
+  display: contents;
+}
+.attention-inbox.is-split {
+  width: min(1080px, 100%);
+  height: calc(100dvh - 96px);
+}
+.inbox-split-notice {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 8px var(--modal-inset, 18px);
+  border-bottom: 1px solid var(--border-soft);
+}
+.inbox-split-notice .inbox-line {
+  margin: 0;
+}
+.inbox-split-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 6px var(--modal-inset, 18px) 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.inbox-split-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.inbox-split-tab.is-on {
+  color: var(--fg);
+  font-weight: 600;
+  border-bottom-color: var(--working);
+}
+.inbox-split-tab:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+.inbox-split-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+.inbox-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
+}
+.inbox-split-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--border-soft);
+  background: var(--bg-2);
+}
+.inbox-split-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  padding: 12px 14px 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+/* Reports' Mark all read sits in its heading row, at the heading's size rather than a button's. */
+.inbox-split-heading .inbox-section-action {
+  padding: 1px 6px;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.inbox-split-refusal {
+  flex-basis: 100%;
+  margin: 0;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.inbox-split-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+.inbox-split-row:hover {
+  background: color-mix(in oklab, var(--working) 6%, var(--bg-2));
+}
+.inbox-split-row.is-selected {
+  background: color-mix(in oklab, var(--working) 12%, var(--bg-2));
+  box-shadow: inset 3px 0 0 var(--working);
+}
+.inbox-split-row:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+}
+.inbox-split-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Rows settled on another page read quieter, so the eye lands on what this pane can settle. */
+.inbox-split-row.is-quiet .inbox-split-row-title {
+  font-weight: 450;
+  color: var(--muted);
+}
+.inbox-split-row-age {
+  font-size: 11px;
+  color: var(--dim);
+}
+.inbox-split-row-meta {
+  grid-column: 1 / 3;
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.inbox-split-unread {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.inbox-split-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px var(--modal-inset, 18px) 18px;
+}
+.inbox-split-pane:focus {
+  outline: none;
+}
+.inbox-split-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.inbox-split-kind {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.inbox-split-back {
+  display: none;
+}
+.inbox-split-moved {
+  margin: 0;
+  font-size: 12px;
+  color: var(--idle);
+}
+.inbox-split-body .inbox-item {
+  margin-bottom: 0;
+}
+.inbox-split-upnext {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.inbox-split-upnext h5 {
+  margin: 0 0 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.inbox-split-upnext-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.inbox-split-upnext-row:hover .inbox-split-upnext-title {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.inbox-split-upnext-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@media (max-width: 800px) {
+  .inbox-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .inbox-split-list {
+    border-right: 0;
+  }
+  .inbox-split-back {
+    display: inline-flex;
+  }
+  .inbox-split.is-detail .inbox-split-list,
+  .inbox-split:not(.is-detail) .inbox-split-pane {
+    display: none;
+  }
 }
 
 /* ---- plan decisions ---- */
@@ -23178,6 +23421,12 @@ button.wf-carried.is-link:focus-visible {
 .voice-key-input {
   width: 190px;
 }
+.voice-separator-input {
+  width: 12ch;
+}
+.voice-separator-error {
+  display: block;
+}
 /* A spoken-name field's heard-as preview (call sign, reference name): the sentence the operator
    would say, a four-step meter that loses a step per warning, and one line per warning. Amber,
    never red: a warning is advice and nothing it says blocks a save. */
@@ -30475,6 +30724,10 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.rail-name-shared {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .rail-sub {
   grid-column: 2;
   min-width: 0;
@@ -34342,32 +34595,103 @@ span.line-run-prov {
 }
 /* The same facts and fixes as a band in the session detail (`StalledBand`), for the Console and
    the Board's drill-in, where the rail row has room only for its mark. Drawn like the Awaiting
-   band beside it, in the Stalled yellow. */
+   band beside it, in the Stalled yellow.
+
+   It collapses like the blocker band (`.blocker-band`): the row is its whole collapsed face -
+   the rule, the first fact and the fixes - and is sticky when expanded, so the fixes never
+   scroll away under a long Foreman note. The summary never wraps, which bounds the row's height
+   by its controls; the expanded fact sheet carries every fact whole. */
 .stalled-band {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 9px 12px 8px;
   border: 1px solid color-mix(in oklab, var(--stalled) 38%, var(--border));
   border-left: 3px solid var(--stalled);
   border-radius: 8px;
   background: color-mix(in oklab, var(--stalled) 6%, var(--panel));
   font-size: 12.5px;
 }
-.stalled-band-top {
+.stalled-band-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 10px 7px 12px;
+  background: inherit;
+  border-radius: 7px;
+}
+.stalled-band-toggle {
+  flex: 1 1 22rem;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 8px;
+  padding: 2px 4px;
+  margin: 0 0 0 -4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stalled-band-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 .stalled-band-flag {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
+  flex: none;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.3px;
   text-transform: uppercase;
   color: var(--stalled);
 }
 .stalled-band-rule {
+  flex: none;
+  font-weight: 650;
+}
+.stalled-band-summary {
+  min-width: 0;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stalled-band-chevron {
+  flex: none;
+  align-self: center;
+  width: 10px;
+  height: 6px;
+  margin-left: 2px;
+  background: var(--select-chevron) no-repeat center;
+  transition: transform 120ms ease;
+}
+.stalled-band.is-open .stalled-band-chevron {
+  transform: rotate(180deg);
+}
+.stalled-band-row > .stalled-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+.stalled-band-more {
+  margin: 0;
+  padding: 9px 14px 11px;
+  border-top: 1px dashed color-mix(in oklab, var(--stalled) 30%, var(--border));
+}
+.stalled-band-more[hidden] {
+  display: none;
+}
+.stalled-band.is-open .stalled-band-row {
+  border-bottom: 1px dashed color-mix(in oklab, var(--stalled) 30%, var(--border));
+  border-radius: 7px 7px 0 0;
+}
+.stalled-band.is-open .stalled-band-row + .stalled-band-more {
+  border-top: 0;
 }
 /* Board tiles mark sessions held by an open workflow run. */
 .tile-held {
@@ -36645,6 +36969,11 @@ span.line-run-prov {
   border-left: 1px solid var(--border);
   cursor: pointer;
 }
+.voice-settings .display-choice-option:has(input:disabled) {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: .65;
+}
 .display-choice-option:first-child {
   border-left: 0;
 }
@@ -36667,6 +36996,19 @@ span.line-run-prov {
 .display-choice-option:has(input:focus-visible) {
   outline: 2px solid var(--select);
   outline-offset: -2px;
+}
+/* A segment row whose options combine (Resident name with call sign): each keeps its checkbox
+   visible, because a filled segment alone reads as one-of-many and would hide that two can be
+   on together. */
+.display-choice-checks .display-choice-option {
+  gap: 6px;
+}
+.display-choice-checks .display-choice-option input {
+  position: static;
+  opacity: 1;
+  width: 13px;
+  height: 13px;
+  accent-color: var(--select);
 }
 
 /* ---- Board card (Settings -> Display) ----
@@ -41245,6 +41587,20 @@ body.foreman-sidecar-open .modal-backdrop {
   max-width: 1060px;
 }
 
+.setup-update-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.setup-update-footer > section {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+.setup-update-footer p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .setup-row-title,
 .setup-command {
   align-items: center;
@@ -42250,6 +42606,177 @@ body.foreman-sidecar-open .modal-backdrop {
   opacity: 0.85;
 }
 
+/* Resident name: Expanding chip. The chip spells out the profile name while its card is
+   pointed at or focused, and folds back to its label at rest. Capped so a long profile name
+   ellipsises inside the chip rather than pushing the call sign off the card. At rest the
+   name takes no width, and its negative margin cancels the chip's `gap`, so a folded chip is
+   exactly the plain one. */
+.resident-chip.has-expanded-name {
+  max-width: 48%;
+  min-width: 0;
+}
+/* Inline-block rather than flex, so its text node can ellipsise: the separator is the one
+   child, and the name is the trailing text. */
+.resident-chip-name {
+  display: inline-block;
+  min-width: 0;
+  max-width: 0;
+  margin-left: -2px;
+  overflow: hidden;
+  opacity: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition:
+    max-width 0.22s ease,
+    opacity 0.18s ease,
+    margin-left 0.22s ease;
+}
+.resident-chip-name-sep {
+  opacity: 0.6;
+}
+.tile:hover .resident-chip-name,
+.tile:focus-within .resident-chip-name,
+/* The Settings preview is `inert`, so it can never be hovered: it shows the expanded state. */
+.board-card-preview-stage .resident-chip-name {
+  max-width: 16em;
+  margin-left: 2px;
+  opacity: 1;
+}
+.resident-chip-name-sep {
+  margin-right: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .resident-chip-name {
+    transition: none;
+  }
+}
+
+/* Resident name: Subtitle. The call sign stays the card's title, and the profile name sits on
+   a muted line under it. The head aligns its items to the title's first baseline rather than
+   to the centre of both lines, so the chips and the keycap read on the call sign's line and the
+   agent dot, which has no text, rests on that baseline beside the capitals. */
+.tile-name-stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.tile-name-stack > .tile-name {
+  flex: none;
+}
+.tile-name-sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tile-head.has-name-sub {
+  align-items: first baseline;
+}
+
+/* A session's call sign beside its title while Always-on listens (`CallSignMark`), in voice's
+   listening green so it reads as "the name you can say". One shape per Settings > Display >
+   Board card > Call sign style; each lifts above the tile's stretched open button, as the
+   jump keycap does, so its text can be selected and read. */
+.cs-mic {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.cs-mark {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  color: var(--voice-listening);
+}
+.cs-mark.cs-sub {
+  flex: initial;
+  color: var(--muted);
+  font-weight: 500;
+}
+.cs-mark.cs-sub b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--voice-listening);
+  font-weight: 650;
+}
+.cs-badge,
+.cs-rail {
+  padding: 0 7px 0 5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--voice-listening) 13%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 40%, var(--border));
+}
+.cs-chip {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px 0 4px;
+  border-radius: 5px;
+  letter-spacing: 0.02em;
+  background: color-mix(in oklab, var(--voice-listening) 18%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 45%, var(--border));
+}
+/* The edge tab rides the top border like the task type tab (`.tk-tab`), in one row with it so
+   neither needs to know the other's width. */
+.tile-edge-tabs {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  z-index: 1;
+  display: inline-flex;
+  gap: 6px;
+}
+.tile-edge-tabs > .tk-tab {
+  position: static;
+}
+.cs-tab {
+  padding: 0 8px 0 6px;
+  font-size: 9.5px;
+  font-weight: 720;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--voice-listening) 14%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--voice-listening) 45%, var(--border));
+  border-radius: 5px;
+}
+.cs-tab .cs-mic {
+  width: 10px;
+  height: 10px;
+}
+/* The Console rail row's compact form: the title ellipsises, the pill never does. */
+.rail-name.has-call-sign {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rail-name.has-call-sign > .rail-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-name .cs-rail {
+  font-size: 10.5px;
+  font-weight: 620;
+}
+
 /* Wraps rather than clips: the board's drill-in detail is a narrow pane, and the band's one
    action must stay reachable there. The facts give way first, then the action takes a line. */
 .resident-band {
@@ -42681,10 +43208,80 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-mcp-all-body ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .resident-mcp-all-body strong { color: var(--fg); font-weight: 600; }
 
-.resident-state { font-size: 12px; }
-.resident-state-path { overflow-wrap: anywhere; }
-.resident-state pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
-.resident-state ul { max-height: 240px; overflow: auto; }
+/* A profile's durable state, read over the editor: files on the left, the preview beside them.
+   Each column scrolls on its own so a long note never pushes the file list or the close control
+   out of reach. */
+.resident-state-notice { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.resident-state-viewer {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, 100%);
+  height: min(760px, calc(100dvh - 96px));
+}
+.resident-state-viewer .modal-head { flex: 0 0 auto; gap: 12px; }
+.resident-state-viewer-title { min-width: 0; overflow-wrap: anywhere; }
+.resident-state-viewer-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.resident-state-viewer-path {
+  flex: 0 0 auto;
+  margin-block: 0;
+  padding: 8px var(--modal-inset);
+  border-bottom: 1px solid var(--border-soft);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.resident-state-viewer-path > span { display: block; }
+.resident-state-viewer-error { flex: 0 0 auto; margin-top: 8px; }
+.resident-state-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+}
+.resident-state-viewer-empty { grid-column: 1 / -1; padding: 18px var(--modal-inset); }
+.resident-state-viewer-empty p { margin: 0; font-size: 12.5px; }
+.resident-state-viewer-files {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 8px 8px var(--modal-inset);
+  border-right: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.resident-state-viewer-files ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.resident-state-viewer-file {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.resident-state-viewer-file:hover:not(:disabled) { background: var(--panel); }
+.resident-state-viewer-file.is-active { border-color: var(--border); background: var(--panel); }
+.resident-state-viewer-file:disabled { cursor: default; }
+.resident-state-viewer-preview { min-width: 0; min-height: 0; overflow: auto; padding: 12px var(--modal-inset) 18px; }
+.resident-state-viewer-preview > p { margin: 0; font-size: 12.5px; }
+.resident-state-viewer-preview pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.resident-state-viewer .markdown.resident-state-viewer-markdown { padding: 0; }
+@media (max-width: 640px) {
+  .resident-state-viewer-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .resident-state-viewer-files { max-height: 160px; border-right: none; border-bottom: 1px solid var(--border-soft); }
+}
 
 /* ---- backlog search and filters ----
 
@@ -43129,6 +43726,24 @@ body.foreman-sidecar-open .modal-backdrop {
 .shaping-env li { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border-soft); color: var(--dim); }
 .shaping-env li.is-set span { color: var(--idle); }
 .shaping-env li.is-unset span { color: var(--attention); }
+/* A marked row's sign-in: its state, the daemon's reason and its controls, all inside the row. */
+.shaping-sign-in { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg); }
+.shaping-sign-in-state { margin: 0; font-size: 12px; font-weight: 600; color: var(--fg); }
+.shaping-sign-in.is-signed_in .shaping-sign-in-state { color: var(--idle); }
+.shaping-sign-in.is-renewing .shaping-sign-in-state, .shaping-sign-in.is-off .shaping-sign-in-state { color: var(--attention); }
+.shaping-sign-in.is-off .shaping-sign-in-state { font-weight: 500; }
+.shaping-sign-in-reason { margin: 0; font-size: 12px; color: var(--dim); }
+.shaping-sign-in-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.shaping-sign-in-actions:empty { display: none; }
+.shaping-sign-in-actions .btn { padding: 4px 9px; font-size: 12px; }
+.shaping-sign-in [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-unused-sign-ins ul { margin: 0; padding: 0 12px 12px; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.shaping-unused-sign-ins li { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.shaping-unused-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.shaping-unused-copy code { align-self: flex-start; max-width: 100%; font: 11.5px/1.5 var(--mono); }
+.shaping-unused-copy span { font-size: 11.5px; color: var(--dim); }
+.shaping-unused-copy [role="alert"] { margin: 0; font-size: 12px; color: var(--attention); }
+.shaping-unused-sign-ins li .btn { flex: none; padding: 4px 9px; font-size: 12px; }
 .shaping-row-actions { flex: none; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .shaping-row-actions .btn { padding: 5px 9px; font-size: 12px; }
 .shaping-move { min-width: 30px; }
@@ -43430,7 +44045,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .vi-listening {
   --vi: var(--voice-listening);
 }
-.vi-muted {
+.vi-muted, .vi-waiting-for-key {
   --vi: var(--voice-muted);
 }
 .vi-auto-muted, .vi-unavailable {
@@ -43481,13 +44096,13 @@ button.vi { cursor: pointer; }
 .app > .vi-floating { position: fixed; bottom: 12px; left: 12px; z-index: 5; }
 .app:has(> .vi-status-line) > .vi-floating { bottom: 38px; }
 .vi-floating .vi-word, .vi-composer .vi-word, .vi-expanded { display: none; }
-button.vi-floating:is(:hover, :focus-visible) {
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) {
   width: auto; border-radius: 999px; padding: 0 13px 0 10px; gap: 6px;
   color: var(--fg); box-shadow: var(--shadow); font: 12px var(--sans);
 }
-button.vi-floating:is(:hover, :focus-visible) :is(.vi-word, .vi-expanded) { display: inline; }
-button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
-.vi-floating.vi-muted { box-shadow: var(--shadow); border-color: var(--border); }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) :is(.vi-word, .vi-expanded) { display: inline; }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) svg { color: var(--vi); }
+.vi-floating:is(.vi-muted, .vi-waiting-for-key) { box-shadow: var(--shadow); border-color: var(--border); }
 .vi-edge-line {
   position: relative; height: 3px; background: var(--vi);
   box-shadow: 0 0 14px 1px color-mix(in oklab, var(--vi) 65%, transparent);
@@ -43502,7 +44117,19 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .app > .vi-edge-line .vi-edge { height: var(--vi-edge-tab-height); }
 /* Keep the centered mute tab above the measured row, including its topmost click targets. */
 .app > .vi-edge-line ~ header.topbar { padding-top: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)); }
-.vi-edge-line.vi-muted { box-shadow: none; background: var(--border); }
+/* The edge tab overlaps the header's padding. Keep Electron's native drag
+   surface below it so the window manager delivers clicks to the microphone. */
+.is-desktop .app > .vi-edge-line ~ header.topbar {
+  -webkit-app-region: none;
+}
+.is-desktop .app > .vi-edge-line ~ header.topbar::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)) 0 0;
+  z-index: -1;
+  -webkit-app-region: drag;
+}
+.vi-edge-line:is(.vi-muted, .vi-waiting-for-key) { box-shadow: none; background: var(--border); }
 .vi-edge {
   position: absolute; top: 100%; left: 50%; transform: translateX(-50%); pointer-events: auto;
   display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
@@ -43514,7 +44141,7 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   background: color-mix(in oklab, var(--vi) 13%, var(--panel-2));
   border: 1px solid color-mix(in oklab, var(--vi) 55%, var(--border));
 }
-.vi-composer.vi-muted { background: var(--panel-2); border-color: var(--border); }
+.vi-composer:is(.vi-muted, .vi-waiting-for-key) { background: var(--panel-2); border-color: var(--border); }
 .vi-settings { border: 0; min-width: 0; padding: 0; }
 .vi-choice { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .vi-choice label { cursor: pointer; }
@@ -43564,6 +44191,27 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .topbar[data-rung~="5"]:has(.vi-topbar) .glyph-btn { min-width: 26px; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .pulse-seg:has(.pulse-n) .pulse-dot,
 .topbar[data-rung~="5"]:has(.vi-topbar) .dispatch-btn .kb-hint { display: none; }
+
+/* Settings > Voice: the mode line, then a tab strip on the Storage panel's rules. */
+.voice-settings .settings-tabs { margin-top: 4px; }
+.voice-settings .kb-capture { min-width: 66px; }
+.voice-settings .kb-row-desc:empty { display: none; }
+
+.voice-spoken-replies .kb-row, .voice-spoken-replies .kb-row-controls { flex-wrap: wrap; }
+.voice-spoken-replies .kb-row-controls { min-width: 0; max-width: 100%; }
+.voice-picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
+}
+.voice-picker-row > label { align-self: start; padding-top: 5px; }
+.voice-spoken-replies .kb-row-text { flex: 1 1 220px; }
+.voice-picker-row [role="status"] { grid-column: 2; margin: 0; }
+.voice-spoken-replies .settings-select { max-width: 100%; min-width: 0; }
+.voice-spoken-replies .voice-model-progress { flex: 1 1 180px; }
+.voice-spoken-replies .settings-hint { margin: 4px 10px 8px; }
+
+.voice-settings { container-type: inline-size; }
 
 /* Conversation Idle rail preview. The count stays visible when its section is collapsed. */
 .idle-rail-total {

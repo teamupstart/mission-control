@@ -2,16 +2,16 @@ import { test, after } from "node:test";
 import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import type { ResetResult, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { muxHandle } from "../src/shared/pane.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-assign-"));
+const home = tempDir("mission-assign-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -379,6 +379,43 @@ test("a retriage made while the prompt is being typed survives the assignment", 
   assert.equal(after.sessionId, sessionId);
   assert.equal(after.priority, "blocker");
   assert.deepEqual(after.labels, ["infra", "urgent"]);
+});
+
+test("an unnamed task handed to a running agent takes a distinct call sign in the claim, and a named one keeps its own", async () => {
+  // The assign claim is the second launch path that names a task (the dispatcher's is the
+  // first). It must read the names already spoken for at the moment it commits, so a task
+  // launching meanwhile under the very name this one would have taken keeps it, and the
+  // name this one does take lands on the stored row.
+  const { AUTO_CALL_SIGN_DICTIONARY, chooseAutoCallSign } = await import("../src/shared/voice-call-signs.ts");
+  const { namesSoundAlike } = await import("../src/shared/voice-names.ts");
+  const { allocateCallSign } = await import("../src/server/voice/call-sign-allocation.ts");
+  for (const [id, own] of [["unnamed", undefined], ["named", "Captain"]] as const) {
+    const { r, tasks, sessionId, clone } = setupInRepo(`mission-assign-call-sign-${id}-`);
+    tasks.useCallSignAllocation((task) => allocateCallSign(task, [], r.listTasks()));
+    r.upsertTask(mkTask({ id, repoRoot: clone, ...(own ? { callSign: own } : {}) }));
+    const firstChoice = chooseAutoCallSign([], id)!;
+    const res = await tasks.assign(id, sessionId, {
+      paneReady,
+      reset: cleanReset,
+      inject: async () => {
+        // Another launch claims a name while the prompt is being typed.
+        r.upsertTask(mkTask({ id: `${id}-other`, status: "dispatching", callSign: firstChoice, repoRoot: clone }));
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    });
+    assert.equal(res.ok, true, res.ok ? undefined : res.error);
+    const stored = getStoredTask(id)!;
+    assert.equal(stored.status, "running");
+    if (own) {
+      assert.equal(stored.callSign, own, "an operator's own call sign is kept");
+      continue;
+    }
+    const sign = stored.callSign!;
+    assert.ok((AUTO_CALL_SIGN_DICTIONARY as readonly string[]).includes(sign), `took ${sign}`);
+    assert.notEqual(sign, firstChoice, "the name claimed while typing was not taken");
+    assert.equal(namesSoundAlike(sign, firstChoice), false, "never heard as a name claimed before the commit");
+    assert.equal(r.getTask(id)!.callSign, sign, "the Registry holds the stored name");
+  }
 });
 
 test("dependency edits cannot enter while assignment owns the task", async () => {
@@ -2268,7 +2305,7 @@ test("the branch probe tells a detached checkout from one it could not read", as
   assert.equal(await headBranch(clone), "feature/probe");
   gitIn(clone, "checkout", "--detach");
   assert.equal(await headBranch(clone), null, "detached HEAD has no branch");
-  const notARepo = mkdtempSync(join(tmpdir(), "mission-not-a-repo-"));
+  const notARepo = tempDir("mission-not-a-repo-");
   try {
     assert.equal(await headBranch(notARepo), undefined, "an unreadable checkout is unknown, not detached");
   } finally {

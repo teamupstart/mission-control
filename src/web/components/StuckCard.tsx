@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { InboxVoiceFoot } from "./InboxVoiceFoot.tsx";
+import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
+import { VoiceRosterContext } from "../lib/voice-roster.ts";
+import { useContext, useEffect, useRef, useState } from "react";
 import { canMessage } from "@shared/pane.ts";
 import { canInterruptSession } from "@shared/session.ts";
 import type { Stall, StallFacts } from "@shared/stall.ts";
@@ -85,9 +88,18 @@ export function StuckCard({
   }, [messageable]);
 
   const disabled = busy !== null;
+  const voice = !!useContext(VoiceAnswersContext);
+  const speaker = useContext(VoiceRosterContext).find(r => r.sessionId === session.id);
+  const sendMessage = (text: string) => {
+    if (!text.trim()) return;
+    const editsAtSend = draftEdits.current;
+    run("message", () => api.sendText(session.id, text.trim(), true), () => {
+      if (text === draft && draftEdits.current === editsAtSend) setDraft("");
+    })();
+  };
 
   return (
-    <section className="inbox-item inbox-stuck" aria-label={`${name} is stuck`}>
+    <section data-voice-kind={voice ? "stuck" : undefined} data-voice-id={session.id} data-voice-session={session.id} data-voice-key={speaker?.key} className="inbox-item inbox-stuck" aria-label={`${name} is stuck`}>
       <div className="inbox-head">
         <AgentDot agent={session.agent} />
         <AgentName view={subject} />
@@ -96,13 +108,13 @@ export function StuckCard({
         <span className="inbox-spacer" />
         <InboxActionButton
           action="open-session"
-          name={name}
+          name={subject}
           tooltip="Focus this session on the fleet"
           onClick={() => onOpenSession(session.id)}
         />
         <InboxActionButton
           action="dismiss"
-          name={name}
+          name={subject}
           tooltip="Remove this from the inbox without resolving it. It stays dismissed until it reports something new"
           ariaLabel={`Dismiss ${name} from the inbox`}
           onClick={onDismiss}
@@ -114,7 +126,7 @@ export function StuckCard({
         {facts?.kind === "silent-working" && messageable && (
           <InboxActionButton
             action="nudge"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Ask it for a one-line status and what, if anything, is blocking it"
             disabled={disabled}
@@ -124,7 +136,7 @@ export function StuckCard({
         {facts?.kind === "silent-working" && canInterruptSession(session) && (
           <InboxActionButton
             action="stop"
-            name={name}
+            name={subject}
             tooltip="Stop the turn it is in. Messages queued behind it are dropped"
             disabled={disabled}
             onClick={run("stop", () => api.interrupt(session.id), undefined, interruptDone)}
@@ -133,7 +145,7 @@ export function StuckCard({
         {facts?.kind === "unfinished-work" && messageable && (
           <InboxActionButton
             action="continue"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Ask it to pick the open work up where it stopped"
             disabled={disabled}
@@ -143,7 +155,7 @@ export function StuckCard({
         {facts?.kind === "unfinished-work" && facts.task && onComplete && (
           <InboxActionButton
             action="mark-done"
-            name={name}
+            name={subject}
             tooltip="Open the Complete dialog: the work is finished and nothing more is owed. It marks the task done, closes the session, and offers a retro when one is worth running"
             disabled={disabled}
             onClick={() => onComplete(session.id)}
@@ -152,7 +164,7 @@ export function StuckCard({
         {facts?.kind === "workflow-parked" && facts.resubmittable && (
           <InboxActionButton
             action="resubmit"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Open the run's next repair round from the session's current work"
             disabled={disabled}
@@ -162,7 +174,7 @@ export function StuckCard({
         {facts?.kind === "workflow-parked" && parkedStep(facts) === "push" && messageable && (
           <InboxActionButton
             action="push"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Tell it to push: the review waits for a pushed head on this branch"
             disabled={disabled}
@@ -175,7 +187,7 @@ export function StuckCard({
           // asks it to continue.
           <InboxActionButton
             action="continue"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Ask it to take its next turn on the parked run"
             disabled={disabled}
@@ -185,7 +197,7 @@ export function StuckCard({
         {facts?.kind === "workflow-parked" && (
           <InboxActionButton
             action="open-run"
-            name={name}
+            name={subject}
             tooltip="Open this workflow run on the Runs page"
             onClick={() => onOpenRun(facts.runId)}
           />
@@ -206,18 +218,13 @@ export function StuckCard({
           />
           <InboxActionButton
             action="message"
-            name={name}
+            name={subject}
             label={facts?.kind === "escalated" ? "Reply" : undefined}
             tooltip="Send this to the agent as your message"
             disabled={disabled || draft.trim() === ""}
-            onClick={() => {
-              const text = draft.trim();
-              if (!text) return;
-              const editsAtSend = draftEdits.current;
-              run("message", () => api.sendText(session.id, text, true), () => {
-                if (draftEdits.current === editsAtSend) setDraft("");
-              })();
-            }}
+            onDictate={sendMessage}
+            dictateDisabled={disabled}
+            onClick={() => sendMessage(draft)}
           />
         </div>
       )}
@@ -231,6 +238,7 @@ export function StuckCard({
           {done}
         </p>
       )}
+      {voice && <InboxVoiceFoot name={speaker} />}
     </section>
   );
 }

@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Upgrade safety, against a database shaped like one this feature never existed in.
 //
@@ -16,7 +16,7 @@ import { join } from "node:path";
 // because it is the exported forward-upgrade contract shared by the live database and by
 // disposable restore verification, and this test needs to run it against a database it built.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-migration-"));
+const home = tempDir("mission-telemetry-migration-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { CURRENT_DATABASE_SCHEMA_VERSION, upgradeDatabaseToCurrentSchema } = await import(

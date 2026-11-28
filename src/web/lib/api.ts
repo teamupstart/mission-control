@@ -1,12 +1,15 @@
-import type { ReportItem } from "@shared/reports.ts";
+import { markReportRead, type ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { HeardEntry } from "@shared/voice-routing.ts";
+import type { HeardEntry, VoiceCard } from "@shared/voice-routing.ts";
+import { VOICE_DASHBOARD_CONFIRM_MS } from "@shared/voice-answers.ts";
 import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceRevision, VoiceState } from "@shared/voice.ts";
 import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
+  type ShaperSignInReply,
+  type ShaperSignOutReply,
   type ShapingConfigView,
   type ShapingIntent,
   type ShapingReply,
@@ -96,6 +99,7 @@ import type {
   ShippingConfigPatch,
   SetNote,
   SkillsConfigPatch,
+  UiConfig,
   UiConfigPatch,
   UiConfigView,
   PipelinesConfigPatch,
@@ -188,6 +192,7 @@ import type {
   PipelineRepoRegistrationResponse,
   PipelineReposView,
   PipelineRunDetail,
+  PipelineLaunchRuntime,
   PipelinesView,
 } from "@shared/pipeline.ts";
 import type { Attachment } from "@shared/attachments.ts";
@@ -447,6 +452,9 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
+export const fetchSessionSettingsAccess = (signal?: AbortSignal) =>
+  fetchJsonWithSignal<import("@shared/settings-mcp.ts").SessionSettingsAccess>("/api/session-settings-access", signal);
+export const fetchUiSkin = (signal?: AbortSignal) => fetchJsonWithSignal<{ skin: UiConfigView["config"]["skin"] }>("/api/ui/skin", signal);
 export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
@@ -515,6 +523,7 @@ export async function fetchAgentEnvironment(): Promise<AgentEnvironmentSettingsV
   }
 }
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+type VoiceUiWriteResult = ActionResult & Partial<UiConfig["voice"]> & { voiceIndicatorVersion?: VoiceRevision };
 export interface VoiceDashboardSnapshot {
   providerRevision: string;
   snapshotOrder: number;
@@ -535,6 +544,16 @@ function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) 
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { signal, headers: { "x-voice-provider-revision": "read" } });
+/** A card with an uncertain countdown only needs the daemon clock. Voice settings stay lazy. */
+export async function fetchVoiceCardTime(signal: AbortSignal, header = "X-Voice-Server-Time-Ms"): Promise<number | null> {
+  try {
+    const res = await fetch("/api/voice/config", { method: "HEAD", signal, cache: "no-store" });
+    const stamp = res.headers.get(header);
+    return res.ok && stamp && Number.isFinite(Number(stamp)) ? Number(stamp) : null;
+  } catch {
+    return null;
+  }
+}
 export const fetchRecentlyHeard = (signal: AbortSignal) =>
   fetchJsonWithSignal<{ entries: HeardEntry[] }>("/api/voice/heard", signal);
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
@@ -569,20 +588,21 @@ export const fetchPipelines = (refresh = false) =>
   fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
 
 /**
- * Replace observation consent and keep the returned pipeline status array intact.
+ * Save pipeline config and keep the returned repository status array intact.
  *
  * This cannot use the generic mutation helper: that helper adds the HTTP `status` number to
  * every answer, while `PipelinesView.status` is the repository health array. Flattening both
  * shapes would replace the array with `200` precisely when a consent write succeeds.
  */
-export async function setPipelinesConfig(
-  config: PipelinesConfigPatch,
+async function writePipelinesConfig(
+  request: { method: "PUT"; config: PipelinesConfigPatch }
+    | { method: "PATCH"; config: { launchRuntime: PipelineLaunchRuntime } },
 ): Promise<{ ok: true; view: PipelinesView } | { ok: false; error: string }> {
   try {
     const res = await actionFetch("/api/pipelines/config", {
-      method: "PUT",
+      method: request.method,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(config),
+      body: JSON.stringify(request.config),
     });
     const data = (await res.json().catch(() => ({}))) as Partial<PipelinesView> & {
       error?: string;
@@ -597,6 +617,10 @@ export async function setPipelinesConfig(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export function setPipelinesConfig(config: PipelinesConfigPatch) {
+  return writePipelinesConfig({ method: "PUT", config });
 }
 // ---- Repository standing instructions ----
 //
@@ -1335,6 +1359,7 @@ async function request<T extends ActionResult = ActionResult>(
       signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
+    options.signal?.throwIfAborted();
     if (!res.ok) {
       return { ...data, ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
@@ -1352,6 +1377,11 @@ const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown
   request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
+
+function voiceSpeechRequestOptions(cancel?: AbortSignal): { signal: AbortSignal } {
+  const deadline = AbortSignal.timeout(5000);
+  return { signal: cancel ? AbortSignal.any([cancel, deadline]) : deadline };
+}
 
 // ---- Recurring Missions ----
 //
@@ -2049,10 +2079,10 @@ export const api = {
     focused,
     typed,
   }),
-  recallPendingTurn: (id: string, turnId: string, revision: number) =>
+  recallPendingTurn: (id: string, turnId: string, revision: number, signal?: AbortSignal) =>
     post<ActionResult & { text?: string }>(
       `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/recall`,
-      { revision },
+      { revision }, { signal },
     ),
   retryPendingTurn: (id: string, turnId: string, revision: number) =>
     post(
@@ -2226,7 +2256,7 @@ export const api = {
   /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
   openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
   /** Mark an agent report read. Idempotent; the first time and way are kept. */
-  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
+  markReportRead: (id: string) => markReportRead(id, post),
   /** Reply to an agent report: delivered as the operator's message, and marks it read. */
   replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
   /**
@@ -2291,8 +2321,9 @@ export const api = {
     response?: string | null,
     selections?: PlanDecisionAnswer[] | null,
     approveFutureBundles = false,
+    voiceSubmitId?: string,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles, voiceSubmitId }),
   /**
    * "Remind me later" on a `request_input` question: park it for `delay` and release the agent
    * with what to do meanwhile. The daemon adds the delay to its own clock.
@@ -2555,9 +2586,29 @@ export const api = {
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
       { signal, headers: { ...(ticket && { "x-voice-provider-ticket": ticket }),
         ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
+  voiceFollowUpRepository: (id: string) => request<ActionResult & { repoRoot?: string }>(
+    "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
+  setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, writeId: string, signal: AbortSignal) =>
+    put<VoiceUiWriteResult & { writeId?: string }>("/api/voice/confirmation", { confirmation, expectedVersion, writeId }, { signal }),
+  voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string, editedReview?: string) =>
+    request<ActionResult>("POST", `/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : ""),
+      undefined, { signal: AbortSignal.timeout(10_000), ...(editedReview && { headers: { "x-voice-edit-review": editedReview } }) }),
+  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: {
+    candidate?: VoiceCard["candidates"][number]; deadline?: number | null; answerCompanion?: boolean;
+  } = {}) => {
+    // Leave the transport alive through the possible delivery window, plus a short
+    // grace period for the reply. The card can offer a retry independently.
+    const remaining = options.deadline == null ? 0 : Math.max(0, options.deadline - performance.now());
+    const confirmation = options.candidate?.kind === "question" ? VOICE_DASHBOARD_CONFIRM_MS : 0;
+    const signal = AbortSignal.timeout(Math.max(Math.ceil(remaining), confirmation) + 2000);
+    const source = options.answerCompanion && action === "send-now" ? "?source=card" : "";
+    const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}${source}`,
+      options.candidate ? { id: options.candidate.id } : undefined, { signal });
+    return signal.aborted ? { ok: false, error: "The request timed out." } : result;
+  },
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
   setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
-    put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),
+    put<VoiceUiWriteResult>("/api/voice/indicators", { id, enabled }, { signal }),
   setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */
@@ -2565,6 +2616,12 @@ export const api = {
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
+  auditionVoiceSpeech: (cancel: AbortSignal) =>
+    post<ActionResult & { id?: string; reason?: string }>("/api/voice/speech/audition", undefined, voiceSpeechRequestOptions(cancel)),
+  startVoiceSpeechDownload: () =>
+    post<ActionResult & { reason?: string }>("/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  cancelVoiceSpeechDownload: () => request("DELETE", "/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, voiceSpeechRequestOptions()),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
   saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
     put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },
@@ -2576,6 +2633,16 @@ export const api = {
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
+  /**
+   * Start a sign-in for a shaper that carries the `auth` marker (404 while `shaper-sign-in` is
+   * off). The reply's `authorizationUrl` is the one place the link appears: the sign-in list
+   * never carries it. A refusal carries the daemon's fixed `reason`.
+   */
+  signInShaper: (shaper: string) =>
+    post<ActionResult & Partial<ShaperSignInReply> & { reason?: string }>("/api/shaping/sign-in", { shaper }),
+  /** End a connection's sign-in, pending or held. A refusal carries the daemon's fixed `reason`. */
+  signOutShaper: (connection: string) =>
+    post<ActionResult & Partial<ShaperSignOutReply> & { reason?: string }>("/api/shaping/sign-out", { connection }),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
   setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
     put<ActionResult & { config?: ShapingConfigView; reason?: string; floor?: number }>("/api/shaping", intent, {
@@ -2620,8 +2687,8 @@ export const api = {
   // drops reads sent before the save, and clears the announced identity so this window takes
   // its new index before its own announcement arrives. A rescan keeps the list - same
   // directories, and a list that is a few seconds old beats none.
-  setRepoIndex: async (cfg: RepoIndexConfigPatch) => {
-    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+  setRepoIndex: async (cfg: RepoIndexConfigPatch, revision: string) => {
+    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, { ...cfg, revision });
     if (saved.ok) forgetCachedRepos();
     return saved;
   },
@@ -2629,6 +2696,8 @@ export const api = {
 
   // --- Pipelines (observing an external SDLC engine) ---
   setPipelines: setPipelinesConfig,
+  setPipelineRuntime: (launchRuntime: PipelineLaunchRuntime) =>
+    writePipelinesConfig({ method: "PATCH", config: { launchRuntime } }),
   registerPipelineRepo: (provider: PipelineProviderId, repoRoot: string) =>
     post<ActionResult & PipelineRepoRegistrationResponse>(`/api/pipelines/register`, {
       provider,
@@ -2636,7 +2705,8 @@ export const api = {
     }),
 
   // --- Task sources (pulling work into the backlog) ---
-  setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),
+  setTaskSources: (cfg: TaskSourcesConfigPatch, revision: string) =>
+    put<ActionResult & Pick<TaskSourcesView, "revision">>(`/api/task-sources/config`, { ...cfg, revision }),
   /** Sweep one source now. The report says what it filed, skipped and dropped. */
   sweepTaskSource: (id: string) =>
     post<ActionResult & SweepReport>(`/api/task-sources/${encodeURIComponent(id)}/sweep`),
@@ -2674,7 +2744,9 @@ export const api = {
     ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
-  setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
+  setSessionSettingsAccess: (input: import("@shared/session-control-authorization.ts").SessionSettingsAuthorization, signal: AbortSignal) =>
+    put("/api/session-settings-access", input, { signal }),
+  setUiConfig: (cfg: UiConfigPatch, signal?: AbortSignal) => put(`/api/ui/config`, cfg, { signal }),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 
   // --- First-run setup reminder ---

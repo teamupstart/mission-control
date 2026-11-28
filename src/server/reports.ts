@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join, posix, sep } from "node:path";
 import { agentDisplayName, sessionDisplayNameInput, withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
@@ -14,6 +14,7 @@ import {
   replyRefusal,
   replyTarget,
   reportAuthorName,
+  reportAuthorLabel,
   reportDocumentKind,
   reportId,
   reportReplyText,
@@ -33,9 +34,18 @@ import type { PendingTurn, ServerEvent, Session, Task } from "@shared/types.ts";
 import { STATE_DIR } from "./config.ts";
 import { getTask as getDurableTask, inTransaction, openDb } from "./db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { resolveCheckoutFile } from "./archives/checkout.ts";
+import { CaseCollisionGuard } from "./archives/paths.ts";
 import type { ReportPagePublication, ReportPagePublicationResult } from "./archives/manager.ts";
 import type { Registry } from "./registry.ts";
-import { buildReportPage, reportDocumentDir } from "./report-document.ts";
+import {
+  buildReportPage,
+  linkedCompanionPaths,
+  readStoredReportCompanions,
+  REPORT_COMPANIONS_DIR,
+  reportDocumentDir,
+  type ReportCompanion,
+} from "./report-document.ts";
 import { readFileWithinCap, resolveSessionFilePath, SessionFileError } from "./session-files.ts";
 import { unref } from "./util/timers.ts";
 
@@ -62,6 +72,47 @@ export class ReportRefusal extends Error {
   constructor(message: string, readonly status: 400 | 403 | 404 | 409 | 413) {
     super(message);
   }
+}
+
+/** The checkout a report's document was read from: its real path and identity at that moment. */
+interface CheckoutIdentity {
+  real: string;
+  dev: number;
+  ino: number;
+}
+
+/** The checkout's real path and identity, null when it is gone; refuses a post it cannot examine. */
+async function checkoutIdentity(root: string): Promise<CheckoutIdentity | null> {
+  const absent = (error: NodeJS.ErrnoException): null => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw checkoutUnreadable(error);
+  };
+  const real = await realpath(root).catch(absent);
+  if (!real) return null;
+  const info = await stat(real).catch(absent);
+  return info ? { real, dev: info.dev, ino: info.ino } : null;
+}
+
+function checkoutUnreadable(error: NodeJS.ErrnoException): ReportRefusal {
+  return new ReportRefusal(
+    `the checkout could not be read to collect the files the document links to (${error.code ?? error.message}); nothing was posted. Post again once it is readable.`,
+    409,
+  );
+}
+
+function checkoutChanged(): ReportRefusal {
+  return new ReportRefusal(
+    "the checkout was replaced while the report was being posted, so its linked files could not be matched to the document; nothing was posted. Post again.",
+    409,
+  );
+}
+
+/** Why a post was refused: a linked file exists in the checkout but could not be read. */
+function unreadableCompanion(path: string, error: NodeJS.ErrnoException): ReportRefusal {
+  return new ReportRefusal(
+    `${path}, which the document links to, could not be read (${error.code ?? error.message}); nothing was posted. Post again once it is readable, or remove the link.`,
+    409,
+  );
 }
 
 /** What a reply hands the outbox: one operator message for one session. */
@@ -128,6 +179,7 @@ interface Row {
   author_key: string;
   author_name: string;
   author_spoken_name: string | null;
+  author_is_reference_name: number;
   author_resident_profile_id: string | null;
   title: string;
   body: string;
@@ -158,6 +210,7 @@ function fromRow(row: Row): ReportItem {
   const author: ReportAuthor = { key: row.author_key, name: row.author_name, residentProfileId: row.author_resident_profile_id };
   if (row.author_spoken_name) {
     author.labels = { fallback: row.author_name, spoken: row.author_spoken_name };
+    if (row.author_is_reference_name) author.referenceNameActive = featureEnabled(VOICE_FLAG);
     author.name = reportAuthorName(author, featureEnabled(VOICE_FLAG));
   }
   return {
@@ -201,6 +254,8 @@ interface StagedDocument {
   name: string;
   kind: ReportDocumentKind;
   bytes: Buffer;
+  /** The files the document links to inside its own directory, read when it was attached. */
+  companions: ReportCompanion[];
 }
 
 /** The timer the announce grace period runs on, injectable so a test can own the clock. */
@@ -272,10 +327,19 @@ export interface ReportManagerOptions {
   stateDir?: string;
   now?: () => number;
   timers?: ReportTimers;
+  /**
+   * Called with each linked companion's resolved path after its containment check and before it
+   * is opened. A test seam for the window a symlink swap would race; the daemon passes none.
+   */
+  beforeCompanionOpen?: (path: string) => Promise<void> | void;
+  /** Called with the checkout root after the document was read, before companions are collected. A test seam. */
+  beforeCompanionCapture?: (root: string) => Promise<void> | void;
 }
 
 export class ReportManager {
   private readonly stateDir: string;
+  private readonly beforeCompanionOpen?: (path: string) => Promise<void> | void;
+  private readonly beforeCompanionCapture?: (root: string) => Promise<void> | void;
   private readonly now: () => number;
   private readonly timers: ReportTimers;
   private readonly stopFlags: () => void;
@@ -306,6 +370,8 @@ export class ReportManager {
 
   constructor(private readonly registry: Registry, options: ReportManagerOptions = {}) {
     this.stateDir = options.stateDir ?? STATE_DIR;
+    this.beforeCompanionOpen = options.beforeCompanionOpen;
+    this.beforeCompanionCapture = options.beforeCompanionCapture;
     this.now = options.now ?? Date.now;
     this.timers = options.timers ?? REAL_TIMERS;
     this.stopEvents = registry.subscribe((event) => this.observe(event));
@@ -343,8 +409,11 @@ export class ReportManager {
         this.registry.setReportMutes(this.listMutes());
         for (const report of this.registry.reportsToRead()) {
           const name = reportAuthorName(report.author, voiceOn);
-          if (name !== report.author.name) {
-            this.registry.upsertReport({ ...report, author: { ...report.author, name } });
+          const hasReference = report.author.referenceNameActive !== undefined;
+          if (name !== report.author.name || (hasReference && voiceOn !== report.author.referenceNameActive)) {
+            const author = { ...report.author, name };
+            if (hasReference) author.referenceNameActive = voiceOn;
+            this.registry.upsertReport({ ...report, author });
           } else if (resend) this.registry.upsertReport(report);
         }
       }
@@ -595,9 +664,12 @@ export class ReportManager {
     const run = session.task ? runs.find((candidate) => candidate.taskId === session.task!.id) : undefined;
     const names = withCurrentReferenceNames(runs, this.registry.listResidentProfiles());
     const fallback = agentDisplayName(sessionDisplayNameInput(session, names)).name;
-    const spoken = agentDisplayName(sessionDisplayNameInput(session, names, true)).name;
+    const display = agentDisplayName(sessionDisplayNameInput(session, names, true));
+    const spoken = display.name;
+    const reference = display.source === "reference-name";
     return {
-      ...(spoken === fallback ? {} : { labels: { spoken, fallback } }),
+      ...(spoken !== fallback || reference ? { labels: { spoken, fallback } } : {}),
+      ...(reference && { referenceNameActive: featureEnabled(VOICE_FLAG) }),
       key: run ? residentAuthorKey(run.profileId) : sessionAuthorKey(session.id),
       // A call sign or reference name names the author only while voice is on.
       name: featureEnabled(VOICE_FLAG) ? spoken : fallback,
@@ -632,12 +704,12 @@ export class ReportManager {
         const placeholder = `pending:${randomUUID()}`;
         const inserted = d.prepare(
           `INSERT INTO reports (id, session_id, task_id, repository, author_key, author_name, author_spoken_name,
-             author_resident_profile_id, title, body, url, document_name, document_kind, root_id,
+             author_is_reference_name, author_resident_profile_id, title, body, url, document_name, document_kind, root_id,
              version, created_at, root_created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           placeholder, session.id, session.task?.id ?? null, session.repoRoot ?? null, author.key, author.labels?.fallback ?? author.name,
-          author.labels?.spoken ?? null, author.residentProfileId, input.title, input.body, input.url ?? null, document?.name ?? null,
+          author.labels?.spoken ?? null, Number(author.referenceNameActive !== undefined), author.residentProfileId, input.title, input.body, input.url ?? null, document?.name ?? null,
           document?.kind ?? null, replaced?.rootId ?? placeholder, replaced ? replaced.version + 1 : 1, now,
           replaced?.rootCreatedAt ?? now,
         );
@@ -695,6 +767,10 @@ export class ReportManager {
     if (!kind) throw new ReportRefusal(`${file} is not an .html or .md file`, 400);
     const root = sessionWorkspaceRoot(session);
     if (!root) throw new ReportRefusal("this session has no checkout to attach a file from", 400);
+    // The checkout the document is read from, fixed before the read: its real path and identity.
+    // Companions are collected from this same directory, never from whatever occupies the path
+    // later. Absent here, the read below refuses the post with its own message.
+    const checkout = await checkoutIdentity(root);
     let target: string;
     try {
       // The Files viewer's containment check: relative, inside the checkout through symlinks,
@@ -707,15 +783,124 @@ export class ReportManager {
       throw error;
     }
     const handle = await open(target, constants.O_RDONLY);
+    let bytes: Buffer;
     try {
-      const { bytes, exceeded } = await readFileWithinCap(handle, REPORT_LIMITS.documentBytes);
-      if (exceeded) {
+      const read = await readFileWithinCap(handle, REPORT_LIMITS.documentBytes);
+      if (read.exceeded) {
         throw new ReportRefusal(`${file} is larger than the ${REPORT_LIMITS.documentBytes / 1024 / 1024} MiB a report may attach`, 413);
       }
-      return { name: basename(target), kind, bytes: Buffer.from(bytes) };
+      bytes = Buffer.from(read.bytes);
     } finally {
       await handle.close();
     }
+    if (!checkout) return { name: basename(target), kind, bytes, companions: [] };
+    if (!target.startsWith(`${checkout.real}${sep}`)) throw checkoutChanged();
+    return { name: basename(target), kind, bytes, companions: await this.stageCompanions(checkout, file, kind, bytes) };
+  }
+
+  /**
+   * Read the files the document links to inside its own directory, so Publish as scout can
+   * archive them with the page after the checkout is gone. Never refuses the report: a linked
+   * file that is missing, outside the checkout, not a regular file or past the bounds is left
+   * out, and the published page lists it as missing instead.
+   */
+  private async stageCompanions(
+    checkout: CheckoutIdentity,
+    file: string,
+    kind: ReportDocumentKind,
+    bytes: Buffer,
+  ): Promise<ReportCompanion[]> {
+    await this.beforeCompanionCapture?.(checkout.real);
+    // Still the checkout the document was read from? A checkout that is gone has no companions.
+    // One replaced at the same path (removed and recreated, or a symlink retargeted) refuses the
+    // post rather than pairing this page with another checkout's files, and one that cannot be
+    // examined (permissions, I/O) refuses it so its linked files are not silently left out.
+    // Checked here and again for every file, at the capture boundary below: a checkout moved
+    // aside and replaced at the same path mid-capture must not supply any file's bytes.
+    const sameCheckout = async (): Promise<boolean> => {
+      const now = await stat(checkout.real).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+        throw checkoutUnreadable(error);
+      });
+      if (!now) return false;
+      if (now.dev !== checkout.dev || now.ino !== checkout.ino) throw checkoutChanged();
+      return true;
+    };
+    if (!(await sameCheckout())) return [];
+    const realRoot = checkout.real;
+    const directory = posix.dirname(file);
+    const companions: ReportCompanion[] = [];
+    const collisions = new CaseCollisionGuard();
+    let total = 0;
+    for (const path of linkedCompanionPaths(kind, bytes).slice(0, REPORT_LIMITS.companionLookups)) {
+      if (companions.length >= REPORT_LIMITS.companionFiles) break;
+      // The scout capture's containment rule: every component is checked with `lstat` and none
+      // may be a symlink, and the file's identity is recorded here, before the open.
+      const relative = posix.join(directory, path);
+      // The containment check says only that the path was refused. A file that is absent, or
+      // that the check refused for its shape (a symlink, not a regular file), is left out. One
+      // that exists but cannot even be examined (permissions, I/O) refuses the post with its
+      // cause, so the report can be posted again once it is readable, rather than being stored
+      // without data that was there.
+      const leaveOut = async (): Promise<void> => {
+        await lstat(join(realRoot, ...relative.split("/"))).catch((error: NodeJS.ErrnoException) => {
+          if (["ENOENT", "ENOTDIR", "ELOOP", "ENAMETOOLONG"].includes(error.code ?? "")) return null;
+          throw unreadableCompanion(path, error);
+        });
+      };
+      const resolved = await resolveCheckoutFile(realRoot, relative);
+      if (!resolved.ok) {
+        await leaveOut();
+        continue;
+      }
+      await this.beforeCompanionOpen?.(resolved.path);
+      // `O_NOFOLLOW` refuses a symlink swapped into the final component after that check. A
+      // directory on the way swapped for a symlink is still followed by `open`, so the handle's
+      // identity must be the one resolved above: a file reached through a swapped parent is a
+      // different file, and is left out rather than read.
+      // `O_NONBLOCK` so a named pipe swapped in after the check cannot hold the open waiting for
+      // a writer; the regular-file check below rejects it.
+      const handle = await open(resolved.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        .catch((error: NodeJS.ErrnoException) => {
+          // Gone, or swapped for a symlink or a socket, since the check: left out, as a missing
+          // file is. Any other failure is the file being unreadable, which refuses the post.
+          if (["ENOENT", "ENOTDIR", "ELOOP", "ENXIO"].includes(error.code ?? "")) return null;
+          throw unreadableCompanion(path, error);
+        });
+      if (!handle) continue;
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.dev !== resolved.dev || info.ino !== resolved.ino) continue;
+        // The identity alone does not prove where the handle was reached from: a directory moved
+        // out of the checkout and replaced by a symlink to its new place still holds the same
+        // file. So containment is checked again now that the file is open, before any byte is
+        // read. Every component must still be a real directory inside the checkout, and the path
+        // must still name the file the handle holds.
+        const again = await resolveCheckoutFile(realRoot, relative);
+        if (!again.ok) {
+          await leaveOut();
+          continue;
+        }
+        if (again.dev !== info.dev || again.ino !== info.ino) continue;
+        // The capture boundary: every check above resolved paths under the checkout's path, so
+        // the directory at that path must still be the checkout the document was read from.
+        if (!(await sameCheckout())) throw checkoutChanged();
+        if (info.size > REPORT_LIMITS.companionBytes - total) continue;
+        const read = await readFileWithinCap(handle, info.size);
+        if (read.exceeded) continue;
+        // Collisions are settled among files actually stored: a spelling that names nothing (or
+        // nothing storable) never shuts out one that does.
+        if (!collisions.admit(path)) continue;
+        total += read.bytes.byteLength;
+        companions.push({ path, bytes: Buffer.from(read.bytes) });
+      } finally {
+        await handle.close();
+      }
+    }
+    // A checkout replaced at any point during capture refuses the post, even when the swap only
+    // made the remaining files fail their own checks and nothing was read from the replacement.
+    await sameCheckout();
+    return companions;
   }
 
   /** Copy a document under its report's directory, through a rename so no half file is left. */
@@ -726,6 +911,17 @@ export class ReportManager {
     try {
       writeFileSync(temporary, document.bytes);
       renameSync(temporary, join(dir, document.name));
+      if (document.companions.length > 0) {
+        // Staged under a dot name and renamed into place whole: a reader that finds the
+        // directory finds every companion in it.
+        const staging = join(dir, `.${REPORT_COMPANIONS_DIR}.partial`);
+        for (const companion of document.companions) {
+          const path = join(staging, ...companion.path.split("/"));
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, companion.bytes);
+        }
+        renameSync(staging, join(dir, REPORT_COMPANIONS_DIR));
+      }
     } catch (error) {
       rmSync(dir, { recursive: true, force: true });
       throw error;
@@ -784,10 +980,16 @@ export class ReportManager {
 
   /** Muted report authors, oldest mute first. */
   listMutes(): ReportMute[] {
+    const voice = featureEnabled(VOICE_FLAG);
     return (openDb()
-      .prepare("SELECT author_key, author_name, author_spoken_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
-      .all() as Array<{ author_key: string; author_name: string; author_spoken_name: string | null; muted_at: number }>)
-      .map((row) => ({ authorKey: row.author_key, authorName: featureEnabled(VOICE_FLAG) ? row.author_spoken_name ?? row.author_name : row.author_name, mutedAt: Number(row.muted_at) }));
+      .prepare("SELECT author_key, author_name, author_spoken_name, author_is_reference_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
+      .all() as Array<{ author_key: string; author_name: string; author_spoken_name: string | null; author_is_reference_name: number; muted_at: number }>)
+      .map((row) => ({
+        authorKey: row.author_key,
+        authorName: voice ? row.author_spoken_name ?? row.author_name : row.author_name,
+        ...(voice && row.author_is_reference_name ? { isReferenceName: true as const } : {}),
+        mutedAt: Number(row.muted_at),
+      }));
   }
 
   /**
@@ -798,12 +1000,12 @@ export class ReportManager {
    */
   mute(authorKey: string): ReportMute | null {
     const latest = openDb()
-      .prepare("SELECT author_name, author_spoken_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
-      .get(authorKey) as { author_name: string; author_spoken_name: string | null } | undefined;
+      .prepare("SELECT author_name, author_spoken_name, author_is_reference_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
+      .get(authorKey) as { author_name: string; author_spoken_name: string | null; author_is_reference_name: number } | undefined;
     if (!latest) return null;
     openDb()
-      .prepare("INSERT INTO report_mutes (author_key, author_name, author_spoken_name, muted_at) VALUES (?, ?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
-      .run(authorKey, latest.author_name, latest.author_spoken_name, this.now());
+      .prepare("INSERT INTO report_mutes (author_key, author_name, author_spoken_name, author_is_reference_name, muted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
+      .run(authorKey, latest.author_name, latest.author_spoken_name, latest.author_is_reference_name, this.now());
     const mutes = this.listMutes();
     this.registry.setReportMutes(mutes);
     return mutes.find((mute) => mute.authorKey === authorKey) ?? null;
@@ -920,7 +1122,7 @@ export class ReportManager {
     }
     if (report.readAt !== null) throw new ReportRefusal("This report has already been read.", 409);
     const target = this.replyTargetFor(report);
-    if (target.kind !== "live") throw new ReportRefusal(replyRefusal(target, report.author.name), 409);
+    if (target.kind !== "live") throw new ReportRefusal(replyRefusal(target, reportAuthorLabel(report.author)), 409);
     const sent = submit(target.sessionId, reportReplyText(report, words, this.now()));
     if (!sent.ok) throw new ReportRefusal(sent.error ?? "the message could not be queued", 409);
     return { report: this.markRead(id, "reply") ?? report, sessionId: target.sessionId, pendingTurn: sent.pendingTurn ?? null };
@@ -956,7 +1158,7 @@ export class ReportManager {
     let report = this.getRow(id);
     if (!report) return refuse(404, "no such report", null);
     if (report.author.residentProfileId !== null) {
-      return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
+      return refuse(409, `${reportAuthorLabel(report.author)} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
     }
     // A task that was deleted or cancelled is normally forgotten the moment it happens, by the
     // task watcher (`forgetFollowUpTask`). This is the fallback for one it has not seen yet, and
@@ -986,9 +1188,9 @@ export class ReportManager {
       // one is not replaced by a second session beside it.
       const target = this.replyTargetFor(report);
       if (target.kind === "live") {
-        return refuse(409, `${report.author.name} is still running: reply to it instead of starting a follow-up task.`, report);
+        return refuse(409, `${reportAuthorLabel(report.author)} is still running: reply to it instead of starting a follow-up task.`, report);
       }
-      if (target.kind === "unreachable") return refuse(409, replyRefusal(target, report.author.name), report);
+      if (target.kind === "unreachable") return refuse(409, replyRefusal(target, reportAuthorLabel(report.author)), report);
       if (!report.repository) {
         return refuse(409, "This report recorded no repository, so a follow-up task cannot be started from it.", report);
       }
@@ -1167,11 +1369,20 @@ export class ReportManager {
     }
     const built = await buildReportPage(report, this.stateDir);
     if (!built.ok) return refuse(built.status, built.problems, report);
+    let companions: ReportCompanion[];
+    try {
+      companions = await readStoredReportCompanions(report, built.page, this.stateDir);
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      return refuse(500, [`could not read the files stored with this report: ${why}`], report);
+    }
     const published = await port.publish({
       reportId: report.id,
       reportCreatedAt: report.createdAt,
       title: report.title,
       page: built.page,
+      companions,
+      documentName: report.document.name,
       session: { id: report.sessionId, name: report.author.name, taskId: report.taskId },
       repositoryLabel: report.repository ? basename(report.repository) : null,
     });

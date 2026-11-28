@@ -1,10 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The destructive half of the `tmux_session` -> `home_name` migration. `reconcileOnStartup`
 // runs `git worktree remove --force` when it decides an agent's home is gone, so the one
@@ -17,7 +16,7 @@ import type { Task } from "../src/shared/types.ts";
 // terminal-home.test.ts covers for the resolvable cases). The reconcile runs from the
 // TaskManager constructor over whatever the registry already holds.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reconcile-"));
+const home = tempDir("mission-reconcile-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");

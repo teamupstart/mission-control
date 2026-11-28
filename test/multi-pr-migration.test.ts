@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The per-repo pull request upgrade path, seeded as an existing install's database actually
 // looks and then opened by db.ts on the code path production takes.
@@ -18,7 +18,7 @@ import { join } from "node:path";
 // is that the primary repo's pull request still lives where it always lived, and that the
 // merge stamp still reaches it now that a fourth statement runs in the same transaction.
 
-const home = mkdtempSync(join(tmpdir(), "mission-multipr-migrate-"));
+const home = tempDir("mission-multipr-migrate-");
 process.env.MISSION_HOME = home;
 
 /**

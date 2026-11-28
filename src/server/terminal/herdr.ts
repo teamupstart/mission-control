@@ -9,6 +9,7 @@ import {
   type HerdrProbe,
 } from "./herdr-client.ts";
 import { defaultExec, heldInComposer, type TerminalExec } from "./exec.ts";
+import { userProcessRunning } from "./server-process.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { shellCommand } from "./shell.ts";
 import type {
@@ -221,6 +222,14 @@ export function herdrMultiplexer(
 
     sessions: {
       alive: null,
+      async serverStopped() {
+        if (unsupported()) return null;
+        const status = await client.probe();
+        if (status.state === "ready") return false;
+        if (status.state !== "stopped") return null;
+        const running = await userProcessRunning(exec, "herdr");
+        return running === null ? null : !running;
+      },
       closeIfOnlyPane: null,
       async spawnDetached(spec) {
         const host = unsupported();

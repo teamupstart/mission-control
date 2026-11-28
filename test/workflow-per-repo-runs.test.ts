@@ -1,13 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
 import type { WorkflowBinding, WorkflowContextSnapshot, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 import { WorkflowInspectorGateStateSchema } from "../src/shared/protocol.ts";
 import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // One workflow run is one repository.
 //
@@ -22,7 +21,7 @@ import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 // gate vocabulary. That is the design constraint, and the last test in this file is the one
 // that says so - a single-repo session must come out of every rule here unchanged.
 
-const home = mkdtempSync(join(tmpdir(), "mission-per-repo-runs-"));
+const home = tempDir("mission-per-repo-runs-");
 process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));

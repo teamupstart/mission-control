@@ -4,7 +4,7 @@ import { WORKFLOW_RUN_PHASES, WORKFLOW_RUN_PHASE_STATUSES } from "../src/shared/
 import type { WorkflowRunDetail, WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { projectWorkflowRecovery, WORKFLOW_PHASE_RECOVERY, type WorkflowRecoveryContext } from "../src/server/workflows/recovery.ts";
 import { runNextMove, inspectorGateActions, refusedUnchangedRequestId, runNoMoveReason } from "../src/web/workflows/run-actions.ts";
-import { runRemedy } from "../src/web/workflows/run-model.ts";
+import { actionBlockSentence, runPosture, runRemedy, sessionActionRecheckOffered } from "../src/web/workflows/run-model.ts";
 
 const context = (patch: Partial<WorkflowRecoveryContext> = {}): WorkflowRecoveryContext => ({
   status: "blocked", phase: "infrastructure_error", bindingId: "binding", bindingState: "active",
@@ -130,4 +130,72 @@ test("a closed-PR block offers the Inspector recheck as its next move", () => {
     assert.equal(runNextMove(d)?.label, "Check again", mode);
     assert.ok(inspectorGateActions(d).some((action) => action.kind === "recheck-inspector"), mode);
   }
+});
+
+test("a session action blocked by a lost session offers a round-free retry, even past the budget", () => {
+  // The report: round 11 of a cap of 10, `resubmit` refused, `grant-rounds` absent, retry
+  // refused as not an infrastructure failure, and only `cancel` left.
+  const lost = context({
+    phase: "session_action_blocked", round: 11, maxRepairRounds: 10,
+    latest: { mode: "full_workflow", status: "running", triggerSource: "manual", triggerKey: "manual:binding:request" },
+    attempts: [{ state: "error" }], recoverableSessionAction: true,
+  });
+  const recovery = projectWorkflowRecovery(lost);
+  assert.ok(recovery.operations.includes("retry"));
+  assert.equal(recovery.primary, "retry");
+  assert.equal(recovery.triage, "retry");
+  assert.match(recovery.resubmit?.refusal ?? "", /used every repair round/);
+  const move = runNextMove(detail(lost));
+  assert.equal(move?.kind, "retry");
+  assert.equal(move?.label, "Check the action again");
+  assert.match(move?.tooltip ?? "", /without spending a repair round/);
+  assert.match(runRemedy(detail(lost).summary)?.tooltip ?? "", /no repair round is spent/);
+
+  // Any other action block keeps its old answer, and so does a detached binding.
+  assert.ok(!projectWorkflowRecovery({ ...lost, recoverableSessionAction: false }).operations.includes("retry"));
+  assert.ok(!projectWorkflowRecovery({ ...lost, bindingState: "orphaned", sessionId: null }).operations.includes("retry"));
+});
+
+test("a recoverable lost-session block does not tell the operator it will never restart", () => {
+  const lost = context({
+    phase: "session_action_blocked",
+    latest: { mode: "full_workflow", status: "running", triggerSource: "manual", triggerKey: "manual:binding:request" },
+    recoverableSessionAction: true,
+  });
+  const recoverable = detail(lost);
+  recoverable.run.gateState = { nodeId: "act", attemptId: "attempt", code: "session_lost", detail: "away" };
+  const posture = runPosture(recoverable);
+  assert.match(posture?.sentence ?? "", /checked again on its own when the session is running/);
+  assert.match(posture?.sentence ?? "", /No repair round was spent/);
+  assert.doesNotMatch(posture?.sentence ?? "", /will not restart on its own/);
+
+  // Any other action block, or a lost session with no re-check on offer, keeps the old words.
+  const other = detail({ ...lost, recoverableSessionAction: false });
+  other.run.gateState = { nodeId: "act", attemptId: "attempt", code: "capture_failed", detail: "git" };
+  assert.match(runPosture(other)?.sentence ?? "", /will not restart on its own/);
+  const detached = detail({ ...lost, bindingState: "orphaned", sessionId: null });
+  detached.run.gateState = { nodeId: "act", attemptId: "attempt", code: "session_lost", detail: "away" };
+  assert.match(runPosture(detached)?.sentence ?? "", /will not restart on its own/);
+});
+
+test("the action card promises a re-check only when the daemon offers one", () => {
+  const lost = context({
+    phase: "session_action_blocked",
+    latest: { mode: "full_workflow", status: "running", triggerSource: "manual", triggerKey: "manual:binding:request" },
+    recoverableSessionAction: true,
+  });
+  const recoverable = detail(lost);
+  recoverable.run.gateState = { nodeId: "act", attemptId: "attempt", code: "session_lost", detail: "away" };
+  assert.equal(sessionActionRecheckOffered(recoverable, "attempt"), true);
+  assert.equal(sessionActionRecheckOffered(recoverable, "an-older-attempt"), false);
+  assert.match(actionBlockSentence("session_lost", sessionActionRecheckOffered(recoverable, "attempt")),
+    /checked again when the session is running/);
+
+  // Orphaned binding: no retry is projected, so the card must not promise one.
+  const orphaned = detail({ ...lost, bindingState: "orphaned", sessionId: null, recoverableSessionAction: false });
+  orphaned.run.gateState = { nodeId: "act", attemptId: "attempt", code: "session_lost", detail: "binding gone" };
+  assert.equal(sessionActionRecheckOffered(orphaned, "attempt"), false);
+  const sentence = actionBlockSentence("session_lost", sessionActionRecheckOffered(orphaned, "attempt"));
+  assert.doesNotMatch(sentence, /checked again/);
+  assert.equal(sentence, "The bound session was gone before the turn finished.");
 });

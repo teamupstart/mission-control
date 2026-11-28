@@ -1,14 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrMatch } from "../src/server/registry.ts";
 import type { BranchSnapshot } from "../src/server/github/branch-update.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
-process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-pr-"));
+process.env.HARNESS_HOME = tempDir("harness-pr-");
 const { Registry, prNumberFromUrl } = await import("../src/server/registry.ts");
 const { pollBranchUpdates } = await import("../src/server/github/branch-update.ts");
 

@@ -8,11 +8,10 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "poller-discovery-off-"));
+const home = tempDir("poller-discovery-off-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_POLL_MS = "0";
 after(() => rmSync(home, { recursive: true, force: true }));

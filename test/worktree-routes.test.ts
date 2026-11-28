@@ -1,5 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { CHECK_WORKTREES_DIR } from "../src/server/config.ts";
 import { openDb } from "../src/server/db.ts";
 import { Registry } from "../src/server/registry.ts";
 import { ReviewManager } from "../src/server/reviews.ts";
@@ -8,14 +11,14 @@ import { QueueManager } from "../src/server/queue.ts";
 import { buildApp } from "../src/server/routes.ts";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
-import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
+import { CheckLeaseManager, CheckLeaseStore } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import type { TerminalLaunchSpec } from "../src/server/terminal/targets.ts";
 import type { TerminalBackendId } from "../src/shared/terminal.ts";
 import { WorktreeActionRequestSchema } from "../src/shared/protocol.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "../src/shared/worktrees.ts";
-import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
 const registry = new Registry();
@@ -85,6 +88,44 @@ test("inventory/config routes are bounded, validated, future-only, and content-f
     body: JSON.stringify({ maxSlots: 0 }),
   });
   assert.equal(invalid.status, 400);
+});
+
+test("GET /api/worktrees reports disposable check-lease provenance and retention diagnostics", async (t) => {
+  const { root, clone } = mkOriginAndClone("mission-worktree-check-route-");
+  const attemptId = "census-check-attempt";
+  const path = join(CHECK_WORKTREES_DIR, attemptId);
+  const store = new CheckLeaseStore(db);
+  t.after(() => {
+    store.delete(attemptId);
+    rmSync(path, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  });
+  mkdirSync(CHECK_WORKTREES_DIR, { recursive: true });
+  const leasePath = mkLinkedWorktree(clone, "census-check", path);
+  store.insertHeld({
+    attemptId, submissionId: "census-submission", nodeId: "check", repoRoot: clone,
+    leasePath, holderToken: "census-check-holder", provider: "git", now: 100,
+  });
+  store.setState(attemptId, "returning", 200);
+
+  const response = await app.request("/api/worktrees", { headers: HEADERS });
+  assert.equal(response.status, 200);
+  const { disposable, retention } = await response.json();
+  assert.equal(disposable.checkRoot, "complete");
+  assert.deepEqual(disposable.entries.find((entry: { root: string; name: string }) =>
+    entry.root === "check" && entry.name === attemptId), {
+    root: "check", name: attemptId, taskId: null, checkState: "returning", gitMetadata: "readable", orphanEvidence: null,
+  });
+  // The diagnostics name checkouts by root, name, task and position - never by location.
+  const diagnostics = JSON.stringify({ disposable, retention });
+  assert.ok(!diagnostics.includes(CHECK_WORKTREES_DIR), "no check checkout path in the response");
+  assert.ok(!diagnostics.includes(path));
+  assert.ok(!diagnostics.includes(root), "no repository path in the response");
+  assert.ok(["configured", "report-only", "enforce"].includes(retention.mode));
+  assert.ok(["off", "report-only", "enforce"].includes(retention.orphanReclaim));
+  assert.ok(Array.isArray(retention.entries));
+  assert.ok(Number.isInteger(retention.total));
+  assert.equal(store.get(attemptId)?.cleanupState, "returning");
 });
 
 test("preview/execute status vocabulary and injected terminal launcher stay exact", async () => {

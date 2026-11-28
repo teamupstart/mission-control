@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { workflowRunParkedOnSession, type WorkflowRunSummary } from "@shared/workflow.ts";
-import { hasOpenStallTask, isIdleStall, legacyStallFingerprint, openStallQueueCount, stallFingerprint, type Stall } from "@shared/stall.ts";
+import {
+  hasOpenStallTask, isIdleStall, legacyStallFingerprint, openStallQueueCount, stallFingerprint,
+  workflowOwnsNextMove, type Stall,
+} from "@shared/stall.ts";
 import { fetchAwayStalls } from "./api.ts";
 
 /** Matches useAwayMode's cadence, and the daemon's own poll - a faster read finds nothing new. */
@@ -59,6 +62,8 @@ export function currentStalls(
   const byRun = runs && new Map(runs.map(run => [run.id, run]));
   const current: ObservedStall[] = [];
   for (const stall of stalls) {
+    // A live run update can arrive ahead of the next stall poll.
+    if (workflowOwnsNextMove(stall.sessionId, runs)) continue;
     if (stall.kind === "workflow-parked" && byRun) {
       const facts = stall.facts?.kind === "workflow-parked" ? stall.facts : undefined;
       const id = facts?.runId ?? stall.workflowRunId;

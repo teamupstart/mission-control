@@ -1,13 +1,13 @@
 // Schema 37 (task hibernation) on an upgraded database: a version 36 file opens, gains only the
 // nullable `tasks.hibernation` column, keeps its rows, and a second open changes nothing.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-hibernation-upgrade-"));
+const home = tempDir("mission-hibernation-upgrade-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

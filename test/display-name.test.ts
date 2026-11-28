@@ -101,7 +101,7 @@ test("with voice off, a saved call sign or reference name names nothing, and the
   const resident = { name: "w", task: { id: "t-resident", title: "Cut releases", kind: "resident" as const } };
   assert.equal(sessionDisplayNameInput(resident, named).resident?.referenceName, null);
   assert.deepEqual(agentNameView(resident, "w", true, named, false), { name: "Release Captain", colorId: "teal" });
-  assert.deepEqual(agentNameView(resident, "w", true, named, true), { name: "Sage", colorId: "teal" });
+  assert.deepEqual(agentNameView(resident, "w", true, named, true), { isReferenceName: true, name: '"Sage"', colorId: "teal" });
 });
 
 test("an alert names its agent by a call sign only while voice is on, in a toast and a stuck line alike", () => {
@@ -136,7 +136,7 @@ test("a resident's task never names it by a call sign, the rule the voice roster
   ];
   const resident = { name: "w", task: { id: "t-resident", title: "Cut releases", kind: "resident" as const, callSign: "Will" } };
   assert.equal(sessionDisplayNameInput(resident, named, true).callSign, null);
-  assert.deepEqual(agentNameView(resident, "w", true, named, true), { name: "Sage", colorId: "teal" }, "its reference name answers");
+  assert.deepEqual(agentNameView(resident, "w", true, named, true), { isReferenceName: true, name: '"Sage"', colorId: "teal" }, "its reference name answers");
   const plain: ResidentNameSource[] = [
     { taskId: "t-resident", settings: { identity: { name: "Release Captain" }, board: { colorId: "teal" } } },
   ];

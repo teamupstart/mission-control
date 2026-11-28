@@ -1,14 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-sdk-hook-isolation-"));
+const home = tempDir("mission-sdk-hook-isolation-");
 process.env.MISSION_HOME = home;
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { lastAgentBinding, taskWorkEpisodeForTask, openDb } = await import("../src/server/db.ts");

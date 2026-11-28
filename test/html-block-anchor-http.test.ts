@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The block-anchor route, end to end over a real checkout.
 //
@@ -11,7 +11,7 @@ import { join } from "node:path";
 // stale render is refused rather than answered, and that a session with no such file, no
 // working directory, or no session at all is turned away before parse5 is reached.
 
-const home = mkdtempSync(join(tmpdir(), "mission-html-block-anchor-"));
+const home = tempDir("mission-html-block-anchor-");
 process.env.MISSION_HOME = home;
 
 const checkout = join(home, "checkout");

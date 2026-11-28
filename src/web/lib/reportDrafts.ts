@@ -36,9 +36,9 @@ export function setReportDraft(rootId: string, text: string): void {
   notify();
 }
 
-/** Forget a chain's draft, once a reply or follow-up from it was accepted. */
-export function clearReportDraft(rootId: string): void {
-  setReportDraft(rootId, "");
+/** An accepted send clears its own words. Dictation or another edit can leave a different draft. */
+export function clearReportDraft(rootId: string, sentText?: string): void {
+  if (sentText === undefined || reportDraft(rootId) === sentText) setReportDraft(rootId, "");
 }
 
 /** A card's draft and its setter, re-rendering only that card when it changes. */

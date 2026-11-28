@@ -1,12 +1,12 @@
 import { test, after } from "node:test";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { mcpFixtureSpawns, writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a dispatched session told a tool exists that it cannot call.
 //
@@ -22,7 +22,7 @@ import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.
 // a real absolute path can carry, and pin the tool vocabulary against the server's own
 // `registerTool` calls.
 
-const home = mkdtempSync(join(tmpdir(), "mission-mcp-"));
+const home = tempDir("mission-mcp-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 // Resolve a known nondefault port before imports, independent of the workflow's port.
@@ -109,7 +109,7 @@ test("the descriptor points at the ONE resolved server path with an absolute run
  * 18 with no `crypto` global, so reaching it at all is visible in the result.
  */
 function pinnedCheckout(): { dir: string; checkout: string; shimDir: string } {
-  const dir = mkdtempSync(join(tmpdir(), "mission-mcp-pinned-"));
+  const dir = tempDir("mission-mcp-pinned-");
   const shimDir = join(dir, "shims");
   mkdirSync(shimDir);
   writeFileSync(
@@ -282,11 +282,13 @@ test("product issue registration requires public confirmation and bounded attach
   const end = source.indexOf('server.registerTool(\n  "report_status"', start);
   assert.ok(start >= 0 && end > start, "report_product_issue registration is present");
   const registration = source.slice(start, end);
-  assert.match(registration, /only after the user explicitly/);
+  assert.match(registration, /when the user explicitly requests a Mission Control report/);
+  assert.match(registration, /built-in Bug Fix Inspector, the operator's launch is a standing request to prepare drafts/);
+  assert.match(registration, /first and scheduled passes of that run/);
   assert.match(registration, /public GitHub issue/);
   assert.match(registration, /Submit public issue/);
   assert.match(registration, /Optional screenshot/);
-  assert.match(registration, /inputSchema: ProductIssueDraftSchema\.shape/);
+  assert.match(registration, /\.\.\.ProductIssueDraftSchema\.shape/);
   assert.match(registration, /\.\.\.productIssueTransport/);
   assert.match(registration, /PRODUCT_ISSUE_CLIENT/);
   assert.doesNotMatch(

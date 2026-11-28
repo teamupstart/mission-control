@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { WorkflowContextSnapshot, WorkflowEvidenceImage } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-carry-forward-"));
+const home = tempDir("mission-workflow-carry-forward-");
 process.env.MISSION_HOME = join(home, "state");
 
 const { openDb, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
@@ -123,7 +123,7 @@ function logWrite(input: {
 }
 
 test("a preflight refinement carries its parent's evidence, including a source the agent has since deleted", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-preflight-")));
+  const checkout = realpathSync(tempDir("mission-carry-preflight-"));
   try {
     writeFileSync(join(checkout, "screen.png"), PNG);
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -246,7 +246,7 @@ test("registering only the pieces a preflight named accumulates instead of repla
   // those 7 - and the submission used to hold 7, because reservation emptied the tray and the
   // first 3 were attached to the previous submission. The preflight then named the first 3 as
   // missing, and the two halves chased each other forever.
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-partial-resubmit-")));
+  const checkout = realpathSync(tempDir("mission-carry-partial-resubmit-"));
   try {
     const { store, noteKey, binding, runId } = fixture(checkout);
     const stage = (label: string, count: number, at: number) => {
@@ -339,7 +339,7 @@ test("registering only the pieces a preflight named accumulates instead of repla
 });
 
 test("a refinement child re-declaring a criterion keeps every link its parent proved for it", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-relink-")));
+  const checkout = realpathSync(tempDir("mission-carry-relink-"));
   try {
     writeFileSync(join(checkout, "panel.png"), Buffer.concat([PNG, Buffer.from("relink", "utf8")]));
     const shot = Buffer.concat([PNG, Buffer.from("relink", "utf8")]);
@@ -485,7 +485,7 @@ test("a refinement child re-declaring a criterion keeps every link its parent pr
 });
 
 test("when the cap binds, a carry gives up old ancestry before the parent's own captures", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-priority-")));
+  const checkout = realpathSync(tempDir("mission-carry-priority-"));
   try {
     const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
     const max = WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount;
@@ -573,7 +573,7 @@ test("when the cap binds, a carry gives up old ancestry before the parent's own 
 });
 
 test("a parent at the coverage limit meeting a child with claims of its own stays readable", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-claimcap-")));
+  const checkout = realpathSync(tempDir("mission-carry-claimcap-"));
   try {
     const { WORKFLOW_EVIDENCE_COVERAGE_LIMITS } = await import("../src/shared/workflow.ts");
     const max = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims;
@@ -655,7 +655,7 @@ test("a parent at the coverage limit meeting a child with claims of its own stay
 });
 
 test("re-registering a criterion under the same id does not spend the carry budget", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-redeclare-")));
+  const checkout = realpathSync(tempDir("mission-carry-redeclare-"));
   try {
     const shared = 40;
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -744,7 +744,7 @@ test("re-registering a criterion under the same id does not spend the carry budg
 });
 
 test("a three-level chain refuses the oldest ancestry, not the parent's own claims", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-chain-")));
+  const checkout = realpathSync(tempDir("mission-carry-chain-"));
   try {
     const { WORKFLOW_EVIDENCE_COVERAGE_LIMITS } = await import("../src/shared/workflow.ts");
     const max = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims;
@@ -826,7 +826,7 @@ test("a three-level chain refuses the oldest ancestry, not the parent's own clai
 });
 
 test("a byte-capped carry stops at the first refusal instead of packing smaller ancestry in", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-bytecap-")));
+  const checkout = realpathSync(tempDir("mission-carry-bytecap-"));
   try {
     const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
     const kib = (n: number) => "x".repeat(n * 1024) + "\n";
@@ -915,7 +915,7 @@ test("a byte-capped carry stops at the first refusal instead of packing smaller 
 });
 
 test("two source records with identical bytes both carry, so neither claim loses its link", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-twins-")));
+  const checkout = realpathSync(tempDir("mission-carry-twins-"));
   try {
     // The exact shape captureSubmissionImages supports and the observed run produced: one
     // screenshot registered twice under two client ids. Both are frozen as distinct records
@@ -998,7 +998,7 @@ test("two source records with identical bytes both carry, so neither claim loses
 });
 
 test("a parent claim survives a link whose evidence the limit refused", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-partial-")));
+  const checkout = realpathSync(tempDir("mission-carry-partial-"));
   try {
     const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
     const max = WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount;
@@ -1095,7 +1095,7 @@ test("a parent claim survives a link whose evidence the limit refused", async ()
 });
 
 test("a new repair round retains the parent's claim beside the one the author wrote today", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-round-relink-")));
+  const checkout = realpathSync(tempDir("mission-carry-round-relink-"));
   try {
     writeFileSync(join(checkout, "old.log"), "round one evidence\n");
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -1206,7 +1206,7 @@ test("a new repair round retains the parent's claim beside the one the author wr
 });
 
 test("byte-identical evidence is frozen once and shared, and the shared body outlives its first run", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-dedupe-")));
+  const checkout = realpathSync(tempDir("mission-carry-dedupe-"));
   try {
     // Bytes unique to this test, so the body count it measures is its own: digest sharing is
     // global by design, and reusing the shared fixture PNG would measure an earlier test.
@@ -1311,7 +1311,7 @@ test("byte-identical evidence is frozen once and shared, and the shared body out
 });
 
 test("re-registering identical bytes attaches them to the next submission, while changed bytes still refuse", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-restage-")));
+  const checkout = realpathSync(tempDir("mission-carry-restage-"));
   try {
     writeFileSync(join(checkout, "shot.png"), PNG);
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -1388,7 +1388,7 @@ test("re-registering identical bytes attaches them to the next submission, while
 });
 
 test("a pruned row is not a reference that keeps a body alive", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-refcount-")));
+  const checkout = realpathSync(tempDir("mission-carry-refcount-"));
   try {
     const bytes = Buffer.concat([PNG, Buffer.from("refcount", "utf8")]);
     writeFileSync(join(checkout, "ref.png"), bytes);
@@ -1640,7 +1640,7 @@ test("the Persona manifest marks carried evidence with the round and tree it was
 });
 
 test("a later round drops carried evidence whose source now reads differently, and keeps one that is gone", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-stale-")));
+  const checkout = realpathSync(tempDir("mission-carry-stale-"));
   try {
     writeFileSync(join(checkout, "stable.log"), "stable: the run that passed\n");
     writeFileSync(join(checkout, "edited.log"), "edited: the run that passed\n");
@@ -1727,7 +1727,7 @@ test("a later round drops carried evidence whose source now reads differently, a
 });
 
 test("a carry never exceeds the aggregate evidence limits it competes for", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-budget-")));
+  const checkout = realpathSync(tempDir("mission-carry-budget-"));
   try {
     const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
     const max = WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount;
@@ -1811,7 +1811,7 @@ test("a carry never exceeds the aggregate evidence limits it competes for", asyn
  */
 
 test("identical bytes re-registered in a later episode return to the tray under the new stamp", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-episode-")));
+  const checkout = realpathSync(tempDir("mission-carry-episode-"));
   try {
     writeFileSync(join(checkout, "round.png"), PNG);
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -1861,7 +1861,7 @@ test("identical bytes re-registered in a later episode return to the tray under 
 });
 
 test("an unresolved intent returns evidence to the tray without erasing the stamp it has", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-unresolved-")));
+  const checkout = realpathSync(tempDir("mission-carry-unresolved-"));
   try {
     writeFileSync(join(checkout, "unresolved.png"), PNG);
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -1895,7 +1895,7 @@ test("an unresolved intent returns evidence to the tray without erasing the stam
 });
 
 test("a coverage claim may link evidence an earlier submission already reserved", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-linkreserved-")));
+  const checkout = realpathSync(tempDir("mission-carry-linkreserved-"));
   try {
     const body = "\u2714 the suite this criterion rests on\n";
     writeFileSync(join(checkout, "suite.log"), body);
@@ -1943,7 +1943,7 @@ test("a coverage claim may link evidence an earlier submission already reserved"
 });
 
 test("the store's deliberate refusals carry a code the evidence tool can relay", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-refusalcode-")));
+  const checkout = realpathSync(tempDir("mission-carry-refusalcode-"));
   try {
     writeFileSync(join(checkout, "coded.png"), PNG);
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -1995,7 +1995,7 @@ test("the store's deliberate refusals carry a code the evidence tool can relay",
 });
 
 test("evidence removed by retention cannot wedge the claims that outlived it", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-danglinglink-")));
+  const checkout = realpathSync(tempDir("mission-carry-danglinglink-"));
   try {
     const body = "the proof a pruned round captured\n";
     writeFileSync(join(checkout, "pruned.log"), body);
@@ -2070,7 +2070,7 @@ test("evidence removed by retention cannot wedge the claims that outlived it", (
 });
 
 test("re-scoping an item does not wedge the untouched claims that link it", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-scopedrift-")));
+  const checkout = realpathSync(tempDir("mission-carry-scopedrift-"));
   try {
     const body = "the suite this criterion rests on\n";
     writeFileSync(join(checkout, "scoped.log"), body);
@@ -2137,7 +2137,7 @@ test("re-scoping an item does not wedge the untouched claims that link it", () =
 });
 
 test("a claim whose link drifted out of scope is left staged rather than frozen beside it", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-frozenscope-")));
+  const checkout = realpathSync(tempDir("mission-carry-frozenscope-"));
   try {
     const body = "the suite this criterion rests on\n";
     writeFileSync(join(checkout, "frozen-scope.log"), body);
@@ -2212,7 +2212,7 @@ test("a claim whose link drifted out of scope is left staged rather than frozen 
  * surface that could tell it why.
  */
 test("a replacement claim citing the parent's reserved proof is frozen, not silently dropped", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-deferred-")));
+  const checkout = realpathSync(tempDir("mission-carry-deferred-"));
   try {
     const suite = "# both fix doors\nok 1 - trust door refusal\nok 2 - setup door refusal\n";
     writeFileSync(join(checkout, "refusal.png"), PNG);
@@ -2375,7 +2375,7 @@ test("a replacement claim citing the parent's reserved proof is frozen, not sile
 });
 
 test("a claim the carry cannot rescue is reported as left staged rather than passed over", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-leftstaged-")));
+  const checkout = realpathSync(tempDir("mission-carry-leftstaged-"));
   try {
     const body = "the suite this criterion rests on\n";
     writeFileSync(join(checkout, "drift.log"), body);
@@ -2439,7 +2439,7 @@ test("a claim the carry cannot rescue is reported as left staged rather than pas
 });
 
 test("reserved evidence names its repair and reserved coverage can be updated", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-refusals-")));
+  const checkout = realpathSync(tempDir("mission-carry-refusals-"));
   try {
     writeFileSync(join(checkout, "shot.png"), PNG);
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -2506,7 +2506,7 @@ test("reserved evidence names its repair and reserved coverage can be updated", 
  * a duplicated log line into a failed capture.
  */
 test("the deferred pass is safe to re-run and logs one refusal, not one per attempt", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-redeferred-")));
+  const checkout = realpathSync(tempDir("mission-carry-redeferred-"));
   try {
     const body = "the suite this criterion rests on\n";
     writeFileSync(join(checkout, "resume.log"), body);
@@ -2566,7 +2566,7 @@ test("the deferred pass is safe to re-run and logs one refusal, not one per atte
  * carrying a different payload, which is what `appendEvent`'s replay-conflict guard refuses.
  */
 test("the left-staged event writes the same normalized claims its id was digested from", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-normalized-")));
+  const checkout = realpathSync(tempDir("mission-carry-normalized-"));
   try {
     const body = "the suite this criterion rests on\n";
     writeFileSync(join(checkout, "zeta.log"), body);
@@ -2636,7 +2636,7 @@ test("the left-staged event writes the same normalized claims its id was digeste
  * a link failed would go looking for evidence that is sitting right there.
  */
 test("a claim refused for room is reported as room, not as a link that failed", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-capped-")));
+  const checkout = realpathSync(tempDir("mission-carry-capped-"));
   try {
     const body = "the suite every criterion here rests on\n";
     writeFileSync(join(checkout, "capped.log"), body);
@@ -2872,8 +2872,8 @@ test("v8 coverage staging migration preserves registrations and permits retained
 
 for (const sameId of [true, false]) for (const leadCaptured of [false, true]) for (const complete of [false, true]) {
   test(`${sameId ? "same-id" : "different-id"} scope narrowing preserves shared proof before the sibling's first capture (${leadCaptured ? "lead captured" : "neither captured"}, ${complete ? "complete" : "incomplete"} replacement)`, async () => {
-    const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-pending-sibling-")));
-    const siblingRoot = realpathSync(mkdtempSync(join(tmpdir(), "mission-pending-sibling-root-")));
+    const checkout = realpathSync(tempDir("mission-pending-sibling-"));
+    const siblingRoot = realpathSync(tempDir("mission-pending-sibling-root-"));
     try {
       const { store, noteKey, binding, runId } = fixture(checkout);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
@@ -2953,8 +2953,8 @@ for (const sameId of [true, false]) for (const leadCaptured of [false, true]) fo
 
 for (const replacementScope of ["repo-01", "all"] as const) for (const aliasBinding of [false, true]) {
   test(`same-id ${replacementScope} update cannot inherit its old proof when its new link cannot freeze (${aliasBinding ? "symlinked" : "physical"} binding)`, async () => {
-    const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-same-id-update-")));
-    const siblingRoot = realpathSync(mkdtempSync(join(tmpdir(), "mission-same-id-sibling-")));
+    const checkout = realpathSync(tempDir("mission-same-id-update-"));
+    const siblingRoot = realpathSync(tempDir("mission-same-id-sibling-"));
     const bindingRoot = aliasBinding ? `${checkout}-alias` : checkout;
     if (aliasBinding) symlinkSync(checkout, bindingRoot, "dir");
     try {
@@ -3049,8 +3049,8 @@ for (const replacementScope of ["repo-01", "all"] as const) for (const aliasBind
 
 for (const oldScope of ["repo-01", "all"] as const) for (const captured of [false, true]) {
   test(`scope-changing replacement from ${oldScope} ${captured ? "after capture" : "before capture"} cannot reuse stale proof`, async () => {
-    const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-scope-replacement-")));
-    const siblingRoot = realpathSync(mkdtempSync(join(tmpdir(), "mission-scope-sibling-")));
+    const checkout = realpathSync(tempDir("mission-scope-replacement-"));
+    const siblingRoot = realpathSync(tempDir("mission-scope-sibling-"));
     try {
       writeFileSync(join(checkout, "proof.log"), "old complete proof");
       const { store, noteKey, binding, runId } = fixture(checkout);
@@ -3247,7 +3247,7 @@ for (const operation of ["binding", "supersedes", "withdraw"] as const) {
 }
 
 for (const failedCapture of [false, true]) test(`an id-bound replacement retires a semantic claim ${failedCapture ? "after image_changed" : "without supersedes"}`, async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-semantic-replacement-")));
+  const checkout = realpathSync(tempDir("mission-semantic-replacement-"));
   try {
     writeFileSync(join(checkout, "proof.log"), "focused checks passed");
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -3311,7 +3311,7 @@ for (const failedCapture of [false, true]) test(`an id-bound replacement retires
 });
 
 for (const explicit of [false, true]) test(`a claim covering two criteria is ${explicit ? "fully retired by explicit supersedes" : "preserved when only one criterion is replaced"}`, async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-shared-claim-")));
+  const checkout = realpathSync(tempDir("mission-shared-claim-"));
   try {
     writeFileSync(join(checkout, "proof.log"), "both criteria passed");
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -3368,7 +3368,7 @@ for (const explicit of [false, true]) test(`a claim covering two criteria is ${e
 });
 
 test("a pinned claim whose text matches a second criterion covers only its id before and after carry-forward", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-pinned-carry-")));
+  const checkout = realpathSync(tempDir("mission-pinned-carry-"));
   try {
     writeFileSync(join(checkout, "proof.log"), "focused checks passed");
     const { store, noteKey, binding, runId } = fixture(checkout);
@@ -3412,7 +3412,7 @@ test("a pinned claim whose text matches a second criterion covers only its id be
 });
 
 test("an image_changed capture failure does not sever previous coverage on resubmit", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-image-carry-")));
+  const checkout = realpathSync(tempDir("mission-image-carry-"));
   try {
     writeFileSync(join(checkout, "proof.log"), "all criteria passed");
     writeFileSync(join(checkout, "image.png"), PNG);
@@ -3454,7 +3454,7 @@ test("an image_changed capture failure does not sever previous coverage on resub
 });
 
 test("registered evidence survives reservation once per item and stays conversation-owned", () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-registered-reserved-")));
+  const checkout = realpathSync(tempDir("mission-registered-reserved-"));
   try {
     const { store, noteKey, binding, runId } = fixture(checkout);
     store.stageWorkflowEvidence(noteKey, [

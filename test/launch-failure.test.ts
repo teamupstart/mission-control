@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A dispatch that never started, from the record the dispatcher writes to the routes that act
 // on it. What is at stake is the failure the operator could not see: the placeholder tile left
@@ -20,7 +20,7 @@ import type { QueueManager } from "../src/server/queue.ts";
 //  - the record is cleared by the next attempt and answered when the same work later starts;
 //  - one reason is one report, and the report's facts are built by the daemon.
 
-const home = mkdtempSync(join(tmpdir(), "mission-launch-failure-"));
+const home = tempDir("mission-launch-failure-");
 process.env.HARNESS_HOME = home;
 // A binary that exists, so bin resolution is not what fails the dispatches below.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";

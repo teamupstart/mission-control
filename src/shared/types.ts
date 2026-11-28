@@ -1,5 +1,5 @@
 import type { FeatureFlagsConfig } from "./feature-flags.ts";
-import type { ShapingConfigView } from "./shaping.ts";
+import type { ShapingConfigView, ShapingSignInView } from "./shaping.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -734,6 +734,7 @@ export interface Session {
   missingEnvironment?: string[];
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  sessionInspectionOnly?: boolean;
   /**
    * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
    * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the
@@ -1491,6 +1492,12 @@ export interface SessionGoal {
    * never denormalized onto session cards.
    */
   pendingPrompts: GoalPromptRevision[];
+  /** Acceptance time for the latest prompt, retained if an unclear verdict is replayed. */
+  latestPromptAcceptedAt?: number;
+  /** Accepted standalone release timestamp. Queue instructions started later still apply. */
+  handoffReleasedAt?: number;
+  /** When the actual deliverable last changed, excluding handoff restrictions. */
+  deliverableUpdatedAt?: number;
   updatedAt: number;
 }
 
@@ -1503,6 +1510,8 @@ export interface SessionIntentGuard {
 
 export interface GoalPromptRevision {
   revision: number;
+  /** Accepted operator time. Older captured revisions may lack this provenance. */
+  acceptedAt?: number;
   /** Null only for a legacy unresolved revision whose text was already lost before migration. */
   prompt: string | null;
 }
@@ -1623,6 +1632,8 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   sentAt: number | null;
+  /** First accepted delivery. Later retries do not renew the item's handoff authority. */
+  firstDeliveredAt?: number;
   /** Runtime captured for this delivery attempt; absent on rows predating this field. */
   deliveryRuntime?: SessionRuntime | null;
   completedAt: number | null;
@@ -3434,6 +3445,11 @@ export interface InspectorPr {
   reviewComplete?: boolean | null;
   /** Exact head whose final clean review was confirmed on GitHub. */
   cleanReviewHeadSha?: string | null;
+  /**
+   * The head the worker matched to a passed Local Inspector review, recorded in any posture.
+   * No GitHub review ran for it. Null for a head reviewed on GitHub and for older rows.
+   */
+  localReviewHeadSha?: string | null;
   /** Completed review rounds. Also the runaway guard. */
   round: number;
   lastReviewedAt: number | null;
@@ -3680,6 +3696,8 @@ export interface InspectorSummary {
   reviewedHeadSha?: string | null;
   observedHeadSha?: string | null;
   cleanReviewHeadSha?: string | null;
+  /** The head matched to a passed Local Inspector review; see `InspectorPr`. */
+  localReviewHeadSha?: string | null;
 }
 
 /**
@@ -4079,16 +4097,31 @@ export type ServerEvent =
        */
       shaping?: ShapingConfigView;
       /**
+       * Shaper sign-in's list at connect time. Present only while `task-shaping` and
+       * `shaper-sign-in` are both on; absent reads as an empty list. It never holds a token, a
+       * code, the OAuth `state` parameter (its own `state` is the connection's status), a verifier or
+       * an authorization URL. One entry per connection the known
+       * shapers name or the store holds, so it is bounded by the shapers and the store.
+       */
+      shapingSignIns?: ShapingSignInView[];
+      /**
        * The voice state at connect time (contract B of the voice plan). Present only while the
        * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
        * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
        */
       voice?: import("./voice.ts").VoiceState;
       /** Current indicator selection on connect or reconnect, only while voice is enabled. */
+      voiceConfirmation?: import("./voice.ts").VoiceConfirmationPlacement;
       voiceIndicators?: string[];
       voiceIndicatorVersion?: import("./voice.ts").VoiceRevision;
       /** Cards still awaiting delivery or a pick when this window connects. */
+      windowId?: string;
+      voiceAnswers?: import("./voice-answers.ts").VoiceAnswer[];
       voiceCards?: import("./voice-routing.ts").VoiceCard[];
+      /** When this SSE connection reached the daemon, paired with the browser request start. */
+      voiceStreamStartedAt?: number;
+      /** Daemon wall time at transmission, used to translate cancel windows into local time. */
+      voiceServerTime?: number;
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -4264,15 +4297,36 @@ export type ServerEvent =
    */
   | { type: "shaping_config"; config: ShapingConfigView | null }
   /**
+   * Shaper sign-in's list (`ShapingSignInView[]`), sent only while `task-shaping` and
+   * `shaper-sign-in` are both on: on every change to the list, and on a flag change only when it
+   * differs from the last list sent, the empty list counting as already sent. So when either
+   * turns off it sends an empty list, which clears it in every window, unless the last list sent
+   * was already empty and every window holds one. It never holds a token, a
+   * code, the OAuth `state` parameter (its own `state` is each connection's status), a verifier
+   * or an authorization URL, so a pending sign-in in it has no link.
+   */
+  | { type: "shaping_sign_ins"; signIns: ShapingSignInView[] }
+  /**
    * The voice state moved: a flag or the voice config changed, a listener's hello arrived or
    * lapsed, or a shell report arrived or lapsed. Carries the whole state, so every follower - each
    * dashboard and the desktop shell - converges without a fetch. Sent only while the `voice` flag
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
-  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
+  | import("./voice-answers.ts").VoiceInboxEvent
+  | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null; voiceServerTime?: number; voiceStreamStartedAt?: number }
+  | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
+  | { type: "voice_dictation"; windowId: string; target: string; text: string; capture: string; interim: boolean }
+  | { type: "voice_dictation_probe"; windowId: string; sequence: number }
+  | { type: "voice_confirm_focus"; windowId: string; sequence: number }
+  | { type: "voice_card_remove"; id: string }
+  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
-  | { type: "voice_indicators"; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
+  /** Bounded invalidation for the shared dashboard skin, with no config values on the stream. */
+  | { type: "ui_skin_changed" }
+  | { type: "settings_config_changed"; domain: import("./session-settings-metadata.ts").SettingsRefreshDomain }
+  | { type: "session_settings_access_changed" }
+  | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
   /**
    * Who can be addressed changed: a resident profile or run, a task's call sign, or a session
    * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces

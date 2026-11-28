@@ -1,11 +1,13 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import type { Page, Route } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
-import { beListener, enableVoice, say, type Listener } from "../fixtures/voice.ts";
+import { beListener, enableVoice, say, sendHello, voiceToken, type Listener } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 // Voice addressing's first phase, end to end against the shipped registry: the flag row toggles,
 // the Voice category appears with it in every open window, a cancel window change persists across
@@ -22,7 +24,7 @@ async function capture(window: Page, name: string): Promise<void> {
   await window.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
 }
 
-async function voiceConfig(daemon: DaemonHandle): Promise<{ cancelWindow: { enabled: boolean; seconds: number }; whenUnsure: string; planFormsByVoice: boolean }> {
+async function voiceConfig(daemon: DaemonHandle): Promise<{ listeningMode: string; endOfSpeechMs: number; cancelWindow: { enabled: boolean; seconds: number }; whenUnsure: string; planFormsByVoice: boolean }> {
   const response = await fetch(`${daemon.baseURL}/api/voice/config`);
   expect(response.status).toBe(200);
   return ((await response.json()) as { config: Awaited<ReturnType<typeof voiceConfig>> }).config;
@@ -37,6 +39,94 @@ const rail = (window: Page) => window.getByRole("tablist", { name: "Settings cat
 const voiceTab = (window: Page) => rail(window).getByRole("tab", { name: "Voice" });
 const modeLine = (window: Page) => window.getByRole("status", { name: "Voice mode" });
 const flagToggle = (window: Page) => window.getByRole("button", { name: /^Voice addressing:/ });
+
+test("Listening mode is searchable and Push-to-talk preserves settings across restart", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/fleet");
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search everything" }).fill("push-to-talk");
+  await page.getByRole("option", { name: /Listening mode, setting/ }).click();
+  await expect(page.locator('[data-anchor="voice/listening-mode"]')).toHaveClass(/settings-flash/);
+  const mode = page.getByRole("combobox", { name: "Listening mode" });
+  const delay = page.getByRole("combobox", { name: "End-of-speech delay" });
+  const calls = page.getByRole("checkbox", { name: "Auto-mute on calls" });
+  const cancel = page.getByRole("combobox", { name: "Cancel window" });
+  await expect(mode).toHaveValue("always-on");
+  await expect(mode).toHaveAccessibleDescription("Choose when Voice opens the microphone");
+  await delay.selectOption("5000");
+  await expect(calls).toBeChecked();
+  await calls.press("Space");
+  await expect(calls).not.toBeChecked();
+  await mode.selectOption("push-to-talk");
+  await expect(delay).toBeDisabled();
+  await expect(calls).toBeDisabled();
+  await openVoiceTab(page, "Names & routing");
+  await expect(page.getByRole("radio", { name: "Ask aloud" })).toBeDisabled();
+  await openVoiceTab(page, "Listening");
+  await expect(cancel).toBeEnabled();
+  await expect(page.getByText("Push-to-talk hotkey", { exact: true })).toBeVisible();
+  await expect.poll(async () => (await voiceConfig(daemon)).listeningMode).toBe("push-to-talk");
+  await daemon.shutdown();
+  await daemon.restart();
+  await page.reload();
+  await expect(mode).toHaveValue("push-to-talk");
+  await expect(delay).toBeDisabled();
+  expect(await sendHello(daemon)).toBe(200);
+  const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+  const report = async (down: boolean) => {
+    const at = voiceHostTimeUs();
+    const result = await page.request.post(daemon.baseURL + "/voice/shell-report", {
+      headers: { "x-harness-token": voiceToken(daemon) },
+      data: { pushToTalkSession: state.pushToTalkSession, registeredHotkey: state.configuredHotkey,
+        capabilities: { hotkey: { available: true } }, reportedAtHostUs: at, pushToTalk: down,
+        ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }) },
+    });
+    expect(result.ok()).toBe(true);
+  };
+  await report(false);
+  await expect(modeLine(page)).toContainText("Waiting for hotkey");
+  await report(true);
+  await expect(modeLine(page)).toContainText("Push to talk");
+  await report(false);
+  await expect(modeLine(page)).toContainText("Waiting for hotkey");
+  if (EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await mode.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(EVIDENCE, "push-to-talk.png") });
+  }
+  await mode.selectOption("always-on");
+  await expect(delay).toBeEnabled();
+  await expect(delay).toHaveValue("5000");
+  await expect(calls).toBeEnabled();
+  await expect(modeLine(page)).toContainText("Listening");
+  await expect(calls).not.toBeChecked();
+  await expect(cancel).toHaveValue("4");
+});
+
+test("end-of-speech delay saves shorter and longer choices independently and survives a daemon restart", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const delay = page.getByRole("combobox", { name: "End-of-speech delay" });
+  const cancel = page.getByRole("combobox", { name: "Cancel window" });
+  await expect(delay).toHaveValue("2000");
+  await expect(delay).toBeEnabled();
+  await expect(delay).toHaveAccessibleDescription("Speech that resumes within this delay stays in the same utterance.");
+  if (EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await delay.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(EVIDENCE, "end-of-speech.png") });
+  }
+  for (const ms of [500, 5000]) {
+    await delay.selectOption(String(ms));
+    await expect.poll(async () => (await voiceConfig(daemon)).endOfSpeechMs).toBe(ms);
+    await expect(cancel).toHaveValue("4");
+  }
+  await daemon.shutdown();
+  await daemon.restart();
+  await page.reload();
+  await expect(delay).toHaveValue("5000");
+  await expect(cancel).toHaveValue("4");
+});
 
 test("reopening Voice settings preserves pending Clear and indicator saves, their errors, and retry", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
@@ -58,7 +148,11 @@ test("reopening Voice settings preserves pending Clear and indicator saves, thei
     if (route.request().method() === "PUT" && ++saves === 1) return heldSave.resolve(route);
     return route.continue();
   });
+  // Clear is on Recently heard and the indicators on On screen. Leaving a tab, like leaving the
+  // page, must not lose a save that is still pending.
+  await openVoiceTab(page, "Recently heard");
   await clear.click();
+  await openVoiceTab(page, "On screen");
   await edge.check();
   const [deletion, save] = await Promise.all([heldClear.promise, heldSave.promise]);
   async function reopen() {
@@ -68,17 +162,21 @@ test("reopening Voice settings preserves pending Clear and indicator saves, thei
     await voiceTab(page).click();
   }
   await reopen();
+  await openVoiceTab(page, "Recently heard");
   await expect.soft(clear).toBeDisabled({ timeout: 1000 });
+  await clear.evaluate(button => (button as HTMLButtonElement).click());
+  await openVoiceTab(page, "On screen");
   await expect.soft(indicators.getByRole("checkbox", { disabled: true })).toHaveCount(5, { timeout: 1000 });
   await expect(edge).toBeChecked({ timeout: 1000 });
-  await clear.evaluate(button => (button as HTMLButtonElement).click());
   await edge.evaluate(box => (box as HTMLInputElement).click());
   expect([deletes, saves]).toEqual([1, 1]);
   await deletion.fulfill({ status: 503, json: { error: "History could not be cleared." } });
   await save.fulfill({ status: 503, json: { error: "save_failed" } });
   async function expectRefusals() {
+    await openVoiceTab(page, "Recently heard");
     await expect(history.getByRole("alert")).toHaveText("History could not be cleared.");
     await expect(history.getByRole("cell", { name: "Retained test utterance" })).toBeVisible();
+    await openVoiceTab(page, "On screen");
     await expect(indicators.getByRole("alert")).toHaveText("Could not save the indicator selection.");
     await expect(edge).not.toBeChecked();
   }
@@ -92,12 +190,17 @@ test("reopening Voice settings preserves pending Clear and indicator saves, thei
     await voiceTab(page).blur();
     await expect(page.locator(".tooltip")).toHaveCount(0);
     await indicators.screenshot({ path: join(captureDir, "indicator-refusal.png") });
+    await openVoiceTab(page, "Recently heard");
+    await page.mouse.move(0, 0);
+    await expect(page.locator(".tooltip")).toHaveCount(0);
     await history.screenshot({ path: join(captureDir, "clear-refusal.png") });
   }
+  await openVoiceTab(page, "Recently heard");
   await clear.click();
-  await edge.check();
   await expect(history.getByRole("alert")).toHaveCount(0);
   await expect(history).toContainText("Nothing heard yet.");
+  await openVoiceTab(page, "On screen");
+  await edge.check();
   await expect(indicators.getByRole("alert")).toHaveCount(0);
   await expect(edge).toBeEnabled();
   await expect(edge).toBeChecked();
@@ -123,7 +226,7 @@ test("only Settings > Voice polls for voice config, and a pending save survives 
   expect(reads, "the Display category does not read voice config").toBe(0);
 
   await voiceTab(page).click();
-  const length = page.getByRole("combobox", { name: "Cancel window length" });
+  const length = page.getByRole("combobox", { name: "Cancel window" });
   await expect(length).toHaveValue("4");
   expect((await page.request.put(endpoint, { data: { cancelWindow: { seconds: 6 } } })).ok()).toBe(true);
   await page.clock.fastForward(6000);
@@ -185,22 +288,27 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
     await capture(peer, "settings-unavailable");
 
     const panel = peer.getByRole("tabpanel", { name: "Voice" });
-    await expect(panel.getByRole("checkbox", { name: "Auto-mute during calls" })).toBeChecked();
-    await expect(panel.getByRole("checkbox", { name: "Cancel window", exact: true })).toBeChecked();
-    await expect(panel.getByRole("combobox", { name: "Cancel window length" })).toHaveValue("4");
-    await expect(panel.getByRole("radio", { name: "Show on screen" })).toBeChecked();
+    await expect(panel.getByRole("checkbox", { name: "Auto-mute on calls" })).toBeChecked();
+    await expect(panel.getByRole("combobox", { name: "Cancel window" })).toHaveValue("4");
+    await openVoiceTab(peer, "Names & routing");
+    await expect(panel.getByRole("radio", { name: "Show" })).toBeChecked();
+    await openVoiceTab(peer, "Spoken replies");
     await expect(panel.getByRole("checkbox", { name: "Plan forms by voice" })).toBeChecked();
 
-    await panel.getByRole("combobox", { name: "Cancel window length" }).selectOption("8");
+    await openVoiceTab(peer, "Listening");
+    await panel.getByRole("combobox", { name: "Cancel window" }).selectOption("8");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(8);
-    await panel.getByRole("radio", { name: "Ask aloud" }).check();
-    await expect.poll(async () => (await voiceConfig(daemon)).whenUnsure).toBe("ask");
+    await openVoiceTab(peer, "Names & routing");
+    await expect(panel.getByRole("radio", { name: "Ask aloud" })).toBeDisabled();
+    await expect.poll(async () => (await voiceConfig(daemon)).whenUnsure).toBe("show");
     await peer.reload();
     const reloaded = peer.getByRole("tabpanel", { name: "Voice" });
-    await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toHaveValue("8");
-    await expect(reloaded.getByRole("radio", { name: "Ask aloud" })).toBeChecked();
-    await reloaded.getByRole("checkbox", { name: "Cancel window", exact: true }).uncheck();
-    await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toBeDisabled();
+    await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("8");
+    await openVoiceTab(peer, "Names & routing");
+    await expect(reloaded.getByRole("radio", { name: "Show on screen" })).toBeChecked();
+    await openVoiceTab(peer, "Listening");
+    await reloaded.getByRole("combobox", { name: "Cancel window" }).selectOption("off");
+    await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("off");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: false, seconds: 8 });
 
     await modeLine(peer).getByRole("button", { name: "Open Setup" }).click();
@@ -282,7 +390,7 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   // Settings > Voice: the daemon refuses every config write.
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const panel = page.getByRole("tabpanel", { name: "Voice" });
-  const length = panel.getByRole("combobox", { name: "Cancel window length" });
+  const length = panel.getByRole("combobox", { name: "Cancel window" });
   const planForms = panel.getByRole("checkbox", { name: "Plan forms by voice" });
   await expect(length).toHaveValue("4");
   let refusedWrites = 0;
@@ -294,6 +402,7 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   await length.selectOption("8");
   await expect(panel.getByText("That change didn't stick: save_failed")).toBeVisible();
   await expect(length, "the length returns to the value the daemon holds").toHaveValue("4");
+  await openVoiceTab(page, "Spoken replies");
   // A click, not `uncheck()`: the switch is meant to spring back, which `uncheck()` reports as an error.
   await planForms.click();
   await expect(planForms, "the switch returns to the value the daemon holds").toBeChecked();
@@ -302,6 +411,7 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   await capture(page, "settings-write-refused");
 
   await page.unroute("**/api/voice/config");
+  await openVoiceTab(page, "Listening");
   await length.selectOption("6");
   await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(6);
   await expect(panel.getByText(/That change didn't stick/)).toHaveCount(0);
@@ -352,10 +462,12 @@ test("Voice settings edits are saved in order, and a refused first edit leaves a
   expect(voiceOn.ok).toBe(true);
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const panel = page.getByRole("tabpanel", { name: "Voice" });
-  const length = panel.getByRole("combobox", { name: "Cancel window length" });
+  const length = panel.getByRole("combobox", { name: "Cancel window" });
   const planForms = panel.getByRole("checkbox", { name: "Plan forms by voice" });
   await expect(length).toHaveValue("4");
+  await openVoiceTab(page, "Spoken replies");
   await expect(planForms).toBeChecked();
+  await openVoiceTab(page, "Listening");
 
   // The first write is held until released, then refused. Every later one reaches the daemon.
   let release: () => void = () => {};
@@ -378,23 +490,39 @@ test("Voice settings edits are saved in order, and a refused first edit leaves a
   await length.selectOption("8");
   await expect.poll(() => writes.length).toBe(1);
   await expect(length, "the first edit shows while it is being saved").toHaveValue("8");
+  await openVoiceTab(page, "Spoken replies");
   await planForms.click();
   await expect(planForms, "the second edit shows at once too").not.toBeChecked();
+  await openVoiceTab(page, "Listening");
   await expect(length).toHaveValue("8");
 
   release();
   await expect(panel.getByText("That change didn't stick: save_failed")).toBeVisible();
   await expect(length, "the refused first edit leaves the panel").toHaveValue("4");
+  await openVoiceTab(page, "Spoken replies");
   await expect(planForms, "the kept second edit stays on screen").not.toBeChecked();
+  await openVoiceTab(page, "Listening");
   await expect.poll(async () => (await voiceConfig(daemon)).planFormsByVoice).toBe(false);
   expect((await voiceConfig(daemon)).cancelWindow.seconds, "the daemon never took the refused edit").toBe(4);
   // In order, one at a time: the second request left only after the first was answered.
-  expect(writes.map((write) => write.body)).toEqual([{ cancelWindow: { seconds: 8 } }, { planFormsByVoice: false }]);
   expect(writes[1]!.at).toBeGreaterThanOrEqual(firstAnsweredAt);
   await capture(page, "settings-edits-in-order");
 
+  // Another window disables cancellation before this window's numeric selection reaches the daemon.
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() === "PUT") {
+      const off = await page.request.put(route.request().url(), { data: { cancelWindow: { enabled: false } } });
+      expect(off.ok()).toBe(true);
+    }
+    await route.fallback();
+  });
   await length.selectOption("6");
-  await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(6);
+  await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: true, seconds: 6 });
+  expect(writes.map(write => write.body)).toEqual([
+    { cancelWindow: { enabled: true, seconds: 8 } }, { planFormsByVoice: false },
+    { cancelWindow: { enabled: true, seconds: 6 } },
+  ]);
   await expect(panel.getByText(/That change didn't stick/)).toHaveCount(0);
+  await openVoiceTab(page, "Spoken replies");
   await expect(planForms).not.toBeChecked();
 });

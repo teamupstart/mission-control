@@ -1521,6 +1521,18 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
       title: `GitHub Inspector: the last review of this pull request did not complete${suffix}`,
     };
   }
+  // A head the Local Inspector passed before the pull request opened. Ahead of the round
+  // count, because no GitHub round ever runs for it: "not looked at yet" would be wrong.
+  const local = inspector.localReviewHeadSha;
+  if (local && local === inspector.observedHeadSha && inspector.open === 0) {
+    return {
+      mark: "✓",
+      tone: "insp-clean",
+      dry,
+      title: `GitHub Inspector: reviewed locally before the pull request opened, at ${local.slice(0, 8)}. `
+        + "No GitHub review ran and nothing was posted. Workflow completion is separate.",
+    };
+  }
   if (inspector.round === 0) {
     // Glyph alone. "Adopted, not looked at yet" is the least urgent thing this chip can
     // say, and it should not cost a single character more than its own presence.

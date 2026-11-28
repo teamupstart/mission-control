@@ -2,9 +2,9 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this is the one path where a Persona's review authority comes from a file
@@ -19,7 +19,7 @@ import { join } from "node:path";
  * `personas-http.test.ts` does for the rest of the Persona catalog.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-persona-import-"));
+const home = tempDir("mission-persona-import-");
 process.env.HARNESS_HOME = join(home, "state");
 for (const prefix of ["MISSION_", "FLEET_", "HARNESS_"]) {
   delete process.env[`${prefix}WORKFLOW_PERSONA_MODEL`];

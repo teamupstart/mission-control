@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 import test from "node:test";
 
@@ -14,6 +13,7 @@ import { HERDR_BIN } from "../src/server/terminal/herdr.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { fakeHerdrSocket, refuse, reply } from "./helpers/herdr-socket.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function run(stdout: string, code = 0, outcomeUnknown = false): RunResult {
   return { stdout, stderr: "", code, outcomeUnknown, overflowed: false };
@@ -239,7 +239,7 @@ test("workspace creation rejects a successful response for a different label or 
 });
 
 test("workspace creation verifies local cwd identity without guessing or retrying", async (t) => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "herdr-create-cwd-")));
+  const dir = realpathSync(tempDir("herdr-create-cwd-"));
   const target = join(dir, "target"), alias = join(dir, "alias"), other = join(dir, "other");
   const missing = join(dir, "missing"), dangling = join(dir, "dangling"), loop = join(dir, "loop");
   const locked = join(dir, "locked"), lockedAlias = join(locked, "alias");

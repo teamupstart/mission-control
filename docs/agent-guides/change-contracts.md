@@ -215,15 +215,64 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
   (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`), reference kinds
   (`SHAPING_REFERENCE_KINDS`), routed-skill lifecycle points (`SHAPING_LIFECYCLE_POINTS`),
-  skill states (`SHAPING_SKILL_STATES`) and after-work prompt states (`SHAPING_PROMPT_STATES`),
-  each with its retired tuple where it has one. `route` was appended to the stages after `select`;
-  the after-work prompt's outbox id prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in
-  `pending_turns` and is final. Stage, transport and
-  built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
-  recorded with launches. A stored shaper whose stage or transport this build does not know is
-  kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
-  domain id is final; its surface is `runtime` until the Settings panel moves it to `settings`.
+  skill states (`SHAPING_SKILL_STATES`), after-work prompt states (`SHAPING_PROMPT_STATES`),
+  sign-in marker kinds (`SHAPING_AUTH_KINDS`), sign-in states (`SHAPING_SIGN_IN_STATES`) and
+  sign-in storage kinds (`SHAPING_SIGN_IN_STORAGE`), each with its retired tuple where it has
+  one. `route` was appended to the stages after `select`; the after-work prompt's outbox id
+  prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in `pending_turns` and is final. Stage,
+  transport, built-in and sign-in marker kind ids are stored inside `app_config.shaping` and in
+  shaper manifests. Sign-in states and storage kinds are recorded with no launch and stored in
+  no config: they are values of the published sign-in view (`ShapingSignInView`), which the
+  dashboard reads by exact value, so they are append-only all the same. The other
+  vocabularies are recorded with launches. A stored shaper whose stage, transport or sign-in
+  marker kind this build does not know is kept unchanged and listed as unsupported, never
+  reinterpreted. The `shaping` settings backup domain id is final, and its surface is
+  `settings` (`src/shared/settings-backup-domains.ts`).
   See [Task shaping](../task-shaping.md)
+- Shaper sign-in's client registrations and signed-out connections, `app_config` key
+  `shaping.signIn` (`ShapingSignInConfigSchema` in `src/shared/shaping.ts`): `{ clients: [{ issuer,
+  clientId, redirectUri, scope, registeredAt }], signedOut: [connectionId], signedOutOverflow }`,
+  at most `SHAPING_SIGN_IN_CLIENTS` (16) clients and `SHAPING_SIGNED_OUT_CONNECTIONS` (64)
+  signed-out ids. The key name and both new field names are final. A sign-out is never undone by
+  a restart, whatever the store does, by these rules. Every removal of a stored record lists its
+  connection id in `signedOut` before the store is asked. A load reads the key before the store,
+  never reads or installs a listed connection's record, and removes it in that connection's
+  store-call turn. An entry holds the id alone, and no rule compares clocks. An entry leaves the
+  list only after the store confirmed a removal, or a write that was still wanted when it ended,
+  and only when no sign-out of that connection was marked since that store call began (a
+  per-connection count in memory). So a write a sign-out cancelled, a write the store refused
+  (`memoryOnly`) and a removal a later sign-out overtook never clear it. An entry whose removal
+  is unconfirmed is never dropped: a sign-out that finds the list full sets `signedOutOverflow`
+  instead, which fails closed. While it is set no stored record loads, and it clears only after a
+  start that listed the whole store removed every record memory does not hold, with no sign-out
+  marked meanwhile. A row that is not JSON or does not match the schema is unreadable, never
+  empty: the daemon's reader answers null, a load rewrites the key to `{ clients: [], signedOut:
+  [], signedOutOverflow: true }` and loads nothing, and a `begin` refuses with `store_unread`
+  without writing. Every write of the key reads it in the same synchronous step and writes the
+  other fields back unchanged. An older build that drops the new fields on write does not honour
+  them either. A sign-out whose entry `app_config` refuses to save is still sent to the store,
+  because a confirmed removal is the other way it holds and not asking would leave the record
+  certain to load. The entry is kept in memory, every later write of the key carries it, and its
+  connection's next store call and the next load try the write again first, and that load
+  treats it as listed whether or not the write succeeds. A sign-in's store write retries an
+  unsaved entry first too, so a refused write leaves the old record covered. A landed write whose
+  entry the key cannot clear is reported as memory-only, because the next start would remove it,
+  and the next write that lands clears the entry. A write that lands while `signedOutOverflow`
+  is set is reported as memory-only too, since the next start removes every stored record, and so
+  is one during which a sign-out of its connection was marked (an expired record removed
+  meanwhile, for example), since that entry stays listed. A load
+  asks the key again after each store call it awaits, and installs no record whose id is listed,
+  unsaved, or covered by the overflow mark at that moment, or while the key is unreadable. A new client registration the key
+  refuses to save is used for that sign-in only, since the key is a reuse cache. Known limit: when
+  `app_config` and the store both refuse, and the daemon stops before either recovers, nothing
+  durable records the sign-out and the next start loads the record again. A test pins this, and
+  it is logged. Value class `operational`, in no backup domain, so a settings snapshot never carries it;
+  it holds no token and no secret. The sign-in service in `src/server/shaping/sign-in/service.ts`
+  is its only writer. The rules for when a registration is reused, kept, dropped, refused or
+  removed belong to the [phased plan](../plans/shaper-oauth-sign-in/phased-plan.md): its "Client
+  registration" contract row and decision 17. The connection id
+  (`connectionId` in `src/server/shaping/sign-in/connection.ts`, the first 32 hex characters of
+  the SHA-256 of the target's canonical JSON) names each stored sign-in and is final too
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
   destination in the telemetry config blob and read back by exact value through the config
@@ -971,6 +1020,28 @@ A SessionAction is a durable side effect, not an evaluator:
   either direction. `resolveDelivery`'s `mark_delivered` is the operator's answer and reopens
   the attempt. Recovery never re-prepares a refused packet - that would retry, on every daemon
   start, a write nobody re-authorized.
+- A missing or `exited` bound session is NOT an immediate block once the packet is delivered.
+  A restart or an update makes the session unavailable for a while and then brings it back, so
+  the observer records `sessionMissingSince` on the attempt state and blocks `session_lost`
+  only once the session has stayed away for the grace window
+  (`WORKFLOW_SESSION_ACTION_SESSION_GRACE_MS`). Nothing advances while it is away. The bound
+  session's live `session_upsert` ends that clock, not only an observer sample, so separate
+  brief misses between two samples never add up to the window. A
+  `session_lost` block is the one block besides the delivery ones that can be reopened:
+  `WorkflowStore.recoverableLostSessionAction` is the single predicate for both the recovery
+  projection's round-free `retry` and the runtime. The block is re-checked automatically on the
+  bound session's next live `session_upsert` and once after startup discovery, and by hand
+  through `retry`. Reopening keeps the attempt's delivery, anchor and pickup, types nothing, and
+  spends no repair round. Every completion proof is still required afterwards. A delivered
+  attempt is recoverable only while `runtimeTransferConnects(anchor.sessionId,
+  binding.sessionId, anchor.noteKey)` holds, so a binding moved any way other than a committed
+  runtime transfer is never reopened only to be blocked again. On `session_upsert` the re-check
+  runs BEFORE `noteSessionActionActivity`, because the update that brings the session back can
+  be the only proof of pickup and that recorder reads waiting attempts alone. The block's stored
+  detail (`SESSION_LOST_RECOVERY`) outlives the binding, so it conditions the re-check on the
+  workflow still being bound and names Reattach or Cancel for a detached one. It must stay true
+  after an orphan, when only Cancel is projected. A session that returns in another conversation
+  never reaches Retry at all: the same `session_upsert` pauses the binding.
 - The authored prompt ceiling is DERIVED (`sessionActionPromptBytes` = `sessionActionPacketBytes`
   less `sessionActionEnvelopeBytes`), never set beside it. An action packet is the operator's
   own instruction frozen into an immutable version, so it is refused when it cannot be sent
@@ -1136,8 +1207,9 @@ place the engine's control verbs go; filling it must not restructure the header 
 A session Goal's `objective`, `text`, `source` and `objectiveVersion` have exactly two writers.
 `Registry.captureAcceptedPrompt` seeds a provisional objective (`source: "heuristic"`, version 1)
 from the first substantive instruction, and only while the Goal has no objective yet. After that,
-only the goal refiner changes them, and only when it resolves an `initial`, `amend` or `replace`
-relationship. `steer` and `unclear` never change them, and no other writer does.
+only the goal refiner changes them. Adopting a different deliverable requires an `initial`,
+`amend` or `replace` relationship. The refiner can also record an explicit operator handoff
+restriction and advance the objective version while the relationship stays `unclear`.
 `openingPrompt` is write-once.
 
 `POST /api/sessions/:id/goal/accept` (`Registry.acceptGoalObjective`) is a person's exit from a
@@ -1147,7 +1219,8 @@ rationale prefix `Accepted by you:`, and sets `relationship: "steer"` and
 `resolvedPromptRevision = promptRevision`. Its patch must never name `objective`, `text`,
 `source`, `objectiveVersion` or `openingPrompt`, so the frozen run contract and
 `resolvedSessionIntent` see the same objective and version as before it ran. Its answers are a
-contract a later caller relies on: 404 without a Goal, 409 without an objective, 200 with the
+contract a later caller relies on: 404 without a Goal, 409 without an objective or while an
+unapplied instruction changes handoff authority, 200 with the
 full `SessionGoal`, idempotent on a Goal that is already settled. A "replace the objective"
 action, if one is ever wanted, is a separate route with its own review, not a body on this one.
 
@@ -1443,7 +1516,7 @@ These rules hold across phases:
    `all` widen a pinned profile, and never give a harness `allNativeSources` without saying in
    [security](../security.md#resident-mcp-secrets) what it gives up.
    Secret values are never returned by a route, published, logged, backed up or placed in an
-   argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
+   argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/publication.ts`) names the tables
    a recovery point is scrubbed of, and a new secret table joins that list. See
    [security](../security.md#resident-mcp-secrets).
 7. **Built-in residents are rows the operator cannot write.** A built-in is a `residents/<slug>.md`

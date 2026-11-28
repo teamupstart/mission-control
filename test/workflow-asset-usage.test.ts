@@ -1,13 +1,13 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   WorkflowDraftGraph,
   WorkflowSummary,
 } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: the browser must answer which workflows use one Library asset without
@@ -15,7 +15,7 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
  * These are the daemon's five required projection boundaries plus the exact live-id seam.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-asset-usage-"));
+const home = tempDir("mission-workflow-asset-usage-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { NO_MISTAKES_REVIEW_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");

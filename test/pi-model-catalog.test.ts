@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough, Readable } from "node:stream";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pi-model-catalog-"));
+const home = tempDir("mission-pi-model-catalog-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const {
@@ -20,6 +19,7 @@ import type {
   PiModelCatalogDeps,
 } from "../src/server/harness/pi/model-catalog.ts";
 import type { HarnessModelCatalogProblem } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

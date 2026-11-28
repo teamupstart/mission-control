@@ -1,11 +1,11 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-legacy-treehouse-")));
+const home = realpathSync(tempDir("mission-legacy-treehouse-"));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
@@ -389,6 +389,37 @@ test("task cleanup reaches conditional return only for its exact durable owner",
   await teardownWorktree(task, service);
   assert.equal(model.calls.filter((entry) => entry.args[0] === "return").length, 1);
   assert.equal(registry.getTask(task.id)?.provider, "treehouse", "the domain owner clears only after teardown reports success");
+});
+
+test("the final automatic policy can refuse a Treehouse return and retain its lease", async () => {
+  const path = join(home, "pool", "automatic-refusal", "repo");
+  mkdirSync(path, { recursive: true });
+  const task = mkTask({
+    id: "legacy-automatic-refusal",
+    repoRoot: join(home, "automatic-refusal-repo"),
+    status: "done",
+    provider: "treehouse",
+    worktreePath: path,
+    worktreeLeaseId: "automatic-refusal-lease",
+  });
+  registry.upsertTask(task);
+  const model = runnerFor(jsonTree({ path, lease_id: task.worktreeLeaseId }));
+  const service = new LegacyTreehouseService(db, {
+    adapter: adapterFor(model),
+    occupancy: emptyOccupancy,
+    git: cleanGit,
+  });
+  let checks = 0;
+  await assert.rejects(teardownWorktree(task, service, "background", undefined, async (checkout) => {
+    assert.equal(checkout, path);
+    return ++checks === 2 ? "new user at the final provider boundary" : null;
+  }), /new user at the final provider boundary/);
+  assert.equal(checks, 2);
+  assert.equal(model.calls.some((call) => call.args[0] === "return"), false);
+  assert.ok(existsSync(path));
+  assert.equal(registry.getTask(task.id)?.worktreePath, path);
+  assert.equal(registry.getTask(task.id)?.worktreeLeaseId, task.worktreeLeaseId);
+  assert.equal((await service.ownership({ kind: "task", id: task.id })).state, "exact");
 });
 
 test("check cleanup retains its row and pin when legacy identity is unverifiable", async () => {

@@ -17,9 +17,9 @@ import {
 } from "./command.ts";
 import {
   callHeaders, callSignal, dataReply, egressRefusal, failure, MCP_OWNED_HEADERS, quoted, REMOTE_REPLY_BYTES, requestFailure, seconds,
-  withoutOwnedHeaders,
+  noteSignInRefused, SIGN_IN_REFUSED_REPLY, signInFor, withoutOwnedHeaders, type SignInGrant,
 } from "./remote.ts";
-import type { ShaperOf, ShapingTransport, TransportContext } from "./types.ts";
+import type { ShaperOf, ShapingTransport, TransportContext, TransportReply } from "./types.ts";
 
 /**
  * The `mcp` transport: one `tools/call` per repository on an MCP server, started as a local
@@ -120,6 +120,8 @@ interface Connection {
   readonly failureRedacted: boolean;
   /** Values the server was handed, scrubbed from whatever it sends back. */
   readonly resolved: readonly ResolvedValue[];
+  /** Whether the server answered any request of a signed-in connection `401`. Always false for one that is not. */
+  readonly unauthorized: boolean;
 }
 
 interface Opened {
@@ -542,15 +544,29 @@ async function openStdio(shaper: ShaperOf<"mcp">, ctx: TransportContext): Promis
     const marked = holdsResolvedValue(said, named) || stderrNamed();
     throw new ConnectError(`${scrubDiagnostic(said)}${tail()}`, marked);
   }
-  return { client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved: named };
+  return {
+    client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved: named, unauthorized: false,
+  };
+}
+
+/**
+ * `base`, telling `noted` of every response with status 401, read from the response itself:
+ * without an auth provider the SDK reports one only as an error whose text is its own.
+ */
+function notingUnauthorized(base: FetchLike, noted: () => void): FetchLike {
+  return async (input, init) => {
+    const response = await base(input, init);
+    if (response.status === 401) noted();
+    return response;
+  };
 }
 
 async function openHttp(
   shaper: ShaperOf<"mcp">,
   ctx: TransportContext,
-  headers: Readonly<Record<string, string>>,
-  resolved: readonly ResolvedValue[],
+  http: RemoteCall,
 ): Promise<Connection> {
+  const { headers, resolved } = http;
   const server = shaper.transport.server;
   if (server.type !== "http") throw new Error("not an http server");
   const [{ Client: McpClient }, { StreamableHTTPClientTransport }] = await Promise.all([
@@ -570,7 +586,21 @@ async function openHttp(
   // A redirect that would resend a request as a GET without its body is refused, not followed.
   const onOrigin = (input: string | URL | Request, init?: RequestInit) =>
     fetchOnOrigin(url.origin, configured, input, { ...init, credentials: "omit" }, undefined, { keepMethod: true });
-  const capped = cappedFetch(onOrigin, REMOTE_REPLY_BYTES, (_error: ResponseCapError) => {
+  // A signed-in connection watches every one of its requests, the handshake's, a call's and the
+  // shared stream's, for a `401`: each carries the same token. The first one tells the service
+  // at once, so a refresh starts even when no call is waiting, and closes the connection, so no
+  // later call of the run sends the refused token on it. One that is not signed in is not watched.
+  let unauthorized = false;
+  const refused = (grant: SignInGrant) => () => {
+    if (unauthorized) return;
+    unauthorized = true;
+    noteSignInRefused(grant);
+    state.fail(SIGN_IN_REFUSED_REPLY.reason);
+    void client.close().catch(() => {});
+  };
+  const sent = http.signIn ? notingUnauthorized(onOrigin, refused(http.signIn)) : onOrigin;
+  const connectError = (message: string, redacted: boolean) => new ConnectError(message, redacted, unauthorized);
+  const capped = cappedFetch(sent, REMOTE_REPLY_BYTES, (_error: ResponseCapError) => {
     state.fail(capReason());
     void client.close().catch(() => {});
   });
@@ -630,26 +660,43 @@ async function openHttp(
     // A failed `initialize` makes the client close its transport before `connect` rejects, so the
     // latch can hold the generic close first. The handshake's own error says why; a specific
     // failure on the latch, an oversized message or a broken stream, says it better.
-    if (state.failure && state.failure !== CLOSED_REASON) throw new ConnectError(state.failure, state.redacted);
+    if (state.failure && state.failure !== CLOSED_REASON) throw connectError(state.failure, state.redacted);
     const cause = await connecting.then(() => error, (reason: unknown) => reason);
     const malformed = malformedReason(cause);
-    if (malformed) throw new ConnectError(`The MCP server did not complete its handshake: ${malformed}`, false);
+    if (malformed) throw connectError(`The MCP server did not complete its handshake: ${malformed}`, false);
     // The SDK's message can carry the server's own reply body, which can echo a header value
     // in any spelling: scrubbed the way a tool error is, escapes and spacing included.
     const detail = quoted(requestFailure(cause), resolved);
-    throw new ConnectError(`The MCP server did not complete its handshake: ${detail.text}`, detail.redacted);
+    throw connectError(`The MCP server did not complete its handshake: ${detail.text}`, detail.redacted);
   }
-  return { client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved };
+  return {
+    client, lost: state.lost, get failure() { return state.failure; }, get failureRedacted() { return state.redacted; }, resolved,
+    get unauthorized() { return unauthorized; },
+  };
 }
 
 /** A connection that could not be opened because of the shaper's own config, not the server. */
 class UnavailableError extends Error {}
 
-/** A connection that failed, with a reason already scrubbed and whether a named value was removed from it. */
+/**
+ * A connection that failed, with a reason already scrubbed, whether a named value was removed
+ * from it, and whether a signed-in connection was answered `401` on the way.
+ */
 class ConnectError extends Error {
-  constructor(message: string, readonly redacted: boolean) {
+  constructor(message: string, readonly redacted: boolean, readonly unauthorized = false) {
     super(message);
   }
+}
+
+/**
+ * What a streamable-HTTP call sends: the configured headers resolved, the carriers, and for a
+ * signed-in shaper its bearer header, with every value to scrub from what comes back.
+ */
+interface RemoteCall {
+  headers: Record<string, string>;
+  resolved: ResolvedValue[];
+  /** The sign-in whose token `headers` carries, so a `401` is noted, or null. */
+  signIn: SignInGrant | null;
 }
 
 /**
@@ -660,12 +707,13 @@ class ConnectError extends Error {
 function connectionFor(
   shaper: ShaperOf<"mcp">,
   ctx: TransportContext,
-  http: { headers: Record<string, string>; resolved: ResolvedValue[] } | null,
+  http: RemoteCall | null,
 ): Promise<Connection> {
+  // A sign-in token is one of the headers, so a changed token opens a connection of its own.
   const key = connectionKey(shaper, ctx, http?.headers ?? null);
   const existing = ctx.scope.shared.get(key) as Opened | undefined;
   if (existing) return existing.connection;
-  const connection = http ? openHttp(shaper, ctx, http.headers, http.resolved) : openStdio(shaper, ctx);
+  const connection = http ? openHttp(shaper, ctx, http) : openStdio(shaper, ctx);
   const opened: Opened = { connection };
   ctx.scope.shared.set(key, opened);
   const forget = () => { if (ctx.scope.shared.get(key) === opened) ctx.scope.shared.delete(key); };
@@ -695,16 +743,54 @@ function contentText(content: unknown): string[] {
       : []);
 }
 
+/**
+ * A shaper whose server carries the `auth` marker asks the sign-in service first: without a token
+ * it is not called, and with one the token rides every request of the connection as a bearer
+ * header, to the server's origin only, and is scrubbed from every reply and reason. A `401` to
+ * any request of the connection, during the handshake, the call or between calls, tells the
+ * service once when it arrives and closes the connection, and every call on it answers
+ * `unavailable`; none is retried. A shaper with no marker is not
+ * touched: its `401` is `failed`, as it always was.
+ */
 export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => {
-  const { server, tool, contextDelivery } = shaper.transport;
-  let http: { headers: Record<string, string>; resolved: ResolvedValue[] } | null = null;
+  const { server } = shaper.transport;
+  let http: RemoteCall | null = null;
+  let signIn: SignInGrant | null = null;
   if (server.type === "http") {
     const refused = egressRefusal(server.url);
     if (refused) return { kind: "unavailable", reason: refused };
+    // Asked before any header is resolved: a marked shaper that is not signed in sends nothing.
+    const asked = signInFor(shaper);
+    if (asked && !asked.ok) return { kind: "unavailable", reason: asked.reason };
+    signIn = asked;
     const resolution = callHeaders(server.headers, request, ctx, MCP_OWNED_HEADERS);
     if (!resolution.ok) return { kind: "unavailable", reason: resolution.reason };
-    http = { headers: resolution.headers, resolved: resolution.resolved };
+    // The marker refuses a configured `authorization`, so the sign-in's header replaces nothing.
+    http = signIn
+      ? { headers: { ...resolution.headers, ...signIn.headers }, resolved: [...resolution.resolved, ...signIn.resolved], signIn }
+      : { headers: resolution.headers, resolved: resolution.resolved, signIn: null };
   }
+  const seen: Refusal = { connection: null, handshake: false };
+  const reply = await callOnServer(request, shaper, ctx, http, seen);
+  // The connection already told the service when the `401` arrived: the call only answers it.
+  return signIn && (seen.handshake || seen.connection?.unauthorized) ? SIGN_IN_REFUSED_REPLY : reply;
+};
+
+/** Where a signed-in call could have been answered `401`: its connection's handshake, or the connection since. */
+interface Refusal {
+  connection: Connection | null;
+  handshake: boolean;
+}
+
+/** One `tools/call` on the run's connection, opening it first when this call is the run's first to need it. */
+async function callOnServer(
+  request: ShapingRequest,
+  shaper: ShaperOf<"mcp">,
+  ctx: TransportContext,
+  http: RemoteCall | null,
+  seen: Refusal,
+): Promise<TransportReply> {
+  const { tool, contextDelivery } = shaper.transport;
   const signal = callSignal(ctx);
   const timedOut = () => ({ kind: "timed_out" as const, reason: `Timed out after ${seconds(ctx.timeoutMs)}.` });
   // A call already cancelled opens nothing: `connectionFor` starts a server or sends a handshake
@@ -715,10 +801,14 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
     connection = await untilAborted(connectionFor(shaper, ctx, http), signal);
   } catch (error) {
     if (error instanceof UnavailableError) return { kind: "unavailable", reason: error.message };
-    if (error instanceof ConnectError) return failure("failed", error.message, http?.resolved ?? [], error.redacted);
+    if (error instanceof ConnectError) {
+      seen.handshake = error.unauthorized;
+      return failure("failed", error.message, http?.resolved ?? [], error.redacted);
+    }
     if (signal.aborted) return timedOut();
     return failure("failed", error instanceof Error ? error.message : String(error), http?.resolved ?? []);
   }
+  seen.connection = connection;
   // This call's own resolved values as well as the connection's: two shapers can reach one
   // connection with the same header text built from different references, and each call scrubs
   // what it resolved itself.
@@ -770,4 +860,4 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
   if (structured && typeof structured === "object" && !Array.isArray(structured)) return dataReply(structured, resolved);
   const [text] = contentText(result.content);
   return dataReply(text ?? null, resolved);
-};
+}

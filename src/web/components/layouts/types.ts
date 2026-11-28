@@ -327,6 +327,19 @@ export interface SessionViewProps {
    */
   cardShortcutBySession?: ReadonlyMap<string, string>;
   /**
+   * The call sign each session's card and rail row is titled by while voice can hear it
+   * (`voiceCardsShowSpokenNames`). App-owned and EMPTY otherwise, so a layout never decides when
+   * a spoken name applies; an absent session keeps its ordinary title.
+   */
+  cardCallSignBySession?: ReadonlyMap<string, string>;
+  /**
+   * The call sign each session's card and rail row draws BESIDE its title while Always-on
+   * listens (`voiceCardCallSignMode` is `element`), in the operator's `callSignCardStyle`.
+   * App-owned and EMPTY otherwise; a session is in this map or in `cardCallSignBySession`,
+   * never both.
+   */
+  cardCallSignElementBySession?: ReadonlyMap<string, string>;
+  /**
    * App-owned join from each resident's session to its live run (`residentMarksBySession`):
    * the marker, label and pin from the run's pinned revision. Absent entries are ordinary -
    * every session that is not a resident. Read by the card, the rail row, the Console band

@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import { after, afterEach, beforeEach, mock, test } from "node:test";
 import fs, { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-key-"));
+const home = tempDir("mission-voice-key-");
 process.env.MISSION_HOME = home;
 const { closeDb } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");

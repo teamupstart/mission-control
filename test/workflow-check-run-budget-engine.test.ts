@@ -18,7 +18,6 @@ import { on } from "node:events";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
 import type {
@@ -29,16 +28,18 @@ import type {
   WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { gitIn, seedGitHistory } from "./helpers/git-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-check-run-budget-"));
+const home = tempDir("mission-check-run-budget-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
-const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
+const { WorkflowEngine, personaCheckEvidence } = await import("../src/server/workflows/engine.ts");
 const { createCheckScheduler } = await import("../src/server/workflows/checks.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { readWorkflowContextRaw } = await import("../src/server/workflows/context.ts");
@@ -191,6 +192,7 @@ function repairRound(
   store: InstanceType<typeof WorkflowStore>,
   id: string,
   round: number,
+  now = 10 * round,
 ): string {
   const submissionId = `submission-${id}-r${round}`;
   store.createRepairSubmission({
@@ -201,14 +203,14 @@ function repairRound(
     triggerKey: `manual:${id}:round-${round}`,
     context: {},
     evidence: {},
-    now: 10 * round,
+    now,
   });
   store.updateSubmissionCapture(submissionId, {
     context: workflowJson(context),
     evidence: workflowJson(context.evidence),
     fingerprint: `fingerprint-${id}-r${round}`,
     status: "running",
-  }, 10 * round + 1);
+  }, now + 1);
   return submissionId;
 }
 
@@ -577,6 +579,79 @@ test("two check nodes on one Command share its budget inside a single round", as
   assert.equal(store.getRun("run-shared")?.status, "completed");
 });
 
+test("a sibling CodeRabbit gate waits for the final reservation and its connection retry", async () => {
+  const id = "coderabbit-shared-refund";
+  const submissionId = `submission-${id}`;
+  const graph: PublishedWorkflowGraph = {
+    ...twoGateGraph,
+    nodes: twoGateGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+  };
+  const store = seedSubmission(id, 5, graph);
+  const yaml = { source: ".coderabbit.yaml" as const, enabled: true, state: "enabled" as const, digest: "a".repeat(64), diagnostic: "enabled" };
+  const evidence = { ...context.evidence, coderabbit: yaml };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson({ ...context, evidence }), evidence: workflowJson(evidence),
+    fingerprint: id, status: "running",
+  }, 4);
+  const comparison = store.freezeCodeRabbitComparison(submissionId, {
+    interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
+    baseRef: "main", severity: "major", maxRuns: 1, timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
+  });
+  let release!: () => void;
+  const reservationHeld = new Promise<void>((resolve) => { release = resolve; });
+  const executions: string[] = [];
+  let now = Date.now();
+  const engine = new WorkflowEngine(store, () => {}, {
+    now: () => now,
+    checkConcurrency: 2,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: ({ nodeId }) => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async () => {
+        executions.push(nodeId);
+        const disconnect = executions.length === 1;
+        if (disconnect) await reservationHeld;
+        return {
+          kind: "exited", exitCode: disconnect ? 1 : 0, output: "", truncatedBytes: 0,
+          review: {
+            comparison, status: disconnect ? "incomplete" : "complete",
+            counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 },
+            titles: [], diagnostic: disconnect ? "WebSocket closed" : "Complete review",
+            ...(disconnect ? { retryableConnection: true as const } : {}),
+          },
+        };
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission(submissionId);
+  try {
+    await waitFor(() => executions.length === 1);
+    const first = executions[0]!;
+    const sibling = first === "gate" ? "gate2" : "gate";
+    assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
+    release();
+    await waitFor(() => store.latestAttemptForNode(submissionId, first)?.state === "retry_wait");
+    const retry = store.latestAttemptForNode(submissionId, first)!;
+    assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
+    now = retry.retryAt!;
+    engine.wake();
+    await waitFor(() => store.getRun(`run-${id}`)?.status === "completed");
+    assert.deepEqual(executions, [first, first]);
+    assert.equal(store.latestAttemptForNode(submissionId, first)?.id, retry.id);
+    assert.equal((store.getAttempt(retry.id)?.output as { status?: string })?.status, "passed");
+    assert.equal(gateOutcome(store, submissionId, sibling).status, "budget_spent");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+  } finally {
+    release();
+    await engine.stop();
+  }
+});
+
 test("an action-required Command blocks without retrying and resumes only after explicit retry", async () => {
   const store = seedSubmission("action-required");
   let authorized = false;
@@ -701,7 +776,86 @@ test("installing a missing executable lets an action-required Command retry unde
 });
 
 
-test("CodeRabbit freezes comparison across an incomplete retry, counts that execution, and reviews repairs at a new head until the tenth execution", { timeout: 300_000 }, async (t) => {
+test("CodeRabbit retries when the lease settles before its withheld result reaches the engine", async () => {
+  const root = realpathSync(mkdtempSync(join(home, "coderabbit-settled-")));
+  const [base, head] = seedGitHistory(root, {
+    branch: "feature",
+    config: { "commit.gpgsign": "false" },
+    later: [{ files: { "keep.txt": "changed\n" }, message: "change" }],
+  });
+  gitIn(root, "update-ref", "refs/remotes/origin/main", base!);
+  gitIn(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  const graph: PublishedWorkflowGraph = {
+    ...budgetGraph,
+    nodes: budgetGraph.nodes.map(node => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+  };
+  const id = "coderabbit-cleanup-settled";
+  const runId = `run-${id}`;
+  const submissionId = `submission-${id}`;
+  const store = seedSubmission(id, 5, graph);
+  const db = openDb();
+  db.prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?")
+    .run(root, root, `binding-${id}`);
+  const snapshot = { ...context, evidence: { ...context.evidence, headSha: head!,
+    coderabbit: { source: ".coderabbit.yaml", digest: "a".repeat(64), enabled: true, state: "enabled", diagnostic: "enabled" },
+  } };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson(snapshot), evidence: workflowJson(snapshot.evidence), fingerprint: id, status: "running",
+  }, Date.now());
+  const leaseRows = new CheckLeaseStore(db);
+  const leases = new CheckLeaseManager(db);
+  const executions: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }),
+    workflowCommand: catalogFor(1),
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    unresolvedCheckLease: (submission, node) => leases.unresolvedLeaseForNode(submission, node),
+    retryBaseMs: 1,
+    checkDeps: ({ attemptId, nodeId }) => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async (request) => {
+        executions.push(attemptId);
+        if (executions.length === 1) {
+          leaseRows.insertHeld({
+            attemptId, submissionId, nodeId, provider: "mission", leaseId: "fixture-lease",
+            repoRoot: root, leasePath: join(root, "fixture-worktree"), holderToken: "fixture-lease", now: Date.now(),
+          });
+          leaseRows.setState(attemptId, "returning", Date.now());
+          assert.equal(leases.unresolvedLeaseForNode(submissionId, nodeId), true);
+          // Model the reclaimer's terminal write before the executor delivers the result.
+          leaseRows.setState(attemptId, "returned", Date.now());
+          return { kind: "infrastructure", cleanupFailed: true, reason: "Pooled worktree hand-back timed out" };
+        }
+        return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0, review: {
+          comparison: request.coderabbit!, status: "complete", counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 },
+          titles: [], diagnostic: "Complete review",
+        } };
+      },
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission(submissionId);
+    await waitFor(() => ["blocked", "completed"].includes(store.getRun(runId)!.status), 60_000);
+    assert.equal(store.getRun(runId)!.status, "completed");
+    assert.deepEqual(store.listSubmissions(runId).map(({ id, round }) => ({ id, round })), [{ id: submissionId, round: 1 }]);
+    const attempts = store.listAttempts(submissionId).filter(attempt => attempt.nodeId === "gate");
+    assert.deepEqual(attempts.map(attempt => attempt.state), ["error", "completed"]);
+    assert.deepEqual(executions, attempts.map(attempt => attempt.id));
+    assert.equal(leaseRows.get(executions[0]!)?.cleanupState, "returned");
+    assert.equal(attempts[0]?.verdict, null);
+    assert.equal(store.checkRunsSpent(runId, "coderabbit", null), 1);
+    assert.equal((attempts[1]!.output as { status: string }).status, "passed");
+    const events = store.listEvents(runId).map(event => event.kind);
+    assert.equal(events.filter(kind => kind === "persona_retry_scheduled").length, 1);
+    assert.ok(!events.includes("check_cleanup_unresolved") && !events.includes("command_action_required"));
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("CodeRabbit returns the allowance after hand-back failure and skips only after ten charged executions", { timeout: 300_000 }, async (t) => {
   const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
@@ -719,6 +873,7 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
   };
   capture(`submission-${id}`);
   let executions = 0, probes = 0;
+  let unresolvedLease = true;
   const comparisons: import("../src/shared/workflow.ts").CodeRabbitComparison[] = [];
   const registry = new Registry();
   // A comparison performs five sequential Git reads, each with its own production
@@ -739,12 +894,123 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
   const manager = new WorkflowManager(registry, store, { engine: {
     workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }), workflowCommand: (slot) => emptyWorkflowCommandView(slot),
     runnerFor: scriptedRunner(() => "fail"), resolveExecution: passingExecution,
+    unresolvedCheckLease: () => unresolvedLease,
+    retryBaseMs: 1,
     checkDeps: () => ({
       codeRabbitProbe: async () => { probes++; return { command: "/fake/coderabbit", env: {}, error: null }; },
       execute: async (request) => {
         executions++; comparisons.push(request.coderabbit!);
-        return { kind: "exited", exitCode: executions === 1 ? 1 : 2, output: "", truncatedBytes: 0,
-          review: { comparison: request.coderabbit!, status: executions === 1 ? "incomplete" : "complete", counts: { critical: 0, major: 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: ["Verify claim"], diagnostic: executions === 1 ? "Incomplete coverage" : "Complete findings" } };
+        if (executions === 1) return { kind: "infrastructure", cleanupFailed: true, reason: "Pooled worktree hand-back timed out" };
+        const incomplete = executions === 2;
+        return { kind: "exited", exitCode: incomplete ? 1 : 2, output: "", truncatedBytes: 0,
+          review: { comparison: request.coderabbit!, status: incomplete ? "incomplete" : "complete", counts: { critical: 0, major: 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: ["Verify claim"], diagnostic: incomplete ? "Incomplete coverage" : "Complete findings" } };
+      },
+    }),
+  } });
+  manager.engine.start(); manager.engine.activateSubmission(`submission-${id}`);
+  try {
+    await waitForState("blocked");
+    const first = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+    assert.equal(first.verdict, null);
+    assert.match(first.error!, /hand-back timed out/);
+    assert.doesNotMatch(first.error!, /Settings > Setup/);
+    assert.equal((first.output as { review: { remainingRuns: number } }).review.remainingRuns, 10);
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
+    assert.equal(store.getRun(`run-${id}`)!.currentPhase, "check_cleanup_unresolved");
+    assert.equal(manager.retry(`run-${id}`, { requestId: "retry-hand-back", nodeAttemptId: first.id }).ok, false);
+    manager.engine.resumeClearedCheckCleanup();
+    assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.id, first.id);
+    unresolvedLease = false;
+    manager.engine.resumeClearedCheckCleanup();
+    await waitForState("blocked");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1, "an incomplete vendor execution still spends allowance");
+    const incomplete = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+    assert.equal(incomplete.verdict, null);
+    assert.equal(store.getRun(`run-${id}`)!.currentPhase, "command_action_required");
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    assert.ok(manager.retry(`run-${id}`, { requestId: "retry-incomplete", nodeAttemptId: incomplete.id }).ok);
+    await waitForState("waiting_for_session");
+    assert.equal(comparisons[2]!.baseTip, base, "retry must ignore moved base ref");
+    assert.equal(comparisons[2]!.head, comparisons[0]!.head);
+    for (let round = 2; round <= 10; round++) {
+      writeFileSync(join(root, "file"), `repair ${round}`); git("commit", "-qam", `repair ${round}`);
+      const next = repairRound(store, id, round); capture(next); manager.engine.activateSubmission(next);
+      await waitForState("waiting_for_session");
+      assert.equal(gateOutcome(store, next).status, round === 10 ? "budget_spent" : "failed");
+    }
+    assert.equal(executions, 11); assert.equal(probes, 11);
+    assert.notEqual(comparisons.at(-1)!.head, comparisons[0]!.head, "new repairs capture their new committed head");
+    assert.equal(comparisons.at(-1)!.baseTip, comparisons[0]!.head, "new submission resolves the moved local ref");
+    assert.ok(String(gateOutcome(store, `submission-${id}-r10`).warning).includes("allowance exhausted"));
+  } finally { await manager.stop(); }
+});
+
+
+for (const maxRuns of [10, 2, 3]) test(
+  maxRuns === 3 ? "CodeRabbit cannot reuse an older pass after a newer incomplete review"
+    : `CodeRabbit reuses a clean comparison with an allowance of ${maxRuns}`,
+  { timeout: 300_000 }, async (t) => {
+  const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
+  writeFileSync(join(root, "file"), "base"); git("add", "."); git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD"); git("update-ref", "refs/remotes/origin/main", base); git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  git("checkout", "-qb", "feature"); writeFileSync(join(root, "file"), "changed"); git("commit", "-qam", "change");
+  const graph: PublishedWorkflowGraph = {
+    ...budgetGraph,
+    nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+    // Match No-Mistakes: the Persona starts after the CodeRabbit outcome is available.
+    edges: [
+      ...budgetGraph.edges.filter((edge) => edge.id !== "s-p1"),
+      { id: "gate-review-pass", source: "gate", sourcePort: "pass", target: "p1", targetPort: "activate" },
+      { id: "gate-review-fail", source: "gate", sourcePort: "fail", target: "p1", targetPort: "activate" },
+    ],
+  };
+  const id = `coderabbit-budget-${maxRuns}`;
+  const store = seedSubmission(id, 20, graph);
+  openDb().prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?").run(root, root, `binding-${id}`);
+  const yaml = { source: ".coderabbit.yaml" as const, digest: "a".repeat(64), enabled: true, state: "enabled" as const, diagnostic: "enabled" };
+  const capture = (submissionId: string, description = "Original PR description") => {
+    const next = { ...context, evidence: {
+      ...context.evidence,
+      headSha: git("rev-parse", "HEAD"),
+      coderabbit: yaml,
+      transcript: [{ role: "assistant" as const, content: `Updated PR description: ${description}` }],
+    } };
+    store.updateSubmissionCapture(submissionId, { context: workflowJson(next), evidence: workflowJson(next.evidence), fingerprint: submissionId, status: "running" }, Date.now());
+  };
+  capture(`submission-${id}`);
+  let executions = 0, probes = 0;
+  let checksEnabled = true;
+  const comparisons: import("../src/shared/workflow.ts").CodeRabbitComparison[] = [];
+  const registry = new Registry();
+  // A comparison performs five sequential Git reads, each with its own production
+  // deadline. Await the published state instead of imposing a five-second deadline
+  // on their combined duration. The test signal still bounds a stalled engine.
+  const waitForState = async (status: "blocked" | "waiting_for_session") => {
+    const changes = on(registry, "event", { signal: t.signal });
+    try {
+      do {
+        const current = store.getRun(`run-${id}`);
+        if (current?.status === status) return;
+        assert.notEqual(current?.status, status === "blocked" ? "waiting_for_session" : "blocked", JSON.stringify(current));
+      } while (!(await changes.next()).done);
+    } finally {
+      await changes.return?.();
+    }
+  };
+  const manager = new WorkflowManager(registry, store, { engine: {
+    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root], checksEnabled }),
+    workflowCommand: (slot) => ({ ...emptyWorkflowCommandView(slot), maxRuns }),
+    runnerFor: scriptedRunner(() => "fail"), resolveExecution: passingExecution,
+    checkDeps: () => ({
+      codeRabbitProbe: async () => { probes++; return { command: "/fake/coderabbit", env: {}, error: null }; },
+      execute: async (request) => {
+        executions++; comparisons.push(request.coderabbit!);
+        const clean = executions === 2;
+        const incomplete = executions === 1 || (maxRuns === 3 && executions === 3);
+        return { kind: "exited", exitCode: incomplete ? 1 : clean ? 0 : 2, output: "", truncatedBytes: 0,
+          review: { comparison: request.coderabbit!, status: incomplete ? "incomplete" : "complete", counts: { critical: 0, major: clean ? 0 : 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: clean ? [] : ["Verify claim"], diagnostic: incomplete ? "Incomplete coverage" : "Complete findings" } };
       },
     }),
   } });
@@ -759,16 +1025,112 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
     await waitForState("waiting_for_session");
     assert.equal(comparisons[1]!.baseTip, base, "retry must ignore moved base ref");
     assert.equal(comparisons[1]!.head, comparisons[0]!.head);
-    for (let round = 2; round <= 10; round++) {
-      writeFileSync(join(root, "file"), `repair ${round}`); git("commit", "-qam", `repair ${round}`);
+    const source = store.listAttempts(`submission-${id}`).find(a => a.nodeId === "gate" && a.state === "completed")!;
+    git("update-ref", "refs/remotes/origin/main", base);
+    for (const round of [2, 3]) {
+      const next = repairRound(store, id, round, Date.now());
+      capture(next, `Clarified verification in round ${round}`);
+      assert.equal(git("rev-parse", "HEAD"), comparisons[1]!.head);
+      assert.equal(git("status", "--porcelain"), "");
+      const denyBeforeRetry = maxRuns === 3 && round === 3;
+      if (denyBeforeRetry) checksEnabled = false;
+      manager.engine.activateSubmission(next);
+      if (denyBeforeRetry) {
+        await waitForState("blocked");
+        const refused = store.listAttempts(next).find(a => a.nodeId === "gate")!;
+        assert.match(refused.error ?? "", /Workflow Commands are switched off/);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 2, "policy denial spends no execution");
+        checksEnabled = true;
+        assert.ok(manager.retry(`run-${id}`, { requestId: "retry-after-policy-denial", nodeAttemptId: refused.id }).ok);
+      }
+      await waitForState("waiting_for_session");
+      assert.equal(executions, 2, "A PR-description-only repair must not execute CodeRabbit again");
+      assert.equal(probes, 2);
+      const attempts = store.listAttempts(next);
+      const gate = attempts.find(a => a.nodeId === "gate" && a.state === "completed")!;
+      const outcome = gate.output as Record<string, unknown>;
+      assert.equal(outcome.status, "passed");
+      assert.equal((outcome.review as { remainingRuns: number }).remainingRuns, maxRuns - 2);
+      assert.equal(outcome.command, null);
+      assert.match(String(outcome.note), new RegExp(source.id));
+      const [evidence] = personaCheckEvidence(graph, "p1", attempts, store.listReceipts(next), comparisons[1]!.head);
+      assert.equal(evidence?.status, "passed");
+      assert.equal(evidence?.note, outcome.note);
+      assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 2);
+      const submittedAt = store.getSubmission(next)!.createdAt;
+      const codeRabbitFinishedAt = gate.finishedAt;
+      const persona = attempts.find((attempt) => attempt.nodeId === "p1");
+      assert.equal(persona?.state, "completed");
+      assert.ok(codeRabbitFinishedAt && persona.startedAt && persona.finishedAt);
+      assert.ok(submittedAt <= codeRabbitFinishedAt && codeRabbitFinishedAt <= persona.startedAt);
+      assert.ok(persona.startedAt <= persona.finishedAt);
+      t.diagnostic(JSON.stringify({
+        round,
+        head: comparisons[1]!.head,
+        submittedAt: new Date(submittedAt).toISOString(),
+        codeRabbit: { outcome: outcome.status, reusedAttemptId: source.id, finishedAt: new Date(codeRabbitFinishedAt).toISOString(), newExecutions: executions - 2 },
+        persona: { runner: "scripted fixture", startedAt: new Date(persona.startedAt).toISOString(), finishedAt: new Date(persona.finishedAt).toISOString() },
+        submissionToPersonaCompletionMs: persona.finishedAt - submittedAt,
+      }));
+    }
+    if (maxRuns === 2) {
+      writeFileSync(join(root, "file"), "new source change");
+      git("commit", "-qam", "new source change");
+      const next = repairRound(store, id, 4); capture(next); manager.engine.activateSubmission(next);
+      await waitForState("waiting_for_session");
+      assert.equal(gateOutcome(store, next).status, "budget_spent");
+      assert.equal(executions, 2);
+      return;
+    }
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    if (maxRuns === 3) {
+      const changedBase = repairRound(store, id, 4);
+      capture(changedBase);
+      manager.engine.activateSubmission(changedBase);
+      await waitForState("blocked");
+      assert.equal(comparisons[2]!.head, comparisons[1]!.head);
+      assert.notEqual(comparisons[2]!.baseTip, comparisons[1]!.baseTip);
+      const incomplete = store.listAttempts(changedBase).find(a => a.nodeId === "gate")!;
+      assert.match(incomplete.error ?? "", /Incomplete coverage/);
+      assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), maxRuns);
+
+      // Restore comparison A. The intervening incomplete review must take precedence over
+      // both the original clean review and the passes that reused it.
+      git("update-ref", "refs/remotes/origin/main", base);
+      const restored = repairRound(store, id, 5);
+      capture(restored);
+      assert.equal(git("rev-parse", "HEAD"), comparisons[1]!.head);
+      assert.equal(git("rev-parse", "refs/remotes/origin/main"), comparisons[1]!.baseTip);
+      manager.engine.activateSubmission(restored);
+      await waitForState("blocked");
+      const attempts = store.listAttempts(restored);
+      const gate = attempts.find(a => a.nodeId === "gate")!;
+      assert.equal(gate.state, "error");
+      assert.equal(gate.verdict, null);
+      assert.match(gate.error ?? "", /review remains incomplete and its execution allowance is exhausted/);
+      assert.equal(store.getRun(`run-${id}`)?.currentPhase, "command_action_required");
+      assert.ok(!attempts.some(a => a.nodeId === "p1"), "the Persona cannot advance on the older pass");
+      assert.equal(executions, 3);
+      assert.equal(probes, 3);
+      t.diagnostic(`Restored comparison A after incomplete comparison B: ${gate.error} No Persona started. ${executions}/${maxRuns} executions spent.`);
+      return;
+    }
+    for (let round = 4; round <= 12; round++) {
+      if (round >= 6) {
+        writeFileSync(join(root, "file"), `repair ${round}`);
+        git("commit", "-qam", `repair ${round}`);
+      }
       const next = repairRound(store, id, round); capture(next); manager.engine.activateSubmission(next);
       await waitForState("waiting_for_session");
-      assert.equal(gateOutcome(store, next).status, round === 10 ? "budget_spent" : "failed");
+      assert.equal(gateOutcome(store, next).status, round === 12 ? "budget_spent" : "failed");
     }
+    assert.equal(comparisons[2]!.head, comparisons[1]!.head, "a moved base requires a fresh review at the same head");
+    assert.equal(comparisons[2]!.baseTip, comparisons[1]!.head);
+    assert.deepEqual(comparisons[3], comparisons[2], "findings cannot be bypassed by resubmitting the same comparison");
     assert.equal(executions, 10); assert.equal(probes, 10);
     assert.notEqual(comparisons.at(-1)!.head, comparisons[0]!.head, "new repairs capture their new committed head");
     assert.equal(comparisons.at(-1)!.baseTip, comparisons[0]!.head, "new submission resolves the moved local ref");
-    assert.ok(String(gateOutcome(store, `submission-${id}-r10`).warning).includes("allowance exhausted"));
+    assert.ok(String(gateOutcome(store, `submission-${id}-r12`).warning).includes("allowance exhausted"));
   } finally { await manager.stop(); }
 });
 
@@ -917,4 +1279,450 @@ test("typecheck, lint and test really execute in a lease of the snapshot and see
     assert.equal(git("rev-parse", "HEAD"), base, "the leases never touched the task's checkout");
     assert.deepEqual(db.prepare("SELECT attempt_id FROM workflow_check_leases WHERE cleanup_state IN ('held', 'returning')").all(), []);
   } finally { await manager.stop(); setWorktreesConfig({ enabled: previousWorktrees }); }
+});
+
+/** A host-suspend clock a test flips: while `asleep`, every attempt overlapped a sleep. */
+function scriptedSleep(): { clock: { mark(): { at: number; suspendedMs: number }; suspendedMsSince(): number }; asleep: boolean } {
+  const state = {
+    asleep: false,
+    clock: {
+      mark: () => ({ at: 0, suspendedMs: 0 }),
+      suspendedMsSince: () => (state.asleep ? 17 * 60_000 : 0),
+    },
+  };
+  return state;
+}
+
+/** The engine over the one-run `test` Command, with the host's sleep and the clock scripted. */
+function sleepEngine(
+  store: InstanceType<typeof WorkflowStore>,
+  sleep: ReturnType<typeof scriptedSleep>,
+  now: () => number,
+  execute: () => Promise<unknown>,
+): InstanceType<typeof WorkflowEngine> {
+  return new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    now,
+    hostSuspend: sleep.clock,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({ execute: execute as never }),
+  });
+}
+
+const CHECK_TIMEOUT = "the check command did not finish within 600000ms and its process group was terminated";
+
+test("a check that times out across host sleeps is retried on the same budgets and passes (#1734)", async () => {
+  const store = seedSubmission("check-sleep");
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 5_000_000;
+  let runs = 0;
+  // More sleeps than the node has infrastructure attempts (3), on a Command allowed one run.
+  const sleeps = 4;
+  const engine = sleepEngine(store, sleep, () => clock, async () => {
+    runs++;
+    if (runs <= sleeps) return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT };
+    return { kind: "exited" as const, exitCode: 0, output: "42 passing\n", truncatedBytes: 0 };
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-sleep");
+    for (let excused = 1; excused <= sleeps; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-check-sleep", "gate");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      assert.equal(store.getRun("run-check-sleep")?.status, "running", `still running after sleep ${excused}`);
+      if (excused === sleeps) sleep.asleep = false;
+      clock = store.latestAttemptForNode("submission-check-sleep", "gate")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-check-sleep")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  // Every retry really ran the command, and the last one passed the gate.
+  assert.equal(runs, sleeps + 1);
+  const gate = store.latestAttemptForNode("submission-check-sleep", "gate")!;
+  assert.equal(gate.state, "completed");
+  assert.equal((gate.output as Record<string, unknown>).status, "passed");
+  const excuses = store.listEvents("run-check-sleep").filter((event) =>
+    event.kind === "persona_retry_scheduled" && (event.payload as { hostSuspended?: boolean }).hostSuspended === true);
+  assert.equal(excuses.length, sleeps);
+  assert.equal(store.hostSuspendedAttempts("submission-check-sleep", "gate"), sleeps);
+  assert.equal(store.listEvents("run-check-sleep").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+  assert.match(
+    store.listAttempts("submission-check-sleep").find((attempt) => attempt.nodeId === "gate" && attempt.attempt === 1)?.error ?? "",
+    /host was asleep during this check.*did not finish within/,
+  );
+});
+
+test("the same check timeouts with no host sleep still spend the three attempts and block", async () => {
+  const store = seedSubmission("check-awake");
+  const sleep = scriptedSleep();
+  let runs = 0;
+  const engine = sleepEngine(store, sleep, Date.now, async () => {
+    runs++;
+    return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT };
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-awake");
+    await waitFor(() => store.getRun("run-check-awake")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(runs, 3);
+  assert.equal(store.getRun("run-check-awake")?.currentPhase, "infrastructure_error");
+  assert.equal(store.hostSuspendedAttempts("submission-check-awake", "gate"), 0);
+  assert.equal(store.listEvents("run-check-awake").some((event) =>
+    event.kind === "persona_retry_scheduled" && (event.payload as { hostSuspended?: boolean }).hostSuspended === true), false);
+});
+
+test("a check failure with no sleep after an excused one still counts toward the three attempts", async () => {
+  const store = seedSubmission("check-stale");
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 6_000_000;
+  let runs = 0;
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    now: () => clock,
+    hostSuspend: sleep.clock,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({
+      execute: async () => {
+        runs++;
+        return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT, ranNothing: false };
+      },
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-stale");
+    await waitFor(() => {
+      const latest = store.latestAttemptForNode("submission-check-stale", "gate");
+      return latest?.attempt === 2 && latest.state === "retry_wait";
+    });
+    sleep.asleep = false;
+    for (;;) {
+      const latest = store.latestAttemptForNode("submission-check-stale", "gate")!;
+      if (store.getRun("run-check-stale")?.status === "blocked") break;
+      if (latest.state === "retry_wait") {
+        clock = Math.max(clock, latest.retryAt!);
+        engine.wake();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  } finally {
+    await engine.stop();
+  }
+  // One excused try, then the three real attempts the node is allowed.
+  assert.equal(runs, 4);
+  assert.equal(store.hostSuspendedAttempts("submission-check-stale", "gate"), 1);
+  assert.equal(store.getRun("run-check-stale")?.currentPhase, "infrastructure_error");
+  assert.equal(store.latestAttemptForNode("submission-check-stale", "gate")?.attempt, 4);
+});
+
+test("after many excused sleeps, the next awake check failure backs off like the first", async () => {
+  // The reviewers' case: twenty excused sleeps, then failures while awake. Backoff from the
+  // raw attempt number would put the first retry 4^20 base delays away.
+  const store = seedSubmission("check-backoff");
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 7_000_000;
+  let runs = 0;
+  const sleeps = 20;
+  const base = 1_000;
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    retryBaseMs: base,
+    now: () => clock,
+    hostSuspend: sleep.clock,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({
+      execute: async () => {
+        runs++;
+        return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT };
+      },
+    }),
+  });
+  const delays: number[] = [];
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-backoff");
+    for (;;) {
+      const run = store.getRun("run-check-backoff");
+      if (run?.status === "blocked") break;
+      const latest = store.latestAttemptForNode("submission-check-backoff", "gate");
+      if (latest?.state === "retry_wait") {
+        if (latest.attempt > sleeps) delays.push(latest.retryAt! - clock);
+        if (latest.attempt === sleeps + 1) sleep.asleep = false;
+        clock = latest.retryAt!;
+        engine.wake();
+        await waitFor(() => store.latestAttemptForNode("submission-check-backoff", "gate")?.id !== latest.id
+          || store.getRun("run-check-backoff")?.status === "blocked");
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(store.hostSuspendedAttempts("submission-check-backoff", "gate"), sleeps);
+  // The excused retry that ends the sleeps waits the fixed five seconds; then the three real
+  // attempts: two retries at 1x and 4x the base, and the third failure blocks the run.
+  assert.deepEqual(delays, [5_000, base, 4 * base]);
+  assert.equal(runs, sleeps + 3);
+  assert.equal(store.getRun("run-check-backoff")?.currentPhase, "infrastructure_error");
+});
+
+test("a check excused by a sleep stays excused while an unresolved lease holds its retry back", async () => {
+  // The third attempt sleeps while the first two failures were real, and its cleanup is not
+  // yet proven. When the lease resolves, the node must retry, not count three spent attempts.
+  const store = seedSubmission("check-lease");
+  const sleep = scriptedSleep();
+  let unresolvedLease = false;
+  let clock = 8_000_000;
+  let runs = 0;
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    now: () => clock,
+    hostSuspend: sleep.clock,
+    unresolvedCheckLease: () => unresolvedLease,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({
+      execute: async () => {
+        runs++;
+        if (runs === 3) {
+          sleep.asleep = true;
+          unresolvedLease = true;
+        }
+        if (runs <= 3) return { kind: "infrastructure" as const, reason: CHECK_TIMEOUT };
+        return { kind: "exited" as const, exitCode: 0, output: "42 passing\n", truncatedBytes: 0 };
+      },
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-lease");
+    for (const attempt of [2, 3]) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-check-lease", "gate");
+        return latest?.attempt === attempt && latest.state === "retry_wait";
+      });
+      clock = store.latestAttemptForNode("submission-check-lease", "gate")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-check-lease")?.currentPhase === "check_cleanup_unresolved");
+    assert.equal(store.hostSuspendedAttempts("submission-check-lease", "gate"), 1,
+      "the excuse is recorded even though the lease blocked its retry");
+    sleep.asleep = false;
+    unresolvedLease = false;
+    engine.resumeClearedCheckCleanup();
+    const resumed = store.latestAttemptForNode("submission-check-lease", "gate")!;
+    assert.equal(resumed.attempt, 4);
+    assert.equal(resumed.state, "retry_wait", "two real attempts spent, so the node retries");
+    assert.notEqual(store.getRun("run-check-lease")?.currentPhase, "infrastructure_error");
+    clock = resumed.retryAt!;
+    engine.wake();
+    await waitFor(() => store.getRun("run-check-lease")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(runs, 4);
+  assert.equal((store.latestAttemptForNode("submission-check-lease", "gate")!.output as Record<string, unknown>).status, "passed");
+});
+
+test("a CodeRabbit disconnect during a host sleep keeps its incomplete review for the retry", async () => {
+  const id = "coderabbit-sleep";
+  const submissionId = `submission-${id}`;
+  const graph: PublishedWorkflowGraph = {
+    ...budgetGraph,
+    nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+  };
+  const store = seedSubmission(id, 5, graph);
+  const yaml = { source: ".coderabbit.yaml" as const, enabled: true, state: "enabled" as const, digest: "a".repeat(64), diagnostic: "enabled" };
+  const evidence = { ...context.evidence, coderabbit: yaml };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson({ ...context, evidence }), evidence: workflowJson(evidence),
+    fingerprint: id, status: "running",
+  }, 4);
+  const comparison = store.freezeCodeRabbitComparison(submissionId, {
+    interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
+    baseRef: "main", severity: "major", maxRuns: 1, timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
+  });
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  const engine = new WorkflowEngine(store, () => {}, {
+    now: () => 9_000_000,
+    hostSuspend: sleep.clock,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: () => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async () => ({
+        kind: "exited", exitCode: 1, output: "", truncatedBytes: 0,
+        review: {
+          comparison, status: "incomplete",
+          counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 },
+          titles: [], diagnostic: "WebSocket closed", retryableConnection: true as const,
+        },
+      }),
+    }),
+  });
+  engine.start();
+  try {
+    engine.activateSubmission(submissionId);
+    await waitFor(() => store.latestAttemptForNode(submissionId, "gate")?.state === "retry_wait");
+  } finally {
+    await engine.stop();
+  }
+  const failed = store.listAttempts(submissionId).find((attempt) => attempt.nodeId === "gate" && attempt.attempt === 1)!;
+  assert.match(failed.error ?? "", /host was asleep during this check/);
+  // The disconnect's review stays on the excused attempt, incomplete, as it would without a sleep.
+  const kept = failed.output as { review?: { status?: string; diagnostic?: string } } | null;
+  assert.equal(kept?.review?.status, "incomplete");
+  assert.equal(kept?.review?.diagnostic, "WebSocket closed");
+  assert.equal(store.hostSuspendedAttempts(submissionId, "gate"), 1);
+});
+
+test("a check runner that throws during a host sleep is retried without spending an attempt", async () => {
+  const store = seedSubmission("check-throw-sleep");
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 10_000_000;
+  let runs = 0;
+  // A throw out of the runner, not a returned result: the engine's own catch must excuse it.
+  const engine = sleepEngine(store, sleep, () => clock, async () => {
+    runs++;
+    if (runs <= 3) throw new Error("check runtime lost its supervisor connection");
+    return { kind: "exited" as const, exitCode: 0, output: "42 passing\n", truncatedBytes: 0 };
+  });
+  engine.start();
+  try {
+    engine.activateSubmission("submission-check-throw-sleep");
+    for (let excused = 1; excused <= 3; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-check-throw-sleep", "gate");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      if (excused === 3) sleep.asleep = false;
+      clock = store.latestAttemptForNode("submission-check-throw-sleep", "gate")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-check-throw-sleep")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  // Three throws, as many as the node's whole infrastructure allowance, all excused.
+  assert.equal(runs, 4);
+  assert.equal(store.hostSuspendedAttempts("submission-check-throw-sleep", "gate"), 3);
+  const first = store.listAttempts("submission-check-throw-sleep").find((attempt) => attempt.nodeId === "gate" && attempt.attempt === 1)!;
+  assert.match(first.error ?? "", /host was asleep during this check.*lost its supervisor connection/);
+  assert.equal(store.listEvents("run-check-throw-sleep").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+  const gate = store.latestAttemptForNode("submission-check-throw-sleep", "gate")!;
+  assert.equal((gate.output as Record<string, unknown>).status, "passed");
+});
+
+/**
+ * Persist three sleep-excused check attempts, the node's whole raw allowance, and stop the
+ * engine with the fourth attempt waiting to retry. Returns that attempt and the clock.
+ */
+async function threeExcusedSleeps(id: string): Promise<{
+  store: InstanceType<typeof WorkflowStore>;
+  waiting: ReturnType<InstanceType<typeof WorkflowStore>["latestAttemptForNode"]>;
+  clock: number;
+}> {
+  const store = seedSubmission(id);
+  const sleep = scriptedSleep();
+  sleep.asleep = true;
+  let clock = 11_000_000;
+  const engine = sleepEngine(store, sleep, () => clock, async () => (
+    { kind: "infrastructure" as const, reason: CHECK_TIMEOUT }
+  ));
+  engine.start();
+  try {
+    engine.activateSubmission(`submission-${id}`);
+    for (let excused = 1; excused <= 3; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode(`submission-${id}`, "gate");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      if (excused < 3) {
+        clock = store.latestAttemptForNode(`submission-${id}`, "gate")!.retryAt!;
+        engine.wake();
+      }
+    }
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(store.hostSuspendedAttempts(`submission-${id}`, "gate"), 3);
+  return { store, waiting: store.latestAttemptForNode(`submission-${id}`, "gate"), clock };
+}
+
+/** A fresh engine over the same store, awake, whose check passes: the daemon after a restart. */
+function restartedEngine(store: InstanceType<typeof WorkflowStore>, now: () => number, onRun: () => void) {
+  return sleepEngine(store, scriptedSleep(), now, async () => {
+    onRun();
+    return { kind: "exited" as const, exitCode: 0, output: "42 passing\n", truncatedBytes: 0 };
+  });
+}
+
+test("a restart that interrupts a check after excused sleeps retries it instead of blocking", async () => {
+  const { store, waiting, clock } = await threeExcusedSleeps("restart-running");
+  // The daemon died while attempt 4 was running: three excused tries, one real one in flight.
+  assert.ok(store.claimAttempt(waiting!.id, null, null, clock), "attempt 4 is now running");
+  let runs = 0;
+  const engine = restartedEngine(store, () => clock, () => { runs++; });
+  engine.start();
+  try {
+    // Recovery read the attempts actually spent (1), not the raw attempt number (4).
+    const recovered = store.latestAttemptForNode("submission-restart-running", "gate")!;
+    assert.equal(recovered.attempt, 5);
+    assert.notEqual(store.getRun("run-restart-running")?.currentPhase, "infrastructure_error");
+    assert.equal(store.getAttempt(waiting!.id)?.error, "Interrupted by daemon restart");
+    await waitFor(() => store.getRun("run-restart-running")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(runs, 1);
+  assert.equal((store.latestAttemptForNode("submission-restart-running", "gate")!.output as Record<string, unknown>).status, "passed");
+});
+
+test("a restart that finds a failed check after excused sleeps retries it instead of blocking", async () => {
+  const { store, waiting, clock } = await threeExcusedSleeps("restart-errored");
+  // The daemon died between a real failure on attempt 4 and queueing its retry.
+  store.finishAttempt(waiting!.id, { state: "error", error: CHECK_TIMEOUT }, clock);
+  let runs = 0;
+  const engine = restartedEngine(store, () => clock, () => { runs++; });
+  engine.start();
+  try {
+    const recovered = store.latestAttemptForNode("submission-restart-errored", "gate")!;
+    assert.equal(recovered.attempt, 5);
+    assert.equal(store.getRun("run-restart-errored")?.status === "blocked", false,
+      "one spent attempt of three is not exhausted");
+    assert.equal(store.listEvents("run-restart-errored").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+    await waitFor(() => store.getRun("run-restart-errored")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(runs, 1);
 });

@@ -150,6 +150,9 @@ until the Phase 4 measurement is in.
 - The workflow manager is the single owner of the question "does this pull request head match
   a passed local review". The Inspector worker asks it through the existing gate seam. The
   match is by Git tree and base branch, so a later commit with the same tree still matches.
+  As built, the question is `WorkflowManager.localReviewMatch`, the worker receives it as the
+  `localReview` start option beside `workflowGate`, and a matched head is recorded in
+  `inspector_prs.local_review_head_sha`. See the Phase 5 implementation record.
 - The posture value `local` is appended to `INSPECTOR_POSTURES` in Phase 5, because the worker
   and the chip need it. Until Phase 6 the merge predicate keeps refusing it.
 - Until Phase 6, a repository holding the merge grant is never treated as locally reviewed:

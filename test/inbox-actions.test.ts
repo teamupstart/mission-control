@@ -31,6 +31,9 @@ import type { ReviewItem } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 import { ResidentNamesContext, VoiceHintsContext } from "../src/web/lib/agent-names.ts";
 import { InboxActionButton, SpokenHint } from "../src/web/components/AgentName.tsx";
+import { VoiceAnswersContext } from "../src/web/lib/voice-open-cards.ts";
+import { VoiceRosterContext } from "../src/web/lib/voice-roster.ts";
+import type { SpokenName } from "../src/shared/voice-names.ts";
 import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -55,6 +58,8 @@ test("action ids are unique, and the question card's two forms are declared", ()
 });
 
 test("a hint fills in the agent's name, and adds the open-card form only while the card is open", () => {
+  assert.equal(spokenHintText(inboxAction("answer"), { name: "Sage", isReferenceName: true }, true), '"Sage", ... or "reply, ..."');
+  assert.equal(spokenHintText(inboxAction("answer"), '"Sage"', true), '""Sage", ..." or "reply, ..."');
   assert.equal(spokenHintText(inboxAction("answer"), "Steve"), '"Steve, ..."');
   assert.equal(spokenHintText(inboxAction("answer"), "Steve", true), '"Steve, ..." or "reply, ..."');
   assert.equal(spokenHintText(inboxAction("answer-option"), "Steve", true), '"Steve, option B"');
@@ -69,6 +74,14 @@ test("a spoken hint renders nothing until voice turns hints on", () => {
     renderToStaticMarkup(voice(true, createElement(SpokenHint, { action: "answer", name: "Steve" }))),
     '<span class="spoken-hint" data-spoken-action="answer">&quot;Steve, ...&quot;</span>',
   );
+});
+
+test("a sent card quotes just the reference name in its answer command", () => {
+  const hint = createElement(SpokenHint, {
+    action: "answer", name: { name: '"Sage"', isReferenceName: true },
+    command: "{name}, answer", instruction: "to reply to one.",
+  });
+  assert.match(renderToStaticMarkup(voice(true, hint)), />Say &quot;Sage&quot;, answer to reply to one\.<\/span>/);
 });
 
 test("a relabelled button keeps its action's id and spoken form", () => {
@@ -164,10 +177,14 @@ function card(review: ReviewItem, flags: { inbox: boolean; voice?: boolean; resi
   const runs = flags.resident
     ? [{ taskId: "t1", settings: { identity: { name: "Linter watcher" }, board: { colorId: "violet" } } }]
     : [];
+  const roster: SpokenName[] = flags.resident ? [{ kind: "resident", key: "resident:lint", name: "Linter watcher",
+    role: "Watch the linter", colorId: "violet", state: "running", sessionId: review.sessionId, taskId: "t1", agent: "claude" }] : [];
+  const questionCard = createElement(VoiceRosterContext.Provider, { value: roster },
+    createElement(VoiceAnswersContext.Provider, { value: flags.voice ? { answers: new Map() } : null }, createElement(ReviewCard, { review, session })));
   return renderToStaticMarkup(
     createElement(FeatureFlagsContext.Provider, { value: config },
       createElement(ResidentNamesContext.Provider, { value: runs },
-        voice(flags.voice ?? false, createElement(ReviewCard, { review, session })))),
+        voice(flags.voice ?? false, questionCard))),
   );
 }
 
@@ -188,11 +205,15 @@ test("a resident's name on a question card is drawn in its board colour", () => 
 });
 
 test("a question card's spoken hints address the agent, and stay hidden until voice turns them on", () => {
-  for (const review of [question, withOptions]) assert.doesNotMatch(card(review, { inbox: true }), /spoken-hint/);
+  for (const review of [question, withOptions]) assert.doesNotMatch(card(review, { inbox: true }), /vh-foot|av-key/);
   const open = card(question, { inbox: true, voice: true, resident: true });
-  assert.match(open, /data-spoken-action="answer">&quot;Linter watcher, \.\.\.&quot; or &quot;reply, \.\.\.&quot;</);
+  assert.match(open, /Say <q>Linter watcher, my answer is …<\/q> to answer in your own words/);
   const options = card(withOptions, { inbox: true, voice: true, resident: true });
-  assert.match(options, /data-spoken-action="answer-option">&quot;Linter watcher, option B&quot;</);
+  assert.match(options, /Say <q>Linter watcher, option B<\/q> to select an option/);
+  assert.doesNotMatch(options, /in your own words/);
+  const other = { ...withOptions, decisions: withOptions.decisions!.map(d => ({ ...d, allowOther: true })) };
+  assert.match(card(other, { inbox: true, voice: true, resident: true }), /option B<\/q> to answer, or <q>Linter watcher, my answer is …/);
+  assert.match(card(withOptions, { inbox: true, voice: true }), /with this card open, say <q>reply, option A<\/q>/);
 });
 
 // ---- card files: every control is a declared action ----
@@ -465,4 +486,39 @@ test("the report card draws Mute through its action with the spoken hint, and no
   assert.doesNotMatch(muted, /data-inbox-action="mute"/);
   assert.match(muted, /Steve&#x27;s reports are muted/);
   assert.match(muted, /Unmute in Settings &gt; Reports\./);
+});
+
+test("the split inbox adds no card action of its own: its pane draws each card's declared actions, and Mark all read keeps its id", async () => {
+  // The split view's own controls (tabs, rows, Previous and Next, back) move the selection; none
+  // acts on a card, so none is an inbox action and none may pose as one.
+  const source = readFileSync(new URL("../src/web/components/InboxSplitView.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /InboxActionButton|data-inbox-action/, "InboxSplitView draws no inbox action itself");
+
+  const { foldAttention } = await import("../src/web/lib/attention.ts");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { mkReport, mkReportControls } = await import("./helpers/report-fixture.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const fold = foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    reports: [mkReport({ id: "r-1", title: "Audit done", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" } })],
+  });
+  const html = renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true, "inbox-split": true } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold,
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: mkReportControls("r-1").controls,
+      }))),
+  );
+  const declared = new Set(actions.map((action) => action.id));
+  const drawn = [...html.matchAll(/data-inbox-action="([^"]+)"/g)].map((m) => m[1]!);
+  for (const id of drawn) assert.ok(declared.has(id), `the split inbox draws undeclared action ${id}`);
+  const pane = html.slice(html.indexOf('aria-label="Selected item"'));
+  for (const id of ["toggle", "mark-read", "mute"]) assert.match(pane, new RegExp(`data-inbox-action="${id}"`), `the pane draws ${id}`);
+  assert.match(html, /data-inbox-action="mark-all-read"[^>]*>Mark all read<\/button>/);
 });

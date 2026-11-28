@@ -12,9 +12,13 @@
 // from ever matching), which is exactly why these must live in one place. A .d.mts
 // alongside gives the TS side types.
 
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { createHash, randomBytes } from "node:crypto";
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { homedir, tmpdir } from "node:os";
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -29,11 +33,11 @@ import { dirname, join, resolve } from "node:path";
  * fail loudly - the hook swallows its fetch errors - it would just quietly stop
  * reporting until someone reinstalled it.
  */
-export function envVar(suffix) {
+export function envVar(suffix, env = process.env) {
   return (
-    process.env[`MISSION_${suffix}`] ??
-    process.env[`FLEET_${suffix}`] ??
-    process.env[`HARNESS_${suffix}`]
+    env[`MISSION_${suffix}`] ??
+    env[`FLEET_${suffix}`] ??
+    env[`HARNESS_${suffix}`]
   );
 }
 
@@ -68,13 +72,22 @@ export const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
  * have several processes racing to invent a state dir.
  */
 export function stateDir() {
-  const override = envVar("HOME");
+  return resolveStateDir(process.env, homedir());
+}
+
+/**
+ * The rule behind `stateDir`, over an explicit environment and home directory, so a caller that
+ * is handed its environment (`mctl`, whose tests run against a temporary home) resolves the same
+ * directory the daemon does instead of keeping a second copy of the rule.
+ */
+export function resolveStateDir(env, home) {
+  const override = envVar("HOME", env);
   if (override) return override;
   for (const name of STATE_DIRS) {
-    const p = join(homedir(), name);
+    const p = join(home, name);
     if (existsSync(p)) return p;
   }
-  return join(homedir(), STATE_DIRS[0]);
+  return join(home, STATE_DIRS[0]);
 }
 
 /** Public TLS identity published by the daemon that owns this state home and API port. */

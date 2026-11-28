@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { after, afterEach, test, type TestContext } from "node:test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
@@ -15,10 +14,11 @@ import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN
 import { McpTaskConfigurationSchema, type McpTaskSnapshot } from "../src/shared/protocol.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "mission-mcp-backlog-"));
+const home = tempDir("mission-mcp-backlog-");
 const repos = join(home, "repos");
 process.env.MISSION_HOME = home;
 process.env.MISSION_WORKSPACE_DIRS = repos;

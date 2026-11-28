@@ -1,12 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { REPORT_LIMITS, type ReportItem } from "../src/shared/reports.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `POST /api/reports/:id/publish`: Publish as scout.
 //
@@ -18,16 +19,17 @@ import { mkSession } from "./helpers/session-fixture.ts";
 // static checker refuses is refused with its problems and archives nothing. Neither reading the
 // document nor publishing it clears the report from to read.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reports-publish-"));
+const home = tempDir("mission-reports-publish-");
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ReportManager, reportDocumentDir } = await import("../src/server/reports.ts");
-const { renderMarkdownPage } = await import("../src/server/report-document.ts");
+const { renderMarkdownPage, readStoredReportCompanions, linkedCompanionPaths } = await import("../src/server/report-document.ts");
 const { ArchiveManager, reportArchiveId } = await import("../src/server/archives/manager.ts");
 const { ArchiveStore } = await import("../src/server/archives/store.ts");
+const { verifyArchiveBundle } = await import("../src/server/archives/bundle.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
@@ -49,10 +51,11 @@ let serial = 0;
 function setup(options: {
   onPruned?: (keys: readonly string[]) => void;
   rename?: (from: string, to: string) => Promise<void>;
+  beforeCompanionOpen?: (path: string) => Promise<void> | void;
 } = {}) {
   serial += 1;
   const registry = new Registry();
-  const reports = new ReportManager(registry, { stateDir: home });
+  const reports = new ReportManager(registry, { stateDir: home, beforeCompanionOpen: options.beforeCompanionOpen });
   const root = join(home, `library-${serial}`);
   const archives = new ArchiveManager({
     root,
@@ -185,6 +188,8 @@ test("a bundle at the report's key that this report did not publish is a conflic
     reportCreatedAt: report.createdAt,
     title: "Someone else's page",
     page: Buffer.from("<html><body><p>Not this report</p></body></html>"),
+    companions: [],
+    documentName: "report.html",
     session: { id: "s-someone-else", name: "Other", taskId: null },
     repositoryLabel: null,
   });
@@ -556,6 +561,1057 @@ test("a page the static checker refuses is refused with its problems, and nothin
   assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
 });
 
+const LINKED_HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Findings</title></head><body>" +
+  "<p>Data: <a href=\"variants.csv\">variants.csv</a>, <a href=\"data/recording.json\">recording.json</a>, " +
+  "<a href=\"gate.diff\">gate.diff</a>.</p><img alt=\"chart\" src=\"chart.png\"></body></html>";
+
+test("files a report's document links to beside it are stored when it is posted, and published with the page", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  mkdirSync(join(checkout, "docs", "reports", "run", "data"), { recursive: true });
+  writeFileSync(join(checkout, "docs", "reports", "run", "variants.csv"), "variant,score\na,1\n");
+  writeFileSync(join(checkout, "docs", "reports", "run", "data", "recording.json"), "{\"frames\":3}\n");
+  writeFileSync(join(checkout, "docs", "reports", "run", "gate.diff"), "-old\n+new\n");
+  writeFileSync(join(checkout, "docs", "reports", "run", "chart.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const report = await post("docs/reports/run/report.html", LINKED_HTML, "Linked data");
+  // The checkout goes away before the press: what publishes is what was stored at post time.
+  rmSync(join(checkout, "docs"), { recursive: true, force: true });
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.equal(archivedPage(archiveId).toString("utf8"), LINKED_HTML, "a page whose links were all stored keeps its bytes");
+  const written = manifest(archiveId);
+  assert.equal(written.archive.capture_status, "complete");
+  assert.deepEqual(written.missing, []);
+  const companions = (written.content.artifacts as Array<{ role: string; archive_path: string }>)
+    .filter((artifact) => artifact.role === "report_companion")
+    .map((artifact) => artifact.archive_path);
+  assert.deepEqual(companions, ["report/chart.png", "report/data/recording.json", "report/gate.diff", "report/variants.csv"]);
+  assert.equal(readFileSync(join(root, PRODUCER, archiveId, "report", "data", "recording.json"), "utf8"), "{\"frames\":3}\n");
+  const verified = await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId });
+  assert.equal(verified.kind, "verified", JSON.stringify(verified));
+
+  const again = await publish(report.id);
+  assert.equal(again.body.replayed, true);
+});
+
+test("links to files that were never stored are unlinked and listed as missing, so the page still publishes", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout, reports } = setup();
+  writeFileSync(join(checkout, "variants.csv"), "variant,score\na,1\n");
+  const report = await post("report.html", LINKED_HTML, "Partly stored");
+  // A report posted before companions were stored has none at all.
+  const older = await post("older.html", LINKED_HTML, "Posted before companions");
+  rmSync(join(reportDocumentDir(older.id, home), "companions"), { recursive: true, force: true });
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.match(page, /<a href="variants\.csv">variants\.csv<\/a>/, "a stored file keeps its link");
+  assert.match(page, /<a>recording\.json<\/a>/, "an unstored file keeps its text and loses its link");
+  assert.match(page, /<img alt="chart">/);
+  const written = manifest(archiveId);
+  assert.equal(written.archive.capture_status, "partial");
+  assert.deepEqual(
+    (written.missing as Array<{ kind: string; expected_source: string }>).map((entry) => [entry.kind, entry.expected_source]),
+    [["report_companion", "chart.png"], ["report_companion", "data/recording.json"], ["report_companion", "gate.diff"]],
+  );
+  assert.equal(
+    (await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind,
+    "verified",
+    "the unlinked page passes the same check every bundle is read under",
+  );
+
+  const olderPublished = await publish(older.id);
+  assert.equal(olderPublished.status, 200, JSON.stringify(olderPublished.body));
+  const olderManifest = manifest(reportArchiveId(PRODUCER, older.id, older.createdAt));
+  assert.equal(olderManifest.missing.length, 4);
+  assert.equal(reports.get(older.id)?.publishedArchiveKey, olderPublished.body.archiveKey);
+});
+
+test("a Markdown document's relative links travel the same way", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  writeFileSync(join(checkout, "table.csv"), "a,b\n");
+  const report = await post("notes.md", "# Notes\n\n[table](table.csv) and [gone](gone.csv)\n", "Markdown links");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const written = manifest(reportArchiveId(PRODUCER, report.id, report.createdAt));
+  assert.ok((written.content.artifacts as Array<{ archive_path: string }>).some((artifact) => artifact.archive_path === "report/table.csv"));
+  assert.deepEqual((written.missing as Array<{ expected_source: string }>).map((entry) => entry.expected_source), ["gone.csv"]);
+});
+
+test("a link to a sibling named report.html is unlinked and listed as missing, never pointed at the published page", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const SIBLING = "<html><body><p>The sibling page, a different file</p></body></html>";
+  writeFileSync(join(checkout, "report.html"), SIBLING);
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const findings = "<html><body><a href=\"report.html\">earlier report</a> <a href=\"data.csv\">data</a></body></html>";
+  const report = await post("findings.html", findings, "Links a sibling report.html");
+  assert.equal(existsSync(join(reportDocumentDir(report.id, home), "companions", "report.html")), false);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.equal(page, findings.replace(" href=\"report.html\"", ""), "only the sibling's link is removed");
+  assert.doesNotMatch(page, /The sibling page/, "the sibling's content is not in the archived page");
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/data.csv"]);
+  assert.deepEqual(missing, ["report.html"]);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+
+  // A document that IS report.html linking to itself keeps the link: it names the page.
+  const self = "<html><body><a href=\"report.html#top\">top</a></body></html>";
+  const selfReport = await post("report.html", self, "Links itself");
+  const selfPublished = await publish(selfReport.id);
+  assert.equal(selfPublished.status, 200, JSON.stringify(selfPublished.body));
+  const selfId = reportArchiveId(PRODUCER, selfReport.id, selfReport.createdAt);
+  assert.equal(archivedPage(selfId).toString("utf8"), self);
+  assert.deepEqual(manifest(selfId).missing, []);
+});
+
+test("a same-directory link to a symlink that resolves outside the checkout is not stored, and is unlinked as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = tempDir("mission-report-outside-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "outside-the-checkout-secret-bytes\n";
+  writeFileSync(join(outside, "secret.csv"), SECRET);
+  symlinkSync(join(outside, "secret.csv"), join(checkout, "secret.csv"));
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><a href=\"secret.csv\">secret</a> <a href=\"kept.csv\">kept</a></body></html>";
+  const report = await post("leak.html", html, "Links a symlink out");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "posting succeeds and stores only the file inside the checkout");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/kept.csv"]);
+  assert.deepEqual(missing, ["secret.csv"]);
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>secret<\/a> <a href="kept\.csv">kept<\/a>/);
+  const bundleDir = join(root, PRODUCER, archiveId);
+  const bundleFiles = readdirSync(bundleDir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(bundleFiles.every((text) => !text.includes(SECRET.trim())), "the external bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a srcset mixing an escaping link with a missing file refuses the publish, and no archive is written", async () => {
+  const { post, publish, bundles, reports, checkout } = setup();
+  mkdirSync(join(checkout, "sub"), { recursive: true });
+  writeFileSync(join(checkout, "outside.png"), "png");
+  const report = await post("sub/mixed.html", "<html><body><img alt=\"x\" srcset=\"../outside.png 1x, gone.png 2x\"></body></html>", "Mixed srcset");
+  const refused = await publish(report.id);
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(refused.body.problems!.join(" "), /leaves the report directory/);
+  assert.deepEqual(bundles(), [], "no archive is written");
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+});
+
+test("a link to a path beneath report.html is never stored, and publishes as missing instead of failing the bundle write", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  // In the checkout, `report.html` is a directory holding data; in the archive it is the page.
+  mkdirSync(join(checkout, "report.html"), { recursive: true });
+  writeFileSync(join(checkout, "report.html", "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("notes.md", "# Notes\n\n[data](report.html/data.csv) and [kept](kept.csv)\n", "Beneath report.html");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "nothing beneath report.html is stored");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/kept.csv"]);
+  assert.deepEqual(missing, ["report.html/data.csv"]);
+  assert.doesNotMatch(archivedPage(archiveId).toString("utf8"), /href="report\.html\/data\.csv"/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+const mkfifo = (path: string) => execFileSync("mkfifo", [path]);
+
+/** The stored copy of an HTML report's document: the page Publish as scout builds from it. */
+const storedPage = (report: ReportItem) => readFileSync(join(reportDocumentDir(report.id, home), report.document!.name));
+
+test("a linked named pipe in the checkout never blocks the post, is not stored, and publishes as missing", { timeout: 20_000 }, async () => {
+  const { post, publish, manifest, root, checkout } = setup();
+  mkfifo(join(checkout, "pipe.csv"));
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("pipe.html", "<html><body><a href=\"pipe.csv\">pipe</a> <a href=\"kept.csv\">kept</a></body></html>", "Linked pipe");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"]);
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["pipe.csv"] });
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a linked file swapped for a named pipe after the containment check never blocks the post's open", { timeout: 20_000 }, async () => {
+  let checkout = "";
+  const { post, checkout: dir } = setup({
+    beforeCompanionOpen: (path) => {
+      if (path !== join(realpathSync(checkout), "data.csv")) return;
+      unlinkSync(path);
+      mkfifo(path);
+    },
+  });
+  checkout = dir;
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("pipe-race.html", "<html><body><a href=\"data.csv\">d</a> <a href=\"kept.csv\">k</a></body></html>", "Pipe swapped in");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "the pipe is opened without blocking and rejected as not a regular file");
+});
+
+test("a stored companion replaced by a named pipe never blocks the publish, and publishes as missing", { timeout: 20_000 }, async () => {
+  const { post, publish, manifest, root, checkout, bundles } = setup();
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("stored-pipe.html", "<html><body><a href=\"data.csv\">d</a> <a href=\"kept.csv\">k</a></body></html>", "Stored pipe");
+  const stored = join(reportDocumentDir(report.id, home), "companions", "data.csv");
+  unlinkSync(stored);
+  mkfifo(stored);
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(bundles(), [archiveId], "exactly this report's archive is written");
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["data.csv"] });
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("the page's archive name is reserved case-insensitively: Report.html and paths beneath it publish as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout, archives } = setup();
+  // A file whose name differs from the page's only in case. On a case-insensitive volume it is
+  // the page's own path in the archive; on any volume it is never stored as a companion.
+  writeFileSync(join(checkout, "Report.html"), "<html><body><p>Another page</p></body></html>");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><a href=\"Report.html\">other</a> <a href=\"REPORT.HTML/data.csv\">data</a> <a href=\"kept.csv\">kept</a></body></html>";
+  assert.deepEqual(linkedCompanionPaths("html", Buffer.from(html)), ["kept.csv"], "neither case variant is a capture candidate");
+  const report = await post("findings.html", html, "Case-folded reserved name");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"]);
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["REPORT.HTML/data.csv", "Report.html"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>other<\/a> <a>data<\/a> <a href="kept\.csv">kept<\/a>/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+
+  // The publisher refuses the name on its own as well: handed a companion called Report.html, it
+  // never writes it beside report/report.html, and the page's link to it is unlinked instead.
+  const direct = await archives.publishReportPage({
+    reportId: "r-90001", reportCreatedAt: 90001, title: "Direct", documentName: "findings.html",
+    page: Buffer.from("<html><body><a href=\"Report.html\">other</a></body></html>"),
+    companions: [{ path: "Report.html", bytes: Buffer.from("<html><body>x</body></html>") }],
+    session: { id: "s-direct", name: "Direct", taskId: null }, repositoryLabel: null,
+  });
+  assert.equal(direct.ok, true, JSON.stringify(direct));
+  const directId = reportArchiveId(PRODUCER, "r-90001", 90001);
+  assert.deepEqual(companionsOf(manifest(directId)), { stored: [], missing: ["Report.html"] });
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId: directId })).kind, "verified");
+});
+
+test("an I/O-style failure checking a stored companion after its open fails the read instead of unlinking it", { skip: asRoot }, async () => {
+  const { post, checkout } = setup();
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  writeFileSync(join(checkout, "data", "nested.csv"), "a,b\n");
+  const report = await post("io-error.html", "<html><body><a href=\"data/nested.csv\">d</a></body></html>", "Stored I/O error");
+  const storedDir = join(reportDocumentDir(report.id, home), "companions", "data");
+  try {
+    // After the open succeeds, the directory stops being searchable: realpath fails with EACCES,
+    // which is not absence.
+    await assert.rejects(
+      readStoredReportCompanions(report, storedPage(report), home, { afterOpen: () => chmodSync(storedDir, 0o000) }),
+      (error: NodeJS.ErrnoException) => error.code === "EACCES",
+    );
+  } finally {
+    chmodSync(storedDir, 0o700);
+  }
+  assert.deepEqual((await readStoredReportCompanions(report, storedPage(report), home)).map((companion) => companion.path), ["data/nested.csv"]);
+});
+
+test("a linked file that exists but cannot be read refuses the post with its cause, and posts once readable", { skip: asRoot }, async () => {
+  const { post, reports, checkout } = setup();
+  mkdirSync(join(checkout, "locked-dir"), { recursive: true });
+  writeFileSync(join(checkout, "locked.csv"), "a,b\n");
+  writeFileSync(join(checkout, "locked-dir", "inner.csv"), "c,d\n");
+  const count = () => reports.listForSession(`s-publish-${serial}`).length;
+  const before = count();
+  chmodSync(join(checkout, "locked.csv"), 0o000);
+  try {
+    await assert.rejects(
+      post("unreadable.html", "<html><body><a href=\"locked.csv\">l</a></body></html>", "Unreadable file"),
+      /locked\.csv, which the document links to, could not be read \(EACCES\)/,
+    );
+  } finally {
+    chmodSync(join(checkout, "locked.csv"), 0o600);
+  }
+  chmodSync(join(checkout, "locked-dir"), 0o000);
+  try {
+    await assert.rejects(
+      post("unreadable-dir.html", "<html><body><a href=\"locked-dir/inner.csv\">i</a></body></html>", "Unreadable directory"),
+      /locked-dir\/inner\.csv, which the document links to, could not be read \(EACCES\)/,
+    );
+  } finally {
+    chmodSync(join(checkout, "locked-dir"), 0o700);
+  }
+  assert.equal(count(), before, "neither refused post stored a report");
+  const posted = await post("unreadable.html", "<html><body><a href=\"locked.csv\">l</a></body></html>", "Readable again");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(posted.id, home), "companions")), ["locked.csv"]);
+});
+
+test("links whose paths differ only in case keep one spelling, so the bundle is written and verifies on any volume", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout, archives } = setup();
+  // Written under both spellings: one file on a case-insensitive volume, two on a sensitive one.
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "Data.csv"), "a,b\n");
+  const html = "<html><body><a href=\"Data.csv\">upper</a> <a href=\"data.csv\">lower</a></body></html>";
+  assert.deepEqual(linkedCompanionPaths("html", Buffer.from(html)), ["Data.csv", "data.csv"], "both are candidates; the first one stored wins");
+  const report = await post("aliases.html", html, "Case aliases");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["Data.csv"]);
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/Data.csv"], missing: ["data.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a href="Data\.csv">upper<\/a> <a>lower<\/a>/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+
+  // Handed both spellings directly, the publisher writes the first and unlinks the other.
+  const direct = await archives.publishReportPage({
+    reportId: "r-90002", reportCreatedAt: 90002, title: "Direct aliases", documentName: "aliases.html",
+    page: Buffer.from(html),
+    companions: [{ path: "Data.csv", bytes: Buffer.from("a,b\n") }, { path: "data.csv", bytes: Buffer.from("a,b\n") }],
+    session: { id: "s-direct", name: "Direct", taskId: null }, repositoryLabel: null,
+  });
+  assert.equal(direct.ok, true, JSON.stringify(direct));
+  const directId = reportArchiveId(PRODUCER, "r-90002", 90002);
+  assert.deepEqual(companionsOf(manifest(directId)), { stored: ["report/Data.csv"], missing: ["data.csv"] });
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId: directId })).kind, "verified");
+});
+
+test("a checkout root that cannot be resolved after the document is read refuses the post instead of storing no companions", { skip: asRoot }, async () => {
+  const outer = join(home, `outer-${Date.now()}`);
+  const checkout = join(outer, "checkout");
+  mkdirSync(checkout, { recursive: true });
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "doc.html"), "<html><body><a href=\"data.csv\">d</a></body></html>");
+  const registry = new Registry();
+  let lock = true;
+  const reports = new ReportManager(registry, {
+    stateDir: home,
+    // After the document was read: the checkout's parent stops being searchable, so realpath of
+    // the root fails with EACCES, which is not absence.
+    beforeCompanionCapture: () => { if (lock) chmodSync(outer, 0o000); },
+  });
+  after(() => reports.stop());
+  const session = mkSession({ id: `s-root-error-${serial}`, name: "Root error", repoRoot: "/repos/root", cwd: checkout });
+  try {
+    await assert.rejects(
+      reports.post(session, { title: "Root unreadable", body: "b", file: "doc.html" }),
+      /the checkout could not be read to collect the files the document links to \(EACCES\)/,
+    );
+  } finally {
+    chmodSync(outer, 0o700);
+  }
+  assert.deepEqual(reports.listForSession(session.id), [], "nothing was posted");
+  lock = false;
+  const posted = await reports.post(session, { title: "Root readable", body: "b", file: "doc.html" });
+  assert.deepEqual(readdirSync(join(reportDocumentDir(posted.id, home), "companions")), ["data.csv"]);
+});
+
+test("a folder moved out of the checkout and replaced by a symlink before the open is never read, though the file's identity is unchanged", async () => {
+  const outside = tempDir("mission-companion-moved-dir-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  let checkout = "";
+  let moved = false;
+  const { post, checkout: dir } = setup({
+    // After the containment check, before the open: the folder holding the linked file is moved
+    // outside the checkout and its old path becomes a symlink to the new place. The file is the
+    // same inode, so an identity check alone would accept it.
+    beforeCompanionOpen: (path) => {
+      if (path !== join(realpathSync(checkout), "sub", "data.csv")) return;
+      renameSync(join(checkout, "sub"), join(outside, "sub"));
+      symlinkSync(join(outside, "sub"), join(checkout, "sub"));
+      moved = true;
+    },
+  });
+  checkout = dir;
+  mkdirSync(join(checkout, "sub"), { recursive: true });
+  writeFileSync(join(checkout, "sub", "data.csv"), "moved-out-of-the-checkout\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("moved.html", "<html><body><a href=\"sub/data.csv\">d</a> <a href=\"kept.csv\">k</a></body></html>", "Folder moved out");
+  assert.equal(moved, true, "the move happened inside the window");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "the file reached through the symlink is not stored");
+});
+
+test("a stored companion enlarged past the byte limit after posting is unlinked at publish and listed as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  writeFileSync(join(checkout, "grows.bin"), "small\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("grows.html", "<html><body><a href=\"grows.bin\">g</a> <a href=\"kept.csv\">k</a></body></html>", "Grows after posting");
+  // After posting, the stored copy alone is one byte past the whole companion budget.
+  writeFileSync(join(reportDocumentDir(report.id, home), "companions", "grows.bin"), Buffer.alloc(REPORT_LIMITS.companionBytes + 1, 0x67));
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["grows.bin"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>g<\/a> <a href="kept\.csv">k<\/a>/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a stored folder replaced by a symlink to another folder inside the store is never followed at publish", async () => {
+  const { post, publish, manifest, root, checkout } = setup();
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  mkdirSync(join(checkout, "other"), { recursive: true });
+  writeFileSync(join(checkout, "data", "x.csv"), "data-file\n");
+  writeFileSync(join(checkout, "other", "x.csv"), "other-file\n");
+  const report = await post("internal.html", "<html><body><a href=\"data/x.csv\">d</a> <a href=\"other/x.csv\">o</a></body></html>", "Internal symlink");
+  const store = join(reportDocumentDir(report.id, home), "companions");
+  // Inside the store, data/ now points at other/: its real path and inode stay inside the store.
+  rmSync(join(store, "data"), { recursive: true, force: true });
+  symlinkSync(join(store, "other"), join(store, "data"));
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/other/x.csv"], missing: ["data/x.csv"] },
+    "other/x.csv is never archived again under data/x.csv");
+  assert.equal(existsSync(join(root, PRODUCER, archiveId, "report", "data")), false);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("the companions read are chosen from the page being published, not from a second read of the stored document", async () => {
+  const { post, checkout } = setup();
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const page = "<html><body><a href=\"kept.csv\">k</a></body></html>";
+  const report = await post("snapshot.html", page, "One snapshot");
+  // The stored document changes after the page was built: it now links nothing.
+  writeFileSync(join(reportDocumentDir(report.id, home), "snapshot.html"), "<html><body><p>no links</p></body></html>");
+  const read = await readStoredReportCompanions(report, Buffer.from(page), home);
+  assert.deepEqual(read.map((companion) => companion.path), ["kept.csv"], "the built page's link is honored");
+});
+
+test("a file and a directory path that collide case-insensitively keep one, so the archive is written on a case-insensitive volume", async () => {
+  const { manifest, archivedPage, root, archives } = setup();
+  const html = "<html><body><a href=\"Data\">file</a> <a href=\"data/x.csv\">nested</a></body></html>";
+  assert.deepEqual(linkedCompanionPaths("html", Buffer.from(html)), ["Data", "data/x.csv"], "both are candidates; collisions are settled among stored files");
+  // The publisher, handed both (as a case-sensitive checkout could store them), writes one. Without
+  // the check, writing report/Data then report/data/x.csv fails on a case-insensitive volume.
+  const published = await archives.publishReportPage({
+    reportId: "r-90003", reportCreatedAt: 90003, title: "File and directory", documentName: "page.html",
+    page: Buffer.from(html),
+    companions: [{ path: "data/x.csv", bytes: Buffer.from("nested\n") }, { path: "Data", bytes: Buffer.from("file\n") }],
+    session: { id: "s-direct", name: "Direct", taskId: null }, repositoryLabel: null,
+  });
+  assert.equal(published.ok, true, JSON.stringify(published));
+  const archiveId = reportArchiveId(PRODUCER, "r-90003", 90003);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/Data"], missing: ["data/x.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a href="Data">file<\/a> <a>nested<\/a>/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a linked name too long for the filesystem is left out at post and publishes as missing, not a 500", async () => {
+  const { post, publish, manifest, root, checkout } = setup();
+  // Four 246-character directories and a file: within an archive path's limits (1,024
+  // characters, 255 per segment), but too long for the filesystem on every platform, so every
+  // lookup answers ENAMETOOLONG. Each segment is 492 UTF-8 bytes (Linux allows 255 per name), and
+  // the whole path under the state home passes macOS's 1,024-byte path limit.
+  const segment = "\u00e9".repeat(246);
+  const long = `${segment}/${segment}/${segment}/${segment}/x.csv`;
+  assert.ok(`report/${long}`.length <= 1024);
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("long-name.html", `<html><body><a href="${long}">long</a> <a href="kept.csv">k</a></body></html>`, "Long name");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"]);
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: [long] });
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("Unicode-equivalent companion spellings keep one, so the archive is written on a normalization-insensitive volume", async () => {
+  const { manifest, root, archives } = setup();
+  const nfc = "caf\u00e9.csv";
+  const nfd = "cafe\u0301.csv";
+  const html = `<html><body><a href="${nfc}">composed</a> <a href="${nfd}">decomposed</a></body></html>`;
+  assert.equal(linkedCompanionPaths("html", Buffer.from(html)).length, 2, "both are candidates; collisions are settled among stored files");
+  const published = await archives.publishReportPage({
+    reportId: "r-90004", reportCreatedAt: 90004, title: "Unicode aliases", documentName: "page.html",
+    page: Buffer.from(html),
+    companions: [{ path: nfd, bytes: Buffer.from("d\n") }, { path: nfc, bytes: Buffer.from("c\n") }],
+    session: { id: "s-direct", name: "Direct", taskId: null }, repositoryLabel: null,
+  });
+  assert.equal(published.ok, true, JSON.stringify(published));
+  const archiveId = reportArchiveId(PRODUCER, "r-90004", 90004);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.equal(stored.length, 1);
+  assert.equal(missing.length, 1);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a checkout replaced at the same path partway through capture refuses the post; no file is taken from the replacement", async () => {
+  for (const links of [["a.csv", "b.csv"], ["a.csv"]]) {
+    const outer = join(home, `mid-swap-${links.length}-${Date.now()}`);
+    const checkout = join(outer, "checkout");
+    mkdirSync(checkout, { recursive: true });
+    for (const name of links) writeFileSync(join(checkout, name), `original ${name}\n`);
+    writeFileSync(join(checkout, "doc.html"), `<html><body>${links.map((name) => `<a href="${name}">${name}</a>`).join(" ")}</body></html>`);
+    const registry = new Registry();
+    let swapped = false;
+    const reports = new ReportManager(registry, {
+      stateDir: home,
+      // Just before the first linked file is opened, the checkout is moved aside and another
+      // directory, holding the same names with other bytes, takes its path.
+      beforeCompanionOpen: (path) => {
+        if (swapped || !path.endsWith(`${sep}a.csv`)) return;
+        swapped = true;
+        const real = realpathSync(checkout);
+        renameSync(real, `${real}-original`);
+        mkdirSync(real);
+        for (const name of links) writeFileSync(join(real, name), `replacement ${name}\n`);
+      },
+    });
+    after(() => reports.stop());
+    const session = mkSession({ id: `s-mid-swap-${links.length}-${serial}`, name: "Mid swap", repoRoot: "/repos/mid", cwd: checkout });
+    await assert.rejects(
+      reports.post(session, { title: "Swapped mid-capture", body: "b", file: "doc.html" }),
+      /the checkout was replaced while the report was being posted/,
+      `${links.length} linked file(s)`,
+    );
+    assert.equal(swapped, true);
+    assert.deepEqual(reports.listForSession(session.id), [], "nothing was posted");
+  }
+});
+
+test("a checkout replaced at the same path after the document is read refuses the post instead of mixing checkouts", async () => {
+  const outer = join(home, `swap-outer-${Date.now()}`);
+  const checkout = join(outer, "checkout");
+  mkdirSync(checkout, { recursive: true });
+  writeFileSync(join(checkout, "data.csv"), "original\n");
+  writeFileSync(join(checkout, "doc.html"), "<html><body><a href=\"data.csv\">d</a></body></html>");
+  const registry = new Registry();
+  let swap = true;
+  const reports = new ReportManager(registry, {
+    stateDir: home,
+    // After the document was read from the original checkout, another directory takes its path.
+    beforeCompanionCapture: (real) => {
+      if (!swap) return;
+      renameSync(real, `${real}-original`);
+      mkdirSync(real);
+      writeFileSync(join(real, "data.csv"), "replacement\n");
+    },
+  });
+  after(() => reports.stop());
+  const session = mkSession({ id: `s-swap-${serial}`, name: "Swap", repoRoot: "/repos/swap", cwd: checkout });
+  await assert.rejects(
+    reports.post(session, { title: "Swapped checkout", body: "b", file: "doc.html" }),
+    /the checkout was replaced while the report was being posted/,
+  );
+  assert.deepEqual(reports.listForSession(session.id), [], "nothing was posted");
+  swap = false;
+  writeFileSync(join(checkout, "doc.html"), "<html><body><a href=\"data.csv\">d</a></body></html>");
+  const posted = await reports.post(session, { title: "Settled checkout", body: "b", file: "doc.html" });
+  assert.equal(readFileSync(join(reportDocumentDir(posted.id, home), "companions", "data.csv"), "utf8"), "replacement\n");
+});
+
+test("a case-colliding spelling that names nothing never shuts out the file that exists", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  // Data sorts first but names no regular file (on a case-insensitive checkout it is the
+  // directory data/, on a sensitive one nothing at all); data/x.csv is the real file.
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  writeFileSync(join(checkout, "data", "x.csv"), "real\n");
+  const html = "<html><body><a href=\"Data\">missing</a> <a href=\"data/x.csv\">real</a></body></html>";
+  const report = await post("collide-missing.html", html, "Missing spelling first");
+  assert.equal(readFileSync(join(reportDocumentDir(report.id, home), "companions", "data", "x.csv"), "utf8"), "real\n",
+    "the existing file is stored even though the missing spelling sorts first");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/data/x.csv"], missing: ["Data"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>missing<\/a> <a href="data\/x\.csv">real<\/a>/, "the working link stays");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report whose <style> element names an unstored file publishes with that reference rewritten", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  writeFileSync(join(checkout, "kept.png"), "png");
+  const html = "<html><head><style>.a{background:url(kept.png)} .b{background:url(gone.png)}</style></head><body><p>x</p></body></html>";
+  const report = await post("styled.html", html, "Style element");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.png"], missing: ["gone.png"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /\.a\{background:url\(kept\.png\)\} \.b\{background:none\}/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report whose <style> element imports an unstored stylesheet publishes with no import left to fetch", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  writeFileSync(join(checkout, "kept.css"), "p{margin:0}\n");
+  const css = "@import \"gone.css\"; @import url(gone2.css) screen; @import \"kept.css\"; body{color:red}";
+  const html = `<html><head><style>${css}</style></head><body><p>x</p></body></html>`;
+  const report = await post("imports.html", html, "Style imports");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.css"], missing: ["gone.css", "gone2.css"] });
+  const page = archivedPage(archiveId).toString("utf8");
+  // An empty `@import "";` would resolve to the page's own URL and be fetched when it opens: the
+  // missing rules are gone whole, and the stored import and the other rule keep their bytes.
+  assert.equal(page, html.replace(css, "  @import \"kept.css\"; body{color:red}"));
+  assert.deepEqual([...page.matchAll(/@import\s*([^;]*);/g)].map((match) => match[1]), ['"kept.css"']);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report posted as Report.html keeps its self-link: it resolves to the archived page", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><h1 id=\"top\">Top</h1><a href=\"Report.html#top\">back to top</a> <a href=\"kept.csv\">k</a></body></html>";
+  const report = await post("Report.html", html, "Capitalised page");
+  assert.equal(report.document?.name, "Report.html");
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const written = manifest(archiveId);
+  assert.deepEqual(companionsOf(written), { stored: ["report/kept.csv"], missing: [] }, "the self-link is not listed as missing");
+  assert.equal(written.archive.capture_status, "complete");
+  assert.equal(archivedPage(archiveId).toString("utf8"), html.replace('href="Report.html#top"', 'href="report.html#top"'),
+    "only the self-link changes, to the page's archive name");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a link that climbs out of the document's directory is neither stored nor unlinked, and still refuses the page", async () => {
+  const { post, publish, bundles, checkout } = setup();
+  mkdirSync(join(checkout, "sub"), { recursive: true });
+  writeFileSync(join(checkout, "secret.txt"), "outside\n");
+  const report = await post("sub/report.html", "<html><body><a href=\"../secret.txt\">x</a></body></html>", "Escaping");
+  assert.equal(existsSync(join(reportDocumentDir(report.id, home), "companions")), false);
+  const refused = await publish(report.id);
+  assert.equal(refused.status, 422);
+  assert.match(refused.body.problems!.join(" "), /leaves the report directory/);
+  assert.deepEqual(bundles(), []);
+});
+
+/** The archive paths of a manifest's companions, and the paths it lists as missing. */
+function companionsOf(written: Record<string, any>): { stored: string[]; missing: Array<string | null> } {
+  return {
+    stored: (written.content.artifacts as Array<{ role: string; archive_path: string }>)
+      .filter((artifact) => artifact.role === "report_companion")
+      .map((artifact) => artifact.archive_path),
+    missing: (written.missing as Array<{ expected_source: string | null }>).map((entry) => entry.expected_source),
+  };
+}
+
+test("a report stores at most the companion file limit: the file past it is unlinked and listed as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const names = Array.from({ length: REPORT_LIMITS.companionFiles + 1 }, (_, index) => `c${String(index).padStart(3, "0")}.txt`);
+  for (const name of names) writeFileSync(join(checkout, name), `${name}\n`);
+  const links = names.map((name) => `<a href="${name}">${name}</a>`).join(" ");
+  const report = await post("many.html", `<html><body><p>${links}</p></body></html>`, "Many companions");
+  const storedDir = join(reportDocumentDir(report.id, home), "companions");
+  assert.equal(readdirSync(storedDir).length, REPORT_LIMITS.companionFiles, "exactly the limit is stored");
+  assert.equal(existsSync(join(storedDir, names.at(-1)!)), false, "the file past the limit is not stored");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, names.slice(0, -1).map((name) => `report/${name}`));
+  assert.deepEqual(missing, [names.at(-1)]);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.match(page, new RegExp(`<a href="${names.at(-2)}">`), "the last file within the limit keeps its link");
+  assert.match(page, new RegExp(`<a>${names.at(-1)}</a>`), "the file past the limit keeps its text and loses its link");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("posting looks up at most the companion lookup bound of linked paths, so thousands of missing links cannot stall it", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  // Sorted, the 512th linked path exists and is within the bound; the 513th exists and is past it.
+  const missing = Array.from({ length: REPORT_LIMITS.companionLookups - 1 }, (_, index) => `m${String(index).padStart(4, "0")}.csv`);
+  writeFileSync(join(checkout, "n-at-bound.csv"), "at\n");
+  writeFileSync(join(checkout, "o-past-bound.csv"), "past\n");
+  const names = [...missing, "n-at-bound.csv", "o-past-bound.csv"];
+  const html = `<html><body>${names.map((name) => `<a href="${name}">${name}</a>`).join(" ")}</body></html>`;
+  const report = await post("many-missing.html", html, "Many missing links");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["n-at-bound.csv"],
+    "the last path within the bound is looked up and stored; the one past it is not looked up");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const { stored, missing: listed } = companionsOf(manifest(reportArchiveId(PRODUCER, report.id, report.createdAt)));
+  assert.deepEqual(stored, ["report/n-at-bound.csv"]);
+  assert.equal(listed.length, 64, "the manifest's missing list is capped, with its last entry counting the rest");
+});
+
+test("a report stores companions up to exactly the byte limit: a file that would pass it is unlinked and listed as missing", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const small = 10;
+  // a.bin and b.bin together are exactly the limit; c.bin is one byte past it.
+  writeFileSync(join(checkout, "a.bin"), Buffer.alloc(REPORT_LIMITS.companionBytes - small, 0x61));
+  writeFileSync(join(checkout, "b.bin"), Buffer.alloc(small, 0x62));
+  writeFileSync(join(checkout, "c.bin"), Buffer.alloc(1, 0x63));
+  // One file alone over the limit is never stored, whatever came before it.
+  writeFileSync(join(checkout, "huge.bin"), Buffer.alloc(REPORT_LIMITS.companionBytes + 1, 0x68));
+  const html = "<html><body><a href=\"a.bin\">a</a> <a href=\"b.bin\">b</a> <a href=\"c.bin\">c</a> <a href=\"huge.bin\">huge</a></body></html>";
+  const report = await post("bytes.html", html, "Byte limit");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")).sort(), ["a.bin", "b.bin"]);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.deepEqual(stored, ["report/a.bin", "report/b.bin"]);
+  assert.deepEqual(missing, ["c.bin", "huge.bin"]);
+  assert.equal(readFileSync(join(root, PRODUCER, archiveId, "report", "a.bin")).byteLength, REPORT_LIMITS.companionBytes - small);
+  const page = archivedPage(archiveId).toString("utf8");
+  assert.match(page, /<a href="b\.bin">b<\/a>/);
+  assert.match(page, /<a>c<\/a> <a>huge<\/a>/);
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a manifest lists up to 64 unlinked paths; past that, 63 are listed and one entry counts the rest", async () => {
+  const { post, publish, manifest, archivedPage, root } = setup();
+  const MAX_MISSING = 64;
+  for (const count of [MAX_MISSING, MAX_MISSING + 1]) {
+    // None of these files exists in the checkout, so none is stored and every link is unlinked.
+    const names = Array.from({ length: count }, (_, index) => `m${String(index).padStart(3, "0")}.csv`);
+    const links = names.map((name) => `<a href="${name}">${name}</a>`).join(" ");
+    const report = await post(`missing-${count}.html`, `<html><body><p>${links}</p></body></html>`, `Missing ${count}`);
+    const published = await publish(report.id);
+    assert.equal(published.status, 200, JSON.stringify(published.body));
+    const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+    const written = manifest(archiveId);
+    assert.equal(written.archive.capture_status, "partial");
+    const missing = written.missing as Array<{ kind: string; expected_source: string | null; reason: string }>;
+    assert.equal(missing.length, MAX_MISSING, `${count} unlinked paths fill the manifest's ${MAX_MISSING} entries`);
+    assert.ok(missing.every((entry) => entry.kind === "report_companion"));
+    if (count === MAX_MISSING) {
+      assert.deepEqual(missing.map((entry) => entry.expected_source), names, "at the limit, every path is listed");
+    } else {
+      assert.deepEqual(missing.slice(0, -1).map((entry) => entry.expected_source), names.slice(0, MAX_MISSING - 1));
+      assert.deepEqual(missing.at(-1), {
+        kind: "report_companion",
+        expected_source: null,
+        reason: "2 more linked files were not stored with the report, so their links were removed",
+      });
+    }
+    const page = archivedPage(archiveId).toString("utf8");
+    assert.doesNotMatch(page, /href=/, "every link to an unstored file is removed, listed or counted");
+    assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+  }
+});
+
+test("one stored companion that cannot be opened answers 500, and is never unlinked into a partial archive", { skip: asRoot }, async () => {
+  const { post, publish, bundles, reports, checkout, manifest } = setup();
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "notes.txt"), "kept\n");
+  const report = await post("one-locked.html", "<html><body><a href=\"data.csv\">data</a> <a href=\"notes.txt\">notes</a></body></html>", "One locked companion");
+  const locked = join(reportDocumentDir(report.id, home), "companions", "data.csv");
+  assert.equal(existsSync(locked), true);
+  chmodSync(locked, 0o000);
+  try {
+    const refused = await publish(report.id);
+    assert.equal(refused.status, 500, JSON.stringify(refused.body));
+    assert.match(refused.body.problems!.join(" "), /^could not read the files stored with this report: .*EACCES/);
+    assert.deepEqual(bundles(), [], "no partial archive is written without the stored file");
+    assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+  } finally {
+    chmodSync(locked, 0o600);
+  }
+  // Readable again, the same press publishes it whole.
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const written = manifest(reportArchiveId(PRODUCER, report.id, report.createdAt));
+  assert.deepEqual(companionsOf(written), { stored: ["report/data.csv", "report/notes.txt"], missing: [] });
+});
+
+test("a linked file or its folder swapped for a symlink after the containment check, before the open, is never read", async () => {
+  const outside = tempDir("mission-companion-race-outside-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "companion-swapped-between-check-and-open-secret";
+  writeFileSync(join(outside, "data.csv"), `${SECRET}\n`);
+  mkdirSync(join(outside, "sub"), { recursive: true });
+  writeFileSync(join(outside, "sub", "nested.csv"), `${SECRET}\n`);
+
+  // The hook runs after each linked file passed its containment check and before it is opened:
+  // the window a session would race. It swaps data.csv for a symlink out (final component), and
+  // the sub folder for a symlink to an outside folder holding a file of the same name (parent).
+  let checkout = "";
+  const swapped: string[] = [];
+  const { post, publish, manifest, archivedPage, root, checkout: dir } = setup({
+    beforeCompanionOpen: (path) => {
+      const real = realpathSync(checkout);
+      if (path === join(real, "data.csv")) {
+        unlinkSync(path);
+        symlinkSync(join(outside, "data.csv"), path);
+        swapped.push("data.csv");
+      } else if (path === join(real, "sub", "nested.csv")) {
+        renameSync(join(checkout, "sub"), join(checkout, "sub-moved"));
+        symlinkSync(join(outside, "sub"), join(checkout, "sub"));
+        swapped.push("sub/nested.csv");
+      }
+    },
+  });
+  checkout = dir;
+  mkdirSync(join(checkout, "sub"), { recursive: true });
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "sub", "nested.csv"), "c,d\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><a href=\"data.csv\">data</a> <a href=\"sub/nested.csv\">nested</a> <a href=\"kept.csv\">kept</a></body></html>";
+  const report = await post("race.html", html, "Swapped before open");
+  assert.deepEqual(swapped.sort(), ["data.csv", "sub/nested.csv"], "both swaps happened inside the window");
+  assert.deepEqual(readdirSync(join(reportDocumentDir(report.id, home), "companions")), ["kept.csv"], "neither swapped file was stored");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["data.csv", "sub/nested.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a> <a>nested<\/a> <a href="kept\.csv">kept<\/a>/);
+  const contents = readdirSync(join(root, PRODUCER, archiveId), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a stored companion replaced by a symlink to an outside file is never followed: unlinked as missing, its bytes absent", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = tempDir("mission-stored-companion-outside-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "stored-companion-swapped-for-a-symlink-secret";
+  writeFileSync(join(outside, "secret.csv"), `${SECRET}\n`);
+  mkdirSync(join(outside, "dir"), { recursive: true });
+  writeFileSync(join(outside, "dir", "nested.json"), `{"secret":"${SECRET}"}\n`);
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  writeFileSync(join(checkout, "data", "nested.json"), "{}\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const html = "<html><body><a href=\"data.csv\">data</a> <a href=\"data/nested.json\">nested</a> <a href=\"kept.csv\">kept</a></body></html>";
+  const report = await post("swapped.html", html, "Stored companion swapped");
+  const stored = join(reportDocumentDir(report.id, home), "companions");
+  assert.deepEqual(readdirSync(stored).sort(), ["data", "data.csv", "kept.csv"]);
+  // After posting, the stored file and the stored directory are each replaced by a symlink out.
+  unlinkSync(join(stored, "data.csv"));
+  symlinkSync(join(outside, "secret.csv"), join(stored, "data.csv"));
+  rmSync(join(stored, "data"), { recursive: true, force: true });
+  symlinkSync(join(outside, "dir"), join(stored, "data"));
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: ["report/kept.csv"], missing: ["data.csv", "data/nested.json"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a> <a>nested<\/a> <a href="kept\.csv">kept<\/a>/);
+  const bundleDir = join(root, PRODUCER, archiveId);
+  const contents = readdirSync(bundleDir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a companions store replaced by a symlink to an outside directory is never listed or read at publish", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = tempDir("mission-companion-store-outside-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "companions-store-swapped-for-a-symlink-secret";
+  writeFileSync(join(outside, "data.csv"), `${SECRET}\n`);
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("store-swap.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Store swapped");
+  const store = join(reportDocumentDir(report.id, home), "companions");
+  rmSync(store, { recursive: true, force: true });
+  symlinkSync(outside, store);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: [], missing: ["data.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a>/);
+  const contents = readdirSync(join(root, PRODUCER, archiveId), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a companions store swapped for a symlink to a large outside tree opens only the linked paths, and reads none of it", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  const outside = tempDir("mission-companion-store-tree-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  // A large tree with a file at the linked name: publishing must neither walk it nor read it.
+  for (let d = 0; d < 40; d += 1) {
+    mkdirSync(join(outside, `d${d}`));
+    for (let f = 0; f < 125; f += 1) writeFileSync(join(outside, `d${d}`, `f${f}.txt`), "x");
+  }
+  writeFileSync(join(outside, "data.csv"), "outside-tree-secret\n");
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("tree-swap.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Store swapped for a tree");
+  const store = join(reportDocumentDir(report.id, home), "companions");
+  let opened = 0;
+  const read = await readStoredReportCompanions(report, storedPage(report), home, {
+    beforeOpen: () => {
+      opened += 1;
+      if (opened === 1) {
+        renameSync(store, `${store}-moved`);
+        symlinkSync(outside, store);
+      }
+    },
+  });
+  assert.deepEqual(read, [], "the file reached through the swapped store is not read");
+  assert.equal(opened, 1, "only the one linked path is opened: the store is never listed");
+
+  // Through the route, with the swap left in place: the store is a symlink, so nothing is read.
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  assert.deepEqual(companionsOf(manifest(reportArchiveId(PRODUCER, report.id, report.createdAt))), { stored: [], missing: ["data.csv"] });
+});
+
+test("a store of 128 files in separate branches eight directories deep is read in full and publishes with nothing missing", async () => {
+  const { post, publish, manifest, root, checkout } = setup();
+  // Each file sits at the end of its own chain of eight directories: 128 files and 1,024
+  // directories, more entries than any fixed walk bound tied to the file count would allow.
+  const names = Array.from({ length: REPORT_LIMITS.companionFiles }, (_, index) =>
+    `b${index}/${Array.from({ length: 7 }, (_, depth) => `l${depth}`).join("/")}/f.txt`);
+  for (const name of names) {
+    mkdirSync(join(checkout, dirname(name)), { recursive: true });
+    writeFileSync(join(checkout, name), name);
+  }
+  const report = await post("deep-store.html", `<html><body>${names.map((name) => `<a href="${name}">x</a>`).join("")}</body></html>`, "Deep store");
+  const read = await readStoredReportCompanions(report, storedPage(report), home);
+  assert.deepEqual(read.map((companion) => companion.path), [...names].sort(), "every stored file is read");
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  const { stored, missing } = companionsOf(manifest(archiveId));
+  assert.equal(stored.length, REPORT_LIMITS.companionFiles);
+  assert.deepEqual(stored, [...names].sort().map((name) => `report/${name}`));
+  assert.deepEqual(missing, [], "no stored file's link is removed");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report directory replaced by a symlink to an outside directory never supplies companions at publish", async () => {
+  const { post, publish, manifest, archivedPage, root, checkout } = setup();
+  const outside = tempDir("mission-report-dir-outside-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "report-directory-swapped-for-a-symlink-secret";
+  const html = "<html><body><a href=\"data.csv\">data</a></body></html>";
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("dir-swap.html", html, "Report directory swapped");
+  const reportDir = reportDocumentDir(report.id, home);
+  // The outside directory looks exactly like a report's: the same document, and a companions
+  // store whose data.csv holds bytes from outside.
+  mkdirSync(join(outside, "companions"), { recursive: true });
+  writeFileSync(join(outside, "dir-swap.html"), html);
+  writeFileSync(join(outside, "companions", "data.csv"), `${SECRET}\n`);
+  rmSync(reportDir, { recursive: true, force: true });
+  symlinkSync(outside, reportDir);
+
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  const archiveId = reportArchiveId(PRODUCER, report.id, report.createdAt);
+  assert.deepEqual(companionsOf(manifest(archiveId)), { stored: [], missing: ["data.csv"] });
+  assert.match(archivedPage(archiveId).toString("utf8"), /<a>data<\/a>/);
+  const contents = readdirSync(join(root, PRODUCER, archiveId), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"));
+  assert.ok(contents.every((text) => !text.includes(SECRET)), "the outside bytes are nowhere in the bundle");
+  assert.equal((await verifyArchiveBundle(realpathSync(root), { producerId: PRODUCER, archiveId })).kind, "verified");
+});
+
+test("a report directory swapped for a symlink between listing and reading is never read, even when the swap is undone after the open", async () => {
+  const { post, checkout } = setup();
+  const outside = tempDir("mission-report-dir-race-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "report-directory-race-secret";
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("dir-race.html", "<html><body><a href=\"data.csv\">d</a></body></html>", "Report directory race");
+  const reportDir = reportDocumentDir(report.id, home);
+  mkdirSync(join(outside, "companions"), { recursive: true });
+  writeFileSync(join(outside, "companions", "data.csv"), `${SECRET}\n`);
+  const swapIn = () => {
+    renameSync(reportDir, `${reportDir}-moved`);
+    symlinkSync(outside, reportDir);
+  };
+  const swapBack = () => {
+    unlinkSync(reportDir);
+    renameSync(`${reportDir}-moved`, reportDir);
+  };
+
+  const left = await readStoredReportCompanions(report, storedPage(report), home, { beforeOpen: swapIn });
+  assert.deepEqual(left, [], "left in place, the path resolves outside the reports store");
+  swapBack();
+  const undone = await readStoredReportCompanions(report, storedPage(report), home, { beforeOpen: swapIn, afterOpen: swapBack });
+  assert.deepEqual(undone, [], "undone after the open, the file at the path is not the one the handle holds");
+  assert.deepEqual((await readStoredReportCompanions(report, storedPage(report), home)).map((companion) => companion.path), ["data.csv"]);
+});
+
+test("a stored directory swapped for a symlink between listing and reading is never read, even when the swap is undone after the open", async () => {
+  const { post, checkout } = setup();
+  const outside = tempDir("mission-companion-parent-outside-");
+  after(() => rmSync(outside, { recursive: true, force: true }));
+  const SECRET = "stored-parent-directory-swapped-secret";
+  mkdirSync(join(outside, "data"), { recursive: true });
+  writeFileSync(join(outside, "data", "nested.json"), `{"secret":"${SECRET}"}\n`);
+  mkdirSync(join(checkout, "data"), { recursive: true });
+  writeFileSync(join(checkout, "data", "nested.json"), "{}\n");
+  writeFileSync(join(checkout, "kept.csv"), "kept\n");
+  const report = await post("parent-swap.html", "<html><body><a href=\"data/nested.json\">n</a> <a href=\"kept.csv\">k</a></body></html>", "Parent swapped");
+  const store = join(reportDocumentDir(report.id, home), "companions");
+  const swapIn = () => {
+    renameSync(join(store, "data"), join(store, "data-moved"));
+    symlinkSync(join(outside, "data"), join(store, "data"));
+  };
+  const swapBack = () => {
+    unlinkSync(join(store, "data"));
+    renameSync(join(store, "data-moved"), join(store, "data"));
+  };
+  const isNested = (path: string) => path.endsWith(join("data", "nested.json"));
+
+  // Swapped in just before the open and left in place: the path now resolves outside the store.
+  const left = await readStoredReportCompanions(report, storedPage(report), home, { beforeOpen: (path) => { if (isNested(path)) swapIn(); } });
+  assert.deepEqual(left.map((companion) => companion.path), ["kept.csv"]);
+  assert.ok(left.every((companion) => !companion.bytes.toString("utf8").includes(SECRET)));
+  swapBack();
+
+  // Swapped in before the open and undone right after it: the path resolves inside again, but the
+  // file there is not the one the handle holds.
+  const undone = await readStoredReportCompanions(report, storedPage(report), home, {
+    beforeOpen: (path) => { if (isNested(path)) swapIn(); },
+    afterOpen: (path) => { if (isNested(path)) swapBack(); },
+  });
+  assert.deepEqual(undone.map((companion) => companion.path), ["kept.csv"]);
+  assert.ok(undone.every((companion) => !companion.bytes.toString("utf8").includes(SECRET)));
+
+  // Untouched, the same store reads both files.
+  assert.deepEqual((await readStoredReportCompanions(report, storedPage(report), home)).map((companion) => companion.path), ["data/nested.json", "kept.csv"]);
+});
+
+test("a stored companion that is gone by publish time is unlinked as missing, as before", async () => {
+  const { post, publish, manifest, checkout } = setup();
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("gone-companion.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Companion gone");
+  unlinkSync(join(reportDocumentDir(report.id, home), "companions", "data.csv"));
+  const published = await publish(report.id);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  assert.deepEqual(companionsOf(manifest(reportArchiveId(PRODUCER, report.id, report.createdAt))), { stored: [], missing: ["data.csv"] });
+});
+
+test("stored companions that cannot be read answer 500 with the error, and nothing is archived", { skip: asRoot }, async () => {
+  const { post, publish, bundles, reports, checkout } = setup();
+  writeFileSync(join(checkout, "data.csv"), "a,b\n");
+  const report = await post("locked.html", "<html><body><a href=\"data.csv\">data</a></body></html>", "Locked companions");
+  const storedDir = join(reportDocumentDir(report.id, home), "companions");
+  assert.equal(existsSync(join(storedDir, "data.csv")), true);
+  chmodSync(storedDir, 0o000);
+  try {
+    const refused = await publish(report.id);
+    assert.equal(refused.status, 500, JSON.stringify(refused.body));
+    assert.match(refused.body.problems!.join(" "), /^could not read the files stored with this report: .*EACCES/);
+  } finally {
+    chmodSync(storedDir, 0o700);
+  }
+  assert.deepEqual(bundles(), [], "no archive is written");
+  assert.equal(reports.get(report.id)?.publishedArchiveKey, null);
+});
+
 test("publishing a report whose stored copy has gone missing is refused, and nothing is archived", async () => {
   const { post, publish, bundles, reports } = setup();
   const report = await post("gone.html", STATIC_HTML);
@@ -708,7 +1764,7 @@ test("a press against a library that cannot be read answers 500 and writes nothi
   after(() => archives.stop());
   const page = Buffer.from(STATIC_HTML);
   const publication = (reportId: string) => ({
-    reportId, reportCreatedAt: 1, title: "Locked library", page,
+    reportId, reportCreatedAt: 1, title: "Locked library", page, companions: [], documentName: "report.html",
     session: { id: "s-locked", name: "Locked", taskId: null }, repositoryLabel: null,
   });
 

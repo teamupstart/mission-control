@@ -147,6 +147,8 @@ export function ConsoleView(props: SessionViewProps & {
     return <RailRow
       key={s.id}
       session={s}
+      callSign={props.cardCallSignBySession?.get(s.id)}
+      callSignElement={props.cardCallSignElementBySession?.get(s.id)}
       // The rail's own ⌘-number slot, from App's one assignment over the fleet's ordered
       // columns - the same map the Board card reads. Undefined until App hands one down and
       // absent for a row past the twelfth, which `RailRow` draws as no keycap at all.

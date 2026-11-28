@@ -1,15 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { GithubIssuesConfigSchema } from "../src/shared/task-source.ts";
 import { githubIssues } from "../src/server/task-sources/github-issues.ts";
+import { tempDir } from "./temp-root.mjs";
 
 for (const abort of [false, true]) {
   test(`linked GitHub reads ${abort ? "stop scheduling after abort" : "use a bounded pool and preserve per-item results"}`, async () => {
-    const dir = mkdtempSync(join(tmpdir(), "mission-linked-pool-"));
+    const dir = tempDir("mission-linked-pool-");
     const bin = join(dir, "gh");
     const log = join(dir, "calls");
     const release = join(dir, "release");

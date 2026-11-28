@@ -1,4 +1,5 @@
-import { getAppConfig, setAppConfig } from "../db.ts";
+import { persistConfigPatch } from "../config-patch-storage.ts";
+import { getAppConfig } from "../db.ts";
 import { ShippingConfigSchema } from "@shared/protocol.ts";
 import type { ShippingConfig, ShippingConfigPatch } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
@@ -20,8 +21,9 @@ export function getShippingConfig(): ShippingConfig {
 
 /** Merge a patch over the current config, persist, and return the result. */
 export function setShippingConfig(patch: ShippingConfigPatch): ShippingConfig {
-  const next = ShippingConfigSchema.parse({ ...getShippingConfig(), ...patch });
-  setAppConfig(CONFIG_ENTRY, next);
+  const current = getShippingConfig();
+  const next = ShippingConfigSchema.parse({ ...current, ...patch });
+  persistConfigPatch(CONFIG_ENTRY, current, next, patch);
   return next;
 }
 

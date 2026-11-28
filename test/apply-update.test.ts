@@ -1,8 +1,7 @@
 import { detachedUpdateHelperSources } from "../src/main/updater.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile, lstat, realpath } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, rm, symlink, writeFile, lstat, realpath } from "node:fs/promises";
 import { join, dirname, relative } from "node:path";
 import test from "node:test";
 import { inspectBundle, prepareSourceUpdate } from "../scripts/install-staged-app.mjs";
@@ -31,6 +30,7 @@ import {
   sanitizeDiagnostic,
 } from "../scripts/apply-update.mjs";
 import { COMMAND_TIMEOUT_MS } from "../scripts/mac-app-lifecycle.mjs";
+import { tempDirAsync } from "./temp-root.mjs";
 
 function args(stateDirectory: string) {
   return {
@@ -188,7 +188,7 @@ function operations(
 }
 
 test("the helper waits, backs up, installs the exact tag, records success, and relaunches by path", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-success-"));
+  const state = await tempDirAsync("mission-apply-success-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations();
@@ -225,7 +225,7 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
 });
 
 for (const mismatch of ['parent', 'directory']) test(`legacy ownership refuses a snapshot for another ${mismatch} before acknowledgment or bundle cleanup`, async (t) => {
-  const state = await realpath(await mkdtemp(join(tmpdir(), 'mission-legacy-owner-')));
+  const state = await realpath(await tempDirAsync('mission-legacy-owner-'));
   t.after(() => rm(state, {recursive: true, force: true}));
   const attemptDirectory = join(state, 'attempt');
   await mkdir(attemptDirectory);
@@ -251,7 +251,7 @@ for (const mismatch of ['parent', 'directory']) test(`legacy ownership refuses a
 });
 
 test("a stable upgrade from a legacy bundle succeeds when the new app has commit metadata", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-stable-legacy-helper-"));
+  const state = await tempDirAsync("mission-stable-legacy-helper-");
   t.after(() => rm(state, { recursive: true, force: true }));
   const f = operations({ installedVersion: "1.2.4", backupVersion: "1.2.3" });
 
@@ -269,7 +269,7 @@ test("a stable upgrade from a legacy bundle succeeds when the new app has commit
 });
 
 test("alpha verifies the installed SHA and rolls back a wrong commit even at the same version", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-alpha-helper-"));
+  const state = await tempDirAsync("mission-alpha-helper-");
   t.after(() => rm(state, { recursive: true, force: true }));
   const target = "b".repeat(40);
   const f = operations({ installedVersion: "1.2.3", backupVersion: "1.2.3" });
@@ -293,7 +293,7 @@ test("the rebuild targets the directory the receipt names, not /Applications by 
   // rebuild used to be spawned without `--apps-dir` and so always landed in `/Applications`.
   // An install made anywhere else therefore reported success while the app that relaunched
   // was still the old one - the exact shape that makes a verification run lie about itself.
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-appsdir-"));
+  const state = await tempDirAsync("mission-apply-appsdir-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations();
@@ -318,7 +318,7 @@ test("the rebuild targets the directory the receipt names, not /Applications by 
 });
 
 test("a deliberate build failure restores both app and receipt before relaunching", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-failure-"));
+  const state = await tempDirAsync("mission-apply-failure-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations({ installFails: true });
@@ -339,7 +339,7 @@ test("a deliberate build failure restores both app and receipt before relaunchin
 });
 
 test("two open failures roll back and try the restored app", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-launch-failure-"));
+  const state = await tempDirAsync("mission-apply-launch-failure-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations({ launchFailures: 2 });
@@ -401,7 +401,7 @@ test("helper diagnostics redact absolute paths including file URLs", () => {
 });
 
 test("a failed install surfaces the decisive child-process tail", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-apply-detail-"));
+  const root = await tempDirAsync("mission-apply-detail-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const failing = join(root, "failing.mjs");
   await writeFile(
@@ -423,7 +423,7 @@ test("a failed install surfaces the decisive child-process tail", async (t) => {
 });
 
 test("the copied helper recognizes an aliased direct-execution path", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-apply-alias-"));
+  const root = await tempDirAsync("mission-apply-alias-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const realHelper = join(root, "scripts/apply-update.mjs");
   const aliasHelper = join(root, "helper-alias.mjs");
@@ -451,7 +451,7 @@ test("the copied helper recognizes an aliased direct-execution path", async (t) 
 test("a hung build is bounded, and says so in its own words", async (t) => {
   // Asserted on realApplyOperations, not the injected seam: the timeout lives inside the real
   // spawnSync call, so a fixture that supplies its own `install` cannot see it at all.
-  const root = await mkdtemp(join(tmpdir(), "mission-apply-timeout-"));
+  const root = await tempDirAsync("mission-apply-timeout-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const wedged = join(root, "wedged.mjs");
   await writeFile(wedged, "setTimeout(() => {}, 60_000);\n");
@@ -471,7 +471,7 @@ test("a hung build is bounded, and says so in its own words", async (t) => {
 });
 
 test("a failed update leaves the previous app and the broken one behind to inspect", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-retain-"));
+  const state = await tempDirAsync("mission-apply-retain-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations({ installFails: true });
@@ -500,7 +500,7 @@ test("a failure before there is any backup still clears the last attempt's evide
   // backup exists - the app never quitting, or the app being gone already - retains nothing.
   // If clearing lived beside the outcomes, an older attempt's evidence would survive underneath
   // it and the documented one-attempt lifetime would be false for exactly these cases.
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-early-failure-"));
+  const state = await tempDirAsync("mission-apply-early-failure-");
   t.after(() => rm(state, { recursive: true, force: true }));
   const f = operations({ waitFails: true });
 
@@ -519,7 +519,7 @@ test("a failure before there is any backup still clears the last attempt's evide
 });
 
 test("a successful update clears what the last failed one retained", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-retain-clear-"));
+  const state = await tempDirAsync("mission-apply-retain-clear-");
   t.after(() => rm(state, { recursive: true, force: true }));
   const f = operations();
 
@@ -539,7 +539,7 @@ test("when there is nowhere durable to retain it, the backup is kept rather than
   // unconditional `finally` then removed the temp directory holding the only
   // backup - so the exact operator whose state directory was too broken to hold a second copy
   // lost the first one too.
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-retain-fails-"));
+  const state = await tempDirAsync("mission-apply-retain-fails-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations({ installFails: true, retainFails: true });
@@ -571,7 +571,7 @@ test("a second helper refuses to run while the first still holds the lock", asyn
   // the collision - `npm error ENOTEMPTY: directory not empty, rmdir` from two `npm ci` runs in
   // one clone, and four administrator panels inside a minute, of which one person could answer
   // at most one.
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-lock-"));
+  const state = await tempDirAsync("mission-apply-lock-");
   t.after(() => rm(state, { recursive: true, force: true }));
   const f = operations({ lockHeldBy: 9182 });
   // An earlier claim from a helper that is still running.
@@ -605,7 +605,7 @@ test("a second helper refuses to run while the first still holds the lock", asyn
 });
 
 test("a lock left by a killed helper is reclaimed rather than waited out", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-lock-stale-"));
+  const state = await tempDirAsync("mission-apply-lock-stale-");
   t.after(() => rm(state, { recursive: true, force: true }));
   // No `lockHeldBy`, so the recorded pid is not alive: the helper was killed mid-update.
   const f = operations();
@@ -626,7 +626,7 @@ test("a lock left by a killed helper is reclaimed rather than waited out", async
 });
 
 test("the lock is released on the way out so the next attempt can start at once", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-lock-release-"));
+  const state = await tempDirAsync("mission-apply-lock-release-");
   t.after(() => rm(state, { recursive: true, force: true }));
   const f = operations({ installFails: true });
 
@@ -654,7 +654,7 @@ test("an install that never reached the app is not rolled back", async (t) => {
   // A cancelled or refused authorization fails the install without touching the app. Restoring
   // over it buys nothing and costs a second administrator panel - and that second panel is how
   // the person ended up authorizing an undo while the upgrade they asked for stayed unapplied.
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-no-rollback-"));
+  const state = await tempDirAsync("mission-apply-no-rollback-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations({ installFails: true, installedVersion: "1.3.3", backupVersion: "1.3.3" });
@@ -671,7 +671,7 @@ test("an install that never reached the app is not rolled back", async (t) => {
 });
 
 test("an install that did replace the app is rolled back", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-rollback-"));
+  const state = await tempDirAsync("mission-apply-rollback-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const f = operations({ installFails: true, installedVersion: "1.2.4", backupVersion: "1.3.3" });
@@ -1073,7 +1073,7 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
   // The tests above inject their ops, so none of them exercises the real filesystem
   // implementation - a `writeEntry` that is not atomic, or a `list` that misses entries, would
   // satisfy every one of them. Real directories, real files, real `ps`.
-  const root = await mkdtemp(join(tmpdir(), "mission-apply-real-lock-"));
+  const root = await tempDirAsync("mission-apply-real-lock-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const ops = realHelperLockOperations();
   // A state directory that does not exist yet. The claim runs before the first outcome is
@@ -1119,7 +1119,7 @@ test("the real lock ops claim, refuse, and reclaim against a real directory", as
 
 test("a handoff that carries a staged bundle installs that bundle instead of rebuilding", async (t) => {
   // The helper forwards the accepted bundle identity to the shared staged operation.
-  const state = await mkdtemp(join(tmpdir(), "mission-apply-staged-"));
+  const state = await tempDirAsync("mission-apply-staged-");
   t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, "install-receipt.json"), "old receipt");
   const bundle = "/state/app-src/release/mac-arm64/Mission Control.app";
@@ -1152,7 +1152,7 @@ test("a handoff that carries a staged bundle installs that bundle instead of reb
 });
 
 test("legacy staged handoff refuses edited bundle bytes even when revision and package identity are unchanged", async (t) => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "mission-legacy-digest-")));
+  const root = await realpath(await tempDirAsync("mission-legacy-digest-"));
   t.after(() => rm(root, {recursive: true, force: true}));
   const appPath = join(root, "apps/Mission Control.app");
   const candidate = join(root, "candidate.app");
@@ -1184,7 +1184,7 @@ test("legacy staged handoff refuses edited bundle bytes even when revision and p
 });
 
 test("a staged install rejects an absent receipt before executing a source installer", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-apply-staged-args-"));
+  const root = await tempDirAsync("mission-apply-staged-args-");
   t.after(() => rm(root, {recursive: true, force: true}));
   const script = join(root, "must-not-run.mjs");
   const executed = join(root, "executed");
@@ -1208,7 +1208,7 @@ test('migration helper argv rejects incomplete tuples and duplicate arguments wi
 });
 
 test("launch conflicts refuse the swap and never relaunch or remove the user's job", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-preflight-"));
+  const state = await tempDirAsync("mission-preflight-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations();
   f.ops.preflight = async () => { throw new Error("Launchd job com.mission-control.recovery-20260918: launchctl bootout 'gui/501/com.mission-control.recovery-20260918'"); };
@@ -1221,7 +1221,7 @@ test("launch conflicts refuse the swap and never relaunch or remove the user's j
 });
 
 test("the bundle exit and registration barriers precede relaunch, and only verified launch records success", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-verified-"));
+  const state = await tempDirAsync("mission-verified-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations();
   f.ops.waitForBundle = async () => { f.actions.push("bundle-exit"); };
@@ -1239,7 +1239,7 @@ test("the bundle exit and registration barriers precede relaunch, and only verif
 });
 
 test("an unregistered launch is stopped safely, retried once, then failed and rolled back", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-unverified-"));
+  const state = await tempDirAsync("mission-unverified-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations();
   let verifications = 0;
@@ -1253,7 +1253,7 @@ test("an unregistered launch is stopped safely, retried once, then failed and ro
 });
 
 test("a verified second launch records success after one cleanup without rolling back", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-retry-success-"));
+  const state = await tempDirAsync("mission-retry-success-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations();
   let verifications = 0;
@@ -1275,7 +1275,7 @@ test("a verified second launch records success after one cleanup without rolling
 });
 
 test("a transient open failure gets one guarded retry and records success only after verification", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-open-retry-"));
+  const state = await tempDirAsync("mission-open-retry-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations({launchFailures: 1});
   f.ops.preflight = async () => { f.actions.push("preflight"); };
@@ -1301,7 +1301,7 @@ test("a transient open failure gets one guarded retry and records success only a
 });
 
 test("rollback retains the backup instead of replacing a bundle with an unowned live process", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-unowned-"));
+  const state = await tempDirAsync("mission-unowned-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations();
   f.ops.verifyLaunch = async () => { throw new Error("unverified"); };
@@ -1313,7 +1313,7 @@ test("rollback retains the backup instead of replacing a bundle with an unowned 
 
 
 test("a process appearing during the backup prevents both installation and rollback over that live bundle", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-late-process-"));
+  const state = await tempDirAsync("mission-late-process-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations();
   let barriers = 0;
@@ -1328,7 +1328,7 @@ test("a process appearing during the backup prevents both installation and rollb
 });
 
 test("a stale LaunchServices registration prevents launching the replacement or restored bundle", async (t) => {
-  const state = await mkdtemp(join(tmpdir(), "mission-stale-registration-"));
+  const state = await tempDirAsync("mission-stale-registration-");
   t.after(() => rm(state, {recursive: true, force: true}));
   const f = operations();
   f.ops.prepareLaunch = async () => { throw new Error("LaunchServices still lists an old instance"); };

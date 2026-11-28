@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { rmSync, existsSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { teardownWorktree } from "../src/server/dispatcher.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function makeRepo(): string {
-  const repo = mkdtempSync(join(tmpdir(), "harness-teardown-"));
+  const repo = tempDir("harness-teardown-");
   const g = (args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
   g(["init", "-q", "-b", "main"]);
   execFileSync("git", ["config", "user.email", "t@t.com"], { cwd: repo });

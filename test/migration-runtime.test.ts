@@ -3,17 +3,17 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { processIdentity } from '../scripts/update-lock.mjs';
 import { atomicMigrationJson, MIGRATION_ACK, MIGRATION_LAUNCH, MIGRATION_TIMEOUT_MS, type MigrationJournal } from '../scripts/install-migration.mjs';
 import { COMMAND_TIMEOUT_MS, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
 import { boundedMigrationWait, migrationRuntimePorts, migrationStartupGate, sameMigrationProcess, verifyMigrationAssets } from '../scripts/migration-runtime.mjs';
 import { migrationPlanFixture } from './helpers/migration-plan.ts';
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(t: test.TestContext) {
-  const stateDirectory = mkdtempSync(join(tmpdir(), 'mission-readiness-'));
+  const stateDirectory = tempDir('mission-readiness-');
   t.after(() => rmSync(stateDirectory, {recursive: true, force: true}));
   const receipt = {schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.2.3', installedVersion: '1.2.3', sourceClone: '/source', appPath: '/Applications/Mission Control.app', installedAt: '2026-09-15T00:00:00.000Z'};
   const plan = {...migrationPlanFixture(receipt), stateDirectory};

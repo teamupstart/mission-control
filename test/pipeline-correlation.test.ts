@@ -1,8 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import {
   ENGINEER_STEP_NAMES,
@@ -11,6 +9,7 @@ import {
 } from "../src/shared/pipeline.ts";
 import { canMessage, messageBlockReason } from "../src/shared/pane.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Correlating a carded session to the pipeline run whose work it is doing.
 //
@@ -26,7 +25,7 @@ import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 // `Session.pipeline` documents and the reason an operator who has consented to nothing sees
 // nothing new.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-correlation-"));
+const home = tempDir("mission-pipeline-correlation-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

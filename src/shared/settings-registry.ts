@@ -1,0 +1,591 @@
+// The settings registry: which categories exist, how they group, and how far each one's
+// writes reach. Pure data - no React, no component imports, no `node:` anything - because
+// four very different callers have to read the SAME list at runtime:
+//
+//   - the router (`useWorkflowRoute.ts`), which validates `#/settings/<id>` against it and
+//     therefore needs the VALUES, not just the type: a type-only import is erased before it
+//     could refuse an unknown category;
+//   - the page (`components/SettingsPage.tsx`), which renders the rail from it;
+//   - the render test, which walks it to prove every category is reachable;
+//   - later, the settings search index, which derives its category hits from it.
+//
+// Keeping it out of the page module is what lets the router import it without pulling a
+// component (and the five hooks behind it) into the router's module graph.
+
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
+import { resolveFeatureFlag, type FeatureFlagId, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+
+/**
+ * The groups, in rail order, and the order the whole registry is read in.
+ *
+ * Ordered by blast radius rather than by age or alphabet: a group's `scope` is the badge
+ * the rail draws beside its label, so the nav answers "what does this reach" before you
+ * click anything. Rendering the rail from this array - never from a hand-kept list in JSX -
+ * is what keeps a new category from landing in a group nothing draws.
+ */
+export const SETTINGS_GROUPS = [
+  { id: "screen", label: "This screen", scope: "browser" },
+  { id: "sessions", label: "Sessions", scope: "machine" },
+  { id: "background", label: "Background work", scope: "machine" },
+  { id: "outbound", label: "Leaves the machine", scope: "github" },
+] as const;
+
+export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number]["id"];
+
+/**
+ * How far a category reaches, as claims a human can act on.
+ *
+ * A group carries the scope of its members in general; a CATEGORY carries its own, which
+ * is sometimes more precise - Setup checks and configures this installation, while Skills sits
+ * in the same *Sessions* group but symlinks into `~/`. Their panel headers therefore say
+ * `This installation` and `Writes ~/` respectively, where the rail's group label says This machine.
+ * The rail is the summary, the panel header is the precise claim, and neither is allowed to
+ * be softer than the truth.
+ */
+export const SETTINGS_SCOPES = {
+  installation: {
+    label: "This installation",
+    hint: "Checks local tools and configures application updates and integrations.",
+  },
+  browser: {
+    label: "This browser",
+    hint: "Stored on this machine for the dashboard. Nothing here reaches the daemon.",
+  },
+  machine: {
+    label: "This machine",
+    hint: "Changes what the daemon does locally. Nothing leaves this machine.",
+  },
+  "home-read": {
+    label: "Reads ~/",
+    hint: "Inspects tools and configuration in your home directory without changing them.",
+  },
+  home: {
+    label: "Writes ~/",
+    hint: "Edits files in your home directory, so it reaches sessions this app never launched.",
+  },
+  github: {
+    label: "Acts on GitHub",
+    hint: "Can publish or merge under your GitHub account.",
+  },
+} as const satisfies Record<string, { label: string; hint: string }>;
+
+export type SettingsScopeId = keyof typeof SETTINGS_SCOPES;
+
+/**
+ * The settings categories, in rail order. Each is a peer destination in the left nav, so
+ * adding one - Notifications, General - is appending an entry here plus a `case` in
+ * `renderCategory`, never lengthening a scroll. Keeping the list as data (not inlined JSX)
+ * is also what the render test walks to prove every category is reachable.
+ *
+ * Entries are grouped CONTIGUOUSLY and in `SETTINGS_GROUPS` order, because the rail renders
+ * group by group while the arrow keys walk this flat array: if the two orders disagree,
+ * Down moves the selection somewhere the eye is not. `settings-sidebar-render.test.ts`
+ * pins that.
+ *
+ * Fields:
+ *  - `blurb` is what the rail's tooltip says. It sits on the registry rather than at the
+ *    nav's render site so a new panel cannot be added without saying what it is for - the
+ *    same reason `label` and `icon` live here.
+ *  - `group` places it in the rail; `scope` is the badge its panel header carries.
+ *  - `keywords` are the extra words a human might search for that the label does not
+ *    contain. Minimal for now; the settings search palette consumes them.
+ *
+ * Ids are NOT persisted anywhere - the hash is a link, not storage - so renaming one costs
+ * a stale bookmark that falls back to the default category, nothing more.
+ *
+ * ANCHORS. Every control row across the panels carries `data-anchor="<category>/<slug>"`,
+ * where `<category>` is an id from this list. Those anchors are stable ids the settings
+ * search index points at, so renaming one is a breaking change to that index rather than a
+ * cosmetic edit; `settings-sidebar-render.test.ts` fails on a duplicate anchor or on one
+ * whose prefix is not a category here.
+ */
+export const SETTINGS_CATEGORIES = [
+  {
+    id: "display",
+    label: "Display",
+    icon: "▦",
+    blurb: "How the dashboard arranges sessions, and how transcripts are drawn",
+    group: "screen",
+    scope: "browser",
+    keywords: [
+      "layout",
+      "appearance",
+      "console",
+      "board",
+      "markdown",
+      "rich text",
+      "conversation",
+      "terminal",
+    ],
+  },
+  {
+    id: "keyboard",
+    label: "Keyboard",
+    icon: "⌨",
+    blurb: "Rebind any shortcut",
+    group: "screen",
+    scope: "browser",
+    keywords: ["shortcut", "chord", "hotkey", "binding", "keys"],
+  },
+  {
+    id: "dispatch",
+    label: "Dispatch",
+    // The chord that opens the dispatch form, and the keycap the topbar's Dispatch button
+    // already draws beside that word - so the rail row reads as "+Dispatch" exactly like the
+    // button it is about, for the reason Workflows below carries its own topbar glyph.
+    icon: "+",
+    blurb: "How the dispatch form asks for a task",
+    // `screen` / `browser`, beside Display and Keyboard, because this is a preference about
+    // how THIS dashboard composes a dispatch - not about what the dispatched agent gets.
+    // Harnesses is the category for the latter, and it is `machine`: everything in it is
+    // daemon-backed and reaches sessions launched from anywhere. Filing a `UiConfig` boolean
+    // there would put a browser-local control under a "Changes what the daemon does locally"
+    // badge, which is the one thing the scope badges are not allowed to do.
+    group: "screen",
+    scope: "browser",
+    keywords: ["guided", "wizard", "steps", "walkthrough", "questions", "keyboard", "form"],
+  },
+  {
+    id: "setup",
+    label: "Setup",
+    icon: "✓",
+    blurb: "Application updates, external tools, and what is still missing",
+    group: "sessions",
+    scope: "installation",
+    keywords: [
+      "install", "alpha", "updates", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins",
+      // Setup lists ai-conductor only while the integration is offered.
+      ...(CONDUCTOR_INTEGRATION_ENABLED ? ["conductor"] : []),
+    ],
+  },
+  {
+    id: "feature-flags", label: "Feature flags", icon: "⚑",
+    blurb: "Choose preview features and manage features that are on by default",
+    group: "sessions", scope: "machine",
+    keywords: ["preview", "experimental", "beta", "flag", "opt in"],
+  },
+  {
+    id: "harnesses",
+    label: "Harnesses",
+    icon: "⚙",
+    blurb: "Defaults each agent is dispatched with",
+    group: "sessions",
+    scope: "machine",
+    keywords: ["agent", "model", "effort", "auto mode", "permission mode", "dispatch"],
+  },
+  {
+    id: "tasks",
+    label: "Tasks",
+    icon: "❏",
+    blurb: "What each kind of task is dispatched with",
+    // `sessions` / `machine`, beside Harnesses: both say what a dispatched session starts
+    // with, and everything here is daemon-backed, so it reaches tasks created from the API,
+    // a task source or a recurring mission as well as from this dashboard.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["task kind", "per kind", "dispatch default", "after work", "workflow", "grill me first", "default"],
+  },
+  {
+    id: "task-shaping",
+    label: "Task shaping",
+    icon: "⧈",
+    blurb: "Shapers that gather context and choose guidance for a task",
+    // `sessions` / `machine`, after Harnesses and Tasks: like them it says what a dispatched
+    // session starts with, and everything here is daemon-backed. A remote shaper is called over
+    // the network, which the panel states beside each one, as Telemetry's does per destination.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["shaper", "shaping", "context", "guidance", "gatherer", "selector", "manifest", "dry run", "caller identity"],
+    // Drawn only while this preview flag is on - see `settingsCategoryAvailable`.
+    flag: "task-shaping",
+  },
+  {
+    id: "worktrees",
+    label: "Worktrees",
+    icon: "⑂",
+    blurb: "Checkout policy, native pool safety, and legacy drain",
+    group: "sessions",
+    scope: "machine",
+    keywords: ["pool", "worktree", "slot", "lease", "capacity", "prune", "treehouse", "cleanup"],
+  },
+  {
+    id: "skills",
+    label: "Skills",
+    icon: "✦",
+    blurb: "Which skills every session gets",
+    group: "sessions",
+    scope: "home",
+    keywords: ["skill", "slash command", "symlink", "catalog"],
+  },
+  {
+    id: "standing-instructions",
+    label: "Standing instructions",
+    icon: "✎",
+    blurb: "Text every session gets, per repository",
+    group: "sessions",
+    scope: "machine",
+    keywords: ["instruction", "prompt", "repository", "always", "rule", "preamble", "per-repo"],
+  },
+  {
+    id: "reports",
+    label: "Reports",
+    icon: "✉",
+    blurb: "When agents post reports, and whose reports are muted",
+    // `sessions` / `machine`, after Standing instructions: the guidance is text a session's
+    // `post_report` tool starts with, and both it and the muted agents are the daemon's.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["report", "post_report", "guidance", "mute", "unmute", "muted", "noisy", "chatty", "inbox", "agent reports"],
+    // Drawn only while this preview flag is on - see `settingsCategoryAvailable`.
+    flag: "inbox",
+  },
+  {
+    id: "voice",
+    label: "Voice",
+    icon: "∿",
+    blurb: "Talking to agents by name: whether voice is listening, and how it behaves",
+    // `sessions` / `machine`: it decides how a spoken message reaches a session, and everything
+    // here is daemon-backed. Audio never leaves the machine; the panel says so where it matters.
+    group: "sessions",
+    scope: "machine",
+    keywords: ["voice", "speech", "microphone", "listening", "mute", "cancel window", "unsure", "plan forms", "hands-free", "call sign", "reference name", "roster", "spoken replies", "play sample", "system voice"],
+    // Drawn only while this preview flag is on - see `settingsCategoryAvailable`.
+    flag: "voice",
+  },
+  {
+    id: "cost",
+    label: "Cost",
+    icon: "$",
+    blurb: "Usage telemetry and what the topbar reports",
+    group: "sessions",
+    scope: "home",
+    keywords: ["telemetry", "otel", "usage", "spend", "estimate", "interval"],
+  },
+  {
+    id: "telemetry",
+    label: "Telemetry",
+    icon: "◎",
+    blurb: "What this app records about itself, and where any of it is sent",
+    // `sessions` / `machine`, immediately after Cost, because the two are the pair people
+    // confuse and reading them side by side is what separates them: Cost is Claude Code
+    // reporting usage INTO this daemon, and this is the daemon exporting its own facts OUT.
+    //
+    // `machine` rather than `github` even though a configured destination genuinely leaves the
+    // machine, and the reason is what the badges promise. `github` means "can publish or merge
+    // under your GitHub account", which this never does. The panel's own copy carries the
+    // sharper claim - which destination, on whose infrastructure, under which opt-in - because
+    // that claim is per-destination and a single rail badge cannot make it.
+    group: "sessions",
+    scope: "machine",
+    keywords: [
+      "telemetry",
+      "opentelemetry",
+      "otel",
+      "otlp",
+      "metrics",
+      "traces",
+      "analytics",
+      "privacy",
+      "consent",
+      "opt in",
+      "opt out",
+      "export",
+      "collector",
+      "grafana",
+      "prometheus",
+      "anonymous",
+    ],
+  },
+  {
+    id: "storage",
+    label: "Storage",
+    icon: "◫",
+    blurb: "Disk use, backup limits, the idle-cache budget, cleanup and low-space warnings",
+    // `sessions` / `machine`, beside Restore: both are about recovery points on this machine,
+    // and keeping them adjacent is what tells the two kinds of backup apart. Everything here
+    // is daemon-backed and local; nothing leaves the machine.
+    group: "sessions",
+    scope: "machine",
+    keywords: [
+      "backup",
+      "database",
+      "disk",
+      "space",
+      "copies",
+      "retention",
+      "back up now",
+      "problem",
+      "sqlite",
+      "limit",
+      "warning",
+      "free space",
+      "cleanup",
+      "pool",
+      "cache",
+    ],
+  },
+  {
+    id: "restore",
+    label: "Restore",
+    icon: "↶",
+    blurb: "Preview and restore automatic settings snapshots",
+    group: "sessions",
+    scope: "home",
+    keywords: ["backup", "snapshot", "recovery", "rollback", "safety"],
+  },
+  {
+    id: "foreman",
+    label: "Foreman",
+    icon: "●",
+    blurb: "The auto-responder's posture and trusted repos",
+    group: "background",
+    scope: "machine",
+    keywords: [
+      "auto-responder",
+      "triage",
+      "cheap tier",
+      "allowlist",
+      "backlog",
+      "scout",
+      "mockup",
+      "review artifact",
+      "automatic completion",
+    ],
+  },
+  {
+    id: "workflows",
+    label: "Workflows",
+    // The same glyph the topbar's Workflows button carries, so the rail row and the page
+    // it configures are recognisably the same subsystem.
+    icon: "⌘",
+    blurb: "Live repair delivery, workflow Commands, and how long run history is kept",
+    group: "background",
+    // `machine`, not `home`: Live delivery types a repair packet into a terminal pane, and
+    // the config itself lives in the daemon's own state - nothing here edits a file in the
+    // home directory, which is the precise claim `home`'s "Writes ~/" badge makes (Skills
+    // and Cost, which do). The blast radius is still real and this scope names it: the
+    // daemon acts locally, including in sessions this app never launched.
+    scope: "machine",
+    keywords: [
+      "workflow",
+      "live delivery",
+      "allowlist",
+      "retention",
+      "persona",
+      "review",
+      "repair",
+      "evidence",
+      "health",
+    ],
+  },
+  {
+    id: "task-sources",
+    label: "Task sources",
+    icon: "⇊",
+    blurb: "Upstreams that pull work into the backlog",
+    group: "background",
+    scope: "machine",
+    keywords: ["github issues", "sweep", "backlog", "import", "upstream"],
+  },
+  {
+    id: "conductor",
+    label: "Conductor",
+    // Three arrows: a fixed sequence being walked. Deliberately NOT the app's own workflow
+    // baton (`⌁`, which the ladder, the peek tile and the Library all wear) - a pipeline is
+    // a SECOND engine's run, and borrowing that glyph would say the one thing this whole
+    // integration is careful not to: that these are Mission Control workflows.
+    icon: "⇶",
+    blurb: "Watch an external SDLC engine's pipelines, per repository",
+    // `background` / `machine`: everything here is daemon-backed and local. It reads files
+    // an engine owns on this machine and writes none of them, so it is neither `home`
+    // (nothing touches ~/) nor `github` (nothing leaves the machine).
+    group: "background",
+    scope: "machine",
+    keywords: [
+      "ai-conductor",
+      "conduct",
+      "pipeline",
+      "sdlc",
+      "gate",
+      "halt",
+      "worktree",
+      "engine",
+    ],
+  },
+  {
+    id: "models",
+    label: "Models",
+    icon: "◈",
+    // Two halves, and the blurb has to name both or it describes half a page: the app's own
+    // background calls, and what a dispatched task of each kind launches on. "the app's own
+    // calls" alone sent anyone looking for "which model plans" straight past this category.
+    blurb: "Models for the app's own calls, and per task kind for dispatched work",
+    group: "background",
+    scope: "machine",
+    keywords: [
+      "provider",
+      "runner",
+      "title",
+      "goal",
+      "digest",
+      "workflow context",
+      "task kind",
+      "plan model",
+      "ship model",
+      "scout model",
+      "effort",
+    ],
+  },
+  {
+    id: "inspector",
+    label: "GitHub Inspector",
+    icon: "⌕",
+    blurb: "Remote review of the pull requests we open",
+    group: "outbound",
+    scope: "github",
+    keywords: ["github inspector", "remote review", "review", "pull request", "dry run", "live", "comments"],
+  },
+  {
+    id: "shipping",
+    label: "Shipping",
+    icon: "⚑",
+    blurb: "Whether clean pull requests merge themselves",
+    group: "outbound",
+    scope: "github",
+    keywords: ["yolo", "auto merge", "soak", "squash", "rebase"],
+  },
+  {
+    id: "trust",
+    label: "Trust",
+    icon: "⛨",
+    blurb: "Which repositories each subsystem may act in",
+    group: "outbound",
+    scope: "github",
+    keywords: [
+      "allowlist",
+      "repo",
+      "repository",
+      "permission",
+      "grant",
+      "matrix",
+      "merge",
+      "review",
+      // Workflows' grant lives here now, so the words an operator would search for to find
+      // its repo list have to resolve to this category rather than only to `workflows`.
+      "workflow",
+      "live delivery",
+      "check",
+    ],
+  },
+] as const satisfies readonly {
+  id: string;
+  label: string;
+  icon: string;
+  blurb: string;
+  group: SettingsGroupId;
+  scope: SettingsScopeId;
+  keywords: readonly string[];
+  /** A preview feature flag the category follows: drawn only while it resolves on. */
+  flag?: FeatureFlagId;
+}[];
+
+export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
+
+/**
+ * How a panel asks the page to move: to another category, and optionally to flash one
+ * anchored control there once it renders.
+ *
+ * The optional `anchor` is a transient UI concern, never part of the route/hash (that
+ * grammar is Phase 1's, category-only): `SettingsPage` changes the route and, after the
+ * target panel is on screen, scrolls its `data-anchor` target into view and flashes it.
+ * The three settings consoles use this to deep-link into Trust, and Shipping's dependency
+ * warnings use it to land on the exact Inspector control they name.
+ */
+export type SettingsNavigate = (category: SettingsCategoryId, anchor?: string) => void;
+
+/**
+ * Where `#/settings` with no category lands, and where an unknown one falls back to.
+ *
+ * Display, deliberately: it is the only category in the browser-scoped group, so a stale
+ * link or a typo cannot open a panel that acts on GitHub.
+ */
+export const DEFAULT_SETTINGS_CATEGORY: SettingsCategoryId = "display";
+
+/** Runtime membership, for the router: an unknown id in a link must not become a route. */
+/**
+ * Categories this build retired by folding them into another, mapped to where they live now.
+ *
+ * Settings hashes are links people keep, so a retired id lands on its new home rather than on
+ * the default panel. Repositories became the Setup panel's Repositories family.
+ */
+export const RETIRED_SETTINGS_CATEGORIES: Readonly<Record<string, SettingsCategoryId>> = {
+  repositories: "setup",
+};
+
+export function isSettingsCategory(id: string): id is SettingsCategoryId {
+  return SETTINGS_CATEGORIES.some((c) => c.id === id);
+}
+
+/**
+ * Whether this build offers a category at all, before any feature flag.
+ *
+ * Conductor stays in the registry while the ai-conductor integration is hidden - its id is a
+ * type other modules name, and the panel is kept for when the integration returns - but it is
+ * not drawn, searched, walked, or routed to. See `shared/conductor-integration.ts`.
+ *
+ * The router reads this half alone, and that is deliberate. A route is parsed before the first
+ * snapshot says which flags are on, and the router rewrites the hash to its canonical form, so
+ * a flag check there would turn every reload of a flag-gated deep link into Display. The page
+ * applies the flag half live through `settingsCategoryAvailable`, as every other reader does.
+ */
+export function settingsCategoryInBuild(
+  id: SettingsCategoryId,
+  conductorEnabled: boolean = CONDUCTOR_INTEGRATION_ENABLED,
+): boolean {
+  return id !== "conductor" || conductorEnabled;
+}
+
+/** The preview flag a category follows, or null for one that is always drawn. */
+export function settingsCategoryFlag(id: SettingsCategoryId): FeatureFlagId | null {
+  return (settingsCategory(id) as { flag?: FeatureFlagId }).flag ?? null;
+}
+
+/**
+ * Whether a category is drawn right now: the one availability gate the rail, the walk, the
+ * page, settings search and the palette all read. A category that follows a feature flag is
+ * drawn only while that flag resolves on, against the live config the event stream holds, so
+ * it appears and disappears in every window the moment the flag changes. Nothing here is
+ * computed at module load.
+ */
+export function settingsCategoryAvailable(
+  id: SettingsCategoryId,
+  flags: FeatureFlagsConfig,
+  conductorEnabled: boolean = CONDUCTOR_INTEGRATION_ENABLED,
+): boolean {
+  if (!settingsCategoryInBuild(id, conductorEnabled)) return false;
+  const flag = settingsCategoryFlag(id);
+  return flag === null || resolveFeatureFlag(flag, flags);
+}
+
+/** The categories drawn under these flags, in registry order. Every rail, walk and index reads this. */
+export function visibleSettingsCategories(
+  flags: FeatureFlagsConfig,
+): readonly (typeof SETTINGS_CATEGORIES)[number][] {
+  return SETTINGS_CATEGORIES.filter((c) => settingsCategoryAvailable(c.id, flags));
+}
+
+/** The categories in one group drawn under these flags, in registry order. The rail's only way to draw a group. */
+export function settingsCategoriesIn(
+  group: SettingsGroupId,
+  flags: FeatureFlagsConfig,
+): readonly (typeof SETTINGS_CATEGORIES)[number][] {
+  return visibleSettingsCategories(flags).filter((c) => c.group === group);
+}
+
+/** One category's entry, by id. */
+export function settingsCategory(
+  id: SettingsCategoryId,
+): (typeof SETTINGS_CATEGORIES)[number] {
+  // Non-null by construction: `SettingsCategoryId` is this array's own union.
+  return SETTINGS_CATEGORIES.find((c) => c.id === id)!;
+}

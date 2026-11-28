@@ -8,13 +8,15 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
+  type BigIntStats,
 } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { LlmImageInput } from "@shared/llm.ts";
 import type {
   WorkflowAgentEvidenceLocator,
@@ -36,6 +38,7 @@ import {
 } from "@shared/workflow.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
+import { checkoutDigest } from "./continuation-evidence.ts";
 import { STATE_DIR } from "../config.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { resolveCheckoutFile, resolveRoots, isIgnored } from "../archives/checkout.ts";
@@ -326,10 +329,14 @@ export async function stageAgentWorkflowEvidence(input: {
   commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
   coverage?: readonly WorkflowEvidenceCoverageClaim[];
   withdrawClientCriterionIds?: readonly string[];
+  continuationContract?: string | null;
   now?: number;
   episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
+  const root = roots.length === 1 ? roots[0]?.realRoot : null;
+  const before = input.continuationContract && root && (input.images.length || input.commandOutputs?.length || input.artifacts?.length)
+    ? await checkoutDigest(root) : null;
   const citedClaims = (input.coverage ?? []).filter((claim) => claim.criterionId);
   if (citedClaims.length > 0) {
     const criteriaByRun = input.store.activeBindingsForNote(input.noteKey).flatMap((binding) => {
@@ -503,6 +510,9 @@ export async function stageAgentWorkflowEvidence(input: {
       sourceRoot: selected.realRoot,
     });
   }
+  // Only a self-contained, single-checkout registration can witness an entire packet.
+  const checkout = before && root
+    ? await checkoutDigest(root) : null;
   return input.store.stageWorkflowEvidence(
     input.noteKey,
     writes,
@@ -510,7 +520,76 @@ export async function stageAgentWorkflowEvidence(input: {
     input.episodeKey ?? null,
     coverageWrites,
     input.withdrawClientCriterionIds,
+    checkout && checkout === before && input.continuationContract && root
+      ? { contract: input.continuationContract, root, checkout } : undefined,
   );
+}
+
+/** Commands were digest-checked while decoding staging rows. Reopen path sources with
+ * the same checkout containment and byte validators as registration and capture.
+ */
+export async function continuationFileStatus(root: string, tray: WorkflowStagedEvidenceList): Promise<"stale" | "unavailable" | "revalidated"> {
+  try {
+    for (const item of [...tray.images, ...tray.artifacts]) {
+      if (item.sourceKind === "command") continue;
+      if (item.sourceKind !== "agent" || !await isIgnored(root, item.sourceLocator)) return "stale";
+      const file = item.mimeType === "text/plain"
+        ? await inspectCheckoutTextArtifact(root, item.sourceLocator)
+        : await inspectCheckoutImage(root, item.sourceLocator);
+      if (file.bytes !== item.bytes || file.sha256 !== item.sha256 || file.mimeType !== item.mimeType) return "stale";
+    }
+    return "revalidated";
+  } catch {
+    return "unavailable";
+  }
+}
+
+function sameEvidenceFile(before: BigIntStats, after: BigIntStats): boolean {
+  return before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+    before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs;
+}
+
+/** Reopen already-validated file sources under the completion claim's synchronous budget.
+ * Read only the registered length, even if a concurrent writer grows the file. Inline
+ * commands have already been hash-checked by the staging reader in the same transaction.
+ */
+export function continuationFileBytesMatch(root: string, tray: WorkflowStagedEvidenceList, deadline: number): boolean {
+  try {
+    const checked: Array<{ path: string; stat: BigIntStats }> = [];
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    for (const item of [...tray.images, ...tray.artifacts]) {
+      if (performance.now() >= deadline) return false;
+      if (item.sourceKind === "command") continue;
+      if (item.sourceKind !== "agent" || isAbsolute(item.sourceLocator)) return false;
+      const path = resolve(root, item.sourceLocator);
+      if (path === root || !isInside(root, path) || realpathSync(path) !== path) return false;
+      const fd = openSync(path, checkoutOpenFlags(root) | constants.O_NONBLOCK);
+      try {
+        const stat = fstatSync(fd, { bigint: true });
+        if (!stat.isFile() || stat.size !== BigInt(item.bytes)) return false;
+        assertOpenedInsideCheckout(fd, path, root, item.mimeType === "text/plain" ? "artifact" : "image");
+        const hash = createHash("sha256");
+        let remaining = item.bytes;
+        while (remaining > 0) {
+          if (performance.now() >= deadline) return false;
+          const read = readSync(fd, buffer, 0, Math.min(remaining, buffer.length), null);
+          if (read === 0) return false;
+          hash.update(buffer.subarray(0, read));
+          remaining -= read;
+        }
+        if (hash.digest("hex") !== item.sha256 || !sameEvidenceFile(stat, fstatSync(fd, { bigint: true }))) return false;
+        checked.push({ path, stat });
+      } finally {
+        closeSync(fd);
+      }
+    }
+    // A source checked early must still name the same file after the rest of the packet.
+    return checked.every(({ path, stat }) => performance.now() < deadline &&
+      realpathSync(path) === path && sameEvidenceFile(stat, lstatSync(path, { bigint: true }))) &&
+      performance.now() < deadline;
+  } catch {
+    return false;
+  }
 }
 
 export async function stageUploadedWorkflowEvidence(input: {

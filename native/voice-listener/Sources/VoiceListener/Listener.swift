@@ -1,17 +1,43 @@
+import Darwin
 import Foundation
 import Security
 
 enum CaptureError: Error { case device, format, listenerInUse }
 
+enum SpeechDrop { case interrupted, queueFull, captureLimit }
+typealias SegmentDropped = (Int64, SpeechDrop) -> Void
+
+enum CaptureLimit: Int {
+    case legacy = 30, oneMinute = 60
+    var samples: Int { rawValue * 16_000 }
+
+    init(daemonProtocol: String?) {
+        let version = daemonProtocol?.components(separatedBy: ".") ?? []
+        self = version.count >= 2 && version[0] == "4" && (Int(version[1]) ?? 0) >= 2 ? .oneMinute : .legacy
+    }
+}
+
 struct Directive: Decodable {
+    static let defaultEndOfSpeechMs = 2000
     let revision: String
+    let captureRevision: String?
     let capture: Bool
+    let endOfSpeechMs: Int?
     let inputDevice: String
+    let speak: Speak?
     let roster: [String]
+    /// The Always-on separator word. Absent for held capture and from older daemons.
+    let separator: String?
+    /// The voiced audio, in milliseconds, an Always-on phrase must hold before its first live preview
+    /// is shown. Present only while the daemon's first-preview hold preview is on; absent, every
+    /// preview shows as it always has. It never changes what is decoded or delivered as the final.
+    let firstPreviewVoicedMs: Int?
 }
 
 struct Hello: Encodable {
-    let version = "4.0"
+    var speech: SpeechHello?
+    let version = "4.2"
+    let reportsSpeechOnset = true
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))
     let modelLoaded: Bool
@@ -28,10 +54,16 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     let token: String
     let directory: URL
     private let listenerID: String
-    private lazy var session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+    let speechInstance: String?
+    private let captureLockPath: String
+    private var captureOffset: Int64?
+    private var captureLock: Int32 = -1
+    private let configuration: URLSessionConfiguration
+    private lazy var session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
 
-    override init() {
-        let env = ProcessInfo.processInfo.environment
+    init(environment env: [String: String] = ProcessInfo.processInfo.environment,
+         configuration: URLSessionConfiguration = .ephemeral) {
+        self.configuration = configuration
         let pin = env["MISSION_VOICE_DAEMON_CERT"]
         let owner = pin == nil ? nil : env["MISSION_VOICE_SUPERVISOR_ID"].flatMap(UUID.init(uuidString:))
         listenerID = (owner ?? UUID()).uuidString
@@ -44,10 +76,34 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             fputs("Expected a loopback daemon URL, readable token file and model directory.\n", stderr)
             exit(1)
         }
+        speechInstance = env["MISSION_VOICE_LISTENER_INSTANCE"]
+        captureLockPath = URL(fileURLWithPath: file).deletingLastPathComponent().appendingPathComponent("voice-capture.lock").path
         self.base = base
         self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         directory = URL(fileURLWithPath: models)
     }
+
+    func applyCaptureChallenge(_ challenge: String?) throws {
+        guard speechInstance == nil, let challenge else { return }
+        guard let offset = Int64(challenge), offset > 0, offset < (1 << 48) else { throw CaptureError.format }
+        if offset == captureOffset { return }
+        if captureLock >= 0 { Darwin.close(captureLock) }
+        captureOffset = nil
+        captureLock = open(captureLockPath, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0o600)
+        var info = stat()
+        var lock = flock()
+        lock.l_type = Int16(F_WRLCK)
+        lock.l_whence = Int16(SEEK_SET)
+        lock.l_start = offset
+        lock.l_len = 1
+        guard captureLock >= 0, fstat(captureLock, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG, fcntl(captureLock, F_SETLK, &lock) == 0 else {
+            throw CaptureError.device
+        }
+        captureOffset = offset
+    }
+
+    deinit { if captureLock >= 0 { Darwin.close(captureLock) } }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -67,12 +123,19 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
-    func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil) async throws -> Response {
+    enum ServiceError: Error { case http(Int) }
+
+    func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil, allowObsolete: Bool = false) async throws -> Response {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || capture != nil ? 30 : 5)
         req.setValue(token, forHTTPHeaderField: "x-harness-token")
         req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
+        if let speechInstance {
+            req.setValue(speechInstance, forHTTPHeaderField: "x-mission-voice-instance")
+        } else {
+            req.setValue(String(getpid()), forHTTPHeaderField: "x-voice-capture-pid")
+        }
         if let capture {
             req.setValue(String(capture.startUs), forHTTPHeaderField: "x-voice-capture-start-host-us")
             req.setValue(String(capture.speechStartUs), forHTTPHeaderField: "x-voice-speech-start-host-us")
@@ -84,16 +147,138 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             req.httpBody = body
         }
         let (data, response) = try await session.data(for: req)
-        if (response as? HTTPURLResponse)?.statusCode == 409,
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 409,
            (try? JSONDecoder().decode([String: String].self, from: data))?["error"] == "listener_in_use" {
             throw CaptureError.listenerInUse
         }
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
+        guard http.statusCode == 200 || (allowObsolete && http.statusCode == 409) else {
+            throw ServiceError.http(http.statusCode)
+        }
         return (data, http)
     }
 
+    private struct SpeechKey: Hashable {
+        let revision: String
+        let onset: Int64
+    }
+    private let speechLock = NSLock()
+    private var starts: [SpeechKey: Task<Void, Never>] = [:]
+    private var dictating = Set<SpeechKey>()
+
+    func isDictating(_ onset: Int64, revision: String) -> Bool {
+        speechLock.withLock { dictating.contains(SpeechKey(revision: revision, onset: onset)) }
+    }
+
+    func shouldPreview(_ onset: Int64, revision: String) async -> Bool {
+        let key = SpeechKey(revision: revision, onset: onset)
+        if isDictating(onset, revision: revision) { return true }
+        guard speechLock.withLock({ starts[key] != nil }) else { return false }
+        await sendSpeech(key, phase: "focus")
+        return isDictating(onset, revision: revision)
+    }
+
+    func preview(_ text: String, onset: Int64, revision: String) async throws {
+        struct Preview: Encodable { let phase = "preview"; let text: String; let speechStartUs: Int64 }
+        let body = try JSONEncoder().encode(Preview(text: text, speechStartUs: onset))
+        let (_, response) = try await request("voice/listener/speech", revision: revision, body: body)
+        if response.value(forHTTPHeaderField: "x-voice-dictation") != "1" {
+            let key = SpeechKey(revision: revision, onset: onset)
+            _ = speechLock.withLock { dictating.remove(key) }
+        }
+    }
+
+    private var finishes: [SpeechKey: Task<Void, Never>] = [:]
+
+    private func sendSpeech(_ key: SpeechKey, phase: String) async {
+        struct Event: Encodable { let speechStartUs: Int64; let phase: String }
+        do {
+            let body = try JSONEncoder().encode(Event(speechStartUs: key.onset, phase: phase))
+            let (_, response) = try await request("voice/listener/speech", revision: key.revision, body: body)
+            if response.value(forHTTPHeaderField: "x-voice-dictation") == "1" {
+                speechLock.withLock { if starts[key] != nil { dictating.insert(key) } }
+            }
+        } catch {
+            fputs("Voice listener could not report a speech boundary.\n", stderr)
+        }
+    }
+
+    func reportPreview(_ phase: String, revision: String, onset: Int64? = nil, text: String? = nil) async -> Bool {
+        struct Sample: Encodable { let phase: String; let onset: Int64?; let text: String? }
+        do {
+            let body = try JSONEncoder().encode(Sample(phase: phase, onset: onset, text: text))
+            let (data, _) = try await request("voice/listener/transcript", revision: revision, body: body)
+            return try JSONDecoder().decode(Acknowledgement.self, from: data).accepted
+        } catch { return false }
+    }
+
+    func pendingOnset(revision: String) -> Int64? {
+        speechLock.withLock { starts.keys.filter { $0.revision == revision }.map(\.onset).max() }
+    }
+
+    // Register synchronously on the tap. Each segment waits only for its own onset POST.
+    func startSpeech(_ onset: Int64, revision: String) {
+        let key = SpeechKey(revision: revision, onset: onset)
+        speechLock.withLock {
+            guard starts[key] == nil, finishes[key] == nil else { return }
+            // A loopback request may reach the router even if its acknowledgment stalls.
+            // Cancel and join the request at the deadline before sending a result or finish.
+            let deadline = ContinuousClock.now + .seconds(1)
+            starts[key] = Task {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await self.sendSpeech(key, phase: "start") }
+                    group.addTask { try? await Task.sleep(until: deadline, clock: .continuous) }
+                    await group.next()
+                    group.cancelAll()
+                }
+            }
+        }
+    }
+
+    func settleSpeech(_ onset: Int64, revision: String, accepted: Bool = false, exceededLimit: Bool = false) {
+        let key = SpeechKey(revision: revision, onset: onset)
+        speechLock.withLock {
+            dictating.remove(key)
+            guard let start = starts.removeValue(forKey: key), !accepted else { return }
+            finishes[key] = Task {
+                await start.value
+                await sendSpeech(key, phase: exceededLimit ? "capture-limit" : "finish")
+                speechLock.withLock { finishes[key] = nil }
+            }
+        }
+    }
+
+    // stop() has synchronously closed the tap. A released hold can still yield
+    // clipped segments for decoding; keep exactly those reservations alive.
+    func closeSpeech(revision: String, keeping segments: [Segment] = []) {
+        let keep = Set(segments.map(\.speechStartHostUs))
+        let discarded = speechLock.withLock { starts.keys.filter { $0.revision == revision && !keep.contains($0.onset) } }
+        for key in discarded { settleSpeech(key.onset, revision: revision) }
+    }
+
+    func drainSpeechFinishes() async {
+        let pending = speechLock.withLock { Array(finishes.values) }
+        for finish in pending { await finish.value }
+    }
+
+    func directive(revision: String?, microphonePaused: Bool) async throws -> Response {
+        var backoff = 100
+        while true {
+            try Task.checkCancellation()
+            do { return try await request("voice/listener/directive", revision: revision) }
+            catch ServiceError.http(503) where microphonePaused {
+                try await Task.sleep(for: .milliseconds(backoff))
+                backoff = min(2000, backoff * 2)
+            }
+        }
+    }
+
     func postUtterance(revision: String, capture: CaptureTimes, body: Data) async throws -> Response {
-        try await Self.postWithHeldRetries(revision: revision) {
+        let key = SpeechKey(revision: revision, onset: capture.speechStartUs)
+        let start = speechLock.withLock { starts[key] }
+        await start?.value
+        try Task.checkCancellation()
+        return try await Self.postWithHeldRetries(revision: revision) {
             try await self.request("voice/utterances", revision: revision, capture: capture, body: body)
         }
     }
@@ -124,22 +309,157 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 }
 
-@MainActor private final class Capture {
+/// What one preview pass decodes: an unfinished phrase, or a whole hold so far.
+protocol PreviewSnapshot { var onset: Int64 { get } }
+extension Segment: PreviewSnapshot { var onset: Int64 { speechStartHostUs } }
+
+/// A hold's live preview: the phrases it has completed, then the one still open, under the hold's onset.
+struct HeldPreview: PreviewSnapshot {
+    let onset: Int64
+    let completed: [Segment]
+    let open: Segment?
+}
+
+/// Decodes a hold for its live preview: each completed phrase once, and the open phrase on every
+/// pass, so the words before a pause stay on screen and in the editor until the key is released.
+@MainActor final class HeldPreviewText {
+    // A hold only appends completed phrases, so each one keeps its position.
+    private var completed: [String] = []
+
+    func text(_ hold: HeldPreview, decode: (Segment) async throws -> String?) async throws -> String? {
+        for phrase in hold.completed.dropFirst(completed.count) { completed.append(try await decode(phrase) ?? "") }
+        var parts = Array(completed.prefix(hold.completed.count))
+        if let open = hold.open { parts.append(try await decode(open) ?? "") }
+        let text = parts.filter { !$0.isEmpty }.joined(separator: " ")
+        return text.isEmpty ? nil : text
+    }
+}
+
+/// Publishes live words for the phrase a snapshot holds. `firstPreviewReady` holds back an
+/// utterance's first words, in the overlay and in a focused editor, until it returns true for that
+/// utterance's snapshot; after that every later pass of the same utterance shows as before. The
+/// audio heartbeat, the focus check and every final decode are unaffected by it.
+@MainActor func runTranscriptPreview<Snapshot: PreviewSnapshot>(
+    isRunning: @escaping () -> Bool, snapshot: @escaping () -> Snapshot?, pendingOnset: () -> Int64?,
+    decode: @escaping (Snapshot) async throws -> String?,
+    report: @escaping (String, Int64?, String?) async -> Bool,
+    editorFocused: @escaping (Int64) async -> Bool = { _ in false },
+    updateEditor: @escaping (Int64, String) async throws -> Void = { _, _ in },
+    firstPreviewReady: @escaping (Snapshot) -> Bool = { _ in true },
+    pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(800)) }
+) async {
+    var decoding: Task<Void, Never>?
+    // The utterance whose first preview has passed the hold. A new onset is a new utterance.
+    var released: Int64?
+    defer { decoding?.cancel() }
+    while !Task.isCancelled && isRunning() {
+        if let segment = snapshot() {
+            let onset = segment.onset
+            // Renew capture independently of recognition, even while a slow decode is in flight.
+            let overlay = await report("audio", onset, nil)
+            if decoding == nil, !Task.isCancelled {
+                decoding = Task { @MainActor in
+                    defer { decoding = nil }
+                    let editor = await editorFocused(onset)
+                    guard (editor || overlay), !Task.isCancelled else { return }
+                    if released != onset { guard firstPreviewReady(segment) else { return } }
+                    guard let words = try? await decode(segment), !Task.isCancelled, isRunning(),
+                          snapshot()?.onset == onset else { return }
+                    // Released only once words reach a surface: a pass that decoded none, failed, or whose words
+                    // neither the editor nor the overlay took leaves the utterance held, so a hold turned on
+                    // later still waits for its voiced audio.
+                    let hasWords = !words.allSatisfy(\.isWhitespace)
+                    if editor {
+                        do {
+                            try await updateEditor(onset, words)
+                            if hasWords { released = onset }
+                        } catch {
+                            guard !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
+                            fputs("Voice listener could not deliver a dictation preview.\n", stderr)
+                        }
+                    }
+                    guard overlay else { return }
+                    let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
+                    if !tail.isEmpty, await report("words", onset, tail) { released = onset }
+                }
+            }
+        } else if let onset = pendingOnset() {
+            _ = await report("audio", onset, nil)
+        } else {
+            _ = await report("ready", nil, nil)
+        }
+        await pause()
+    }
+}
+
+/// A transcript that can stand for a whole capture. A hold's phrases decode separately and join into
+/// one message, in spoken order; a phrase that decoded to nothing contributes no words.
+protocol HoldTranscript: Encodable {
+    static func message(_ phrases: [(segment: Segment, transcript: Self?)]) -> Self?
+}
+
+/// The one recognizer call a capture's decode makes, so a test can observe what each decode is
+/// given. Its types are associated so this file builds without the speech model's module: the
+/// lifecycle tests compile it against a stub recognizer.
+protocol SegmentTranscriber {
+    associatedtype Boosting
+    associatedtype Transcript: HoldTranscript
+    func transcribe(_ segment: Segment, boosting: Boosting?, separator: String?) async throws -> Transcript?
+}
+
+@MainActor final class Capture {
     let revision: String
     var mic: Microphone?
+    var previewTask: Task<Void, Never>?
     var decoding: Task<Void, Never>?
     var releasedAt: Int64?
     var releasedSegments: [Segment] = []
     var onInputClosed: (() -> Void)?
+    /// Follows live directive edits, like the end-of-speech delay.
+    var separator: String?
+    /// The first-preview hold in force for this Always-on capture, or nil for none. Follows live edits.
+    var firstPreviewVoicedMs: Int?
 
-    init(_ revision: String) { self.revision = revision }
+    let daemon: Daemon
+
+    init(_ revision: String, daemon: Daemon) {
+        self.revision = revision
+        self.daemon = daemon
+    }
+
+    /// Applies a directive edit to this open Always-on capture without closing the microphone, when
+    /// the directive still authorizes it: the new end-of-speech delay and separator word take
+    /// effect for speech that has not been decoded yet, and the first-preview hold from the next
+    /// preview pass. Returns false when the capture must reopen.
+    func applyLiveEdit(captureRevision: String?, held: Bool, endOfSpeechMs: Int, separator: String?,
+                       firstPreviewVoicedMs: Int?) -> Bool {
+        guard !held, let captureRevision, captureRevision == revision, let mic, mic.isRunning else { return false }
+        mic.updateEndOfSpeechMs(endOfSpeechMs)
+        self.separator = separator
+        self.firstPreviewVoicedMs = firstPreviewVoicedMs
+        return true
+    }
+
+    /// Whether an Always-on phrase holds enough voiced audio for its first preview under the hold in force now.
+    func firstPreviewReady(_ phrase: Segment) -> Bool {
+        guard let hold = firstPreviewVoicedMs, hold > 0 else { return true }
+        return phrase.voicedSamples >= hold * 16
+    }
+
+    /// Decodes one segment with the separator in force now, so a live edit reaches every later decode.
+    func transcribe<T: SegmentTranscriber>(_ segment: Segment, using recognizer: T,
+                                           boosting: T.Boosting?) async throws -> T.Transcript? {
+        try await recognizer.transcribe(segment, boosting: boosting, separator: separator)
+    }
 
     func release(at time: Int64) {
         guard releasedAt == nil else { return }
+        previewTask?.cancel()
         releasedAt = time
         mic?.whenCaptured(through: time) { [weak self] in
             guard let self, let mic else { return }
             releasedSegments = mic.stop(releasedAt: time)
+            daemon.closeSpeech(revision: revision, keeping: releasedSegments)
             self.mic = nil
             onInputClosed?()
             onInputClosed = nil
@@ -148,20 +468,46 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
     func cancel() {
         onInputClosed = nil
+        previewTask?.cancel()
         decoding?.cancel()
         mic?.stop()
+        daemon.closeSpeech(revision: revision)
         mic = nil
         releasedSegments.removeAll()
     }
 }
 
 @MainActor final class Listener {
-    let daemon = Daemon()
+    typealias OpenInput = @MainActor (String, Bool, Int, CaptureLimit, @escaping (Int64) -> Void, @escaping SegmentDropped,
+                           @escaping @MainActor (Microphone) -> Void) throws -> Microphone
+    let daemon: Daemon
+    private let microphonePermission: () -> String
+    private let openInput: OpenInput
+
+    init(daemon: Daemon = Daemon(), microphonePermission: @escaping () -> String = permission,
+         openInput: @escaping OpenInput = { selection, held, delay, limit, start, drop, stop in
+             try Microphone(selection: selection, held: held, endOfSpeechMs: delay, limit: limit, onSpeechStart: start,
+                            onSegmentDropped: drop, onStopped: stop)
+         }) {
+        self.daemon = daemon
+        self.microphonePermission = microphonePermission
+        self.openInput = openInput
+    }
     var recognizer: Recognizer?
     private var current: Capture?
     private var draining: [Capture] = []
     private var directivePoll: Task<Daemon.Response, Error>?
     private var pendingHello: Task<Void, Error>?
+    private var captureLimit = CaptureLimit.legacy
+
+    private lazy var playback = Playback(player: MacSpeechPlayer(), fetch: { [daemon] id in
+        try await daemon.request("voice/speech/jobs/\(id)/audio").data
+    }, report: { [daemon] id, type, outcome in
+        var body = ["type": type]
+        body["outcome"] = outcome
+        _ = try await daemon.request("voice/speech/jobs/\(id)/events", body: JSONEncoder().encode(body), allowObsolete: type == "ended")
+    })
+    private var speech: SpeechHello? { daemon.speechInstance.map { _ in SpeechHello() } }
 
     func hello() async throws {
         let previous = pendingHello
@@ -174,19 +520,30 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     private func sendHello(first: Bool) async throws {
-        let status = permission()
-        if status != "granted" { close() }
+        let status = microphonePermission()
+        if status != "granted" { close(); await daemon.drainSpeechFinishes() }
         if first && status == "not-determined" {
             fputs("Microphone access is undetermined for the launching app. Run the listener from a terminal app that already has microphone access.\n", stderr)
         }
-        let body = Hello(modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
+        let body = Hello(speech: speech, modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
         defer {
             if status == "denied" {
                 fputs("Microphone access denied by macOS.\n", stderr)
                 exit(2)
             }
         }
-        _ = try await daemon.request("voice/listener/hello", body: JSONEncoder().encode(body))
+        struct Welcome: Decodable { let `protocol`: String? }
+        let (data, response) = try await daemon.request("voice/listener/hello", body: JSONEncoder().encode(body))
+        try daemon.applyCaptureChallenge(response.value(forHTTPHeaderField: "x-voice-capture-lock"))
+        let limit = CaptureLimit(daemonProtocol: try JSONDecoder().decode(Welcome.self, from: data).protocol)
+        if captureLimit != limit {
+            close()
+            directivePoll?.cancel()
+            captureLimit = limit
+        }
+        if first && limit == .legacy {
+            fputs("This daemon supports 30-second voice capture. Update the daemon for longer messages and capture-limit notices.\n", stderr)
+        }
     }
 
     func close() {
@@ -197,12 +554,21 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     func run() async throws {
+        playback.changed = { [weak self] in self?.directivePoll?.cancel() }
+        // A pipe inherited across the confined startup gate closes on supervisor death.
+        if daemon.speechInstance != nil {
+            DispatchQueue.global().async {
+                var byte: UInt8 = 0
+                while read(STDIN_FILENO, &byte, 1) > 0 {}
+                exit(0)
+            }
+        }
         try await hello()
         let heartbeat = Task {
             while !Task.isCancelled {
                 try await Task.sleep(for: .seconds(10))
                 do { try await hello() }
-                catch { close(); exit(1) }
+                catch { close(); await daemon.drainSpeechFinishes(); exit(1) }
             }
         }
         defer { heartbeat.cancel(); close() }
@@ -211,7 +577,10 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         try await hello()
         var revision: String?
         while true {
-            let poll = Task { [revision] in try await daemon.request("voice/listener/directive", revision: revision) }
+            // A pause acknowledgement may retry while storage recovers. An active
+            // microphone must close on failure, including a tap draining its last frames.
+            let paused = current?.mic == nil && !draining.contains { $0.mic != nil }
+            let poll = Task { [revision] in try await daemon.directive(revision: revision, microphonePaused: paused) }
             directivePoll = poll
             let response = await poll.result
             directivePoll = nil
@@ -222,18 +591,31 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             }
             let (data, http) = try response.get()
             let next = try JSONDecoder().decode(Directive.self, from: data)
-            let capture = next.capture && permission() == "granted"
+            if next.speak != nil && daemon.speechInstance == nil { throw URLError(.badServerResponse) }
+            if next.speak != nil || playback.busy { close() }
+            try await playback.apply(next.speak)
+            let capture = next.speak == nil && !playback.busy && next.capture && microphonePermission() == "granted"
             if next.revision != revision || capture != (current?.mic?.isRunning == true) {
                 let releasedRevision = http.value(forHTTPHeaderField: "x-voice-release-revision")
                 var allowed = Set((http.value(forHTTPHeaderField: "x-voice-draining-revisions") ?? "")
                     .split(separator: ",").map(String.init))
                 if let releasedRevision { allowed.insert(releasedRevision) }
                 draining.removeAll { previous in
-                    if allowed.contains(previous.revision) && permission() == "granted" { return false }
+                    if allowed.contains(previous.revision) && microphonePermission() == "granted" { return false }
                     previous.cancel()
                     return true
                 }
-                if let current, permission() == "granted", releasedRevision == current.revision,
+                let held = http.value(forHTTPHeaderField: "x-voice-held-revision") == next.revision
+                let duration = next.endOfSpeechMs ?? (held ? 800 : Directive.defaultEndOfSpeechMs)
+                if capture {
+                    guard (1...30_000).contains(duration) else { throw CaptureError.format }
+                    if current?.applyLiveEdit(captureRevision: next.captureRevision, held: held, endOfSpeechMs: duration,
+                                              separator: next.separator, firstPreviewVoicedMs: next.firstPreviewVoicedMs) == true {
+                        revision = next.revision
+                        continue
+                    }
+                }
+                if let current, microphonePermission() == "granted", releasedRevision == current.revision,
                    let time = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init) {
                     current.release(at: time)
                     draining.append(current)
@@ -246,16 +628,47 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     // its final frames. Keep polling so a mute can still cancel it.
                     closing.onInputClosed = { [weak self] in self?.directivePoll?.cancel() }
                 } else if capture {
-                    let held = http.value(forHTTPHeaderField: "x-voice-held-revision") == next.revision
-                    let batch = Capture(next.revision)
-                    let microphone = try Microphone(selection: next.inputDevice, held: held, onStopped: { [weak self] stopped in
+                    let captureRevision = held ? next.revision : next.captureRevision ?? next.revision
+                    let batch = Capture(captureRevision, daemon: daemon)
+                    batch.separator = held ? nil : next.separator
+                    // Push-to-talk previews are never held: a hold shows its words as before.
+                    batch.firstPreviewVoicedMs = held ? nil : next.firstPreviewVoicedMs
+                    current = batch
+                    let limit = captureLimit
+                    let microphone = try openInput(next.inputDevice, held, duration, limit, { [daemon] onset in
+                        daemon.startSpeech(onset, revision: captureRevision)
+                    }, { [daemon] onset, reason in
+                        daemon.settleSpeech(onset, revision: captureRevision, exceededLimit: limit == .oneMinute && reason == .captureLimit)
+                    }, { [weak self] stopped in
                         guard let self, self.current?.mic === stopped else { return }
                         self.current?.cancel()
                         self.current = nil
                         self.directivePoll?.cancel()
                     })
                     batch.mic = microphone
-                    current = batch
+                    batch.previewTask = Task { [daemon] in
+                        let decode = { (phrase: Segment) in try await recognizer.transcribe(phrase, boosting: nil)?.text }
+                        let report = { (phase: String, onset: Int64?, text: String?) in
+                            await daemon.reportPreview(phase, revision: captureRevision, onset: onset, text: text)
+                        }
+                        let editorFocused = { (onset: Int64) in await daemon.shouldPreview(onset, revision: captureRevision) }
+                        let updateEditor = { (onset: Int64, words: String) in
+                            try await daemon.preview(words, onset: onset, revision: captureRevision)
+                        }
+                        let pendingOnset = { daemon.pendingOnset(revision: captureRevision) }
+                        guard held else {
+                            await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.preview },
+                                pendingOnset: pendingOnset, decode: decode, report: report,
+                                editorFocused: editorFocused, updateEditor: updateEditor,
+                                firstPreviewReady: { [weak batch] phrase in batch?.firstPreviewReady(phrase) ?? true })
+                            return
+                        }
+                        // A pause inside a hold ends only a recognition phrase. The preview keeps the whole hold.
+                        let hold = HeldPreviewText()
+                        await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.heldPreview },
+                            pendingOnset: pendingOnset, decode: { try await hold.text($0, decode: decode) }, report: report,
+                            editorFocused: editorFocused, updateEditor: updateEditor)
+                    }
                     let previous = draining.last?.decoding
                     batch.decoding = Task { [segments = microphone.segments] in
                         defer {
@@ -265,32 +678,57 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         await previous?.value
                         guard !Task.isCancelled else { return }
                         let boosting = try? await recognizer.prime(next.roster)
-                        @MainActor func deliver(_ buffered: Segment) async {
+                        // Posts one message: a segment of automatic speech, or every phrase of a released hold.
+                        @MainActor func deliver(_ buffered: [Segment]) async {
+                            guard let first = buffered.first else { return }
+                            let onset = first.speechStartHostUs
+                            var accepted = false
+                            defer {
+                                daemon.settleSpeech(onset, revision: batch.revision, accepted: accepted)
+                            }
                             do {
-                                var segment = buffered
+                                var phrases = buffered
+                                // Clipping only shortens the tail, so a phrase keeps its position and a
+                                // clipped one ends sooner: its end time tells a stale decode apart.
+                                var decoded: [(endedAt: Int64, transcript: Recognizer.Transcript?)] = []
                                 var daemonCutoff: Int64?
                                 while !Task.isCancelled {
-                                    if let cutoff = daemonCutoff ?? batch.releasedAt, segment.endedAt > cutoff {
-                                        guard let clipped = segment.through(cutoff) else { return }
-                                        segment = clipped
+                                    if let cutoff = daemonCutoff ?? batch.releasedAt, let last = phrases.last, last.endedAt > cutoff {
+                                        phrases = phrases.compactMap { $0.through(cutoff) }
+                                        guard !phrases.isEmpty else { return }
                                     }
-                                    let words = try await recognizer.transcribe(segment, boosting: boosting)
-                                    try Task.checkCancellation()
+                                    // Only the opening phrase can carry the address the roster primes.
+                                    let primed = daemon.isDictating(onset, revision: batch.revision) ? nil : boosting
+                                    var transcripts: [(segment: Segment, transcript: Recognizer.Transcript?)] = []
+                                    decoded.removeLast(max(0, decoded.count - phrases.count))
+                                    for (index, phrase) in phrases.enumerated() {
+                                        if index < decoded.count, decoded[index].endedAt == phrase.endedAt {
+                                            transcripts.append((phrase, decoded[index].transcript))
+                                            continue
+                                        }
+                                        let words = try await batch.transcribe(phrase, using: recognizer, boosting: index == 0 ? primed : nil)
+                                        try Task.checkCancellation()
+                                        decoded.removeLast(decoded.count - index)
+                                        decoded.append((phrase.endedAt, words))
+                                        transcripts.append((phrase, words))
+                                    }
+                                    guard let last = phrases.last else { return }
                                     // Key-up may have arrived during this very decode.
-                                    if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }
-                                    guard let words else { return }
-                                    let (data, http) = try await daemon.postUtterance(revision: next.revision,
-                                        capture: (segment.startedAtHostUs, segment.speechStartHostUs, segment.endedAt),
+                                    if let releasedAt = batch.releasedAt, last.endedAt > releasedAt { continue }
+                                    guard let words = Recognizer.Transcript.message(transcripts) else { return }
+                                    let (data, http) = try await daemon.postUtterance(revision: batch.revision,
+                                        capture: (first.startedAtHostUs, onset, last.endedAt),
                                         body: JSONEncoder().encode(words))
                                     try Task.checkCancellation()
                                     // The POST can also beat the key-up directive back to the helper.
-                                    if http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,
+                                    if http.value(forHTTPHeaderField: "x-voice-release-revision") == batch.revision,
                                        let cutoff = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init),
-                                       segment.endedAt > cutoff {
+                                       last.endedAt > cutoff {
                                         daemonCutoff = cutoff
                                         continue
                                     }
-                                    if try !JSONDecoder().decode(Daemon.Acknowledgement.self, from: data).accepted {
+                                    accepted = try JSONDecoder().decode(Daemon.Acknowledgement.self, from: data).accepted
+                                    if !accepted {
                                         fputs("Voice daemon declined an utterance.\n", stderr)
                                     }
                                     return
@@ -302,14 +740,16 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         }
                         for await segment in segments {
                             if Task.isCancelled { return }
-                            await deliver(segment)
+                            await deliver([segment])
                         }
                         guard !Task.isCancelled else { return }
                         let pending = batch.releasedSegments
                         batch.releasedSegments.removeAll()
+                        // Release ends a hold's one message, however many pauses it contained.
+                        if held { await deliver(pending); return }
                         for segment in pending {
                             if Task.isCancelled { return }
-                            await deliver(segment)
+                            await deliver([segment])
                         }
                     }
                 }
@@ -321,9 +761,16 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
 @main struct VoiceListener {
     @MainActor static func main() async {
-        do { try await Listener().run() }
-        catch CaptureError.listenerInUse { fputs("Another voice listener is active.\n", stderr); exit(1) }
-        catch CaptureError.device { fputs("The selected microphone input is unavailable.\n", stderr); exit(1) }
-        catch { fputs("Voice listener stopped. Check the daemon, local models and selected input.\n", stderr); exit(1) }
+        let listener = Listener()
+        do { try await listener.run() }
+        catch {
+            await listener.daemon.drainSpeechFinishes()
+            switch error {
+            case CaptureError.listenerInUse: fputs("Another voice listener is active.\n", stderr)
+            case CaptureError.device: fputs("The selected microphone input is unavailable.\n", stderr)
+            default: fputs("Voice listener stopped. Check the daemon, local models and selected input.\n", stderr)
+            }
+            exit(1)
+        }
     }
 }

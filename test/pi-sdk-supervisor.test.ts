@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: whether the Pi driver actually COMPOSES with the daemon that owns
 // session lifecycle, rather than merely satisfying its interface.
@@ -16,7 +16,7 @@ import { join } from "node:path";
 // Pi's harness slot is pointed at `piSdkSpec` with a SCRIPTED Pi behind it, so this is the
 // shipped adapter throughout. Nothing installs Pi, reads a credential or spends a token.
 
-const home = mkdtempSync(join(tmpdir(), "pi-sdk-supervisor-"));
+const home = tempDir("pi-sdk-supervisor-");
 process.env.HARNESS_HOME = join(home, "state");
 // Resolvable, so the terminal-handoff argv below is composed the way a real one is.
 process.env.MISSION_PI_BIN = "/bin/echo";

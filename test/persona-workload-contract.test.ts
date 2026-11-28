@@ -1,8 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
-import { readFile, appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, appendFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   PersonaWorkloadRequestSchema,
@@ -21,10 +20,13 @@ import {
 import {
   codexRepositoryConfig,
   REPOSITORY_PROVIDERS,
+  repositoryWorkerResult,
+  runCodexRepositoryWorkload,
   REPOSITORY_TOOL_NAMES,
   type RepositoryProvider,
   type RepositoryProviderLaunch,
 } from "../src/server/workflows/persona-workload/providers.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 function request(
   provider: "claude" | "codex" = "codex",
@@ -354,9 +356,9 @@ test("Codex capability config disables native action tools and registers only re
 async function capabilityFixture(
   t: TestContext,
   provider: "codex" | "claude",
-  capabilities: { version: string; servers?: { name: string; enabled: boolean }[]; tools?: string[] },
+  capabilities: { version: string; servers?: { name: string; enabled: boolean }[]; tools?: string[]; omitStructuredOutput?: boolean },
 ) {
-  const cwd = await mkdtemp(join(tmpdir(), "repository-provider-"));
+  const cwd = await tempDirAsync("repository-provider-");
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const binary = join(cwd, "provider.mjs");
   const script = new URL("./fixtures/repository-provider-cli.mjs", import.meta.url);
@@ -371,6 +373,7 @@ async function capabilityFixture(
     signal: AbortSignal.timeout(10_000),
   };
   return {
+    launch,
     run: () => REPOSITORY_PROVIDERS[provider](launch),
     launches: async () => (await readFile(join(cwd, "launches.log"), "utf8")).trim().split("\n"),
   };
@@ -402,6 +405,51 @@ test("Claude rejects an unexpected tool at initialization even when the provider
   assert.deepEqual(await fixture.launches(), ["version", "session", "init"]);
 });
 
+// A reply the provider returned must reach the executor, which records the return before it
+// judges the content. Throwing here would refund it as a provider that never answered.
+test("Codex hands back a returned non-JSON reply and malformed usage instead of failing", async (t) => {
+  const fixture = await capabilityFixture(t, "codex", {
+    version: "codex-cli 0.166.0",
+    servers: [{ name: "repository", enabled: true }],
+  });
+  const output = await runCodexRepositoryWorkload(fixture.launch, {
+    createClient: () => ({
+      startThread: () => ({
+        run: async () => ({ finalResponse: "I reviewed it and it looks fine", usage: { input_tokens: "many" } }),
+      }),
+    }) as never,
+  });
+  assert.deepEqual(output, { verdict: undefined, usage: { input_tokens: "many" } });
+});
+
+test("Claude hands back a returned result without structured output instead of failing", async (t) => {
+  const fixture = await capabilityFixture(t, "claude", {
+    version: "2.1.319 (Claude Code)",
+    tools: [...REPOSITORY_TOOL_NAMES, "StructuredOutput"],
+    omitStructuredOutput: true,
+  });
+  const output = await fixture.run();
+  assert.equal(output.verdict, undefined);
+  assert.deepEqual(output.usage, { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+    output_tokens: 1, total_cost_usd: 0 });
+});
+
+test("the provider worker reports any returned reply it cannot carry as invalid_verdict, never a provider failure", () => {
+  const req = request();
+  // A valid verdict keeps its usage and completes.
+  assert.deepEqual(repositoryWorkerResult(req, { verdict: pass, usage: { input_tokens: 3 }, providerRunId: "run-1" }), {
+    status: "completed", result: { kind: "persona_verdict", verdict: pass }, usage: { input_tokens: 3 }, providerRunId: "run-1",
+  });
+  // A returned reply with no usable verdict keeps the usage the provider reported.
+  assert.deepEqual(repositoryWorkerResult(req, { verdict: undefined, usage: { input_tokens: 3 } }), {
+    status: "failed", code: "invalid_verdict", usage: { input_tokens: 3 },
+  });
+  // Usage the result cannot carry is still a returned reply: never provider_unavailable.
+  for (const usage of [{ input_tokens: "many" }, { input_tokens: -1 }, "garbage"]) {
+    assert.deepEqual(repositoryWorkerResult(req, { verdict: pass, usage }), { status: "failed", code: "invalid_verdict" });
+  }
+});
+
 async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   const values: T[] = [];
   for await (const value of source) values.push(value);
@@ -409,7 +457,7 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
 }
 
 test("env-node provider launchers use the configured Node and report a body-free capability failure", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "provider-launcher-"));
+  const root = await tempDirAsync("provider-launcher-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const binary = join(root, "codex.mjs");
   const nodeBinary = join(root, "runtime");

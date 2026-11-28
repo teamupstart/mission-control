@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: one question asked, two identical cards in "to review".
 //
@@ -25,7 +24,7 @@ import { join } from "node:path";
 // The retry then long-polls the ORIGINAL review, so answering the one card the operator
 // sees unblocks whichever call is still listening.
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-duplicate-"));
+const home = tempDir("mission-review-duplicate-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));

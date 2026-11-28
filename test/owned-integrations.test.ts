@@ -2,16 +2,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
 import { buildOwnedIntegrationInstaller } from "./helpers/owned-integration-installer.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("desktop installer reports partial MCP registration, repair and removal failures", async t => {
   for (const scenario of ["claude CLI", "codex CLI", "invalid configuration", "removal"] as const) {
     await t.test(scenario, async t => {
-      const home = mkdtempSync(join(tmpdir(), "owned-mcp-failure-"));
+      const home = tempDir("owned-mcp-failure-");
       t.after(() => rmSync(home, {recursive: true, force: true}));
       mkdirSync(join(home, ".claude"));
       mkdirSync(join(home, "dist/satellites"), {recursive: true});
@@ -51,7 +51,7 @@ test("desktop installer initializes blank settings and preserves malformed setti
     ["non-object JSON", "[]", false],
   ] as const) {
     await t.test(label, async t => {
-      const home = mkdtempSync(join(tmpdir(), "owned-blank-settings-"));
+      const home = tempDir("owned-blank-settings-");
       t.after(() => rmSync(home, {recursive: true, force: true}));
       mkdirSync(join(home, ".claude"));
       mkdirSync(join(home, "dist/satellites"), {recursive: true});
@@ -83,7 +83,7 @@ test("desktop installer initializes blank settings and preserves malformed setti
 });
 
 test("packaged installer repairs source hooks, statusline and MCP in place and reverses its wrapper", async t => {
-  const home = mkdtempSync(join(tmpdir(), "owned-installer-"));
+  const home = tempDir("owned-installer-");
   t.after(() => rmSync(home, {recursive:true, force:true}));
   mkdirSync(join(home, ".claude"));
   mkdirSync(join(home, "state"));
@@ -130,7 +130,7 @@ test("packaged installer repairs source hooks, statusline and MCP in place and r
 });
 
 test("desktop MCP removal removes owned registrations and preserves custom or disabled ones", async t => {
-  const home = mkdtempSync(join(tmpdir(), "owned-mcp-removal-"));
+  const home = tempDir("owned-mcp-removal-");
   t.after(() => rmSync(home, {recursive: true, force: true}));
   const claudeHome = join(home, ".claude");
   mkdirSync(claudeHome);
@@ -195,7 +195,7 @@ fs.writeFileSync(configPath, JSON.stringify(config));
 });
 
 test("desktop repair collapses owned duplicates within and across hook groups", async t => {
-  const home = mkdtempSync(join(tmpdir(), "owned-hook-duplicates-"));
+  const home = tempDir("owned-hook-duplicates-");
   t.after(() => rmSync(home, {recursive: true, force: true}));
   mkdirSync(join(home, ".claude"));
   mkdirSync(join(home, "dist/satellites"), {recursive: true});
@@ -236,7 +236,7 @@ test("desktop repair collapses owned duplicates within and across hook groups", 
 });
 
 test("desktop MCP removal preserves a registration replaced after its initial inspection", async t => {
-  const home = mkdtempSync(join(tmpdir(), "owned-mcp-race-"));
+  const home = tempDir("owned-mcp-race-");
   t.after(() => rmSync(home, {recursive: true, force: true}));
   mkdirSync(join(home, ".claude"));
   const settingsPath = join(home, ".claude/settings.json");

@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * A recurring mission's selected Workflow, from the template through to a started run.
@@ -12,7 +11,7 @@ import { join } from "node:path";
  * field, and this file proves the field is enough.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-workflow-handoff-"));
+const home = tempDir("mission-schedule-workflow-handoff-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

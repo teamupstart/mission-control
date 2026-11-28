@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { WorkflowRun, WorkflowRunDetail, WorkflowRunPage } from "../src/shared/workflow.ts";
 import { runNextMove } from "../src/web/workflows/run-actions.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflows-http-"));
+const home = tempDir("mission-workflows-http-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -628,7 +628,8 @@ test("the shipped workflow is readable through the existing workflow routes", as
     // either never agreed to run commands on their machine.
     assert.equal(
       versionBody.graph.nodes.filter((node) => node.kind === "check").length,
-      number < 3 ? 0 : number < 19 ? 2 : number < 22 ? 3 : 4,
+      // Version 23 adds the Local Inspector as a fifth check node.
+      number < 3 ? 0 : number < 19 ? 2 : number < 22 ? 3 : number < 23 ? 4 : 5,
     );
     // The same rule for the session action node, which only version 8 authors: a binding
     // pinned to any earlier version never agreed to have a pull request typed at its session

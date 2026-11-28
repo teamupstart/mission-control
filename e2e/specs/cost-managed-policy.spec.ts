@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * Settings > Cost on a machine whose managed Claude Code policy sends metrics elsewhere.
@@ -22,7 +22,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const EVIDENCE = artifactsDir("cost-managed-policy");
 
-const policyRoot = mkdtempSync(join(tmpdir(), "mission-e2e-managed-policy-"));
+const policyRoot = tempDir("mission-e2e-managed-policy-");
 const policyDir = join(policyRoot, "Library", "Application Support", "ClaudeCode");
 mkdirSync(policyDir, { recursive: true });
 writeFileSync(
@@ -111,7 +111,7 @@ test("Cost settings names the host a managed policy sends metrics to", async ({
 
 // A policy that turns Claude Code's metrics off rather than sending them elsewhere. Its own
 // fixture root, because `daemonEnv` is read once, when each test's daemon starts.
-const disabledRoot = mkdtempSync(join(tmpdir(), "mission-e2e-managed-policy-off-"));
+const disabledRoot = tempDir("mission-e2e-managed-policy-off-");
 const disabledDir = join(disabledRoot, "Library", "Application Support", "ClaudeCode");
 mkdirSync(disabledDir, { recursive: true });
 writeFileSync(

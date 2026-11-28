@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { bypassXcrunGitShim, developerDirectory, disableAutoMaintenance } from "./git-environment.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 test("auto maintenance is disabled by appending to the environment's own git config", () => {
   const env: NodeJS.ProcessEnv = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.editor", GIT_CONFIG_VALUE_0: "true" };
@@ -17,8 +17,8 @@ test("auto maintenance is disabled by appending to the environment's own git con
 });
 
 test("a test worker's commits start no `git maintenance` child", (t) => {
-  const repo = mkdtempSync(join(tmpdir(), "mission-git-environment-"));
-  const trace = mkdtempSync(join(tmpdir(), "mission-git-environment-trace-"));
+  const repo = tempDir("mission-git-environment-");
+  const trace = tempDir("mission-git-environment-trace-");
   t.after(() => {
     rmSync(repo, { recursive: true, force: true });
     rmSync(trace, { recursive: true, force: true });
@@ -41,7 +41,7 @@ test("an empty PATH component is the current directory, so a git there keeps the
   // `PATH=:/usr/bin` makes a shell run `./git` before Apple's. Reading that as "the first git is
   // /usr/bin/git" would put the developer-directory git in front of the one this PATH selects.
   const cwd = process.cwd();
-  const here = mkdtempSync(join(tmpdir(), "mission-git-environment-cwd-"));
+  const here = tempDir("mission-git-environment-cwd-");
   t.after(() => {
     process.chdir(cwd);
     rmSync(here, { recursive: true, force: true });
@@ -78,7 +78,7 @@ test("on a Mac whose git is the xcrun shim, workers run the real git with its ow
   const run = (args: string[]) => spawnSync("git", args, { env: { ...process.env, PATH: env.PATH }, encoding: "utf8" });
   assert.equal(run(["--version"]).stdout, spawnSync("/usr/bin/git", ["--version"], { encoding: "utf8" }).stdout);
   assert.ok(existsSync(join(run(["--exec-path"]).stdout.trim(), "git-upload-pack")));
-  const repo = mkdtempSync(join(tmpdir(), "mission-git-environment-layout-"));
+  const repo = tempDir("mission-git-environment-layout-");
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   assert.equal(run(["init", "-q", repo]).status, 0);
   assert.ok(readdirSync(join(repo, ".git", "hooks")).length > 0, "the default template was found");

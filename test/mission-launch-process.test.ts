@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // What is at stake: with outside sessions hidden (the default), the ONLY thing that keeps a
@@ -12,7 +11,7 @@ import { dirname, join } from "node:path";
 // through its REAL builder, and the process chain it produces is synthesized from that argv,
 // rather than from a string this file spells by hand.
 
-const home = mkdtempSync(join(tmpdir(), "mission-launch-process-"));
+const home = tempDir("mission-launch-process-");
 writeFileSync(join(home, "token"), "loopback-test-token\n", { mode: 0o600 });
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -29,6 +28,7 @@ const { resumeGuardArgv, managedResumeRoot } = await import("../src/server/harne
 const leaseRoot = managedResumeRoot();
 after(() => rmSync(leaseRoot, { recursive: true, force: true }));
 import type { Proc } from "../src/server/discovery/processes.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function proc(p: Partial<Proc> & Pick<Proc, "pid" | "ppid" | "command">): Proc {
   return { tty: "ttys9", startRaw: "", startMs: 1000, agent: null, agentNative: false, ...p };

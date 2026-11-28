@@ -243,7 +243,7 @@ test("a dispatched scout is told to write a report, and archives it, with skills
   await expect(card).not.toContainText("PR #");
 });
 
-test("a scout without a submitted report warns first, then closes and preserves its written report", async ({
+test("a scout without a submitted report warns first, retains its report, and archives it on explicit cleanup", async ({
   dashboard,
   daemon,
 }) => {
@@ -308,21 +308,21 @@ test("a scout without a submitted report warns first, then closes and preserves 
 
   await expect
     .poll(async () => {
-      const res = await fetch(`${daemon.baseURL}/api/tasks`);
-      const tasks = (await res.json()) as Array<{ kind: string; status: string }>;
-      return tasks.find((candidate) => candidate.kind === "scout")?.status ?? null;
-    })
-    .toBe("done");
-  await expect
-    .poll(async () => {
       const res = await fetch(`${daemon.baseURL}/api/sessions`);
       return ((await res.json()) as FleetSession[]).length;
     }, { timeout: 20_000, message: "the confirmed close should finish stopping the scout" })
     .toBe(0);
-  // NO_SUBMIT wrote a real report. Checkout return must preserve it through the archive
-  // cleanup guard, even though normal completion refused the missing submission. Session
-  // removal precedes that asynchronous capture/indexing, so an immediate zero-count read
-  // sometimes passed before the very recovery this fixture requires had finished.
+  const res = await fetch(`${daemon.baseURL}/api/tasks`);
+  const rows = (await res.json()) as Array<{ id: string; kind: string; status: string; worktreePath: string | null }>;
+  const task = rows.find((candidate) => candidate.kind === "scout");
+  expect(task).toMatchObject({ status: "done", worktreePath: expect.any(String) });
+  expect(readFileSync(join(task!.worktreePath!, "docs/reports/e2e-scout/report.html"), "utf8")).toContain(FINDING);
+  expect(await archives(daemon)).toHaveLength(0);
+
+  // The operator can reclaim the retained checkout. Its return still archives the written
+  // report, even though the scout never submitted it.
+  const reclaimed = await fetch(`${daemon.baseURL}/api/tasks/${task!.id}/reclaim`, { method: "POST" });
+  expect(reclaimed.ok, await reclaimed.text()).toBe(true);
   await expect.poll(() => archives(daemon).then((rows) => rows.length), {
     timeout: 30_000, message: "cleanup should preserve the existing unsubmitted report",
   }).toBe(1);

@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `GET /api/reports/:id/document`: the reader's one source.
 //
@@ -14,7 +14,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
 // gone missing is a 404 whose message the reader can show. Reading changes nothing about the
 // report.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reports-document-http-"));
+const home = tempDir("mission-reports-document-http-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

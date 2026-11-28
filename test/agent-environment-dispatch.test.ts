@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { registerHooks } from "node:module";
-import { tmpdir } from "node:os";
+import { tempDir } from "./temp-root.mjs";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -19,7 +19,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { shellWords, wrapperAgentCommand } from "../src/server/terminal/shell.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
 
-const dir = mkdtempSync(join(tmpdir(), "mission-dispatch-environment-"));
+const dir = tempDir("mission-dispatch-environment-");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 // Residents normally force the SDK. Override only the dispatcher's runtime selection so a

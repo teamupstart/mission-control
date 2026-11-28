@@ -1,16 +1,16 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { AgentType, ReviewItem } from "../src/shared/types.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-grill-first-"));
+const home = tempDir("mission-grill-first-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, resolveGrillFirstPin } = await import("../src/server/tasks.ts");

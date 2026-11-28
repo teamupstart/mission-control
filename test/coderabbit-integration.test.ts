@@ -1,8 +1,7 @@
 // Drive YAML/allowance precedence, typed tuning and pinned Git identity with no vendor calls.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { execFileSync } from "node:child_process";
@@ -10,10 +9,12 @@ import { createHash } from "node:crypto";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, type CodeRabbitComparison } from "../src/shared/workflow.ts";
 import type { RunCheckInput, CheckRunDeps } from "../src/server/workflows/checks.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
-const home=mkdtempSync(join(tmpdir(),"mc-cr-integration-"));process.env.MISSION_HOME=home;
+import { tempDir } from "./temp-root.mjs";
+const home=tempDir("mc-cr-integration-");process.env.MISSION_HOME=home;
 after(()=>rmSync(home,{recursive:true,force:true}));
 const { runCheck }=await import("../src/server/workflows/checks.ts");
-const { codeRabbitReadiness, resolveCodeRabbitComparison, codeRabbitChangedPaths }=await import("../src/server/workflows/coderabbit.ts");
+const { codeRabbitReadiness, resolveCodeRabbitComparison }=await import("../src/server/workflows/coderabbit.ts");
+const { reviewChangedPaths }=await import("../src/server/workflows/review-comparison.ts");
 const { CODERABBIT_OPERATOR_ACTION }=await import("../src/server/workflows/coderabbit-result.ts");
 const { parseCodeRabbitConfig }=await import("../src/server/workflows/coderabbit-config.ts");
 const { WorkflowCommandArtifactService }=await import("../src/server/workflows/command-artifacts.ts");
@@ -27,6 +28,7 @@ const { WorkflowCheckOutcomeSchema }=await import("../src/shared/protocol.ts");
 const enabled=parseCodeRabbitConfig(Buffer.from('reviews: {auto_review: {enabled: true}}'));
 const comparison:CodeRabbitComparison={interpreterVersion:1,yaml:enabled,head:"a".repeat(40),baseTip:"b".repeat(40),mergeBase:"c".repeat(40),baseRef:"main",severity:"major",maxRuns:10,timeoutMs:2700000,ruleRevision:1,empty:false,error:null,command:["coderabbit","review","--deep"]};
 const summary={comparison,status:"complete" as const,counts:{critical:0,major:0,minor:1,trivial:0,info:0,none:0},titles:["minor advisory"],diagnostic:"Complete review"};
+const cleanReview = { ...summary, counts: { ...summary.counts, minor: 0 }, titles: [] };
 const input=():RunCheckInput=>({slot:"coderabbit",command:emptyWorkflowCommandView("coderabbit"),policy:{checksEnabled:true,repoAllowlist:["/repo"]},reserveRun:()=>({granted:true,spent:0}),cwd:"/repo",repoRoot:"/repo",headSha:comparison.head,coderabbit:{yaml:enabled,dirty:false,comparison:async()=>comparison}});
 const deps=():CheckRunDeps=>({codeRabbitProbe:async()=>({command:"/fake/coderabbit",env:{HOME:home},error:null}),execute:async()=>({kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary})});
 test("the real CodeRabbit probe hands a scrubbed managed environment to the review child", async () => {
@@ -71,6 +73,105 @@ test("YAML true needs no catalog override and defaults to ten runs and 45 minute
  const d=deps();let called=0;d.execute=async(request)=>{called++;assert.equal(request.timeoutMs,2700000);assert.equal(request.headSha,comparison.head);assert.deepEqual(request.command,["/fake/coderabbit","review","--deep","--agent","--gate","major","--committed","--base-commit",comparison.mergeBase!]);return {kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary};};
  const r=await runCheck(i,d);assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"passed");assert.equal(r.outcome.review!.remainingRuns,9);}assert.equal(called,1);
 });
+test("CodeRabbit reuse requires an exact comparison and respects --fresh", async (t) => {
+  const fresh = { ...comparison, command: ["coderabbit", "review", "--fresh"] };
+  const cases = [
+    { name: "identical comparison reuses the pass", prior: comparison, current: { ...comparison }, runs: 0 },
+    { name: "changed head executes a fresh review", prior: comparison, current: { ...comparison, head: "d".repeat(40) }, runs: 1 },
+    { name: "changed severity executes a fresh review", prior: comparison, current: { ...comparison, severity: "minor" as const }, runs: 1 },
+    { name: "current --fresh executes after an ordinary clean review", prior: comparison, current: fresh, runs: 1 },
+    { name: "--fresh executes even on an identical comparison", prior: fresh, current: fresh, runs: 1 },
+  ];
+  for (const { name, prior, current, runs } of cases) {
+    await t.test(name, async (caseTest) => {
+      const i = input();
+      i.coderabbit!.priorCleanReview = { attemptId: "prior-clean-review", review: { ...cleanReview, comparison: prior } };
+      i.coderabbit!.comparison = async () => current;
+      const probe = caseTest.mock.fn(deps().codeRabbitProbe!);
+      const review = {
+        ...summary,
+        comparison: current,
+        counts: { ...cleanReview.counts, major: 1 },
+        titles: ["Fresh major finding"],
+      };
+      const execute = caseTest.mock.fn<NonNullable<CheckRunDeps["execute"]>>(async () => ({
+        kind: "exited", exitCode: 2, output: "fresh review output", truncatedBytes: 0, review,
+      }));
+      const result = await runCheck(i, { codeRabbitProbe: probe, execute });
+
+      assert.equal(result.kind, "outcome");
+      assert.equal(probe.mock.callCount(), runs);
+      assert.equal(execute.mock.callCount(), runs);
+      if (runs === 0) {
+        assert.equal(result.outcome.status, "passed");
+        assert.match(result.outcome.note, /Reused complete CodeRabbit review/);
+      } else {
+        const request = execute.mock.calls[0]!.arguments[0];
+        assert.deepEqual(request.coderabbit, current);
+        assert.equal(request.command.includes("--fresh"), current.command?.includes("--fresh") ?? false);
+        assert.equal(result.outcome.status, "failed");
+        assert.equal(result.outcome.exitCode, 2);
+        assert.equal(result.outcome.output, "fresh review output");
+        assert.deepEqual(result.outcome.review, { ...review, remainingRuns: 9 });
+      }
+    });
+  }
+});
+const reuseFailures: Array<{
+  name: string;
+  configure: (i: RunCheckInput) => void;
+  reason: RegExp;
+  lookups?: number;
+}> = [
+  {
+    name: "dirty submission",
+    configure: (i) => { i.coderabbit!.dirty = true; },
+    reason: /uncommitted changes without a review snapshot/,
+  },
+  {
+    name: "rejected comparison lookup",
+    configure: (i) => { i.coderabbit!.comparison = async () => { throw new Error("fixture lookup failed"); }; },
+    reason: /could not establish a complete review/,
+    lookups: 1,
+  },
+  {
+    name: "active vendor wait",
+    configure: (i) => { i.coderabbit!.retryAt = Date.now() + 60_000; },
+    reason: /CodeRabbit vendor wait is active until .* Retry after that time/,
+  },
+  {
+    name: "denied repository policy",
+    configure: (i) => { i.policy.repoAllowlist = []; },
+    reason: /This repository is not on the workflow allowlist/,
+  },
+  {
+    name: "uncommitted review configuration",
+    configure: (i) => { i.coderabbit!.yaml = { ...enabled, committed: false }; },
+    reason: /The captured \.coderabbit\.yaml is not the one in the reviewed commit/,
+  },
+];
+
+for (const { name, configure, reason, lookups = 0 } of reuseFailures) {
+  test(`CodeRabbit blocks even with a prior clean review when preflight finds ${name}`, async (t) => {
+    const i = input();
+    configure(i);
+    const candidate = i.coderabbit!;
+    const lookup = t.mock.fn(candidate.comparison);
+    candidate.comparison = lookup;
+    candidate.priorCleanReview = { attemptId: "prior-clean-review", review: cleanReview };
+    const d = deps();
+    const probe = t.mock.fn(d.codeRabbitProbe!);
+    const execute = t.mock.fn(d.execute!);
+    const result = await runCheck(i, { ...d, codeRabbitProbe: probe, execute });
+
+    assert.equal(result.kind, "action_required");
+    assert.match(result.reason, reason);
+    assert.equal(result.review?.status, "incomplete");
+    assert.equal(lookup.mock.callCount(), lookups);
+    assert.equal(probe.mock.callCount(), 0);
+    assert.equal(execute.mock.callCount(), 0);
+  });
+}
 test("eight long finding titles still produce a schema-valid outcome for Persona evidence",async()=>{
  const r=await runCheck(input(),{...deps(),execute:async()=>({kind:"exited",exitCode:2,output:"",truncatedBytes:0,
   review:{...summary,counts:{...summary.counts,major:8},titles:Array.from({length:8},(_,i)=>`${i}: ${"x".repeat(246)}`)}})});
@@ -168,12 +269,12 @@ test("changed paths come from git: renames and deletions are allowed, only head 
  f.git("add",".");f.git("commit","-qm","more base");const mergeBase=f.git("rev-parse","HEAD");
  f.git("mv","old-name.ts","new-name.ts");f.git("rm","-q","to-delete");writeFileSync(join(f.root,"caf\u00e9\nline.md"),"unicode and newline\n");writeFileSync(join(f.root,"keep me.txt"),"edited\n");
  f.git("add",".");f.git("commit","-qm","rename delete add");const head=f.git("rev-parse","HEAD");
- const paths=await codeRabbitChangedPaths(f.root,mergeBase,head);
+ const paths=await reviewChangedPaths(f.root,mergeBase,head);
  assert.deepEqual([...paths.required].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts"]);
  assert.deepEqual([...paths.allowed].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts","old-name.ts","to-delete"]);
- assert.deepEqual(await codeRabbitChangedPaths(f.root,head,head),{required:[],allowed:[]});
- await assert.rejects(codeRabbitChangedPaths(f.root,"main",head),/not pinned to full commits/);
- await assert.rejects(codeRabbitChangedPaths(f.root,"f".repeat(40),head),/could not be listed/);
+ assert.deepEqual(await reviewChangedPaths(f.root,head,head),{required:[],allowed:[]});
+ await assert.rejects(reviewChangedPaths(f.root,"main",head),/not pinned to full commits/);
+ await assert.rejects(reviewChangedPaths(f.root,"f".repeat(40),head),/could not be listed/);
 });
 test("missing origin/HEAD requires explicit base tuning and resolves its tip and merge-base",async()=>{
  const f=repo("explicit-base"),head=f.git("rev-parse","HEAD");
@@ -230,7 +331,7 @@ test("normalized findings use the existing quota and authenticated reader; raw c
 test("all 33 previously published versions retain exact hashes; only No-Mistakes appends the stage",()=>{
  const expected=JSON.parse(readFileSync(new URL("./fixtures/coderabbit-workflow-history.json",import.meta.url),"utf8"));
  for(const [id,hash] of Object.entries(expected)){const v=BUILTIN_WORKFLOWS.flatMap(w=>w.versions).find(v=>v.id===id)!;assert.equal(createHash("sha256").update(JSON.stringify(v)).digest("hex"),hash,id);}
- const noMistakes=BUILTIN_WORKFLOWS.find(w=>w.definition.id.includes("no-mistakes"))!;assert.equal(noMistakes.versions.length,22);
+ const noMistakes=BUILTIN_WORKFLOWS.find(w=>w.definition.id.includes("no-mistakes"))!;assert.equal(noMistakes.versions.length,23);
  const nodes=noMistakes.versions.at(-1)!.graph.nodes;assert.equal(nodes.filter(n=>n.kind==="check"&&n.slot==="coderabbit").length,1);
  for(const w of BUILTIN_WORKFLOWS.filter(w=>w!==noMistakes))assert.ok(!w.versions.some(v=>v.graph.nodes.some(n=>n.kind==="check"&&n.slot==="coderabbit")));
 });
@@ -243,6 +344,21 @@ test("a runtime refusal proven before process start returns its allowance",async
  const i=input();let releases=0;i.reserveRun=()=>({granted:true,spent:0,release:()=>{releases++;}});
  const r=await runCheck(i,{...deps(),execute:async()=>({kind:"infrastructure",started:false,reason:"no lease could be acquired"})});
  assert.equal(r.kind,"action_required");assert.equal(releases,1);
+});
+
+test("CodeRabbit hands a withheld verdict to automatic infrastructure recovery", async () => {
+ const i = input();
+ let refunds = 0;
+ i.reserveRun = () => ({ granted: true, spent: 0, release: () => { refunds++; } });
+ const reason = "the coderabbit check exited 2, but git ls-remote --symref origin HEAD was stopped during worktree hand-back";
+ const execution = {
+  kind: "infrastructure" as const, cleanupFailed: true as const, reason,
+  review: { ...summary, status: "incomplete" as const },
+ };
+ const result = await runCheck(i, { ...deps(), execute: async () => execution });
+ assert.equal(result.kind, "infrastructure");
+ assert.equal(result.reason, reason);
+ assert.equal(refunds, 1);
 });
 test("unexpected comparison and executor failures log classified secret-free diagnostics",async(t)=>{
  const logs:string[]=[];t.mock.method(console,"error",(...args:unknown[])=>logs.push(args.join(" ")));

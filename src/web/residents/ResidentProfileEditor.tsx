@@ -385,7 +385,7 @@ export function ResidentProfileEditor({
             <Body draft={draft} update={update} changeHarness={changeHarness} useMcpDefault={!base && !seed && !mcpEdited} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} profileId={profile?.id ?? null} />
           </section>
         ))}
-        {profile && <ResidentState key={profile.id} profileId={profile.id} />}
+        {profile && <ResidentState key={profile.id} profileId={profile.id} profileName={profile.name} />}
       </div>
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
     </section>

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { setImmediate } from "node:timers/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acknowledgeUpdateLaunch, observeUpdateLaunch, unmanagedLaunchMessage } from "../src/main/launch-health.ts";
 import { processIdentity } from "../scripts/update-lock.mjs";
 import { logMain } from "../src/main/main-log.ts";
 import { realMacAppOps, launchAckPath } from "../scripts/mac-app-lifecycle.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 test("unmanaged startup reports the current process, with the same job remediation and no kill", async () => {
   const bundle = "/Applications/Mission Control.app";
@@ -43,7 +43,7 @@ test("unmanaged startup returns actionable guidance when launch inspection fails
 });
 
 test("renderer acknowledgment retries on the next load after a failed write", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-launch-ack-retry-"));
+  const root = tempDir("mission-launch-ack-retry-");
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const directory = join(root, "state");
   writeFileSync(directory, "block mkdir");
@@ -64,7 +64,7 @@ test("renderer acknowledgment retries on the next load after a failed write", as
 });
 
 test("unwritable main log falls back to sanitized stderr without preventing startup", (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "mission-main-log-fallback-"));
+  const directory = tempDir("mission-main-log-fallback-");
   t.after(() => rmSync(directory, {recursive: true, force: true}));
   const stderr = t.mock.method(console, "error", () => {});
   assert.doesNotThrow(() => logMain("renderer unresponsive Authorization: Bearer private-token /Users/private/path", directory));
@@ -77,7 +77,7 @@ test("unwritable main log falls back to sanitized stderr without preventing star
 });
 
 test("main log is durable and sanitized; only a valid launch nonce can publish renderer readiness", (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "mission-main-log-"));
+  const directory = tempDir("mission-main-log-");
   t.after(() => rmSync(directory, {recursive: true, force: true}));
   const path = join(directory, "daemon.log");
   logMain("renderer unresponsive Authorization: Bearer private-token /Users/private/path", path);

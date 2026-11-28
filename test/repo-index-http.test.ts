@@ -3,21 +3,20 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { RepoIndexView } from "../src/shared/repo-index.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-repo-index-http-"));
+const root = tempDir("mission-repo-index-http-");
 const operatorHome = join(root, "operator");
 const stateHome = join(root, "state");
 const previousHome = process.env.HOME;
@@ -77,10 +76,11 @@ async function getView(): Promise<RepoIndexView> {
 }
 
 async function putDirectories(paths: string[]): Promise<Response> {
+  const { revision } = await getView();
   return app.request("/api/repo-index", {
     method: "PUT",
     headers: HEADERS,
-    body: JSON.stringify({ directories: paths.map((path) => ({ path })) }),
+    body: JSON.stringify({ revision, directories: paths.map((path) => ({ path })) }),
   });
 }
 

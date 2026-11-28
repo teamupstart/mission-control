@@ -77,9 +77,10 @@ be read or parsed, saving and removing keys both fail and preserve its contents.
 
 ## Public product issue reporting
 
-Product reports are public GitHub issues, not private support messages. The agent tool is defined
-for use only after the user explicitly requests a report, shows the daemon-derived public content in an
-`input` review, and calls the mutation route only after a human selects **Submit public issue**.
+Product reports are public GitHub issues. The user can request a draft directly or launch the
+built-in Bug Fix Inspector to request drafts for confirmed defects throughout that run, including
+scheduled passes. The tool shows each daemon-derived draft in an `input` review and calls the
+mutation route only after a human selects **Submit public issue** for that draft.
 Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review answers publish
 nothing.
 
@@ -111,10 +112,10 @@ claim prevent double-clicks and replays from creating duplicate issues.
 has no private utility-process channel, so preflight reports that the report must be opened in the
 desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
-The agent path is separate and token-guarded, and requires an active session. After an explicit
-user request, `report_product_issue` previews through MCP and waits for a human-submitted `input`
+The agent path is separate and token-guarded, and requires an active session. `report_product_issue` previews through MCP and waits for a human-submitted `input`
 review before it publishes. There is no MCP path that publishes without that review. The preview
-does not mint a dashboard grant.
+does not mint a dashboard grant. An agent that has searched a repository for duplicates can pass
+`expectedTarget`. A mismatch with the daemon's preview stops the report before the approval request.
 
 Screenshots use daemon-issued upload locators, never caller-supplied filesystem paths. The daemon
 resolves every locator again immediately before publication, refuses symlinks and paths outside
@@ -254,6 +255,12 @@ its own. It lets the operator's **Launch** or **Restart on new profile** click i
 app give a resident run the grant above. Restart authorizes the replacement launch, never
 copies the old run's grant.
 
+Bug Fix Inspector uses the same trusted launch click with a read-only scope pinned to its profile
+revision. The Registry binds that scope to the same identity and restores it on the same terms.
+It permits cross-session reads of sessions, transcripts, workflow runs and command output.
+Delegated session actions and workflow mutations require a separate full control grant.
+The session control menu shows **Read-only** and **Off** revokes the grant.
+
 - **The click.** Inside the click, before the launch request is sent, the dashboard arms a
   single-use authorization bound to that launch's request id, the profile id and the profile
   revision. It uses the same private preload capability and trusted-click check as the session
@@ -291,8 +298,8 @@ from the standalone browser, the Residents dock and the Console band say so afte
 the session's menu stays the only way to grant control afterwards.
 
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
-are available without the grant; cross-session access requires **Control other sessions** on
-the caller. The daemon checks binding session and conversation identity, filters ownership
+are available without a grant. Cross-session reads accept either read-only inspection or
+**Control other sessions**. Cross-session actions require **Control other sessions**. The daemon checks binding session and conversation identity, filters ownership
 before list pagination, and checks both ends of reattachment plus delivery packet destinations.
 Unknown or historical targets require delegation. The shared machine token alone grants no
 workflow MCP access. Existing manager checks still enforce submission/run matching, replay keys,
@@ -772,6 +779,69 @@ can hold at most two of Node's shared file-I/O threads and never keeps another r
 The gatherer also holds at most one open file at a time, daemon-wide, released only once its
 close finishes, so a stalled close cannot make descriptors pile up.
 [The guide](task-shaping.md#the-built-in-gatherer) states every rule.
+
+### Where a shaper sign-in is kept
+
+**A preview.** Shaper sign-in runs only while the `task-shaping` and `shaper-sign-in` flags
+are on. A sign-in is made in **Settings > Task shaping**
+([Signing in from Settings](task-shaping.md#signing-in-from-settings)) or through the daemon's
+API ([Signing in over the API](task-shaping.md#signing-in-over-the-api)). A shaper that
+carries the sign-in marker asks the sign-in service for its access token on every call, from
+memory, and sends it only to its server's origin.
+
+**In short.** The shaper's row in Settings says where its sign-in is kept: "Kept in the macOS
+Keychain" or "Kept in memory". What is kept is the access token and the refresh token, with
+when the token expires and which client obtained it. They are never written to a file
+Mission Control owns, to its database, to a settings backup or snapshot, to the browser or to
+a log. The daemon reads them, and so can another program running as you that the Keychain
+lets in, as below. **Sign out** in Settings removes them and revokes them at the server. The
+rest of this section is the detail.
+
+A remote shaper that needs an OAuth sign-in has its tokens kept by the daemon, one record
+per connection. A connection is one server URL, scope and authorization server. The record holds
+the access token, the refresh token, when the access token expires, the scope granted, the
+client that obtained the tokens, and the connection itself. Mission Control never writes a
+record to its own files, to `app_config`, to its own backups or settings snapshots, or to the
+browser, never logs one, and never puts one in an error message. Saving it starts no command,
+so a token never appears in a process argument list. The one place it is written is the
+Keychain below, and a keychain is itself a file in your home folder: a backup of the whole
+Mac, such as Time Machine, normally includes it, still encrypted.
+
+- **On macOS** each record is one generic password item in your default keychain, which is
+  your login Keychain unless you have made another keychain the default, with the service name **`Mission Control shaper sign-in`** and a label that adds the server's host.
+  Its account is a 16-character tag of the daemon's state directory, a `/`, and the
+  connection's id, so a daemon run from a checkout and the desktop app, which use different
+  state directories, never read each other's sign-ins. The item is never marked for iCloud
+  Keychain sync. The daemon reaches the Keychain through its own native addon, which calls
+  the Security framework directly, off the daemon's event loop.
+- **Elsewhere**, and on macOS when `MISSION_SHAPER_SIGN_IN_STORE` is `memory` or the
+  Keychain addon does not load, records are kept in the daemon's memory and are gone when it
+  stops. [Shaper sign-in storage](configuration.md#shaper-sign-in-storage) has the switch.
+
+**What the Keychain protects against, and what it does not.** The item is encrypted at rest
+with the keychain that holds it and is unreadable while that keychain is locked. It is not a boundary against
+a program that runs as you: such a program can ask the Keychain for the item as the daemon
+does. macOS ties the item to the program that created it, so when a different program asks
+to read it, such as the desktop app reading an item the daemon wrote from a checkout, or
+after an update replaces the program, macOS asks you whether to allow it. **Always Allow**
+lets that program read the item from then on without asking; **Allow** asks again next time.
+
+**What the browser sees.** The dashboard opens the authorization URL, which carries the client
+id, the OAuth `state` parameter and the PKCE challenge, and the browser follows the
+authorization server's redirect to the daemon's callback, which carries the code. The browser
+never sees a token or the PKCE verifier, and without the verifier a code or a `state` it saw
+cannot be used. The dashboard keeps the authorization URL in the page's memory only, never in
+browser storage, and a reload drops it.
+
+**Removing a sign-in.** **Sign out** on the shaper's row in **Settings > Task shaping**, or on
+its entry under **Sign-ins no shaper uses**, removes the record from the Keychain or from
+memory and revokes the tokens at the authorization server. Switching `shaper-sign-in` off
+removes nothing: held sign-ins stay where they are and are not refreshed, so they may lapse.
+
+**Removing a sign-in by hand.** Open **Keychain Access**, choose your default keychain
+(**login**, unless you changed it), search for `Mission Control shaper sign-in`, and delete the item whose label names the
+server. A daemon that is running may still hold that sign-in in memory, so quit it first, or
+restart it afterwards, for the removal to take effect.
 
 ## Workflow reviewer repository access
 

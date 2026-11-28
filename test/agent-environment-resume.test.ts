@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tempDir } from "./temp-root.mjs";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { promisify } from "node:util";
@@ -11,7 +11,7 @@ import type { Task } from "../src/shared/types.ts";
 import { managedResumeFixture, writeResumeProcessInventory } from "./helpers/managed-resume-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
-const home = mkdtempSync(join(tmpdir(), "mission-env-resume-"));
+const home = tempDir("mission-env-resume-");
 const cwd = join(home, "checkout");
 mkdirSync(cwd);
 process.env.MISSION_HOME = join(home, "state");

@@ -901,3 +901,21 @@ test("only a foreman_complete workflow that owns a repository plan waits on Fore
     assert.equal(heldGapRecoveryApplies(kind, true), false);
   }
 });
+
+
+test("an already-held continuation uses ordinary gap recovery with its earlier registration visible", () => {
+  const held = { ...decision("held"), episodeKey: "intent:1:4", gaps: [
+    { id: "full-suite", kind: "standards" as const, path: "", detail: "55 full-suite failures remain" },
+    { id: "proof", kind: "unverified" as const, path: "", detail: "No evidence is registered" },
+  ] };
+  const original = input({ episodeKey: held.episodeKey, workflowEvidenceEligible: true, queue: queue({ promptedDecision: held }) });
+  for (const decide of [decideImmediateHeldGapDelivery, decideShipShepherd]) {
+    const before = decide(original);
+    const after = decide({ ...original, earlierContinuationEvidence: true });
+    assert.equal(after.kind, "recover");
+    if (before.kind !== "recover" || after.kind !== "recover") assert.fail("Expected ordinary held recovery");
+    assert.deepEqual({ ...after, payload: before.payload }, before);
+    assert.match(after.payload!, /Evidence was registered before the continuation/);
+    assert.match(after.payload!, /55 full-suite failures remain/);
+  }
+});

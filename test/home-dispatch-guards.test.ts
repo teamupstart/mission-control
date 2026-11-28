@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The entries outside /dispatch include the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -76,11 +76,30 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   // The listener's verified model lookup, GET /api/voice/model, answers 404 with the voice preview off.
   // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
+  // PUT /api/voice/confirmation and GET /api/voice/tasks/:id/follow-up both return 404 with Voice off.
+  // PUT /api/voice/open-cards also returns 404 with Voice off.
+  // The five speech routes for supervision, audio, playback events, Stop and audition also return 404 with Voice off.
   // Persona repository access adds the grant update and per-run repository query audit routes.
+  // GET /api/voice/mute and POST /api/voice/hotkey-recording answer 404 with the voice preview off.
+  // The synthesis model adds gated POST and DELETE /api/voice/speech/model/download.
+  // Form submit refusal and inbox action claim and completion return 404 with Voice off.
+  // The listener reports speech onset and completion through one additional voice-gated route.
+  // Session settings adds the MCP entry point, the operator access pair and the skin refresh read.
+  // Foreman's guarded POST /api/sessions/:id/queue/wrapup/drain returns 404 for a missing session.
+  // GET /api/inspector/config now includes localReview: false with the Local Inspector preview off.
+  // Typed settings adds PATCH /api/workflows/config for field-scoped policy saves.
+  // POST /voice/listener/transcript also returns 404 with the voice preview off.
+  // GET /api/ui/config's default body gains `residentCardNameStyles: []` (no new route).
+  // Repository Index and Task Sources views carry config revisions for conditional writes.
+  // A Task Sources replacement without a revision now answers 400.
+  // PATCH /api/pipelines/config accepts only the Engineer runtime.
+  // Shaper sign-in adds POST /api/shaping/sign-in, POST /api/shaping/sign-out and
+  // GET /api/shaping/sign-in/callback, which answer 404 with task-shaping off.
+  // GET /api/ui/config's default body gains `callSignCardStyle: "subtitle"` (no new route).
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 476);
+  assert.equal(others.length, 503);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "9ef56a7b0fd8f3e1e29eec63425c1d125e6d088705d68b55d060582ba63dedbe");
+    "13c0780d91c3cb0bac88ab51993dd50ab845792e2d44f1e00d5bb878037edea9");
 });
 
 function sourceFiles(dir: string): string[] {

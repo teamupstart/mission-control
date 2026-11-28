@@ -1,4 +1,5 @@
 import type { NamedAgentEnvironment } from "../../executables/named-variable.ts";
+import type { SdkLaunchOptions } from "../types.ts";
 import type { PiHostUI } from "./sdk-ui.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
 
@@ -168,6 +169,7 @@ export interface PiRuntimeOptions {
   signal?: AbortSignal;
   /** Refuse launch or replacement rather than drop tools required by a managed task. */
   readonly missionToolsRequired?: boolean;
+  readonly missionToolCaller?: SdkLaunchOptions["missionToolCaller"];
   /**
    * The operator's REPOSITORY STANDING INSTRUCTIONS, as Pi's own system-prompt append.
    *

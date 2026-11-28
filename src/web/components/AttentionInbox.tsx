@@ -1,4 +1,4 @@
-import { useContext, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
@@ -20,12 +20,19 @@ import { Tooltip } from "./Tooltip.tsx";
 import { AgentDot, EnsembleProgressDots } from "./session-bits.tsx";
 import { ReviewCard } from "./ReviewModal.tsx";
 import { requestComposerFocus } from "../lib/composer-focus.ts";
+import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
+import type { Session, ReviewItem } from "@shared/types.ts";
 import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 import { ReportCard } from "./ReportCard.tsx";
-import type { ReplyTarget, ReportItem } from "@shared/reports.ts";
+import { reportAuthorLabel, type ReplyTarget, type ReportItem } from "@shared/reports.ts";
 import type { ReportEntryControls, ReportPublishState } from "../lib/sessionReports.ts";
 import { SessionControlRequestCard } from "./SessionControlRequestCard.tsx";
+import { INBOX_SPLIT_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { activePaneDialog } from "@shared/session.ts";
+import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
+import { InboxSplitView } from "./InboxSplitView.tsx";
+import { inboxSplitEntries, initialSplitKey, type InboxSplitEntry } from "../lib/inbox-split.ts";
 import { StuckCard } from "./StuckCard.tsx";
 import {
   PausedResidentsContext,
@@ -137,6 +144,8 @@ export function AttentionInbox({
   onComplete,
   onReplyBox,
   pinned = null,
+  files,
+  onOpenPath,
 }: {
   fold: AttentionFold;
   /** Session whose first visible question should receive focus when the inbox opens. */
@@ -177,8 +186,17 @@ export function AttentionInbox({
   onReplyBox?: (sessionId: string, present: boolean) => void;
   /** The report a notification opened that no section lists, drawn above them; null for none. */
   pinned?: PinnedReport | null;
+  /**
+   * The session files store, for the checkout listing that decides which paths a question's
+   * text names - the same listing the per-session review modal reads, so a question links its
+   * files the same way whichever surface the operator answers it from.
+   */
+  files?: SessionFilesController;
+  /** Open one checkout file in the session's Files tab. The inbox closes first, like every deep link. */
+  onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
   const reportsOn = useFeatureFlag(INBOX_FLAG);
+  const splitOn = useFeatureFlag(INBOX_SPLIT_FLAG_ID);
   const [initialQuestionId] = useState(() => {
     if (!focusSessionId) return;
     for (const item of fold.items) {
@@ -231,6 +249,24 @@ export function AttentionInbox({
     : null;
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
+  // The path handler is built ONCE and reads the latest `onClose` and `onOpenPath` through refs.
+  // It reaches every question's `Markdown`, whose memo compares the link handler by identity,
+  // and App rebuilds both props on every render - a fresh wrapper here re-parsed every open
+  // question on every SSE frame, where the inbox used to pass no handler and never did.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const openPathRef = useRef(onOpenPath);
+  openPathRef.current = onOpenPath;
+  const pathsLinkable = Boolean(onOpenPath);
+  const openPathAndLeave = useMemo(
+    () => pathsLinkable
+      ? (sessionId: string, path: string) => {
+          closeRef.current();
+          openPathRef.current?.(sessionId, path);
+        }
+      : undefined,
+    [pathsLinkable],
+  );
   const leave = (go: () => void) => () => {
     onClose();
     go();
@@ -261,11 +297,77 @@ export function AttentionInbox({
   };
   let section: AttentionItem["kind"] | null = null;
 
+  // The report a notification opened, as its band draws it. The split pane draws the same card.
+  const pinnedCard = (report: ReportItem) => (
+    <ReportCard
+      report={report}
+      open={reports.openReportId === report.id}
+      target={reports.targetFor(report)}
+      onToggle={() => reports.onToggle(report)}
+      onMarkRead={() => markRead(report)}
+      onReply={(text) => reports.onReply(report, text)}
+      onFollowUp={(text) => reports.onFollowUp(report, text)}
+      muted={reports.mutedAuthors.has(report.author.key)}
+      onMute={() => mute(report)}
+      onOpenDocument={() => reports.onOpenDocument(report)}
+      onPublish={() => reports.onPublish(report)}
+      publishState={reports.publishStateFor(report)}
+      onOpenArchive={() => reports.onOpenArchive(report)}
+      error={readRefused.get(report.id) ?? null}
+    />
+  );
+  // One row's card and its refused dismissal: the stacked list draws it per row, and the split
+  // pane draws it for the selected entry, narrowed to its one question or report.
+  const itemNode = (item: AttentionItem, split = false) => (
+    <>
+      <InboxItem
+        item={item}
+        initialQuestionId={initialQuestionId}
+        questionTitleRef={questionTitle}
+        reports={reports}
+        onMarkRead={markRead}
+        onMute={mute}
+        readRefused={readRefused}
+        dismissButton={<DismissButton item={item} onDismiss={dismiss(item)} />}
+        onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
+        onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
+        onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
+        onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
+        onComplete={onComplete && ((sessionId) => leave(() => onComplete(sessionId))())}
+        onReplyBox={onReplyBox}
+        files={files}
+        onOpenPath={openPathAndLeave}
+        onDismiss={dismiss(item)}
+        onLeave={onClose}
+        split={split}
+      />
+      {saysNothingNew(item, refused.get(item.id)?.said) && (
+        <p className="inbox-line inbox-error" role="alert">
+          {refused.get(item.id)!.error}
+        </p>
+      )}
+    </>
+  );
+  const markAllButton = (
+    <InboxActionButton
+      action="mark-all-read"
+      name={SECTION_TITLES.agent_reports}
+      className="btn btn-ghost inbox-section-action"
+      tooltip={`Mark the ${listedReportIds.length} listed report${listedReportIds.length === 1 ? "" : "s"} read. A report that arrives after this click stays`}
+      onClick={markAllRead}
+    />
+  );
+  const emptyText = snoozed.length > 0
+    ? "Nothing needs an answer right now. Snoozed questions come back here on their own at the time you chose."
+    : "You are all clear. Agents' questions, ensemble decisions and stuck finalizations collect here as they arrive.";
+  const pinnedReport = reportsOn && pinned?.status === "ready" ? pinned.report : null;
+  const splitEntries = splitOn ? inboxSplitEntries(fold, snoozed, pinnedReport) : [];
+
   return (
     <Overlay
       id={OVERLAY_IDS.attention}
       onClose={onClose}
-      className="modal attention-inbox"
+      className={`modal attention-inbox${splitOn ? " is-split" : ""}`}
       // `Overlay` defaults `role` to undefined, and an `aria-label` on a role-less div is
       // dropped by most screen readers - so this modal announced itself as nothing at all,
       // alone among the overlays (every sibling passes this). It is also what lets a test
@@ -301,27 +403,50 @@ export function AttentionInbox({
           </button>
         </Tooltip>
       </header>
+      {splitOn ? (
+        <>
+        {/* A notification's report joins the list once it has loaded; until then, or when it could
+            not be loaded, this band says so in the stacked inbox's own words. */}
+        {reportsOn && pinned && pinned.status !== "ready" && (
+          <section className="modal-bleed inbox-split-notice" aria-label="Opened from a notification">
+            <span className="inbox-split-kind">Opened from a notification</span>
+            <p className={`inbox-line${pinned.status === "failed" ? " inbox-error" : " dim"}`} role={pinned.status === "failed" ? "alert" : undefined}>
+              {pinned.status === "failed" ? "This report could not be loaded." : "Loading the report..."}
+            </p>
+          </section>
+        )}
+        <InboxSplitView
+          entries={splitEntries}
+          initialKey={initialSplitKey(splitEntries, focusSessionId ?? null, reports.openReportId)}
+          openReportId={reports.openReportId}
+          onToggleReport={reports.onToggle}
+          renderEntry={(entry) => {
+            if (entry.type === "item") return itemNode(entry.item, true);
+            if (entry.type === "snoozed") return <SnoozedInboxRow review={entry.snoozed.review} session={entry.snoozed.session} />;
+            return (
+              <section className="inbox-entry inbox-pinned" aria-label="Opened from a notification">
+                {pinnedCard(entry.report)}
+              </section>
+            );
+          }}
+          renderSubject={(entry) => <SplitSubject entry={entry} />}
+          headingFor={splitHeading}
+          reportsHeadAction={
+            <>
+              {markAllButton}
+              {markAllRefusal && <p className="inbox-line inbox-error inbox-split-refusal" role="alert">{markAllRefusal}</p>}
+            </>
+          }
+          emptyText={emptyText}
+        />
+        </>
+      ) : (
       <div className="modal-body">
         {reportsOn && pinned && (
           <section className="inbox-entry inbox-pinned" aria-label="Opened from a notification">
             <h4 className="inbox-section">Opened from a notification</h4>
             {pinned.status === "ready" ? (
-              <ReportCard
-                report={pinned.report}
-                open={reports.openReportId === pinned.report.id}
-                target={reports.targetFor(pinned.report)}
-                onToggle={() => reports.onToggle(pinned.report)}
-                onMarkRead={() => markRead(pinned.report)}
-                onReply={(text) => reports.onReply(pinned.report, text)}
-                onFollowUp={(text) => reports.onFollowUp(pinned.report, text)}
-                muted={reports.mutedAuthors.has(pinned.report.author.key)}
-                onMute={() => mute(pinned.report)}
-                onOpenDocument={() => reports.onOpenDocument(pinned.report)}
-                onPublish={() => reports.onPublish(pinned.report)}
-                publishState={reports.publishStateFor(pinned.report)}
-                onOpenArchive={() => reports.onOpenArchive(pinned.report)}
-                error={readRefused.get(pinned.report.id) ?? null}
-              />
+              pinnedCard(pinned.report)
             ) : (
               <p className={`inbox-line${pinned.status === "failed" ? " inbox-error" : " dim"}`} role={pinned.status === "failed" ? "alert" : undefined}>
                 {pinned.status === "failed" ? "This report could not be loaded." : "Loading the report..."}
@@ -330,11 +455,7 @@ export function AttentionInbox({
           </section>
         )}
         {fold.items.length === 0 && (
-          <p className="inbox-empty">
-            {snoozed.length > 0
-              ? "Nothing needs an answer right now. Snoozed questions come back here on their own at the time you chose."
-              : "You are all clear. Agents' questions, ensemble decisions and stuck finalizations collect here as they arrive."}
-          </p>
+          <p className="inbox-empty">{emptyText}</p>
         )}
         {fold.items.map((item) => {
           const heading = item.kind === section ? null : SECTION_TITLES[item.kind];
@@ -345,40 +466,12 @@ export function AttentionInbox({
                 <>
                   <div className="inbox-section-head">
                     <h4 className="inbox-section">{heading}</h4>
-                    <InboxActionButton
-                      action="mark-all-read"
-                      name={heading}
-                      className="btn btn-ghost inbox-section-action"
-                      tooltip={`Mark the ${listedReportIds.length} listed report${listedReportIds.length === 1 ? "" : "s"} read. A report that arrives after this click stays`}
-                      onClick={markAllRead}
-                    />
+                    {markAllButton}
                   </div>
                   {markAllRefusal && <p className="inbox-line inbox-error" role="alert">{markAllRefusal}</p>}
                 </>
               ) : heading && <h4 className="inbox-section">{heading}</h4>}
-              <InboxItem
-                item={item}
-                initialQuestionId={initialQuestionId}
-                questionTitleRef={questionTitle}
-                reports={reports}
-                onMarkRead={markRead}
-                onMute={mute}
-                readRefused={readRefused}
-                dismissButton={<DismissButton item={item} onDismiss={dismiss(item)} />}
-                onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
-                onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
-                onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
-                onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
-                onComplete={onComplete && ((sessionId) => leave(() => onComplete(sessionId))())}
-                onReplyBox={onReplyBox}
-                onDismiss={dismiss(item)}
-                onLeave={onClose}
-              />
-              {saysNothingNew(item, refused.get(item.id)?.said) && (
-                <p className="inbox-line inbox-error" role="alert">
-                  {refused.get(item.id)!.error}
-                </p>
-              )}
+              {itemNode(item)}
             </div>
           );
         })}
@@ -391,7 +484,83 @@ export function AttentionInbox({
           </div>
         )}
       </div>
+      )}
     </Overlay>
+  );
+}
+
+function splitHeading(entry: InboxSplitEntry): string {
+  switch (entry.group) {
+    case "pinned":
+      return "Opened from a notification";
+    case "elsewhere":
+      return "Opens elsewhere";
+    case "snoozed":
+      return "Snoozed";
+    case "read":
+      return SECTION_TITLES.agent_reports;
+    case "answer":
+      return entry.type === "item" ? SECTION_TITLES[entry.item.kind] : "";
+  }
+}
+
+/** Who a split list row is about, by the same naming rule as the stacked row's header. */
+function SplitSubject({ entry }: { entry: InboxSplitEntry }): React.JSX.Element {
+  if (entry.type === "item") return <ItemSubject item={entry.item} />;
+  if (entry.type === "snoozed") return <span>{entry.snoozed.session.name || "(unnamed)"}</span>;
+  return <span>{reportAuthorLabel(entry.report.author)}</span>;
+}
+
+function ItemSubject({ item }: { item: AttentionItem }): React.JSX.Element {
+  return <AgentName view={useInboxSubject(item)} />;
+}
+
+/**
+ * One session's questions, drawn through the same `ReviewCard` the per-session modal draws and
+ * fed the same checkout listing, through the same hook. Without it a question opened from here
+ * printed its paths as plain text while the very same question, opened from the conversation's
+ * badge, linked them.
+ */
+function InboxReviewCards({
+  session,
+  reviews,
+  initialQuestionId,
+  questionTitleRef,
+  onOpenSession,
+  files,
+  onOpenPath,
+}: {
+  session: Session;
+  reviews: readonly ReviewItem[];
+  initialQuestionId?: string;
+  questionTitleRef: Ref<HTMLHeadingElement>;
+  onOpenSession: (sessionId: string) => void;
+  files?: SessionFilesController;
+  onOpenPath?: (sessionId: string, path: string) => void;
+}): React.JSX.Element {
+  const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
+  const sessionId = session.id;
+  // Stable while the handler and session are, for `Markdown`'s memo - see `openPathAndLeave`.
+  const openSessionFile = useCallback((path: string) => onOpenPath?.(sessionId, path), [onOpenPath, sessionId]);
+  const openPath = onOpenPath ? openSessionFile : undefined;
+  return (
+    <>
+      {reviews.map((review) => (
+        <ReviewCard
+          key={review.id}
+          review={review}
+          titleRef={review.id === initialQuestionId ? questionTitleRef : undefined}
+          session={session}
+          note={session.note}
+          onMovedToChat={(sessionId) => {
+            onOpenSession(sessionId);
+            requestComposerFocus(sessionId);
+          }}
+          checkoutPaths={checkoutPaths}
+          onOpenPath={openPath}
+        />
+      ))}
+    </>
   );
 }
 
@@ -495,7 +664,10 @@ function InboxItem({
   onComplete,
   onDismiss,
   onReplyBox,
+  files,
+  onOpenPath,
   onLeave,
+  split = false,
 }: {
   item: AttentionItem;
   initialQuestionId?: string;
@@ -514,8 +686,15 @@ function InboxItem({
   /** Dismiss this row, for a card that draws its own Dismiss from the action registry. */
   onDismiss: () => void;
   onReplyBox?: (sessionId: string, present: boolean) => void;
+  files?: SessionFilesController;
+  onOpenPath?: (sessionId: string, path: string) => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
+  /**
+   * Drawn in the split inbox's pane (`inbox-split`), where a parked menu is answered in place with
+   * the prompt the review modal draws, rather than pointing at the session card.
+   */
+  split?: boolean;
 }): React.JSX.Element {
   const subjectView = useInboxSubject(item);
   const subject = <AgentName view={subjectView} />;
@@ -587,7 +766,8 @@ function InboxItem({
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
             {subject}
-            <span className="dim"> · {item.reviews.length} pending</span>
+            {/* The split pane draws one question of the row, and its toolbar says which of how many. */}
+            {!split && <span className="dim"> · {item.reviews.length} pending</span>}
             {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session on the fleet">
@@ -597,22 +777,19 @@ function InboxItem({
             </Tooltip>
             {dismissButton}
           </div>
-          {item.reviews.map((review) => (
-            <ReviewCard
-              key={review.id}
-              review={review}
-              titleRef={review.id === initialQuestionId ? questionTitleRef : undefined}
-              session={item.session}
-              note={item.session.note}
-              onMovedToChat={(sessionId) => {
-                onOpenSession(sessionId);
-                requestComposerFocus(sessionId);
-              }}
-            />
-          ))}
+          <InboxReviewCards
+            session={item.session}
+            reviews={item.reviews}
+            initialQuestionId={initialQuestionId}
+            questionTitleRef={questionTitleRef}
+            onOpenSession={onOpenSession}
+            files={files}
+            onOpenPath={onOpenPath}
+          />
         </section>
       );
-    case "session_dialog":
+    case "session_dialog": {
+      const dialog = split ? activePaneDialog(item.session) : null;
       return (
         <section className="inbox-item inbox-dialog">
           <div className="inbox-head">
@@ -627,15 +804,20 @@ function InboxItem({
             </Tooltip>
             {dismissButton}
           </div>
-          <p className="inbox-line">
-            {item.prompt ? `Parked on: ${item.prompt}` : "Parked on a menu in its terminal."}
-            {/* The agent's own text ends without punctuation, so the aside used to butt
-                straight onto it ("...use Bash Answered on the session card"). The app's
-                separator rather than a full stop, because the clause is a different voice. */}
-            <span className="dim"> · Answered on the session card, not here.</span>
-          </p>
+          {dialog ? (
+            <PaneDialogPrompt sessionId={item.session.id} dialog={dialog} note={item.session.note} />
+          ) : (
+            <p className="inbox-line">
+              {item.prompt ? `Parked on: ${item.prompt}` : "Parked on a menu in its terminal."}
+              {/* The agent's own text ends without punctuation, so the aside used to butt
+                  straight onto it ("...use Bash Answered on the session card"). The app's
+                  separator rather than a full stop, because the clause is a different voice. */}
+              <span className="dim"> · Answered on the session card, not here.</span>
+            </p>
+          )}
         </section>
       );
+    }
     case "pipeline_halt":
       return (
         <section className="inbox-item inbox-halt">

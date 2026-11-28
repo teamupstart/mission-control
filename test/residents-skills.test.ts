@@ -1,12 +1,13 @@
 import { after, beforeEach, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import fs, { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import os, { homedir, tmpdir } from "node:os";
+import fs, { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os, { homedir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "resident-skills-test-"));
+const root = tempDir("resident-skills-test-");
 process.env.MISSION_HOME = join(root, "state");
 after(() => rmSync(root, { recursive: true, force: true }));
 const { defaultSkillSources, parseResidentSkill, scanSkillSources, saveResidentSkillSources, residentSkillIndex, rescanResidentSkillIndex, validateSkillDirectories } = await import("../src/server/residents/skill-index.ts");

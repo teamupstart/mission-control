@@ -1,5 +1,5 @@
 import { workflowGraphFingerprint } from "./workflows/graph-fingerprint.ts";
-import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
+import { RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
 import type { SdkUsage, TranscriptBoundary, TranscriptSession } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
@@ -337,9 +337,14 @@ let db: DatabaseSync | undefined;
 // 60: durable receipt replay for a blocking question filed by voice.
 // 61: remember accepted spoken outbox IDs after retirement.
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
-// 63: missing variable names for one terminal launch, bound to its discovered process.
-// 64: pin a terminal dispatch's recovery receipt on its task before backend submission.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 64;
+// 63: replace the previously materialized Voice mute shortcut default once.
+// 64: retain handoff release, accepted Goal instruction and initial queue delivery times.
+// 65: preserve resident reference-name provenance in reports and mutes.
+// 66: remember verified departure for task worktree retention.
+// 67: preserve additional SDK checkout grants across driver and daemon lifetimes.
+// 68: missing variable names for one terminal launch, bound to its discovered process.
+// 69: pin a terminal dispatch's recovery receipt on its task before backend submission.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 69;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -515,6 +520,14 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   migrate(d);
   migrateMockupsSkill(d);
   migrateCodeRabbitFollowUp(d);
+  if (databaseSchemaVersion(d) < 63) {
+    const key = APP_CONFIG_ENTRIES.voice.key;
+    const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string } | undefined;
+    // Old saves materialized defaults without recording which fields the operator chose.
+    // Change only that exact legacy value. Future explicit selections survive every reopen.
+    const next = row && withTopLevelLiteral(row.value, "hotkey", '"ctrl+alt+m"', '"cmd+ctrl+alt+v"');
+    if (next) d.prepare("UPDATE app_config SET value = ? WHERE key = ?").run(next, key);
+  }
   markDatabaseSchemaCurrent(d);
 }
 
@@ -925,8 +938,11 @@ function createSchemaObjects(d: DatabaseSync): void {
       text                    TEXT,              -- compact durable objective for the card
       source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
       opening_prompt          TEXT,              -- first accepted human instruction, write-once
+      handoff_released_at     INTEGER,
+      deliverable_updated_at  INTEGER,
       objective               TEXT,              -- durable completion contract
       prompt                  TEXT,              -- latest filtered human instruction
+      latest_prompt_accepted_at INTEGER,
       focus                   TEXT,              -- compact latest instruction
       relationship            TEXT,              -- initial | steer | amend | replace | unclear
       rationale               TEXT,              -- why the latest relationship was chosen
@@ -1480,6 +1496,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
       publication_handoff_generation INTEGER,
+      publication_ci_generation INTEGER,
       disabled_nodes_json   TEXT,
       persona_directives_json TEXT,
       check_budget_epoch_round INTEGER,
@@ -2349,7 +2366,8 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- restart revert every card to its pre-refinement guess. A rename outranks both.
       display_name      TEXT,
       created_at        INTEGER NOT NULL,
-      updated_at        INTEGER NOT NULL
+      updated_at        INTEGER NOT NULL,
+      extra_dirs_json   TEXT
     );
 
     -- Human turns the daemon still owns. Unlike a harness's internal queue, rows here have
@@ -2435,6 +2453,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL,
       sent_at           INTEGER,
+      first_delivered_at INTEGER,
       delivery_runtime  TEXT,              -- runtime that accepted this delivery attempt
       completed_at      INTEGER
     );
@@ -2503,6 +2522,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       stack_note         TEXT,
       stack_state        TEXT,           -- JSON StackObservation: the last lifecycle observation
       stack_await_replacement_at INTEGER, -- the operator chose Wait for a replacement
+      local_review_head_sha TEXT,        -- head matched to a passed Local Inspector review
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -2616,7 +2636,7 @@ function createSchemaObjects(d: DatabaseSync): void {
     -- Custom server DEFINITIONS live in app_config (residents.mcpServers) and travel with
     -- settings snapshots. Their SECRET VALUES live only here: written by a save, read only by
     -- a launch's snapshot, never returned by a route, published, logged or captured by a
-    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/service.ts). Keyed by the
+    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/publication.ts). Keyed by the
     -- server's id and the field ("env:NAME", "header:Name", "query:name").
     CREATE TABLE IF NOT EXISTS resident_mcp_secrets (
       server_id   TEXT NOT NULL,
@@ -3540,11 +3560,8 @@ function createSchemaObjects(d: DatabaseSync): void {
     -- file in a worktree moves nothing on the row at all. So the clock is kept where it can be
     -- derived from the checkouts themselves, and re-derived after a restart.
     --
-    -- The row is not created when the task ends. It is created at the FIRST SUCCESSFUL
-    -- OBSERVATION of a set of resources, and that is the rollout safety mechanism rather than
-    -- laziness: no timestamp this database already holds can prove when a pre-existing tree
-    -- was last touched, so every tree that existed before this shipped is seeded at the moment
-    -- it is first read and gets one full, final grace period from there.
+    -- A row can report a blocker before the clock starts. Only a verified owner-free
+    -- observation grants a deadline. Older rows have no verified departure.
     CREATE TABLE IF NOT EXISTS task_worktree_retention (
       task_id         TEXT PRIMARY KEY,
       -- The RESOURCE GENERATION this observation was taken against - taskResourceGeneration's
@@ -3560,7 +3577,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- content, no Git output. Comparing it with the next observation's is the whole of "did
       -- anything change".
       fingerprint     TEXT NOT NULL,
-      -- When the fingerprint last CHANGED - the activity boundary the 30-day rule counts from.
+      -- When the fingerprint last changed, or when a new clock was first seeded.
       -- Seeded at first observation (see above) and reset by any changed fingerprint. An
       -- unknown read never moves it, because "we could not look" is not evidence of quiet.
       last_changed_at INTEGER NOT NULL,
@@ -3568,11 +3585,10 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- read, which is the difference between a tree that is genuinely quiet and one nothing
       -- has managed to probe for a week.
       observed_at     INTEGER NOT NULL,
-      -- last_changed_at plus the retention window. Stored rather than computed on read so the
-      -- boundary a restart resumes from is the one that was actually granted, even if the
-      -- window's value ever changes.
+      -- The later of departure and Git activity, plus the applied window. Zero while held.
       cleanup_due_at  INTEGER NOT NULL,
       retention_ms    INTEGER NOT NULL DEFAULT 2592000000,
+      unowned_since   INTEGER,
       -- Everything from here down is Phase 2's claim/retry state, declared now so activating
       -- automatic reclamation needs no second migration. Phase 1 writes 'observing' and NULL
       -- to all of it and never transitions a claim; task-worktree-retention.ts has no
@@ -3942,6 +3958,7 @@ function migrate(d: DatabaseSync): void {
   // Added within version 41, before it shipped: a database this branch already opened lacks it.
   addColumn(d, "session_review_deliveries", "handed_at", "INTEGER");
   addColumn(d, "task_worktree_retention", "retention_ms", "INTEGER NOT NULL DEFAULT 2592000000");
+  addColumn(d, "task_worktree_retention", "unowned_since", "INTEGER");
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "tasks", "hibernation", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
@@ -4110,6 +4127,7 @@ function migrate(d: DatabaseSync): void {
   // builds turns into a visible refusal instead of a silent retry on every restart. 0 on
   // every older row, which is what they all were.
   addColumn(d, "sdk_sessions", "resume_deferrals", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "sdk_sessions", "extra_dirs_json", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -4157,6 +4175,7 @@ function migrate(d: DatabaseSync): void {
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
   addColumn(d, "workflow_runs", "publication_handoff_generation", "INTEGER");
+  addColumn(d, "workflow_runs", "publication_ci_generation", "INTEGER");
   addColumn(d, "workflow_delivery_turns", "discarded_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_discarded_turns ON workflow_delivery_turns(discarded_at) WHERE discarded_at IS NOT NULL");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
@@ -4212,6 +4231,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_commands", "timeout_ms", "INTEGER");
   addColumn(d, "workflow_commands", "on_unavailable", "TEXT NOT NULL DEFAULT 'skip'");
   addColumn(d, "workflow_commands", "on_budget_exhausted", "TEXT NOT NULL DEFAULT 'skip'");
+  addColumn(d, "workflow_commands", "inspector_severity", "TEXT");
   // One attempt's claim on a Command's per-run execution budget. Nullable with no default and
   // no backfill: an attempt written before this column existed reserved nothing, and inventing
   // a reservation for it would spend a budget against work whose cost is already paid.
@@ -4272,6 +4292,8 @@ function migrate(d: DatabaseSync): void {
   // guard falls back to the full fingerprint for those rows, which is exactly what it did
   // before, so an upgraded database keeps its historical behaviour on historical rows.
   addColumn(d, "workflow_submissions", "repository_fingerprint", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_packet", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_checkout", "TEXT");
   addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
   // Existing staged rows are images. The append-only kind lets text/log evidence share the
   // reservation and generation lifecycle without changing any historical row's meaning.
@@ -4390,6 +4412,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "check_evidence_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_input_json", "TEXT");
+  addColumn(d, "workflow_submissions", "local_inspector_comparison_json", "TEXT");
   addColumn(d, "workflow_submissions", "coderabbit_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_rejections_json", "TEXT");
 
@@ -4732,6 +4755,11 @@ function migrate(d: DatabaseSync): void {
   // Capture the attempt's runtime before delivery. Legacy rows have no acknowledgement
   // evidence and retain the conservative pickup-verification path.
   addColumn(d, "foreman_queue_items", "delivery_runtime", "TEXT");
+  addColumn(d, "foreman_queue_items", "first_delivered_at", "INTEGER");
+  if (databaseSchemaVersion(d) < 64) {
+    // Older queues only retain the latest known send. Keep that stamp across future retries.
+    d.exec("UPDATE foreman_queue_items SET first_delivered_at = sent_at WHERE first_delivered_at IS NULL AND sent_at IS NOT NULL");
+  }
 
   // `prompted_goal`: the historical resolved-intent guard used before prompted
   // completion consumed work-cycle generations. It remains readable for one-time
@@ -5166,6 +5194,10 @@ function migrate(d: DatabaseSync): void {
   // operator has chosen to wait for a replacement parent.
   addColumn(d, "inspector_prs", "stack_state", "TEXT");
   addColumn(d, "inspector_prs", "stack_await_replacement_at", "INTEGER");
+  // The head the worker matched to a passed Local Inspector review, in any posture. Nullable
+  // with no default: a row written before it was never matched, so it reads as reviewed (or
+  // not) on GitHub exactly as before.
+  addColumn(d, "inspector_prs", "local_review_head_sha", "TEXT");
   // One row per (pull request, prompt kind, condition tip): the claim taken BEFORE a catch-up
   // or restack prompt is typed, exactly as CodeRabbit's receipts are. `outcome` is
   // `uncertain` from the claim until delivery is confirmed (`delivered`); a confirmed
@@ -5284,6 +5316,9 @@ function migrate(d: DatabaseSync): void {
   // legacy rows explicitly pre-versioned rather than inventing a prompt history they never had.
   addColumn(d, "session_goals", "objective", "TEXT");
   addColumn(d, "session_goals", "opening_prompt", "TEXT");
+  addColumn(d, "session_goals", "handoff_released_at", "INTEGER");
+  addColumn(d, "session_goals", "deliverable_updated_at", "INTEGER");
+  addColumn(d, "session_goals", "latest_prompt_accepted_at", "INTEGER");
   addColumn(d, "session_goals", "focus", "TEXT");
   addColumn(d, "session_goals", "relationship", "TEXT");
   addColumn(d, "session_goals", "rationale", "TEXT");
@@ -5439,6 +5474,31 @@ function migrate(d: DatabaseSync): void {
 
   addColumn(d, "reports", "author_spoken_name", "TEXT");
   addColumn(d, "report_mutes", "author_spoken_name", "TEXT");
+
+  addColumn(d, "reports", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "report_mutes", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  // Recover the source using the profile revision at post time. A profile rename alone
+  // can also make the stored spoken and pinned fallback names differ.
+  if (databaseSchemaVersion(d) < 65) {
+    d.function("normalized_spoken_name", { deterministic: true }, value => {
+      const parsed = SpokenNameSchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    });
+    d.exec(`
+      UPDATE reports SET author_is_reference_name = 1,
+        author_spoken_name = COALESCE(author_spoken_name, author_name)
+      WHERE author_resident_profile_id IS NOT NULL AND COALESCE(author_spoken_name, author_name) = (
+        SELECT CASE WHEN json_valid(settings_json) THEN normalized_spoken_name(json_extract(settings_json, '$.identity.referenceName')) END
+        FROM resident_profile_revisions WHERE profile_id = reports.author_resident_profile_id
+          AND created_at <= reports.created_at ORDER BY revision DESC LIMIT 1
+      );
+      UPDATE report_mutes SET author_is_reference_name = 1
+      WHERE (SELECT author_is_reference_name FROM reports WHERE reports.author_key = report_mutes.author_key
+        AND reports.author_name = report_mutes.author_name
+        AND COALESCE(reports.author_spoken_name, reports.author_name) = COALESCE(report_mutes.author_spoken_name, report_mutes.author_name)
+        AND created_at <= report_mutes.muted_at ORDER BY seq DESC LIMIT 1) = 1;
+    `);
+  }
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
@@ -9775,6 +9835,7 @@ export interface TaskWorktreeRetentionRow {
   generation: string;
   fingerprint: string;
   lastChangedAt: number;
+  unownedSince: number | null;
   observedAt: number;
   cleanupDueAt: number;
   cleanupState: string;
@@ -9794,6 +9855,7 @@ interface TaskWorktreeRetentionDbRow {
   observed_at: number;
   cleanup_due_at: number;
   retention_ms: number;
+  unowned_since: number | null;
   cleanup_state: string;
   claim_token: string | null;
   claimed_at: number | null;
@@ -9809,6 +9871,7 @@ function toRetentionRow(row: TaskWorktreeRetentionDbRow): TaskWorktreeRetentionR
     generation: row.generation,
     fingerprint: row.fingerprint,
     lastChangedAt: row.last_changed_at,
+    unownedSince: row.unowned_since,
     observedAt: row.observed_at,
     cleanupDueAt: row.cleanup_due_at,
     cleanupState: row.cleanup_state,
@@ -9847,7 +9910,7 @@ export function listDueTaskWorktreeRetention(now: number): TaskWorktreeRetention
   const rows = openDb()
     .prepare(
       `SELECT * FROM task_worktree_retention
-       WHERE cleanup_due_at <= ? AND (retry_at IS NULL OR retry_at <= ?)
+       WHERE cleanup_due_at > 0 AND cleanup_due_at <= ? AND (retry_at IS NULL OR retry_at <= ?)
        ORDER BY cleanup_due_at ASC`,
     )
     .all(now, now) as unknown as TaskWorktreeRetentionDbRow[];
@@ -9894,6 +9957,27 @@ export function deleteTaskWorktreeRetention(taskId: string): void {
   openDb().prepare(`DELETE FROM task_worktree_retention WHERE task_id = ?`).run(taskId);
 }
 
+/** A tracked user or an unverified first observation invalidates the clock and any claim. */
+export function holdTaskWorktreeRetention(taskId: string, reason: string, now: number, expectedGeneration?: string): void {
+  const task = getTask(taskId);
+  if (!task || !isRetentionRetryable(task)) return;
+  const generation = taskResourceGeneration(task);
+  if (expectedGeneration && generation !== expectedGeneration) return;
+  const error = reason.slice(0, RETENTION_ERROR_LIMIT);
+  openDb().prepare(`
+    INSERT INTO task_worktree_retention
+      (task_id, generation, fingerprint, last_changed_at, observed_at, cleanup_due_at,
+       cleanup_state, last_error, updated_at)
+    VALUES (?, ?, '', ?, 0, 0, 'observing', ?, ?)
+    ON CONFLICT(task_id) DO UPDATE SET
+      generation = excluded.generation, unowned_since = NULL, cleanup_due_at = 0, cleanup_state = 'observing',
+      claim_token = NULL, claimed_at = NULL, retry_at = NULL, last_attempt_at = NULL,
+      last_error = excluded.last_error, updated_at = excluded.updated_at
+    WHERE generation <> excluded.generation OR unowned_since IS NOT NULL OR cleanup_due_at <> 0
+       OR last_error IS NOT excluded.last_error
+  `).run(taskId, generation, now, error, now);
+}
+
 /** What one observation did to the ledger. Returned so a caller can log or assert it. */
 export type RetentionObservationOutcome =
   /** No row existed for this generation: the conservative full window starts NOW. */
@@ -9931,6 +10015,8 @@ export interface RetentionObservationInput {
   now: number;
   /** How long a quiet tree is kept. Passed in so policy lives with the observer, not here. */
   retentionMs: number;
+  /** This observation followed a verified absence of checkout users. */
+  verifyDeparture?: boolean;
 }
 
 /**
@@ -10002,6 +10088,7 @@ export function recordTaskWorktreeObservation(
 
     let outcome: RetentionObservationOutcome;
     if (!existing) outcome = "seeded";
+    else if (input.verifyDeparture && existing.unowned_since === null) outcome = "replaced";
     else if (existing.generation !== generation) {
       // A generation change on a row that is already in RETRY is not an external replacement,
       // and treating it as one is the bug this branch exists to prevent. A row only reaches
@@ -10012,7 +10099,7 @@ export function recordTaskWorktreeObservation(
       // non-terminal task's row is pruned before any of this. So the survivor ADOPTS: new
       // generation, new fingerprint, same activity boundary, same deadline. It was 30 days
       // quiet before the failed attempt and it does not earn another month by surviving one.
-      outcome = existing.cleanup_state === "retry" ? "retry-adopted" : "replaced";
+      outcome = !input.verifyDeparture && existing.cleanup_state === "retry" ? "retry-adopted" : "replaced";
     } else if (existing.fingerprint !== fingerprint) outcome = "changed";
     else outcome = "unchanged";
 
@@ -10024,7 +10111,9 @@ export function recordTaskWorktreeObservation(
       ).run(generation, fingerprint, now, now, taskId);
     } else if (outcome === "unchanged") {
       d.prepare(
-        `UPDATE task_worktree_retention SET observed_at = ?, last_error = NULL, updated_at = ?
+        `UPDATE task_worktree_retention
+         SET observed_at = ?, last_error = CASE WHEN cleanup_state = 'retry' THEN last_error END,
+             updated_at = ?
          WHERE task_id = ?`,
       ).run(now, now, taskId);
     } else if (outcome === "changed") {
@@ -10051,9 +10140,9 @@ export function recordTaskWorktreeObservation(
         `INSERT OR REPLACE INTO task_worktree_retention
            (task_id, generation, fingerprint, last_changed_at, observed_at, cleanup_due_at,
             cleanup_state, claim_token, claimed_at, last_attempt_at, retry_at, last_error,
-            updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'observing', NULL, NULL, NULL, NULL, NULL, ?)`,
-      ).run(taskId, generation, fingerprint, now, now, now + retentionMs, now);
+            updated_at, unowned_since)
+         VALUES (?, ?, ?, ?, ?, ?, 'observing', NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      ).run(taskId, generation, fingerprint, now, now, now + retentionMs, now, input.verifyDeparture ? now : null);
     }
     // Rebase only after a successful probe, and never change a claimed deadline. Store the
     // applied window separately: a grace-clamped deadline cannot tell us which policy made it.
@@ -10063,14 +10152,18 @@ export function recordTaskWorktreeObservation(
       const fresh = outcome === "seeded" || outcome === "changed" || outcome === "replaced";
       const windowChanged = existing && existing.retention_ms !== retentionMs;
       if (fresh || windowChanged) {
-        const lastChanged = fresh ? now : existing!.last_changed_at;
-        const due = fresh ? lastChanged + retentionMs
+        const cutoff = fresh ? worktreeRetentionCutoff(now, null, retentionMs)
+          : worktreeRetentionCutoff(existing!.last_changed_at, existing!.unowned_since, retentionMs);
+        const due = fresh ? cutoff
           : retentionMs < existing!.retention_ms
-            ? Math.max(lastChanged + retentionMs, now + RETENTION_OBSERVE_INTERVAL_MS)
-            : Math.max(lastChanged + retentionMs, existing!.cleanup_due_at);
+            ? Math.max(cutoff, now + RETENTION_OBSERVE_INTERVAL_MS)
+            : Math.max(cutoff, existing!.cleanup_due_at);
         d.prepare(`UPDATE task_worktree_retention SET cleanup_due_at = ?, retention_ms = ? WHERE task_id = ?`)
           .run(due, retentionMs, taskId);
       }
+    }
+    if (input.verifyDeparture) {
+      d.prepare(`DELETE FROM task_worktree_returns WHERE task_id = ?`).run(taskId);
     }
     const row = d
       .prepare(`SELECT * FROM task_worktree_retention WHERE task_id = ?`)
@@ -10136,6 +10229,7 @@ export interface RetentionClaimInput {
   /** A value only this attempt holds. Every later transition must present it. */
   token: string;
   now: number;
+  requireDeparture?: boolean;
 }
 
 /**
@@ -10178,7 +10272,9 @@ export function claimTaskWorktreeCleanup(
     if (taskResourceGeneration(current) !== generation) return refuse("generation-moved");
     if (existing.generation !== generation) return refuse("generation-moved");
     if (existing.fingerprint !== fingerprint) return refuse("activity-changed");
-    if (existing.cleanup_due_at > now) return refuse("not-due");
+    if (existing.cleanup_due_at === 0 || existing.cleanup_due_at > now || (input.requireDeparture && existing.unowned_since === null)) {
+      return refuse("not-due");
+    }
     if (existing.retry_at !== null && existing.retry_at > now) return refuse("not-due");
     if (existing.cleanup_state === "claimed") return refuse("already-claimed");
     d.prepare(
@@ -10565,7 +10661,7 @@ export function completeTaskWithSessionClosure(
   }
 }
 
-/** Only completions made under the automatic-return policy may resume destructive return. */
+/** Whether this completion is still owed a handoff to the retention ledger. */
 export function taskOwesWorktreeReturn(task: Task): boolean {
   if (task.status !== "done" || !taskHasWorktrees(task) || task.completedAt === null) return false;
   return Boolean(openDb().prepare(`SELECT 1 FROM task_worktree_returns
@@ -13046,6 +13142,9 @@ export function loadSessionNotes(): SessionNote[] {
 // ---- session goals ----
 
 interface SessionGoalRow {
+  handoff_released_at: number | null;
+  deliverable_updated_at: number | null;
+  latest_prompt_accepted_at: number | null;
   opening_prompt: string | null;
   note_key: string;
   text: string | null;
@@ -13071,11 +13170,12 @@ function pendingGoalPrompts(r: SessionGoalRow): SessionGoal["pendingPrompts"] {
     if (Array.isArray(parsed)) {
       const valid = parsed.flatMap((entry) => {
         if (!entry || typeof entry !== "object") return [];
-        const revision = (entry as { revision?: unknown }).revision;
-        const prompt = (entry as { prompt?: unknown }).prompt;
+        const { revision, prompt, acceptedAt } = entry as { revision?: unknown; prompt?: unknown; acceptedAt?: unknown };
         return Number.isInteger(revision) && Number(revision) > 0 &&
           (typeof prompt === "string" || prompt === null)
-          ? [{ revision: Number(revision), prompt }]
+          ? [{ revision: Number(revision), prompt,
+            ...(typeof acceptedAt === "number" && Number.isSafeInteger(acceptedAt) ? { acceptedAt } : {}),
+          }]
           : [];
       });
       const unresolved = valid
@@ -13125,6 +13225,9 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     resolvedPromptRevision:
       r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0),
     pendingPrompts: pendingGoalPrompts(r),
+    ...(r.latest_prompt_accepted_at === null ? {} : { latestPromptAcceptedAt: r.latest_prompt_accepted_at }),
+    ...(r.handoff_released_at === null ? {} : { handoffReleasedAt: r.handoff_released_at }),
+    ...(r.deliverable_updated_at === null ? {} : { deliverableUpdatedAt: r.deliverable_updated_at }),
     updatedAt: r.updated_at,
   };
 }
@@ -13134,8 +13237,9 @@ export function upsertSessionGoal(g: SessionGoal): void {
     .prepare(
       `INSERT INTO session_goals
          (note_key, text, source, objective, opening_prompt, prompt, focus, relationship, rationale,
-          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at,
+          handoff_released_at, deliverable_updated_at, latest_prompt_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text, source=excluded.source, objective=excluded.objective,
          opening_prompt=COALESCE(session_goals.opening_prompt, excluded.opening_prompt),
@@ -13144,12 +13248,15 @@ export function upsertSessionGoal(g: SessionGoal): void {
          prompt_revision=excluded.prompt_revision,
          resolved_prompt_revision=excluded.resolved_prompt_revision,
          pending_prompts=excluded.pending_prompts,
-         updated_at=excluded.updated_at`,
+         handoff_released_at=excluded.handoff_released_at,
+         deliverable_updated_at=excluded.deliverable_updated_at,
+         latest_prompt_accepted_at=excluded.latest_prompt_accepted_at, updated_at=excluded.updated_at`,
     )
     .run(
       g.noteKey, g.text, g.source, g.objective, g.openingPrompt, g.prompt, g.focus, g.relationship,
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
-      JSON.stringify(g.pendingPrompts), g.updatedAt,
+      JSON.stringify(g.pendingPrompts), g.updatedAt, g.handoffReleasedAt ?? null,
+      g.deliverableUpdatedAt ?? null, g.latestPromptAcceptedAt ?? null,
     );
 }
 
@@ -15769,6 +15876,13 @@ export function claimNextPendingTurn(
       if (!composeSpoken) throw new Error("Missing spoken delivery composer");
       row.text = composeSpoken(row.spoken_words);
       row.composed_at = now;
+    } else if (row.spoken_words !== null) {
+      // A pre-upgrade claim froze this suffix after the words and routing notes.
+      // Change only the next send, leaving any earlier delivery receipt intact.
+      const legacySuffix = "\n\nWhen you have finished this, post a report.";
+      if (row.text.slice(row.spoken_words.length).endsWith(legacySuffix)) {
+        row.text = row.text.slice(0, -legacySuffix.length);
+      }
     }
     const spokenClaimId = row.spoken_words === null ? null : randomUUID();
     const changed = d
@@ -15822,40 +15936,20 @@ export function recordPendingTurnInterrupt(id: string, revision: number, now: nu
     .run(now, id, revision).changes === 1;
 }
 
-/** Move the newest still-editable row back to the composer. */
+/** Recall the newest editable row, or the exact spoken turn named by a held voice card. */
 export function recallPendingTurn(
   noteKey: string,
   id: string,
   revision: number,
+  heldVoiceTurn = false,
 ): PendingTurn | null {
-  const d = openDb();
-  d.exec("BEGIN IMMEDIATE");
-  try {
-    const newest = d
-      .prepare(
-        `SELECT * FROM pending_turns
-          WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1`,
-      )
-      .get(noteKey) as unknown as PendingTurnRow | undefined;
-    if (!newest || newest.id !== id || newest.revision !== revision) {
-      d.exec("COMMIT");
-      return null;
-    }
-    const changed = d
-      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND revision = ?`)
-      .run(id, revision).changes;
-    if (changed !== 1) {
-      d.exec("ROLLBACK");
-      return null;
-    }
-    d.exec("COMMIT");
-    return rowToPendingTurn(newest);
-  } catch (err) {
-    try {
-      d.exec("ROLLBACK");
-    } catch {}
-    throw err;
-  }
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE note_key = ? AND id = ? AND state = 'queued' AND revision = ?
+      AND ((? = 1 AND spoken_words IS NOT NULL) OR id = (
+        SELECT id FROM pending_turns WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1
+      ))
+    RETURNING *`).get(noteKey, id, revision, Number(heldVoiceTurn), noteKey) as PendingTurnRow | undefined;
+  return row ? rowToPendingTurn(row) : null;
 }
 
 function transitionPendingTurn(
@@ -16440,6 +16534,7 @@ interface QueueItemRow {
   created_at: number;
   updated_at: number;
   sent_at: number | null;
+  first_delivered_at: number | null;
   delivery_runtime: "terminal" | "sdk" | null;
   completed_at: number | null;
 }
@@ -16466,6 +16561,7 @@ function rowToItem(r: QueueItemRow): WorkItem {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     sentAt: r.sent_at,
+    ...(r.first_delivered_at === null ? {} : { firstDeliveredAt: r.first_delivered_at }),
     ...(r.delivery_runtime ? { deliveryRuntime: r.delivery_runtime } : {}),
     completedAt: r.completed_at,
   };
@@ -17161,8 +17257,8 @@ export function upsertQueueItem(i: WorkItem): void {
          id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
          send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
          proposed_payload, recovered_at, revision, created_at, updated_at, sent_at,
-         completed_at, delivery_runtime
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         completed_at, delivery_runtime, first_delivered_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
          state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
@@ -17172,13 +17268,17 @@ export function upsertQueueItem(i: WorkItem): void {
          approved_at=excluded.approved_at, proposed_payload=excluded.proposed_payload,
          recovered_at=excluded.recovered_at, revision=excluded.revision,
          updated_at=excluded.updated_at, sent_at=excluded.sent_at,
-         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime`,
+         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime,
+         first_delivered_at=CASE WHEN foreman_queue_items.intent = excluded.intent
+           THEN COALESCE(foreman_queue_items.first_delivered_at, excluded.first_delivered_at)
+           ELSE excluded.first_delivered_at END`,
     )
     .run(
       i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
       JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
       i.lastVerdict, i.approvedAt, i.proposedPayload, i.recoveredAt, i.revision,
       i.createdAt, i.updatedAt, i.sentAt, i.completedAt, i.deliveryRuntime ?? null,
+      i.firstDeliveredAt ?? null,
     );
 }
 
@@ -17341,6 +17441,11 @@ export function reorderQueueItems(noteKey: string, ids: string[], now: number): 
 
 // ---- generic app config (Foreman config, future singletons) ----
 
+/** Whether a value is stored for this entry, readable or not. */
+export function hasAppConfig(entry: AppConfigEntry): boolean {
+  return openDb().prepare(`SELECT 1 FROM app_config WHERE key = ?`).get(entry.key) !== undefined;
+}
+
 /** Read a registered JSON-encoded config blob, or undefined when unset/corrupt JSON. */
 export function getAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
@@ -17389,16 +17494,30 @@ export function setSkillsAck(noteKey: string, generation: number, now = Date.now
     .run(noteKey, generation, now);
 }
 
+const appConfigRevisions = new Map<string, number>();
+const appConfigRevisionSource = randomUUID();
+
+/** A daemon-local generation for conditional setting replacement. */
+export function appConfigRevision(entry: AppConfigEntry): string {
+  return `${appConfigRevisionSource}:${appConfigRevisions.get(entry.key) ?? 0}`;
+}
+
+function bumpAppConfigRevision(entry: AppConfigEntry): void {
+  appConfigRevisions.set(entry.key, (appConfigRevisions.get(entry.key) ?? 0) + 1);
+}
+
 export function setAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
   value: AppConfigInput<Entry>,
+  db = openDb(),
 ): void {
-  openDb()
+  db
     .prepare(
       `INSERT INTO app_config (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
     .run(entry.key, JSON.stringify(value));
+  bumpAppConfigRevision(entry);
 }
 
 /**
@@ -17412,6 +17531,7 @@ export function hasAppConfigRow(entry: AppConfigEntry): boolean {
 /** Remove a registered config blob, so a later read answers undefined as if never set. */
 export function deleteAppConfig(entry: AppConfigEntry): void {
   openDb().prepare(`DELETE FROM app_config WHERE key = ?`).run(entry.key);
+  bumpAppConfigRevision(entry);
 }
 
 // ---- Inspector: the adoption + provenance ledgers ----
@@ -17465,6 +17585,7 @@ interface InspectorPrRow {
   stack_note?: string | null;
   stack_state?: string | null;
   stack_await_replacement_at?: number | null;
+  local_review_head_sha?: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -17538,6 +17659,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     reviewedBaseRef: r.reviewed_base_ref ?? null,
     reviewedBaseSha: r.reviewed_base_sha ?? null,
     mergeCommitSha: r.merge_commit_sha ?? null,
+    localReviewHeadSha: r.local_review_head_sha ?? null,
     stack: rowToStackLineage(r),
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
@@ -17640,6 +17762,8 @@ export function updateInspectorPr(
     /** Written beside `reviewedBaseRef`; advanced when GitHub confirms the same merge base. */
     reviewedBaseSha?: string | null;
     mergeCommitSha?: string | null;
+    /** The head matched to a passed Local Inspector review, or null once a head is not. */
+    localReviewHeadSha?: string | null;
   },
   now: number,
 ): void {
@@ -17656,7 +17780,7 @@ export function updateInspectorPr(
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
               title = ?, base_ref_name = ?, reviewed_base_ref = ?, reviewed_base_sha = ?, merge_commit_sha = ?,
-              updated_at = ?
+              local_review_head_sha = ?, updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -17683,6 +17807,7 @@ export function updateInspectorPr(
       next.reviewedBaseRef ?? null,
       next.reviewedBaseSha ?? null,
       next.mergeCommitSha ?? null,
+      next.localReviewHeadSha ?? null,
       now,
       key,
     );

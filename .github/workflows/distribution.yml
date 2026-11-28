@@ -61,6 +61,9 @@ jobs:
     # Pin a supported arm64 image, never `macos-latest`. ci.yml's dispatch-only developer
     # `package` job pins the same image so both build on the shipped OS; move them together.
     runs-on: macos-15
+    # The voice-listener manifest requires Swift tools 6.2.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     environment: desktop-distribution
     timeout-minutes: 60
     # Serialize alpha publication and retirement. A newer queued alpha may replace

@@ -4,6 +4,8 @@
 // action an inbox card offers with the words a voice command would use for it, live here so the
 // daemon, the dashboard and a later voice layer read one declaration rather than three copies.
 
+import { spokenNameLabel, type SpokenNameIdentity } from "./voice-names.ts";
+
 /**
  * The preview flag for reports and inbox upgrades. Today it turns on agent reports (the Reports
  * section and the to read figure) and the one naming rule (`agentDisplayName`) on alert titles,
@@ -150,13 +152,22 @@ export function inboxAction(id: InboxActionId): InboxActionSpec {
   return ACTIONS_BY_ID.get(id)!;
 }
 
+export type HintName = string | SpokenNameIdentity;
+
+export function spokenHintExample(name: HintName, template: string) {
+  const label = typeof name === "string" ? name : spokenNameLabel(name);
+  const phrase = template.replaceAll("{name}", () => label);
+  return { phrase, quoteCommand: typeof name === "string" || !name.isReferenceName };
+}
+
 /**
  * The hint a card prints beside a control: its spoken form with the agent's name filled in,
  * and the open-card form after it when there is one. Null for a click-only action.
  */
-export function spokenHintText(action: InboxActionSpec, name: string, cardOpen = false): string | null {
+export function spokenHintText(action: InboxActionSpec, name: HintName, cardOpen = false): string | null {
   if (!action.spoken) return null;
-  const named = `"${action.spoken.named.replaceAll("{name}", name)}"`;
+  const { phrase, quoteCommand } = spokenHintExample(name, action.spoken.named);
+  const named = quoteCommand ? `"${phrase}"` : phrase;
   return cardOpen && action.spoken.whileOpen ? `${named} or "${action.spoken.whileOpen}"` : named;
 }
 

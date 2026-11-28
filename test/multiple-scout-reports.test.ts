@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { rename } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import type { ArchiveSubject, ArchiveTaskGateway } from "../src/server/archives/task-gateway.ts";
 import type { ArchiveManagerOptions } from "../src/server/archives/manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { validReportHtml } from "./helpers/archive-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-multiple-scouts-"));
+const home = tempDir("mission-multiple-scouts-");
 process.env.MISSION_HOME = home;
 const { ArchiveManager } = await import("../src/server/archives/manager.ts");
 const { ArchiveCaptureStore } = await import("../src/server/archives/capture-store.ts");

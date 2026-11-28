@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this is the first production REVIEW driver, the one place a run's evidence
@@ -17,7 +17,7 @@ import { join } from "node:path";
  * decision boundary - is exercised without a real model or real Git.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-review-"));
+const home = tempDir("mission-ensemble-review-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { ENSEMBLE_HARD_LIMITS, readReviewAttemptReceipt } = await import("../src/shared/ensemble.ts");

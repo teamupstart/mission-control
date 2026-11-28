@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -20,6 +19,7 @@ import { VoiceUtteranceSchema, type VoiceUtterance } from "../src/shared/voice-r
 import { stateDir, tokenPath } from "../src/shared/harness-runtime.mjs";
 import { voiceTestModel } from "./helpers/voice-test-model.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 const run = promisify(execFile);
 test("the published sherpa addon transcribes a recording through the listener and daemon", async t => {
@@ -30,7 +30,7 @@ test("the published sherpa addon transcribes a recording through the listener an
     t.skip("Pinned recognizer model is absent from the offline unit-test cache");
     return;
   }
-  const cwd = await mkdtemp(join(tmpdir(), "voice-listener-checkout-"));
+  const cwd = await tempDirAsync("voice-listener-checkout-");
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await run(process.execPath, ["scripts/build-voice-sherpa.mjs", join(cwd, "dist")]);
   const manifests = join(cwd, "models.json");
@@ -56,8 +56,24 @@ test("the published sherpa addon transcribes a recording through the listener an
   const app = new Hono();
   const captures: VoiceUtterance[] = [];
   let posts = 0;
+  const readings: { phase: string; posts: number; final: boolean; text: string }[] = [];
+  app.use("/voice/listener/transcript", async (c, next) => {
+    const sample = await c.req.raw.clone().json();
+    await next();
+    if ((await c.res.clone().json()).accepted) {
+      const preview = voiceStateStore.state().transcript;
+      if (preview) readings.push({ phase: preview.phase, posts, final: sample.final === true, text: preview.text });
+    }
+  });
   let hellos = 0;
   let acceptedAfterRelease = false;
+  let onDirectivePoll: (() => void) | undefined;
+  app.use("/voice/listener/directive", async (_c, next) => {
+    onDirectivePoll?.();
+    await next();
+  });
+  let onAcceptedCapture: (() => void) | undefined;
+  let onCaptureResult: ((revision: string | undefined, accepted: boolean, response: Response) => void) | undefined;
   app.use("/voice/listener/hello", async (_c, next) => { hellos++; await next(); });
   app.use("/voice/utterances", async (c, next) => {
     posts++;
@@ -71,8 +87,11 @@ test("the published sherpa addon transcribes a recording through the listener an
       }, 5);
     }
     await next();
-    if ((await c.res.clone().json()).accepted) {
+    const { accepted } = await c.res.clone().json();
+    onCaptureResult?.(c.req.query("revision"), accepted, c.res);
+    if (accepted) {
       captures.push(VoiceUtteranceSchema.parse(payload));
+      onAcceptedCapture?.();
       if (voiceStateStore.state().mode === "auto-muted") {
         acceptedAfterRelease = true;
         voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({ reportedAtHostUs: voiceHostTimeUs(), callActive: false }));
@@ -81,10 +100,16 @@ test("the published sherpa addon transcribes a recording through the listener an
   });
   registerVoiceRoutes(app);
   const deliveries: { target: string; text: string }[] = [];
+  const dictation: { target: string; capture: string; text: string; interim: boolean }[] = [];
+  let probe: ((windowId: string, sequence: number) => void) | undefined;
   const router = registerVoiceUtteranceRoutes(app, { deliver: async (target, text) => {
     deliveries.push({ target: target.key, text });
     return "queued";
-  } }, () => {});
+  } }, () => {}, undefined, {
+    dictate: (_window, target, text, capture, interim) => dictation.push({ target, capture, text, interim }),
+    probeDictation: (windowId, sequence) => probe?.(windowId, sequence),
+    pending: () => [], forSession: () => [], resolve: async () => false, publish() {}, removeCompanion() {}, open() {}, confirmFocus() {},
+  });
   t.after(() => router.reset());
   const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
   t.after(() => server.close());
@@ -168,6 +193,11 @@ test("the published sherpa addon transcribes a recording through the listener an
     assert.equal(posts, 1);
   });
   assert.equal(captures.length, 1);
+  await t.test("short WAV playback reports quiet and audio and publishes the accepted final words", () => {
+    // Either decoder can finish first on a short file. Completed addressing has priority.
+    assert.deepEqual(readings.slice(0, 2).map(r => r.phase), ["ready", "audio"]);
+    assert.deepEqual(readings.at(-1), { phase: "words", final: true, posts: 1, text: captures[0]!.text });
+  });
   const capture = captures[0]!;
   assert.equal(capture.backend, "sherpa-onnx");
   const normalize = (text: string) => text.toLowerCase().replace(/[^a-z ]/gu, "").trim();
@@ -211,5 +241,161 @@ test("the published sherpa addon transcribes a recording through the listener an
     assert.equal(acceptedAfterRelease, true);
     assert.equal(captures.length, 3);
     assert.equal(normalize(captures[2]!.text), "steve check the build");
+  });
+  const recording = await readFile(fixture);
+  const phrase = recording.subarray(44);
+  const pcmBytesPerMs = 32;
+  const silence = (ms: number) => Buffer.alloc(ms * pcmBytesPerMs);
+  async function playPhrases(name: string, ...pcm: Buffer[]): Promise<VoiceUtterance[]> {
+    const sequence = Buffer.concat([recording.subarray(0, 44), ...pcm]);
+    sequence.writeUInt32LE(sequence.length - 8, 4);
+    sequence.writeUInt32LE(sequence.length - 44, 40);
+    const path = join(cwd, name);
+    await writeFile(path, sequence);
+    const before = captures.length;
+    await play(path, "--backend", "sherpa-onnx");
+    return captures.slice(before);
+  }
+  await t.test("Sherpa splits or joins the same recorded phrases at the selected silence boundary", async () => {
+    // The recording already has about 1.2 seconds of combined trailing and leading quiet.
+    for (const [endOfSpeechMs, addedQuietMs, expected] of [[500, 0, 2], [2000, 0, 1], [2000, 1800, 2], [5000, 1800, 1]] as const) {
+      voiceStateStore.reset();
+      setVoiceConfig({ endOfSpeechMs });
+      const messages = await playPhrases("two-phrases.wav", phrase, silence(addedQuietMs), phrase);
+      assert.equal(messages.length, expected, `delay ${endOfSpeechMs} ms, added silence ${addedQuietMs} ms`);
+      if (expected === 1) {
+        // Recognition of the name can vary without priming. Its final word must come from the second phrase.
+        assert.ok(messages[0]!.words.at(-1)!.endMs > (phrase.length / pcmBytesPerMs) + addedQuietMs);
+      }
+    }
+  });
+  await t.test("a five-second pause setting still joins recorded speech across Sherpa’s 20-second threshold", async () => {
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 5000 });
+    const before = posts;
+    readings.length = 0;
+    const messages = await playPhrases("past-twenty-seconds.wav", ...Array<Buffer>(9).fill(phrase), silence(5000));
+    assert.equal(messages.length, 1);
+    assert.ok(readings.some(r => r.posts === before && !r.final && r.phase === "words" && r.text.trim()),
+      "unpaced playback published a recognized prefix before the long utterance reached the router");
+    assert.ok(messages[0]!.words.at(-1)!.endMs > 8 * phrase.length / pcmBytesPerMs, "the ninth command belongs to the first capture");
+  });
+  await t.test("Sherpa drops a recording’s overlong command through its selected pause and admits the next command", async t => {
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 3000 });
+    let polls = 0;
+    onDirectivePoll = () => { if (++polls === 18) setVoiceConfig({ endOfSpeechMs: 5000 }); };
+    t.after(() => { onDirectivePoll = undefined; });
+    const messages = await playPhrases("overlong.wav", ...Array<Buffer>(25).fill(phrase), silence(5000), phrase);
+    assert.deepEqual(messages.map(message => normalize(message.text)), ["steve check the build"]);
+    assert.ok(messages[0]!.words.at(-1)!.endMs < phrase.length / pcmBytesPerMs);
+  });
+  await t.test("successive delay edits retain an emerging recorded command after extended silence", async t => {
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 2000 });
+    let polls = 0;
+    onDirectivePoll = () => {
+      polls++;
+      if (polls === 8) setVoiceConfig({ endOfSpeechMs: 5000 });
+      if (polls === 9) setVoiceConfig({ endOfSpeechMs: 800 });
+    };
+    t.after(() => { onDirectivePoll = undefined; });
+    // At poll eight only the first 64 ms of the name has been voiced, before Silero confirms onset.
+    const messages = await playPhrases("quiet-before-edits.wav", silence(7 * 2048 - 256), phrase);
+    assert.deepEqual(messages.map(message => normalize(message.text)), ["steve check the build"]);
+    assert.ok(polls >= 9 && polls <= 12, `finished at poll ${polls}`);
+  });
+  await t.test("one running Sherpa listener applies a longer boundary between phrases in the same recording", async t => {
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 500 });
+    // The natural gap is ~1.2 s. Extend the later gaps to ~4.2 and ~6.2 s:
+    // only the 5 s choice joins the middle pair and still splits the final phrase.
+    onAcceptedCapture = () => {
+      // The helper waits for this POST before polling and feeding any more audio.
+      onAcceptedCapture = undefined;
+      setVoiceConfig({ endOfSpeechMs: 5000 });
+    };
+    t.after(() => { onAcceptedCapture = undefined; });
+    const messages = await playPhrases("live-delay.wav", phrase, phrase, silence(3000), phrase, silence(5000), phrase);
+    assert.equal(messages.length, 3);
+    const phraseMs = phrase.length / pcmBytesPerMs;
+    assert.ok(messages[0]!.words.at(-1)!.endMs < phraseMs, "500 ms splits the first phrase");
+    assert.ok(messages[1]!.words.at(-1)!.endMs > phraseMs + 3000, "5 s joins both middle phrases");
+    assert.ok(messages[2]!.words.at(-1)!.endMs < phraseMs, "the final phrase is separate");
+  });
+  await t.test("Sherpa retains unfinished words when the silence delay changes during speech or the following pause", async t => {
+    t.after(() => { onDirectivePoll = undefined; });
+    for (const [leadMs, newDelay, expected] of [[0, 5000, 1], [1000, 5000, 1], [0, 500, 2]] as const) {
+      voiceStateStore.reset();
+      setVoiceConfig({ endOfSpeechMs: newDelay === 500 ? 5000 : 2000 });
+      let polls = 0;
+      onDirectivePoll = () => {
+        // Poll two follows 2.048 seconds of input: inside the first pause, or mid-command with the lead-in.
+        if (++polls === 2) setVoiceConfig({ endOfSpeechMs: newDelay });
+      };
+      const messages = await playPhrases("unfinished.wav", silence(leadMs), phrase, silence(1800), phrase);
+      assert.equal(messages.length, expected, `after a change to ${newDelay} ms`);
+      const transcript = messages.map(message => normalize(message.text)).join(" ");
+      assert.equal(transcript.match(/check the build/g)?.length, 2, transcript);
+    }
+  });
+  await t.test("a focused field receives incremental Sherpa recognition and one final transcript without session delivery", async t => {
+    // Earlier recordings may still have outstanding delivery timers.
+    router.reset();
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 2000, cancelWindow: { enabled: false } });
+    const disconnect = router.openCards.connect("field-window");
+    t.after(disconnect);
+    router.openCards.report({ windowId: "field-window", focused: true, dictationTarget: crypto.randomUUID(), cards: [] });
+    const before = deliveries.length;
+    await play(fixture, "--backend", "sherpa-onnx");
+    const final = dictation.at(-1);
+    assert.ok(final && !final.interim);
+    assert.equal(normalize(final.text), "steve check the build");
+    assert.ok(dictation.slice(0, -1).some(frame => normalize(frame.text) && normalize(frame.text) !== normalize(final.text)));
+    assert.ok(dictation.slice(0, -1).every(frame => frame.interim && frame.capture === final.capture));
+    assert.equal(deliveries.length, before);
+    assert.deepEqual(router.heard.list(), []);
+    t.diagnostic(JSON.stringify(dictation.map(({ interim, text }) => ({ interim, text }))));
+  });
+  await t.test("one Sherpa process skips a focus-refused phrase and dictates the next phrase on the same revision", async t => {
+    router.reset();
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 500, cancelWindow: { enabled: false } });
+    const editor = crypto.randomUUID();
+    const other = crypto.randomUUID();
+    for (const id of ["editor", "other"]) t.after(router.openCards.connect(id, true));
+    let refusals = 0;
+    const revisions: string[] = [];
+    onCaptureResult = (revision, accepted, response) => {
+      assert.ok(revision);
+      revisions.push(revision);
+      if (!accepted) {
+        assert.equal(response.headers.get("x-voice-focus-unconfirmed"), "1");
+        refusals++;
+      }
+    };
+    probe = (id, sequence) => {
+      router.openCards.acknowledgeDictation(id, sequence, id === "editor" ? editor : refusals ? undefined : other);
+    };
+    t.after(() => { probe = undefined; onCaptureResult = undefined; });
+    const start = dictation.length;
+    const previousPosts = posts;
+    const previousDeliveries = deliveries.length;
+    const messages = await playPhrases("focus-recovers.wav", phrase, silence(1000), phrase);
+    assert.equal(posts - previousPosts, 2);
+    assert.equal(new Set(revisions).size, 1);
+    assert.equal(refusals, 1);
+    assert.equal(messages.length, 1);
+    const frames = dictation.slice(start);
+    const final = frames.at(-1);
+    assert.ok(final && !final.interim);
+    assert.equal(normalize(final.text), "steve check the build");
+    assert.ok(frames.some(frame => frame.interim && normalize(frame.text) !== normalize(final.text)));
+    assert.ok(frames.slice(0, -1).every(frame => frame.interim));
+    assert.ok(frames.every(frame => frame.target === editor && frame.capture === final.capture));
+    assert.equal(deliveries.length, previousDeliveries);
+    assert.deepEqual(router.heard.list(), []);
+    t.diagnostic(JSON.stringify({ refusals, accepted: messages.length, frames: frames.map(({ text, interim }) => ({ text, interim })) }));
   });
 });

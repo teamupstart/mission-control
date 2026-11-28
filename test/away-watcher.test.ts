@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "../src/shared/workflow.ts";
@@ -9,13 +8,14 @@ import type { EnsembleSummary } from "../src/shared/ensemble.ts";
 import type { UnpushedCommits } from "../src/shared/unpushed.ts";
 import type { ReportItem } from "../src/shared/reports.ts";
 import { mkReport } from "./helpers/report-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The away watcher's buffer lifecycle: when a window opens, what lands in it, and
 // how it survives the moment of return. Real db for the config (as
 // away-config.test.ts does) and a fake registry, so the poll loop never runs and
 // each pass is driven explicitly.
 
-const home = mkdtempSync(join(tmpdir(), "mission-away-watch-"));
+const home = tempDir("mission-away-watch-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -264,14 +264,14 @@ test("a call sign or reference name names a digest line only while voice is on a
     applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: !voice });
     assert.deepEqual(w.takePending()?.events.map((event) => event.title).sort(), voice
       ? ["Fix the parser went idle", "Linter watcher went idle"]
-      : ["Alice went idle", "Sage went idle"]);
+      : ['"Sage" went idle', "Alice went idle"]);
     w.stop();
     setAwayConfig({ away: false }, 2000);
     return titles;
   };
   // Voice off: a saved call sign and reference name are kept, and name nothing.
   assert.deepEqual(titlesWith(false), ["Fix the parser went idle", "Linter watcher went idle"]);
-  assert.deepEqual(titlesWith(true), ["Alice went idle", "Sage went idle"]);
+  assert.deepEqual(titlesWith(true), ['"Sage" went idle', "Alice went idle"]);
 });
 
 test("with the inbox flag on, a report is buffered while away and the digest names who posted", (t) => {

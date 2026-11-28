@@ -208,11 +208,17 @@ word, a name that sounds like another agent's, one short syllable, or a voice co
 warnings explain and never block; **Dispatch** stays enabled whatever they say. Closed, the fold's
 summary names the call sign beside the Persona.
 
+Left blank, the task is given a call sign as it launches when a safe one is free: a distinctive
+name no other agent is heard as, from a short built-in list. If every safe name is taken, it
+launches without one. Your own call sign is always kept. See
+[Automatic call signs](voice.md#automatic-call-signs).
+
 A call sign is not the title and changes nothing the launch provisions. It is annotation, like
 priority: an update may set or clear it while the agent runs (a resident's task takes none; see
 [Call signs](voice.md#call-signs)), and with the
 [inbox](attention-and-alerts.md) naming rule and voice both on it is the name the inbox, the review
-modal, question cards and alerts print for the session.
+modal, question cards and alerts print for the session. [Call signs](voice.md#call-signs) covers
+when it also titles the session's card.
 
 A task in the backlog answers to its call sign only once it launches. From then on it is listed
 while it runs and while it is hibernated, however long it sleeps. Once it stops it stays listed
@@ -1994,9 +2000,10 @@ a self-hosted Jira reached through the CLI needs no allowlist entry at all.
 
 Two operational notes. The environment is the **daemon's**, read when it sweeps - exporting
 the variables in a shell after the daemon started does not reach it, so restart the daemon
-(`make restart`) after adding them. And behind a TLS-inspecting VPN the REST rung needs the
-proxy's CA in `NODE_EXTRA_CA_CERTS` in that same environment; certificate verification is
-never disabled to work around it.
+(`make restart`) after adding them. Behind a TLS-inspecting VPN the REST rung trusts the
+proxy's CA when it is in the operating system's certificate store (the macOS keychain), which the
+daemon adds to Node's roots at start, or in `NODE_EXTRA_CA_CERTS` in that same environment;
+certificate verification is never disabled to work around it.
 
 **A broken credential never reads as "no issues".** That is the whole reason `preflight`
 exists, and **Check it works** distinguishes, each naming one thing to go and do:
@@ -2011,7 +2018,7 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `the jira CLI is installed but not configured … run jira init` | installed, never pointed at a site |
 | `the jira CLI is not authenticated` / `Jira rejected the JIRA_API_TOKEN / JIRA_EMAIL credential (HTTP 401)` | the credential is wrong or expired |
 | `Jira could not run this query (HTTP 400) - <what Jira said>` | the JQL is the problem, not the credential |
-| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
+| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is the proxy's CA missing from the system store and `NODE_EXTRA_CA_CERTS` |
 | `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
 | `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
 | `refusing to send JIRA_API_TOKEN to <host>` | that host is not Jira Cloud and is not in `JIRA_ALLOWED_HOSTS`. Name it there if it really is your Jira; the CLI rung keeps working regardless |

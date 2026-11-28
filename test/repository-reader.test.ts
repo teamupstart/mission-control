@@ -2,7 +2,6 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
   unlink,
-  mkdtemp,
   readFile,
   writeFile,
   mkdir,
@@ -10,7 +9,6 @@ import {
   rm,
   symlink,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
@@ -20,9 +18,10 @@ import {
   type RepositoryQueryAuditMetadata,
 } from "../src/shared/repository-access.ts";
 import { createRepositoryReader } from "../src/server/workflows/persona-workload/reader.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 async function fixture(t: TestContext, content = "one\ntwo\nthree\n") {
-  const root = await mkdtemp(join(tmpdir(), "repository-reader-"));
+  const root = await tempDirAsync("repository-reader-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const git = (...args: string[]) =>
     execFileSync("git", args, {
@@ -119,6 +118,7 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
   assert.equal(a.status, "ok");
   assert.equal(a.truncated, true);
   assert.equal(a.items.length, 2);
+  assert.equal(f.audit[0]!.readLayer, "worktree");
   assert.deepEqual(f.audit[0]!.handles[0]!.range, {
     kind: "line",
     startLine: 1,
@@ -130,6 +130,8 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
   });
   assert.equal(b.items[0]!.text, "three");
   assert.equal(b.truncated, false);
+  await reader.query("read", { path: "src/a.txt", layer: "index" });
+  assert.equal(f.audit.at(-1)!.readLayer, "index");
   assert.equal(
     (await reader.query("read", { path: "link", cursor: a.nextCursor })).code,
     "invalid_cursor",
@@ -155,6 +157,53 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
       ).code,
       "invalid_cursor",
     );
+});
+test("an opt-in read proves exact worktree absence without treating unreadable paths as removed", async (t) => {
+  const f = await fixture(t);
+  const reader = f.make();
+  const path = "src/removed[1].txt";
+  const absent = await reader.query("read", { path, verifyAbsence: true });
+  assert.equal(absent.status, "ok");
+  assert.deepEqual(absent.items, [{ path, metadata: { absent: true } }]);
+  assert.partialDeepStrictEqual(f.audit.at(-1), { readLayer: "worktree", absentWorktreePath: path, handles: [] });
+
+  const deletedPath = "src/staged-deletion.txt";
+  f.view.worktree = [...f.view.worktree, {
+    path: deletedPath, kind: "file", blob: null, binary: false, classifications: ["staged", "deleted"],
+  }];
+  const stagedDeletion = await f.make().query("read", { path: deletedPath, verifyAbsence: true });
+  assert.equal(stagedDeletion.status, "ok");
+  assert.deepEqual(stagedDeletion.items, [{ path: deletedPath, metadata: { absent: true } }]);
+  assert.partialDeepStrictEqual(f.audit.at(-1), { readLayer: "worktree", absentWorktreePath: deletedPath, handles: [] });
+
+  const inspector = f.make({ verifyWorktreeAbsenceByDefault: true });
+  for (const missingPath of [path, deletedPath]) {
+    const ordinaryRead = await inspector.query("read", { path: missingPath });
+    assert.deepEqual(ordinaryRead.items, [{ path: missingPath, metadata: { absent: true } }]);
+    assert.equal(f.audit.at(-1)?.absentWorktreePath, missingPath);
+  }
+  assert.equal((await inspector.query("read", { path, layer: "index" })).code, "unavailable");
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+
+  for (const input of [
+    { path },
+    { path, layer: "index", verifyAbsence: true },
+    { path: ".env", verifyAbsence: true },
+    { path: "src", verifyAbsence: true },
+    { path: "link/hidden.txt", verifyAbsence: true },
+  ]) {
+    assert.notEqual((await reader.query("read", input)).status, "ok", JSON.stringify(input));
+    assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+  }
+  const present = await reader.query("read", { path: "src/a.txt", start: 500, verifyAbsence: true });
+  assert.equal(present.status, "ok");
+  assert.deepEqual(present.items, []);
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+  f.view.worktree[0]!.blob = "f".repeat(40);
+  f.view.worktree[0]!.classifications.push("deleted");
+  const unavailable = await f.make({ verifyWorktreeAbsenceByDefault: true }).query("read", { path: "src/a.txt" });
+  assert.equal(unavailable.code, "unavailable");
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
 });
 test("case-insensitive search returns one context line on each side and audits that exact range", async (t) => {
   const f = await fixture(t, "first\nBefore\nNeedle\nAfter\nlast\n");
@@ -284,7 +333,7 @@ test("raw-byte evidence is exact and missing allowed objects fail closed", async
 test("read refuses an allowed blob stored only in an external Git alternate", async (t) => {
   const content = "external fixture content";
   const f = await fixture(t, content);
-  const alternate = await mkdtemp(join(tmpdir(), "alternate-objects-"));
+  const alternate = await tempDirAsync("alternate-objects-");
   t.after(() => rm(alternate, { recursive: true, force: true }));
   const objects = join(f.root, ".git", "objects");
   const blob = f.git("rev-parse", "HEAD:src/a.txt");
@@ -331,6 +380,15 @@ test("search skips oversized and non-UTF-8 files while diff describes them witho
 });
 
 // Delay one known object until the call times out. Count actual Git reads across pages.
+/**
+ * The call budget for a reader whose one object read is paused for ten seconds. Well under the
+ * pause, so the page still ends on `limit: "time"` deterministically, and well over the time a
+ * loaded machine takes to spawn git and read the unpaused objects first. At 1.5s that spawn
+ * alone could exhaust the budget before the first item, which the reader rightly refuses
+ * rather than resuming, and the test saw a `null` limit.
+ */
+const PAUSED_CALL_MS = 5_000;
+
 async function pauseObjectRead(root: string, type: "blob" | "commit", oid: string) {
   const gitBinary = join(root, "pausing-git");
   await writeFile(gitBinary, [
@@ -355,7 +413,7 @@ test("search resumes a timed empty page at the next file, then paginates within 
   const last = f.git("rev-parse", ":last");
   f.view.worktree.push({ ...first, path: "last", blob: last });
   const gate = await pauseObjectRead(f.root, "blob", last);
-  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: 1500, callItems: 1 } });
+  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: PAUSED_CALL_MS, callItems: 1 } });
   const query = { query: "found", caseSensitive: true };
   const empty = await reader.query("search", query);
   assert.equal(empty.status, "ok");
@@ -385,7 +443,7 @@ test("path-filtered log preserves earlier commits on timeout and resumes at the 
   f.view.retainedRevisions.unshift({ id: head, tree: f.git("rev-parse", "HEAD^{tree}"), parents: [parent.id] });
   f.view.retainedCommitCount = 2;
   const gate = await pauseObjectRead(f.root, "commit", parent.id);
-  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: 1500 } });
+  const reader = f.make({ gitBinary: gate.gitBinary, budgets: { ...REPOSITORY_DEFAULT_BUDGETS, callMs: PAUSED_CALL_MS } });
   const query = { path: "src/a.txt" };
   const page = await reader.query("git_log", query);
   assert.equal(page.limit, "time");

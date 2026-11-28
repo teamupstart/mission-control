@@ -115,6 +115,7 @@ function IdentitySection({ draft, update, disabled, profileId = null }: Resident
       {voiceNames && (
         <SpokenNameField
           className="resident-reference-name"
+          referenceName
           label="Reference name"
           example="cut the release"
           value={draft.identity.referenceName ?? ""}
@@ -431,6 +432,9 @@ function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): 
 function AuthoritySection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
   return (
     <div className="resident-fields">
+      {draft.authority.inspectOtherSessions && (
+        <p className="field-hint">A desktop Launch click grants read-only inspection of other sessions and workflows.</p>
+      )}
       <label className="alert-row resident-authority">
         <Tooltip label="Let this resident's run read and steer your other live sessions, when you launch it with a click in the desktop app">
           <input

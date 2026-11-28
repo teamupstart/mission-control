@@ -1,5 +1,7 @@
 import {
   Children,
+  createContext,
+  useContext,
   cloneElement,
   isValidElement,
   useCallback,
@@ -212,6 +214,9 @@ export interface TooltipContent {
   description: string;
 }
 
+/** Floating voice controls live in a second document owned by the same React tree. */
+export const TooltipDocument = createContext<Document | null>(null);
+
 export function Tooltip({
   label,
   children,
@@ -225,6 +230,7 @@ export function Tooltip({
   children: ReactElement;
 }): React.JSX.Element {
   // Derived once, and named for the two jobs above rather than for their types.
+  const owner = useContext(TooltipDocument) ?? (typeof document === "undefined" ? null : document);
   const rich = typeof label !== "string";
   const description = rich ? label.description : label;
   const bubbleContent = rich ? label.content : label;
@@ -283,7 +289,7 @@ export function Tooltip({
       setTip(settleSide(tip, r.width, r.height));
       return;
     }
-    const shift = onScreen(r.left, r.right, window.innerWidth);
+    const shift = onScreen(r.left, r.right, el.ownerDocument.defaultView!.innerWidth);
     // Flip under the trigger when the bubble does not actually FIT above it. The
     // threshold in `show` cannot answer this: it runs before the bubble exists, so it
     // can only ask whether the trigger sits near the top of the viewport, not whether
@@ -374,8 +380,8 @@ export function Tooltip({
   return (
     <>
       {trigger}
-      {typeof document === "undefined" ? describedBy : createPortal(describedBy, document.body)}
-      {tip &&
+      {owner ? createPortal(describedBy, owner.body) : describedBy}
+      {owner && tip &&
         createPortal(
           <span
             ref={measure}
@@ -400,7 +406,7 @@ export function Tooltip({
           >
             {bubbleContent}
           </span>,
-          document.body,
+          owner.body,
         )}
     </>
   );

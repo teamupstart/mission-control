@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, test } from "node:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const stateHome = mkdtempSync(join(tmpdir(), "mission-playwright-entrypoint-"));
+const stateHome = tempDir("mission-playwright-entrypoint-");
 
 after(() => rmSync(stateHome, { recursive: true, force: true }));
 

@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tempDir } from "./temp-root.mjs";
 
 // The merge gate's CI verdict, read through the Inspector's one GraphQL query.
 //
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 // the individual checks beside it, and clears that failure only when every narrowing condition
 // in `checksOf` holds. Everything else keeps GitHub's verdict.
 
-const dir = mkdtempSync(join(tmpdir(), "mission-inspector-retried-checks-"));
+const dir = tempDir("mission-inspector-retried-checks-");
 const gh = join(dir, "gh");
 const calls = join(dir, "calls");
 const snapshot = join(dir, "snapshot.json");

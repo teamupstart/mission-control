@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { SessionNote } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
-const home = mkdtempSync(join(tmpdir(), "mission-notes-"));
+const home = tempDir("mission-notes-");
 process.env.HARNESS_HOME = home;
 const { openDb, upsertSessionNote, getSessionNote, loadSessionNotes } = await import(
   "../src/server/db.ts"

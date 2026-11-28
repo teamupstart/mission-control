@@ -24,7 +24,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](dispatch-and-backlog.md#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](workflows.md#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](workflows.md#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_WORKFLOW_PERSONA_TIMEOUT_MS` | `600000` | [Personas](workflows.md#workflows-and-personas): hard cap on one Persona call. Sized with the `MISSION_INSPECTOR_TIMEOUT_MS` of the time (600000, before reviews moved to `xhigh` effort) rather than with the 120s default below, because a Persona reads the same shape of evidence - a diff and a transcript window - and the cost of the budget being too small is paid three times: a timeout is an infrastructure failure, and the engine retries one twice more before failing the submission |
+| `MISSION_WORKFLOW_PERSONA_TIMEOUT_MS` | `600000` | [Personas](workflows.md#workflows-and-personas): hard cap on one Persona call. Sized with the `MISSION_INSPECTOR_TIMEOUT_MS` of the time (600000, before reviews moved to `xhigh` effort) rather than with the 120s default below, because a Persona reads the same shape of evidence - a diff and a transcript window - and the cost of the budget being too small is paid three times: a timeout is an infrastructure failure, and the engine retries one twice more before failing the submission. Counted in awake time: a host sleep does not spend it ([host sleep](workflows.md#automatic-recovery-before-review)) |
 | `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](ensembles.md#multi-agent-ensembles): the model behind every ensemble evaluation - the Best-of-N comparison, the Consensus divergence pass, and each Panel-vote judge's ballot. An explicit evaluator or judge model wins, then a judging Persona's model override; otherwise **Settings → Models → Ensemble evaluation**, then this variable, then the provider's cheap default |
 | `OPENAI_API_KEY` | unset | [Voice addressing](voice.md#faster-routing): with the `voice` preview on and **Decision model** on Automatic, this key alone switches OpenAI Decisions on for [ambiguous spoken requests](security.md#voice-routing). Read as spelled, not through the `MISSION_` prefixes. A key saved in **Settings → Voice** overrides it on that machine; **Off** there stops it |
 | `TYPESAFE_API_KEY` | unset | [Voice addressing](voice.md#faster-routing): the same for Jev. On Automatic, a saved key of either provider and `OPENAI_API_KEY` come first |
@@ -281,9 +281,24 @@ depends on how the daemon was started:
 The daemon reads its environment once, when it starts, so a variable set or changed afterwards
 reaches shapers only after a restart. `GET /api/shaping` reports it as `unset` until then.
 
+## Shaper sign-in storage
+
+A shaper's sign-in is kept in the macOS Keychain, or in the daemon's memory where there is
+no Keychain. An operator signs a shaper in and out from **Settings > Task shaping**, behind the
+`shaper-sign-in` preview flag, which needs `task-shaping` on too
+([Signing in from Settings](task-shaping.md#signing-in-from-settings)). The shaper's row says
+which store holds its sign-in. [Where a shaper sign-in is kept](security.md#where-a-shaper-sign-in-is-kept)
+says what is stored and how to remove it.
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `MISSION_SHAPER_SIGN_IN_STORE` | unset | `memory` keeps every shaper sign-in in the daemon's memory only, so none outlives a restart and nothing is written to the Keychain. Unset or `keychain`, the daemon uses the Keychain on macOS when its Keychain addon loads, and memory otherwise. Any other value is read as `memory`, the choice that keeps nothing. Letter case and surrounding spaces are ignored. Follows the usual `MISSION_` / `FLEET_` / `HARNESS_` chain. Read once, the first time the daemon opens the store, which is when both flags are first on |
+
+Off macOS the store is always memory, whatever this says.
+
 ## Desktop update channel
 
-**Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
+**Alpha updates** at the top of **Settings → Setup** opts a managed desktop app into
 updates from the latest commit on `main`. It defaults off. Alpha checks about every five
 minutes and on **Check for updates**; stable mode retains its six-hour release checks.
 Both modes require an explicit **Update Now**, followed by **Restart and Install**. Stable selects
@@ -527,8 +542,22 @@ and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/c
 
 **Settings > Worktrees > Task worktree retention** stores `worktrees.taskRetentionDays` in the
 daemon-owned configuration. It defaults to **30 days** and accepts whole days from **7 to 90**,
-with no off switch. Invalid writes are rejected; out-of-range numeric stored values are clamped,
-and missing or nonnumeric stored values use 30. It is independent of `MISSION_WORKTREE_SWEEP_MS`.
+when the seven-day feature flag is off and report-only mode is unset. Invalid writes are rejected, out-of-range numeric stored
+values are clamped, and missing or nonnumeric stored values use 30. The observation cadence is
+independent of `MISSION_WORKTREE_SWEEP_MS`.
+
+Turn on **Seven-day worktree cleanup** in **Settings > Feature flags** to enforce seven-day
+retention. Switching it off restores the stored Worktrees window. The daemon adopts changes
+without a restart and recomputes deadlines on successful observation.
+`MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` still takes precedence for a read-only trial.
+If the daemon previously used `MISSION_WORKTREE_CLEANUP_PREVIEW=enforce`, enable the flag to
+continue using seven days.
+
+**Reclaim orphaned task worktrees** in **Settings > Feature flags** adds two classes to the same
+retention clock: disposable task checkouts Git no longer recognizes, and tasks whose terminal
+home is proved absent. Report-only mode evaluates both classes whether or not that flag is on,
+records what it would do as the retention blocker, and never archives, fetches or deletes.
+See [orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
 
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.

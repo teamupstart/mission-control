@@ -6,14 +6,15 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { once } from "node:events";
 import { createServer } from "node:net";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-extension-reconcile-"));
+const home = tempDir("mission-extension-reconcile-");
 process.env.MISSION_HOME = home;
 delete process.env.PI_EXTENSIONS_DIR;
 const target = join(home, "build", "extension.js");

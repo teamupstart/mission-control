@@ -954,7 +954,8 @@ export function sweepResultFromWalk(
  *
  * Never resolves to a throw: a DNS failure, a refused connection or a TLS rejection is an
  * answer this source has to report as its own error, exactly like a non-zero CLI exit.
- * TLS verification is NOT relaxed - behind a TLS-inspecting VPN the fix is the operator's
+ * TLS verification is NOT relaxed - behind a TLS-inspecting VPN the proxy's root is trusted
+ * through the system store the daemon adds at start (`system-trust.ts`) or the operator's
  * `NODE_EXTRA_CA_CERTS`, and disabling verification here would silently apply to a daemon
  * doing much more than this one query.
  */
@@ -980,7 +981,8 @@ async function restSearch(
     // The cause's code is appended because Node's own message for every transport failure
     // is the same three words, "fetch failed", and the three failures underneath it have
     // three different fixes: ECONNREFUSED is the wrong host or port, ENOTFOUND is a typo,
-    // and a certificate error behind a TLS-inspecting VPN is `NODE_EXTRA_CA_CERTS`.
+    // and a certificate error behind a TLS-inspecting VPN is a proxy root in neither the system
+    // store nor `NODE_EXTRA_CA_CERTS`.
     const cause = (err as { cause?: { code?: unknown } } | null)?.cause;
     const code = typeof cause?.code === "string" ? ` (${cause.code})` : "";
     const message = err instanceof Error ? err.message : String(err);

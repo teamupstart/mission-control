@@ -1,5 +1,6 @@
-import type { ShapingRequest } from "@shared/shaping.ts";
+import { shaperSignInTarget, SIGN_IN_REASONS, type Shaper, type ShapingRequest, type SignInTarget } from "@shared/shaping.ts";
 import { plaintextCredentialProblem } from "@shared/resident-mcp.ts";
+import { shaperSignIns } from "../sign-in/index.ts";
 import {
   holdsResolvedValue,
   JSON_ESCAPE_LEVELS,
@@ -42,6 +43,58 @@ export function egressRefusal(url: string): string | null {
   return plaintextCredentialProblem(parsed)
     ? "The shaper's URL is plain http to a host that is not this machine, so no request was sent. Use https."
     : null;
+}
+
+/** What a signed-in call adds to its request: the token as a bearer header, and the token to scrub. */
+export interface SignInGrant {
+  ok: true;
+  target: SignInTarget;
+  /** The token this call sends. Held for the call only, and handed back to `noteRefused` on a `401`. */
+  token: string;
+  headers: { authorization: string };
+  resolved: ResolvedValue[];
+}
+
+/** The name the token is redacted under: `[sign-in token redacted]`. */
+export const SIGN_IN_TOKEN_NAME = "sign-in token";
+
+/**
+ * A shaper's sign-in for one call. Null for a shaper with no `auth` marker, which is not
+ * touched: the service is not asked and its request is today's. For a marked one the sign-in
+ * service is asked once, from memory and without waiting: a refusal carries its fixed reason and
+ * the call makes no request, and a token comes back as the `authorization` header with the token
+ * among the values every reply and reason is scrubbed of.
+ */
+export function signInFor(shaper: Shaper): SignInGrant | { ok: false; reason: string } | null {
+  const target = shaperSignInTarget(shaper);
+  if (target === null) return null;
+  const answer = shaperSignIns.accessToken(target);
+  if (!answer.ok) return { ok: false, reason: SIGN_IN_REASONS[answer.reason] };
+  return {
+    ok: true,
+    target,
+    token: answer.token,
+    headers: { authorization: `Bearer ${answer.token}` },
+    resolved: [{ name: SIGN_IN_TOKEN_NAME, value: answer.token }],
+  };
+}
+
+/**
+ * A server answered `401` to a request that carried `grant`'s token: the service is told, with
+ * that token, and decides when the background refresh runs. Told once per refusal, at the moment
+ * the response arrives, whether or not a call is waiting on it.
+ */
+export function noteSignInRefused(grant: SignInGrant): void {
+  shaperSignIns.noteRefused(grant.target, grant.token);
+}
+
+/** What a signed-in call answers once its server refused the token: never retried. */
+export const SIGN_IN_REFUSED_REPLY: Readonly<{ kind: "unavailable"; reason: string }> = Object.freeze({ kind: "unavailable", reason: SIGN_IN_REASONS.refused });
+
+/** A `401` to the one request of a signed-in `http` call: the service is told, and the call is `unavailable`. */
+export function signInRefused(grant: SignInGrant): TransportReply {
+  noteSignInRefused(grant);
+  return SIGN_IN_REFUSED_REPLY;
 }
 
 /**

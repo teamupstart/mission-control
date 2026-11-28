@@ -1,17 +1,17 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import { SessionActionCapabilitiesSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: HTTP is the only write boundary for a SessionAction. Every mutation must
 // pass the shared Zod schema, a stale revision must preserve both tabs' text, archive must
 // leave a readable row rather than turning Delete into historical data loss, and a skill id
 // must never be able to smuggle a command through a field the daemon later resolves.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-actions-http-"));
+const home = tempDir("mission-session-actions-http-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

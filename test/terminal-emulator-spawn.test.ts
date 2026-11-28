@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import { weztermSocketFixture } from "./helpers/wezterm-socket.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: that "a tab opened" and "we can address it" stay two answers.
 //
@@ -20,7 +20,7 @@ import { join } from "node:path";
 // executable catalog's wezterm socket strip - and that last one only ever shows up in a spawned
 // environment, so a fake exec could not assert it at all.
 
-const home = mkdtempSync(join(tmpdir(), "mission-emu-spawn-"));
+const home = tempDir("mission-emu-spawn-");
 const FAKE = join(home, "fake-wezterm");
 const LOG = join(home, "calls.jsonl");
 const socket = await weztermSocketFixture();

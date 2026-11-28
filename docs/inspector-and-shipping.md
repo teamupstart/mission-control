@@ -263,6 +263,14 @@ check the repair. Follow-up replies keep the provider's default. The
 timings above were measured at default effort, so a review now takes longer than they show,
 and the review timeout is 1200 seconds to allow for it.
 
+Inspector answers waiting follow-ups in order before reviewing the PR. A failed reply ends
+work on that PR for the sweep, so Inspector can observe and process the next PR. Unanswered
+questions stay pending, and the retry wait starts when the failure occurs. Inspector keeps
+observing the PR during backoff, including checking whether a new head can end the wait.
+Waiting questions and pending thread resolutions share one queue. Work carried over from the
+previous sweep runs before newly discovered work. A failed operation moves behind the other
+queued work.
+
 ### Whether a finding reached GitHub
 
 Every finding records whether, and when, it was posted. The time is stamped when GitHub
@@ -427,6 +435,39 @@ which also shows its fingerprint and timestamps. The modal reads
 stays open. It has no Resolve: that stays on the row, and closes every finding on the pull
 request at once.
 
+## Local Inspector (preview)
+
+**Review in the workflow before the pull request opens** runs the Inspector's review when a
+workflow reaches a [Local Inspector Command](workflows.md#local-inspector-command-preview).
+Inspector must be on. Both Dry run and Live support local review. Findings go to the author's
+session, and enabled reviews require a verified read-only workload on the submitted checkout.
+Tune the blocking severity, timeout and allowance in **Library > Commands > Local Inspector**.
+
+With Local review on, a workflow that runs the Local Inspector last before its Pull Request
+action (No-Mistakes Review version 23) skips the GitHub review round only for a pushed head that
+matches a passed Local Inspector attempt. A skipped or failed attempt and a head whose content or
+base differs still get the GitHub review:
+
+| Setting | Before the pull request | After the pull request |
+| --- | --- | --- |
+| Local review off | Nothing | Every pushed head is reviewed on GitHub. Live posts, Dry run records |
+| Local review on, Dry run | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed, never posted |
+| Local review on, Live | Local Inspector rounds | Heads matching a local pass: nothing. Other heads: reviewed and posted as before |
+
+A head matches when its Git tree and base branch equal what a passed (not skipped) Local
+Inspector attempt read. For a matched head the worker keeps observing the pull request (state,
+checks, CodeRabbit follow-up, stack lifecycle and the merge check) but starts no review,
+answers no thread and posts nothing. It records the head with review posture `local` under a
+Live Inspector, and with the current posture (`dry-run` or `not-allowlisted`) otherwise. The
+session chip shows a check mark and says the head was reviewed locally. Existing Inspector
+threads on the pull request are left as they are. See
+[Local review replaces the GitHub round](workflows.md#local-review-replaces-the-github-round)
+for the fallbacks.
+
+Shipping accepts a matched head recorded `local` as merge provenance, in a repository holding the
+**merge grant** as anywhere else. See
+[It needs the GitHub Inspector, fully on](#it-needs-the-github-inspector-fully-on) for the rules.
+
 ## Shipping (YOLO mode)
 
 **Settings → Shipping** is where you decide what lands without you. **YOLO mode** merges
@@ -484,8 +525,8 @@ Every one of these, on the same read of the pull request:
 
 | Gate | Why |
 |---|---|
-| The GitHub Inspector reviewed **this** push, against **this** base | a review of the previous head is not a review of what would land, and the same head against another base is a different diff |
-| The GitHub Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
+| The GitHub Inspector reviewed **this** push, against **this** base | a review of the previous head is not a review of what would land, and the same head against another base is a different diff. A head the worker recorded from a [local match](#local-inspector-preview) counts, with no GitHub round |
+| The GitHub Inspector **published** that review (`review-unpublished`), or a Local Inspector review still matches it (`local-review-missing`) | on, **live**, and the repo on *its* allowlist - see below. A `local` head also needs Local review on and the workflow manager to report the match for this exact head on the same sweep |
 | The pull request targets the repository's **default branch** (`base-not-default`) | YOLO mode lands work on the default branch and nowhere else, whoever chose the base. A base or default branch GitHub did not report fails closed. Stacked pull requests answer this through the next two gates instead |
 | A [stacked pull request](#stacked-pull-requests) targets the **default branch** (`stacked-base`) | merging a child into its parent's branch would fold it into the parent's pull request and skip its own review. Only a pull request with stack lineage is evaluated |
 | A stacked pull request has been **released** for its current head (`stack-hold`) | a base change alone proves nothing: GitHub retargets a child by itself when the parent's branch is deleted. Only a pull request with stack lineage is evaluated |
@@ -527,13 +568,15 @@ never published is not a review anything may act on:
 | on, but **dry run** | it reviews and publishes nothing - no merge |
 | on and live, repo **not on the GitHub Inspector's allowlist** | same: it reviews, publishes nothing - no merge |
 | on, live, repo on **both** allowlists | the gates above decide |
+| on, live, **Local review** on, repo on both allowlists | a head recorded `local` stands in for the published review - see below |
 
 The middle two are worth stating plainly because they are not obvious: dry run still
 *reviews*, and it advances the reviewed head exactly as a live round does. Only the
 publishing stops. So "the GitHub Inspector reviewed this push" is true in dry run, and it is not
 sufficient - **dry run means dry for the merge too**. While YOLO mode is armed, Shipping's
 **Prerequisites** card names whichever of the three is in the way and links to the control
-that fixes it; each reason also appears per pull request in the *Merge queue*. The session detail
+that fixes it, and with Local review on its Dry run line says locally reviewed pull requests wait
+too; each reason also appears per pull request in the *Merge queue*. The session detail
 says so only while something is genuinely unmet - a checklist of green ticks is one nobody
 reads on the day a tick turns red.
 
@@ -541,6 +584,30 @@ Switching from dry run to live does not promote the review that already ran. The
 head records the GitHub Inspector posture that produced it; once live, the GitHub Inspector reviews that
 same head again, and only the new live result can authorize a later merge. Rows created by
 an older build have no recorded posture and fail closed through the same re-review path.
+
+**A matching Local Inspector review is the one other review a merge may rest on.** With
+[Local review](#local-inspector-preview) on, the worker records a head whose Git tree and base a
+passed Local Inspector attempt read as `local`, and records it only while the GitHub Inspector is
+Live. The merge predicate accepts that record only while all of these hold, read on every sweep:
+
+- the GitHub Inspector's current posture is **live**. This is the first gate above and it is
+  unchanged, so while the GitHub Inspector is off, in **Dry run**, or the repository is not on
+  its list, nothing merges, a matching local pass included;
+- Local review is still on;
+- the recorded head is the observed head, against the same base;
+- the workflow manager still reports the match for that exact head.
+
+The block reason says which condition failed. With the GitHub Inspector off, in Dry run, or the
+repository off its list, the first gate refuses as `inspector-off`, `inspector-dry-run` or
+`inspector-not-allowlisted`. A recorded head that is not this push, or was recorded against
+another base, is `not-reviewed`. `local-review-missing` applies only to a head recorded `local` on
+this push and base whose backing is gone - Local review switched off, or the manager no longer
+reporting the match - and holds it until the worker's GitHub review of the head replaces the local
+record. A push that changes the tree no longer matches, so it needs a GitHub review like any other
+head. A later commit with the same tree and base still matches: the worker
+records it as `local` on its next sweep, and until then the predicate holds it as `not-reviewed`
+because the recorded head is another commit. CI, the soak, threads, requested changes, the
+default-branch rule, the stack release and the merge grant all still apply.
 
 The two allowlists stay separate: letting the GitHub Inspector comment on a repo is a smaller
 grant than letting it merge there, so a repo has to be on both. Shipping's list does not
@@ -1020,14 +1087,16 @@ had already been written off:
 Only a **merged** pull request does this. One that was closed without merging changes
 nothing, and neither does one still open. A stacked pull request also has to have merged into
 the repository's default branch: one merged into its parent's branch is
-[not a merge here](#a-merge-into-the-parents-branch). An upgrade records the merged outcome, releases
-dependents, and starts final completion cleanup for task-owned worktrees. Required archives
-are saved before those worktrees are reset and returned.
+[not a merge here](#a-merge-into-the-parents-branch). An upgrade records the merged outcome
+and releases dependents.
 
-Final completion of a task with owned worktrees closes its agent and resets and returns those
-worktrees, including residual local changes, regardless of the Shipping setting. An agent that
-is still working, awaiting input or review, or carrying queued work is not completed from an
-intermediate merge. Its episode must first finish idle with an empty queue.
+Final completion of a task with owned worktrees closes its agent and leaves those worktrees
+under background retention, regardless of the Shipping setting. The grace period begins
+once the daemon confirms the last tracked user has left. When retention cleanup can proceed,
+the daemon saves required archives before it resets or removes the worktrees.
+
+An agent that is still working, awaiting input or review, or carrying queued work is not
+completed from an intermediate merge. Its episode must first finish idle with an empty queue.
 
 **Settings > Shipping > Close assigned sessions after their pull requests merge** controls
 agents without task-owned worktrees:
@@ -1038,8 +1107,8 @@ agents without task-owned worktrees:
 | **on** | Close the idle completed agent to free fleet capacity |
 
 Provider or archive failures preserve the unreturned resource records. See
-[task worktree retention](worktrees-and-checks.md#task-worktree-retention) for safe Kill returns,
-manual reconciliation, quarantine, and the unchanged 30-day fallback.
+[task worktree retention](worktrees-and-checks.md#task-worktree-retention) for the grace period,
+automatic return requirements, and manual reconciliation.
 
 ## Automatic PR branch updates (preview)
 

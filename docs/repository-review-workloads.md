@@ -26,6 +26,21 @@ kind is append-only: `persona_verdict` is the sole current member. Later work ca
 `inspector_verdict` without replacing the transport. Resolved provider, model and effort live
 in `request.execution`; the frozen Persona remains separate. Prompt, daemon-owned images,
 call-ledger identity and returned usage survive this boundary. The daemon records the model call, terminal usage and ordered query metadata.
+The executor emits `persona_returned` as soon as the provider returns, before it checks usage,
+the audit seal or the verdict, and a completed terminal result is accepted only after that
+event. The daemon's Command accounting reads the recorded event, so a Local Inspector reply
+that is rejected after it returned still counts as an execution. The in-process executor
+also hands that event and its ordered event history to a supervisor sink in the same tick the
+reply arrives. The daemon applies the stream's identity, sequence and event-order checks to it
+and records it there, before the event stream carries it. If the sink fails, the stream still
+carries the return. A daemon that dies right after the
+return has already recorded the spent execution. If a shutdown, a rejected
+event or an expired grant stops the supervisor before it records that return in order, it reads
+the closed workload's replay and records the return anyway. The replay must pass the same
+identity, sequence and event-order checks as the live stream and ends at a terminal result,
+so a return reported before the provider started or after the terminal result is never
+recorded. That record only spends the execution and never accepts a
+verdict.
 
 `WorkflowRepositoryArtifactService.forRoot` gives the manager and supervisor the same
 daemon-owned materializer for a canonical artifact directory. The supervisor can install
@@ -253,6 +268,11 @@ policy and Inspector's secret scrubber. Inspector's historical deny grant remain
 Symlinks expose only their target blob bytes; submodules are metadata, never traversed.
 Binary content is metadata-only in diffs and unavailable as text. Byte reads are refused if
 scrubbing would change the immutable bytes. Multiline scrubbing preserves line coordinates.
+Worktree `read` calls can set `verifyAbsence` to confirm that an exact allowed path is
+absent from the captured view. The reader returns an `absent: true` metadata item and
+records its path in the audit. Local Inspector uses this behavior for ordinary worktree
+reads and can continue after reading a deleted path. An empty read, a denied path, or an
+unavailable blob does not confirm removal.
 
 Git receives closed argv arrays and only descriptor-derived object ids. A disposable bare
 wrapper points at the verified object directory without reading its Git configuration.

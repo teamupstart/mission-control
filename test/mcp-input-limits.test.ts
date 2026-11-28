@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { PLAN_DECISION_LIMITS } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The MCP tools' own collection limits, through the real stdio tool path.
@@ -22,7 +21,7 @@ import { PLAN_DECISION_LIMITS } from "../src/shared/protocol.ts";
  * call returns at once instead of waiting on a human.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mcp-input-limits-"));
+const home = tempDir("mcp-input-limits-");
 const received: { path: string; body: { decisions?: { options: unknown[] }[] } }[] = [];
 const daemon = createServer((req: IncomingMessage, res) => {
   let raw = "";

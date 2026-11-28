@@ -1,8 +1,7 @@
 // acli uses its own OAuth site. A profile switch must never file another site's issues.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { JiraConfigSchema } from "../src/shared/task-source.ts";
 import type { JiraConfig, SweepContext, WritebackNotice } from "../src/shared/task-source.ts";
@@ -14,6 +13,7 @@ import {
 import { jira, MAX_SWEEP_ISSUES, sweepResultFromWalk } from "../src/server/task-sources/jira.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 function fixture(name: string): RunResult {
   return stubRun(JSON.parse(readFileSync(new URL(`./fixtures/acli/${name}.json`, import.meta.url), "utf8")));
@@ -21,7 +21,7 @@ function fixture(name: string): RunResult {
 const cfg = (over: Partial<JiraConfig> = {}) => JiraConfigSchema.parse({
   queryVia: "acli", site: "example.atlassian.net", jql: "project = MC", ...over,
 });
-const ctx: SweepContext = { sourceId: "acli", repoRoot: tmpdir(), signal: new AbortController().signal };
+const ctx: SweepContext = { sourceId: "acli", repoRoot: testTempRoot(), signal: new AbortController().signal };
 function scripted(...answers: RunResult[]) {
   const calls: { bin: string; args: string[]; opts: Parameters<JiraAcliDeps["run"]>[2] }[] = [];
   const deps: JiraAcliDeps = {
@@ -37,7 +37,7 @@ function scripted(...answers: RunResult[]) {
 
 const notice: WritebackNotice = {
   externalId: "MC-2", externalUrl: "https://example.atlassian.net/browse/MC-2",
-  taskTitle: "Repair parser", prUrl: "https://github.com/acme/demo/pull/9", repoRoot: tmpdir(),
+  taskTitle: "Repair parser", prUrl: "https://github.com/acme/demo/pull/9", repoRoot: testTempRoot(),
   signal: "task-completed", action: "annotate", outcome: "Completed parser repair", observedAt: 1,
 };
 const ok = (body: unknown = {}) => stubRun({ code: 0, stdout: JSON.stringify(body), stderr: "" });
@@ -484,7 +484,7 @@ test("an abandoned operation starts no subprocess", async () => {
   assert.equal(calls.length, 0);
 });
 
-const home = mkdtempSync(join(tmpdir(), "mission-acli-"));
+const home = tempDir("mission-acli-");
 after(() => rmSync(home, { recursive: true, force: true }));
 test("production dispatch, linked reads and preflight use only the redirected acli, without a local fallback", async () => {
   const agents = writeFakeAgents(home);

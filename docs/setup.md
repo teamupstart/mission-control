@@ -16,7 +16,9 @@ requires macOS 12+ on Apple Silicon and native GitHub CLI authentication, withou
 npm, npx, Git or local compilation. Signed release qualification is still pending; unavailable
 assets refuse installation. Existing source installs can be replaced in place by this command
 once assets are published, preserving their state and destination. Copied signed DMGs can enroll
-through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
+through **Enroll this copied app** in the footer of **Settings → Setup**. The footer also shows
+the managed installation path and offers **Check for updates**. Reopen an enrolled app to enable
+automatic stable and exact-SHA alpha binary updates.
 
 Switching on Alpha updates also switches on **Enable all feature flags**, so every preview
 feature comes on while keeping any you switched off. Adjust them in **Settings > Feature flags**.

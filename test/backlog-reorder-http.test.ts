@@ -1,10 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * `POST /api/tasks/:id/reorder` - the one route that writes a backlog rank, and therefore
@@ -25,7 +24,7 @@ import type { ReviewManager } from "../src/server/reviews.ts";
  * real state dir under the test runner, and a hoisted import would defeat this preamble.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-backlog-reorder-"));
+const home = tempDir("mission-backlog-reorder-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");

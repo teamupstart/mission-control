@@ -26,8 +26,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -56,6 +55,7 @@ import {
 import { installDirectoryProblem, userAppsDir } from "../scripts/install-destination.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
+import { tempDirAsync } from "./temp-root.mjs";
 
 const FORK = "someone-else/ai-harness";
 
@@ -234,7 +234,7 @@ test("the updater-owned clone's former canonical remote is accepted for migratio
 });
 
 test("a privileged updater clone is replaced without depending on permissions inside it", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-privileged-clone-"));
+  const root = await tempDirAsync("mission-privileged-clone-");
   const origin = join(root, "origin");
   const clone = join(root, "app-src");
   const locked = join(clone, "src", "server", "setup");
@@ -496,7 +496,7 @@ test(
   // guards is a missing CALL: the pure rule can be perfect while nothing consults it. The app
   // takes this pin when the build is verified and cannot look again after it quits, so the
   // script is the last reader before the swap.
-  const root = await mkdtemp(join(tmpdir(), "mission-staged-pin-"));
+  const root = await tempDirAsync("mission-staged-pin-");
   t.after(() => rm(root, { recursive: true, force: true }));
   const bundle = join(root, "staged", "Mission Control.app");
   const appsDir = join(root, "apps");
@@ -1420,7 +1420,7 @@ test("the privileged shell transaction tolerates a failed post-swap retention st
     return;
   }
 
-  const root = await mkdtemp(join(tmpdir(), "mission-bundle-retention-"));
+  const root = await tempDirAsync("mission-bundle-retention-");
   const sourceBundle = join(root, "source.app");
   const appPath = join(root, "Mission Control.app");
   const staged = join(root, ".incoming");
@@ -1467,7 +1467,7 @@ test("the real writability check does not demand a rewritable outgoing bundle", 
     return;
   }
 
-  const appsDir = await mkdtemp(join(tmpdir(), "mission-bundle-unwritable-"));
+  const appsDir = await tempDirAsync("mission-bundle-unwritable-");
   const sourceBundle = join(appsDir, "source.app");
   const appPath = join(appsDir, APP_BUNDLE_NAME);
   const locked = join(appPath, "Contents");

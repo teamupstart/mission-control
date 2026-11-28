@@ -354,7 +354,7 @@ Their earlier versions remain available with their original review graphs and co
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks No-Mistakes Review - its six stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its seven stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -381,6 +381,10 @@ Version 22 inserts optional YAML-enabled CodeRabbit at stage 2, moving these Per
 stages 3, 4 and 5. Earlier versions retain their original numbering.
 Each group runs in parallel behind its own All-pass Join. Every fail returns to the session for
 repair, and the Pull Request action does not run until all three Persona stages pass.
+Version 23 adds the [Local Inspector](#local-inspector-command-preview) as stage 6, the last
+stage before the Pull Request action, so it reviews content every other reviewer already
+accepted. With Local review off the stage skips with a note and version 23 behaves as
+version 22. See [Local review replaces the GitHub round](#local-review-replaces-the-github-round).
 
 Test Coverage Judge assesses whether the submitted tests appropriately cover changed material
 executable behavior through meaningful happy-path, boundary, and exception assertions. It traces
@@ -718,6 +722,35 @@ input. Mission Control still captures and seals that same-round child for crash 
 history, but it does not apply criterion-mapped readiness, deliver an evidence-repair packet, or
 create a Persona or Check attempt. An action with any reachable Persona or Check keeps the normal
 fresh-evidence rule.
+
+A restart or an update can leave the bound session `exited`, or not yet restored, while an
+action is waiting on its turn. A terminal session also reads `exited` for a few seconds whenever
+a discovery sweep misses its process, until the next sweep finds it again. The action does not
+block on that. While the binding stays active and names that session, the action keeps waiting
+for up to ten minutes for it to come back, and nothing advances while the session is away. Each
+return starts the ten minutes over, so separate short misses never add up to a block. If the
+session is still gone after ten minutes, the run blocks with **action did not finish**
+(`session_lost`). That block spends no repair round, and the run page says the action is checked
+again on its own rather than that the review is stopped for good.
+
+The ten minutes last only as long as the binding does. A session that is really removed, rather
+than briefly missed, ends it sooner: a terminal session left out of discovery for longer than
+its eight-second exit linger, or a session that ends for good, is evicted, and eviction orphans
+its binding. The run is blocked straight away (**session gone**), and the action then blocks as
+`session_lost` because the binding no longer names its session. Neither the automatic re-check
+nor **Check the action again** applies there, because both need an active binding. Reattach the
+workflow to a live session or cancel the run.
+
+The re-check follows the binding, not the conversation. When the session the binding names is
+running again in the same conversation, Mission Control checks the action again by itself. So
+does a terminal successor adopted through **Continue in terminal**, because the binding moves to
+it. In either case the run continues from the delivery, pickup and turn it had already recorded,
+and the instruction is never typed a second time. A conversation resumed under a new session
+any other way does not move the binding, so it does not clear the block. The run's next move is
+**Check the action again**, offered through `retry`, which spends no repair round and stays
+available even when every round is spent. It does the same re-check by hand, and refuses with a
+reason while the bound session is still away. Resubmitting for fresh evidence is offered too,
+but only while the run has a repair round left.
 
 Publishing snapshots the action exactly as it snapshots a Persona - name, description,
 instruction, required skill, completion, source id and source revision. Editing or archiving
@@ -1721,6 +1754,24 @@ infrastructure retry starts a new bounded operation. Provider token or quota exh
 pauses immediately in `provider_token_exhausted` and shows the error to the operator. Local CLI
 timeouts, process failures, parse errors, and contract violations keep their existing bounded
 policy. Rejected responses remain inspectable on the attempt.
+
+A host that sleeps mid-call does not spend that budget. Model call timeouts count only time the
+host was awake, so a Mac that idle-sleeps on battery no longer times a call out on the next wake.
+A Persona call that fails anyway while the host slept through it, for example because its
+connection dropped, is recorded as `persona_host_suspended` and retried about five seconds later.
+When the attempt has frozen review input, the retry reuses that input and consumes no correction
+execution. An older attempt without frozen review input is retried the same way without spending
+one of the node's three infrastructure attempts. Every such call is excused, however many sleeps a
+night brings, because each one needs a newly observed sleep. A token limit still pauses the run at
+once. Checks get similar treatment. A check command's timeout counts only awake time. A check
+whose command could not finish while the host slept through it is retried about five seconds
+later without spending one of the node's three infrastructure attempts: an infrastructure failure
+such as a timeout, a dropped CodeRabbit connection, or an error from the check runner itself. A
+check whose command ran and reported a failure is a verdict, not an infrastructure failure, and is
+not retried. The daemon sees a sleep as a heartbeat arriving more than 30
+seconds late, so an event loop stalled that long counts as one. Session turns are run by the
+agent's own CLI, which Mission Control does not time out or retry.
+[Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep) prevents the sleep altogether.
 Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
 
 The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the
@@ -2158,8 +2209,8 @@ of the route behind it. A parked run offers **Start repair round N**, naming the
 opens; a GitHub Inspector gate waiting on a pull request offers **Ask the session to open a
 PR**, or **Check again** when its immutable policy declines the handoff; a run blocked as
 **PR closed** offers **Check again**, which reads the pull request from GitHub again and lifts
-the block only if it is open; a run blocked on an exhausted provider call offers **Retry the
-failed call**.
+the block when it reopens. A merged duplicate can also qualify for the bounded recovery described below.
+A run blocked on an exhausted provider call offers **Retry the failed call**.
 
 The daemon reports allowed run recovery operations with every summary and run response. The
 header, GitHub Inspector controls, and Review drawer use that projection. Renaming a phase does
@@ -2476,11 +2527,15 @@ A check runs in a **pooled worktree**, and a check that times out is terminated 
 group. When that group cannot be proven gone, the worktree cannot be handed back, and the run
 blocks rather than reporting a result it cannot account for - something may still be writing
 into the tree the verdict came from. The run reads **Blocked**, phase `check_cleanup_unresolved`.
+The same phase covers a failed hand-back after the check process has exited. If
+`git ls-remote --symref origin HEAD` exceeds its 30-second deadline while refreshing the pool's
+default branch, the attempt reports a network probe timeout.
 
-That block is meant to clear itself, and now does. The pool's reclamation pass keeps asking
-whether the group has gone and hands the tree back when it can prove it; on the next sweep the
-run **resumes on its own** - the retry the block withheld is scheduled against the same
-evidence and the same round, and the timeline records **Check cleanup resolved**. A node that
+The pool's reclamation pass checks for remaining processes when their exit is uncertain and
+retries failed hand-backs with backoff. Once the lease is accounted for, the next workflow
+sweep schedules the retry against the same evidence and round, and the timeline records
+**Check cleanup resolved**. A CodeRabbit attempt withheld for worktree cleanup reports the
+hand-back diagnostic and returns its execution allowance before the retry. A node that
 had already spent every infrastructure attempt moves to `infrastructure_error` instead, which
 is the phase **Retry provider call** belongs to.
 
@@ -2615,6 +2670,16 @@ pre-write refusal can be retried explicitly; a lost or possibly-landed write bec
 **Delivery uncertain** and is never sent again automatically. Inspect the pane, then either
 mark it delivered or type the required confirmation to discard it and create a new repair
 round.
+
+A completed review can continue to own the author's CI turns on the primary checkout. When
+the confirmed Pull Request action includes CI follow-through, a pending check observation
+can extend its handoff by one consecutive generation. Each claim verifies the action's own
+prompt, the current intent, the adopted branch and exact reviewed head, and the accepted
+checkout content. From the first publication handoff onward, the daemon verifies the full
+commit ID before the checkout probe and again when it spends the handoff. A different
+commit starts a fresh review even if it has the same tree. Another pending observation
+can extend the handoff again. A passing observation spends the final handoff. An explicit
+**Run again** starts a separate review.
 
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
@@ -2932,7 +2997,9 @@ full resubmission requirement still applies. The durable adoption also preserves
 Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
 **Recheck GitHub Inspector** only appears while the run is in a live gate wait that the
 evaluator can process. It reevaluates the current durable observation and remains waiting until
-GitHub Inspector's normal sweep has seen a new head. A spent blocked run has no working recheck,
+GitHub Inspector's normal sweep has seen a new head. GitHub Inspector no longer sweeps a pull
+request it has read closed or merged, so a recheck of a wait on one also reads it from GitHub
+directly (see **PR closed** below). A spent blocked run has no working recheck,
 so the dashboard omits it and the daemon refuses a direct request without writing a recheck
 audit event.
 
@@ -2945,10 +3012,35 @@ never as a closed one. A run already blocked as **PR closed** recovers when its 
 seen open again. While GitHub Inspector still polls the pull request, its next poll lifts the
 block. GitHub Inspector stops polling a pull request once it reads it closed, so **Check again**
 on the run page reads the pull request from GitHub itself: an open answer resumes polling and
-lifts the block, a closed or merged answer leaves it, and a failed read leaves it and is recorded
+lifts the block. A closed or merged answer ordinarily leaves it in place. A failed read is recorded
 on the run's timeline. If GitHub cannot be reached, a pull request whose last read was open
 still recovers. Recovery restores the wait the block interrupted, including the repair-push
 wait, without a full restart or another Persona round.
+
+A pull request can also finish before the gate hears about it: it merges while the workflow's
+Pull Request action is still settling, or the daemon restarts after GitHub Inspector read it
+closed. GitHub Inspector has already stopped polling it, so no fresh observation will arrive.
+When the gate's own pinned pull request is retired on a read that said closed or merged, or
+because Shipping merged it, the gate blocks as **PR closed** instead of waiting. The run's
+timeline records that the block came from the retired record and whether the closure
+preceded gate entry. The gate checks this when it opens, at every daemon start, and on
+**Check again**. **Check again** on such a wait also reads the pull request from GitHub, so a
+pull request that was reopened resumes polling and the wait comes back. A merge is never a
+pass: the run is not completed, no review is waived, no finding is cleared, and the task and
+its session stay as they were. A retired record whose last read did not say the pull request
+finished, or one that is not the pull request the gate pinned, proves nothing, and the run
+keeps waiting until **Check again** reads GitHub.
+
+For a ship or bugfix task stranded by a duplicate automatic review, use **Check again** on the
+**PR closed** run. Recovery requires a fresh GitHub read of the merged head, a complete green
+page of check runs and a successful final check that was running at the preceding handoff
+and finished by the duplicate claim. The daemon compares the two consecutive Foreman claims,
+the delivered CI action and prompt receipts, pinned workflow, intent, completed first-round
+publications, accepted trees, clean live Inspector review and current checkout. At settlement
+it rereads human decisions, including transcript instructions received since the block. An ambiguous
+history, unresolved finding, operator hold or active session blocker keeps the run open.
+Recovery records both submission IDs and the CI interval in the duplicate's timeline. The
+ordinary task settlement rules then evaluate the merged episode.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
@@ -3121,6 +3213,84 @@ focus returns after dialogs, and reduced-motion preferences disable canvas and p
 At narrow widths the canvas stays primary and Library and Properties become mutually exclusive
 drawers.
 
+## Local Inspector Command (preview)
+
+Enable **Local Inspector** in Settings > Feature flags, then turn on **Review in the workflow
+before the pull request opens** in Settings > GitHub Inspector. Add **Command · Local Inspector**
+to a custom or duplicated workflow before its **Pull Request** action, then publish and bind the
+new version. The Inspector must be on, and Workflow Commands must be enabled for the repository
+through Trust.
+
+Local Inspector uses the Inspector's provider and model. On both Codex and Claude it has read
+access to the exact submitted checkout through the [read-only repository workload](repository-review-workloads.md),
+including staged, unstaged and nonignored untracked files within the repository policy. The review
+prompt directs the Inspector to read the repository brief and applicable standards from that
+checkout, skip optional guidance confirmed absent, and review the changes against the workflow
+goal. Before accepting a verdict, the stage requires a successful repository query that returns
+at least one item.
+The run records the publication tree, base ref, merge base, threshold and outcome. Open findings
+carry forward on the next submission and are available under **Load findings**. Closing a
+finding outside the new diff requires an audited read of its file or confirmation that its
+exact path is absent from the submitted worktree.
+
+The defaults in **Library > Commands > Local Inspector** are **Major and above**, **10 executions
+per run**, a **10-minute timeout** and **Block for operator action** on exhaustion. Lower-severity
+findings are advisory. Blocking findings return a repair packet to the session. The session can
+repair and resubmit before the workflow opens a pull request or runs CI. The workflow's repair
+limit applies to those rounds. A repository review spends an execution once its provider
+returns a response, even if the stage then rejects that response: a malformed verdict, a verdict
+without a verified repository query, a failed audit, an interruption, or findings that cannot be
+retained. A review that fails before its provider returns spends nothing, and its retry runs on the
+same allowance: for example an unavailable provider, or a daemon restart while the provider is
+still running. A restart after the provider returned still spends the execution. If the
+allowance runs out with blocking findings still open or a review result that could not be
+processed, the stage pauses for operator action even when its exhaustion policy is **Skip**.
+
+Submission capture records whether local review is enabled. When the preview, Inspector or
+local review is off, the stage skips with a note. An enabled stage blocks for operator action
+if the repository lacks Commands permission, the submitted worktree is unavailable, the
+provider fails, the diff is oversized, or findings cannot be retained.
+
+### Local review replaces the GitHub round
+
+No-Mistakes Review version 23 places the Local Inspector last before the Pull Request action
+and keeps version 22's Inspector completion gate. With Local review on, the gate after the pull
+request is a check, not a review: it completes the run when the submission's Local Inspector
+attempt **passed** (not skipped) and the open pull request's head has the Git tree that review
+read, on the base branch it compared against. The match is by tree and base, not by commit, so a
+re-created commit with the same tree still matches. No remote model call runs and nothing is
+posted, so no Inspector findings send the session back to push a repair. In the end-to-end spec
+`e2e/specs/local-review-gate.spec.ts`, run against a fake GitHub that starts one CI run per new
+pull request head, the reviewed change reached GitHub with one push and one CI run; a later push
+with different content started a second run and took the GitHub path. The Completion tab says
+**Reviewed locally** and lists the Local Inspector's findings, and the gate's
+`inspector_gate_clean` event records `path: "local"` (or `"github"` on the GitHub path).
+
+The GitHub Inspector still sweeps the pull request for state, head, checks, CodeRabbit
+follow-up, the stack lifecycle and Shipping. For a matched head it starts no review, answers no
+thread and posts nothing. Under a Live Inspector it records the head with review posture
+`local`; in Dry run, or in a repository not on its list, it records the current posture, so Dry
+run never produces a `local` head. Switching to Live records `local` on the next sweep, again
+without a GitHub review. The workflow manager owns the match, and the gate and the worker both
+ask it.
+
+Every other head keeps today's GitHub review, so no pull request silently loses review:
+
+- a later push whose tree differs, such as a CI repair or a conflict merge. The gate waits on
+  `head_mismatch` for a full workflow round as it always has;
+- a run whose Local Inspector stage skipped, failed or blocked, and any workflow version
+  without the stage, including bindings pinned to version 22 or earlier;
+- a pull request opened outside a workflow.
+
+A repository holding the Shipping merge grant takes the local path like any other. Shipping
+accepts a head recorded `local` as merge provenance while the GitHub Inspector is Live, Local
+review is on, and the match still holds for that exact head. See
+[It needs the GitHub Inspector, fully on](inspector-and-shipping.md#it-needs-the-github-inspector-fully-on).
+
+A run whose repair budget ends while the Local Inspector still fails stops at `round_limit`
+before the Pull Request action, so the gate is never reached and no GitHub review starts for
+it. Local Inspector findings stay run data. They are not copied into the Inspections table.
+
 ## Local CodeRabbit Command
 
 The `coderabbit` Library Command works in any custom workflow evaluation stage, including
@@ -3156,11 +3326,14 @@ The locally observed `origin/HEAD` supplies the default base. If it is unavailab
 explicit base in Library.
 
 The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
+CodeRabbit nodes in the same run take turns. A scheduled retry has priority over queued
+CodeRabbit nodes, including during backoff, so it can use the returned slot.
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
-Exhaustion before a node starts reviewing skips with a visible warning, even if the tool is
-unavailable. A node whose latest non-skipped review in this run remains incomplete blocks on
-exhaustion, including on a fresh submission; it cannot earn approval by spending its allowance.
+Exhaustion before a node starts reviewing skips with a warning above the pipeline for that
+round, even if the tool is unavailable. A node whose latest non-skipped review execution in
+this run remains incomplete blocks on exhaustion, including on a fresh submission. It cannot
+earn approval by spending its allowance.
 A later complete review clears that condition. To recover from an exhausted incomplete review,
 explicitly raise the allowance in Library > Commands, then submit a new round to capture it.
 Retrying the same submission keeps its frozen allowance. YAML-enabled reviews with
@@ -3176,11 +3349,13 @@ When the provider explicitly marks an error as `errorType: connection` and `reco
 Mission Control automatically retries the same step and captured comparison, up to three total
 attempts. The delays are 30 and 60 seconds plus up to 50% jitter; a longer vendor wait takes
 precedence, including a deadline extended by another node after the retry was scheduled.
-Pending retries survive daemon restart. Every launched attempt spends the existing
-shared review allowance, and retries never authorize extra credits. Missing completion,
-authentication, usage and credit errors do not qualify. Exhaustion retains the connection cause
-and asks the operator to inspect output and retry after connectivity recovers. A heartbeat or
-partial review never satisfies the gate.
+Pending retries survive daemon restart. The shared allowance reserves a slot during execution
+and returns it when the runtime reports an infrastructure failure (including worktree hand-back)
+or the provider confirms a recoverable disconnect. A launched review with missing completion,
+authentication, usage or credit errors still spends its slot. This accounting is local to
+Mission Control. Retries never authorize extra vendor credits. Reaching the retry limit retains
+the connection cause and asks the operator to inspect output and retry after connectivity
+recovers. A heartbeat or partial review never satisfies the gate.
 
 CodeRabbit reviews the same commit as the other Commands. An uncommitted submission is reviewed
 through its review snapshot, a commit of exactly the captured publication content parented on HEAD, so a ship
@@ -3193,6 +3368,14 @@ resolved base tip and merge-base. If resolution fails, correct local refs or bas
 same submission. Later ref movement cannot rewrite a successfully pinned comparison. Reviews run
 in the existing commit-pinned supervised lease with `review --agent --gate <severity>
 --committed --base-commit <merge-base>`.
+
+A repair round can reuse the same node's latest non-skipped review execution in the run when it passed
+with zero findings and the pinned comparison is identical. The pass cites the original attempt
+for downstream Personas and spends no execution allowance, even after the allowance is
+exhausted. A changed head, base or review
+configuration requires a fresh review, as does an explicit `--fresh` command. Reviews with
+findings, incomplete reviews and skips never supply a reusable pass. A refusal before the
+review starts leaves previous review evidence available once the preflight problem is fixed.
 
 A complete gate, explicit full coverage and matching exit code pass or return findings for
 repair. The CLI reports coverage in one of two shapes: CLI 0.9.1 prints an unreviewed-file count,

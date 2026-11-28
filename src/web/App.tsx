@@ -10,14 +10,20 @@ import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { RecentlyHeard } from "./components/RecentlyHeard.tsx";
+import { useVoiceSurface, VoiceCardOutlet, voicePortal } from "./components/VoiceFloatingSurface.tsx";
+import { VoiceCardHost } from "./components/VoiceCardHost.tsx";
+import { launchResident } from "./residents/launch.ts";
 import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
-import { VOICE_FLAG } from "@shared/voice.ts";
+import { VOICE_FLAG, voiceCapable, voiceCardCallSignMode, voiceCardsShowSpokenNames } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
+import { useVoiceOpenCards, VoiceAnswersContext } from "./lib/voice-open-cards.ts";
+import { VoiceHintsContext } from "./lib/agent-names.ts";
 import { NO_SPOKEN_NAMES, VoiceRosterContext } from "./lib/voice-roster.ts";
-import { withCurrentReferenceNames } from "@shared/display-name.ts";
+import { sessionCallSign, withCurrentReferenceNames } from "@shared/display-name.ts";
 
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -67,6 +73,7 @@ import type { ReportPublishState } from "./lib/sessionReports.ts";
 import { AttentionInbox, type InboxReportControls, type PinnedReport } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
+import { newRequestId } from "./lib/request-id.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import {
   LaunchFailureProvider,
@@ -408,8 +415,12 @@ export function App(): React.JSX.Element {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    shapingSignIns,
     voice,
-    voiceCards,
+    voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
+    fadingVoiceCards,
+    setVoiceCardRetention,
+    dismissVoiceCard,
     acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
@@ -433,8 +444,15 @@ export function App(): React.JSX.Element {
     latestSessionTransfer,
   } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
-  const { route, navigate, replace, pendingRoute, confirmPending, cancelPending } =
+  const { route: requestedRoute, navigate, replace, pendingRoute, confirmPending, cancelPending } =
     useWorkflowRoute(workflowDirty);
+  const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
+  // The initial flag defaults precede the snapshot, including on an enabled shell deep link.
+  const disabledVoiceRoute = requestedRoute.page === "voice-card" && hasSnapshot && !spokenNames;
+  const route = disabledVoiceRoute ? { page: "fleet" as const } : requestedRoute;
+  useEffect(() => {
+    if (disabledVoiceRoute) replace({ page: "fleet" });
+  }, [disabledVoiceRoute, replace]);
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest, buffered, returning: returningFromAway } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
@@ -452,7 +470,6 @@ export function App(): React.JSX.Element {
     [residentRuns, residentProfiles],
   );
   // Call signs and reference names are voice's names: they name an agent only while it is on.
-  const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
   const voiceConfig = useVoiceConfig(spokenNames && route.page === "settings" && route.category === "voice");
   // Muted report authors: left out of the fold and its to read figure, and never notified.
   const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
@@ -483,6 +500,7 @@ export function App(): React.JSX.Element {
   });
   const { bindings } = useKeybindings();
   useEffect(() => {
+    if (route.page === "voice-card") return;
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
@@ -527,7 +545,13 @@ export function App(): React.JSX.Element {
   const gearPhrase = gearDotPhrase(gearDot);
   // Storage's size and free-space warnings, as a desktop notification when the operator asked.
   useStorageNotifications(storageHealth);
-  const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
+  const voiceHints = spokenNames && !!voice && voice.mode !== "off";
+  useVoiceOpenCards(voiceHints && connected ? voiceWindowId : undefined, route.page !== "voice-card");
+  const [reviewRequest, setReviewRequest] = useState<{ sessionId: string; questionId?: string } | null>(null);
+  const reviewSessionId = reviewRequest?.sessionId ?? null;
+  const setReviewSessionId = useCallback((sessionId: string | null) => {
+    setReviewRequest(sessionId ? { sessionId } : null);
+  }, []);
   // The entry point can ask for initial focus on a conversation's question. The inbox still
   // renders the live attention fold.
   const [inbox, setInbox] = useState<{ focusSessionId: string | null } | null>(null);
@@ -634,7 +658,7 @@ export function App(): React.JSX.Element {
     onReply: async (report, text) => {
       const result = await api.replyToReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not send the reply";
-      clearReportDraft(report.rootId);
+      clearReportDraft(report.rootId, text);
       setOpenReportId((current) => (current === report.id ? null : current));
       refreshPinned(report.id);
       return null;
@@ -642,7 +666,7 @@ export function App(): React.JSX.Element {
     onFollowUp: async (report, text) => {
       const result = await api.followUpReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not start the follow-up task";
-      clearReportDraft(report.rootId);
+      clearReportDraft(report.rootId, text);
       setOpenReportId((current) => (current === report.id ? null : current));
       refreshPinned(report.id);
       return null;
@@ -716,6 +740,12 @@ export function App(): React.JSX.Element {
   // edit made anywhere else - or the task being dispatched out from under the modal - is seen
   // here rather than shadowed by a copy taken at open time.
   const [dispatchRequest, setDispatchRequest] = useState<DispatchRequest | null>(null);
+  const pendingVoiceFollowUp = useRef<string | null>(null);
+  useEffect(() => () => { pendingVoiceFollowUp.current = null; }, [spokenNames]);
+  const requestDispatch = useCallback((request: Parameters<typeof setDispatchRequest>[0]) => {
+    pendingVoiceFollowUp.current = null;
+    setDispatchRequest(request);
+  }, []);
   const [reportOpen, setReportOpen] = useState(false);
   useEffect(() => {
     if (reportOpen) featureVisit("report", "open", "reports");
@@ -910,6 +940,37 @@ export function App(): React.JSX.Element {
     },
     [navigate],
   );
+  const standalone = route.page === "voice-card";
+  const desktopVoice = spokenNames && !standalone && !!window.missionDesktop?.isDesktop;
+  const trayHistory = desktopVoice && !!window.missionDesktop?.onRecentlyHeard;
+  const preferredPlacement = useUiConfig().voice.confirmation;
+  const voicePlacement = desktopVoice && voiceCapable(voice, "floating-windows") ? preferredPlacement : "toast";
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const closeTrayHistory = useCallback(() => setHistoryOpen(false), []);
+  const { root: pillRoot, requestOpen: requestPill } = useVoiceSurface("pill", voicePlacement === "pill");
+  const { root: popRoot, requestOpen: requestPopover } = useVoiceSurface("popover", voicePlacement === "popover" || (trayHistory && historyOpen), closeTrayHistory);
+  const previousCards = useRef(voiceCards);
+  useEffect(() => {
+    const previous = previousCards.current;
+    previousCards.current = voiceCards;
+    if (![...voiceCards.keys()].some(id => !previous.has(id))) return;
+    if (voicePlacement === "pill") requestPill();
+    if (voicePlacement === "popover") requestPopover();
+  }, [voiceCards, voicePlacement, requestPill, requestPopover]);
+  const openTrayHistory = useCallback(() => { setHistoryOpen(true); requestPopover(); }, [requestPopover]);
+  const surfaceRoot = voicePlacement === "popover" ? popRoot : voicePlacement === "pill" ? pillRoot : null;
+  useEffect(() => {
+    if (!trayHistory) { setHistoryOpen(false); return; }
+    return window.missionDesktop?.onRecentlyHeard?.(openTrayHistory);
+  }, [trayHistory, openTrayHistory]);
+  useEffect(() => {
+    const child = popRoot?.ownerDocument.defaultView;
+    if (!historyOpen || !child) return;
+    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") closeTrayHistory(); };
+    child.addEventListener("blur", closeTrayHistory);
+    child.addEventListener("keydown", escape);
+    return () => { child.removeEventListener("blur", closeTrayHistory); child.removeEventListener("keydown", escape); };
+  }, [historyOpen, popRoot, closeTrayHistory]);
   const openVoiceSetup = useCallback(() => openSettingsAnchor("setup", "setup/family-voice"), [openSettingsAnchor]);
   const openForemanTrust = useCallback(
     (): void => openSettingsAnchor("trust", "trust/matrix"),
@@ -1223,7 +1284,14 @@ export function App(): React.JSX.Element {
     [layout, selectedId],
   );
 
-  const closeDispatch = useCallback(() => setDispatchRequest(null), []);
+  const closeDispatch = useCallback(() => requestDispatch(null), [requestDispatch]);
+  const followUpRequest = dispatchRequest?.kind === "new" && dispatchRequest.followUp ? dispatchRequest : null;
+  const closeDispatchOpening = useCallback(() => {
+    setDispatchRequest(current => {
+      const activeFollowUp = current?.kind === "new" && current.followUp ? current : null;
+      return activeFollowUp === followUpRequest ? null : current;
+    });
+  }, [followUpRequest]);
   const closeComplete = useCallback(() => {
     setCompleteSessionId(null);
     setRestartPromptSessionId(null);
@@ -1247,14 +1315,15 @@ export function App(): React.JSX.Element {
    * all the way out rather than dropping back onto a new-dispatch form nobody asked for.
    */
   const openTaskEditor = useCallback((taskId: string) => {
-    setDispatchRequest({ kind: "edit", taskId });
-  }, []);
+    requestDispatch({ kind: "edit", taskId });
+  }, [requestDispatch]);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
-  const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
+  const openDispatch = useCallback(() => requestDispatch(current => current?.kind === "repair-follow-up"
+    ? { kind: "new", followUp: current.followUp } : { kind: "new" }), [requestDispatch]);
   /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
   const openResidentLaunch = useCallback(
-    (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
-    [],
+    (profileId: string) => requestDispatch({ kind: "resident", profileId }),
+    [requestDispatch],
   );
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
@@ -1265,8 +1334,8 @@ export function App(): React.JSX.Element {
    * than an Ensemble the operator did not ask for.
    */
   const launchEnsemble = useCallback((strategyId: EnsembleStrategyId) => {
-    setDispatchRequest({ kind: "ensemble", strategyId });
-  }, []);
+    requestDispatch({ kind: "ensemble", strategyId });
+  }, [requestDispatch]);
   const closeMissions = useCallback(() => {
     setMissionsOpen(false);
     setMissionsTarget(null);
@@ -1446,10 +1515,33 @@ export function App(): React.JSX.Element {
    * The live residents in the order the drawer, the dock and `⌥1`…`⌥9` share. One derivation
    * for the drawer's cards, the jump keys and the palette's resident rows.
    */
-  const residentEntries = useMemo(
-    () => residentDrawerEntries(residentRuns, residentProfiles, sessions),
-    [residentRuns, residentProfiles, sessions],
+  const spokenCardNames = voiceCardsShowSpokenNames(voice);
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles, spokenCardNames),
+    [sessions, residentRuns, residentProfiles, spokenCardNames],
   );
+  const residentEntries = useMemo(
+    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession),
+    [residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession],
+  );
+  // Push-to-talk titles a session's card by its call sign; Always-on keeps the title and draws
+  // the call sign beside it. One map or the other, from the same rule (`voiceCardCallSignMode`).
+  const callSignMode = voiceCardCallSignMode(voice);
+  const allCallSigns = useMemo(() => {
+    const out = new Map<string, string>();
+    if (!callSignMode) return out;
+    for (const session of sessions) {
+      const callSign = sessionCallSign(session);
+      if (callSign) out.set(session.id, callSign);
+    }
+    return out;
+  }, [sessions, callSignMode]);
+  const noCallSigns = useMemo(() => new Map<string, string>(), []);
+  const cardCallSigns = callSignMode === "title" ? allCallSigns : noCallSigns;
+  const cardCallSignElements = callSignMode === "element" ? allCallSigns : noCallSigns;
   // The filter and both card surfaces share each run's feedback across menu and card unmounts.
   const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
   const updateResidentLoopFeedback = useCallback((runId: string, feedback: ResidentLoopFeedback) => {
@@ -2092,7 +2184,10 @@ export function App(): React.JSX.Element {
       delete document.documentElement.dataset[flag];
     }
     closeComplete();
-    closeDispatch();
+    // Tour teardown closes its demo form. The operator's repository lookup and draft
+    // both belong to the follow-up that requested them.
+    setDispatchRequest(current =>
+      current?.kind === "repair-follow-up" || (current?.kind === "new" && current.followUp) ? current : null);
     setReviewSessionId(null);
     navigate(exit?.route ?? snapshot.route);
     setLayout(snapshot.layout);
@@ -2170,7 +2265,7 @@ export function App(): React.JSX.Element {
       else if (!settled) land(exit?.focus ?? "setup:settings-gear");
     };
     requestAnimationFrame(restore);
-  }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout, tourTargets]);
+  }, [cancelPending, closeComplete, navigate, setLayout, tourTargets]);
 
   /**
    * Perform one palette row.
@@ -2710,18 +2805,6 @@ export function App(): React.JSX.Element {
     },
     [],
   );
-  const previousVoiceCards = useRef(voiceCards);
-  useEffect(() => {
-    const messages: string[] = [];
-    for (const card of voiceCards.values()) {
-      if ((card.state === "not-running" || card.state === "failed") && card.detail) {
-        const previous = previousVoiceCards.current.get(card.id);
-        if (previous?.state !== card.state || previous.detail !== card.detail) messages.push(card.detail);
-      }
-    }
-    previousVoiceCards.current = voiceCards;
-    if (messages.length) showFleetActionError(messages.join(" "));
-  }, [voiceCards, showFleetActionError]);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
@@ -2762,6 +2845,26 @@ export function App(): React.JSX.Element {
       }));
     }
   }, [files.ensure, files.select, layout, requestFilesTab]);
+
+  /**
+   * Open one of a session's checkout files from the inbox, from wherever the operator was.
+   *
+   * `focusSession`'s reason, for a file: the inbox opens over any page, and `openSessionPath`
+   * only selects - so from Settings it closed the inbox and left Settings on screen, and a Fleet
+   * filter that excluded the session hid the detail the file opens in. The file opens only once
+   * the move to Fleet is accepted, so a dirty draft's "leave anyway?" still gets its say.
+   *
+   * A stable callback, not a plain function: it reaches every inbox question's `Markdown`,
+   * whose memo compares the link handler by identity, so a new one per App render re-parsed
+   * every open question on every SSE frame.
+   */
+  const openSessionPathOnFleet = useCallback((sessionId: string, path: string): void => {
+    navigate({ page: "fleet" }, (allowed) => {
+      if (!allowed) return;
+      setFilter("");
+      openSessionPath(sessionId, path);
+    });
+  }, [navigate, openSessionPath]);
 
   const commentOnSessionPath = useCallback((sessionId: string, path: string): void => {
     openSessionPath(sessionId, path);
@@ -2925,13 +3028,6 @@ export function App(): React.JSX.Element {
   // reason: the placement moves sessions between `boardColumns` arrays, so it is an input to
   // the one ordering rather than a decision a view makes while drawing.
   const { groupBoardByRepo: groupByRepo, blockedPlacement, blockedFrameCollapsed } = useUiConfig();
-  // Which sessions are residents, joined through their task to the live run that launched
-  // them: the marker and pin from that run's pinned revision. One join, handed to every
-  // layout, and its pins reach `orderSessions` here and in both views from the same map.
-  const residentBySession = useMemo(
-    () => residentMarksBySession(sessions, residentRuns, residentProfiles),
-    [sessions, residentRuns, residentProfiles],
-  );
   const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
   const residentReplacementBySession = useMemo(
     () => residentReplacementsBySession(sessions, tasks, residentRuns),
@@ -2996,8 +3092,8 @@ export function App(): React.JSX.Element {
       : sessions;
     const matched = !fleetQuery ? placed : placed.filter((session) => {
       const mark = residentBySession.get(session.id);
-      if (!mark) return matchesSessionFilter(session, fleetQuery);
-      const residentFields = [mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
+      if (!mark) return matchesSessionFilter(session, fleetQuery, [allCallSigns.get(session.id)]);
+      const residentFields = [mark.listeningTitle ?? "", mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
       if (placement.visitors.has(session.id)) {
         residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
       } else {
@@ -3019,7 +3115,7 @@ export function App(): React.JSX.Element {
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
       awaitingIds, stalledById,
     );
-  }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
+  }, [sessions, placement, fleetQuery, allCallSigns, residentBySession, residentSearchNow, residentActiveHours,
     residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
     pinnedResidents, blockedPlacement, awaitingIds, stalledById]);
   const visible = fleet.sessions;
@@ -3545,11 +3641,11 @@ export function App(): React.JSX.Element {
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
-    ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
+    ? pendingReviews.filter((r) => r.sessionId === modalSession.id && (!reviewRequest?.questionId || r.id === reviewRequest.questionId))
     : [];
   // A menu the session is parked on is answered in the same modal as its reviews: a resident
   // card's menu row opens it, as its review rows do.
-  const modalDialog = modalSession ? activePaneDialog(modalSession) : null;
+  const modalDialog = modalSession && !reviewRequest?.questionId ? activePaneDialog(modalSession) : null;
   const seeWorkPreviewTask = seeWorkTourPreviewTaskId
     ? tasks.find((task) => task.id === seeWorkTourPreviewTaskId) ?? null
     : null;
@@ -3984,6 +4080,8 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    cardCallSignBySession: cardCallSigns,
+    cardCallSignElementBySession: cardCallSignElements,
     residentBySession,
     residentLoopFeedbackFor: (runId) => ({
       value: residentLoopFeedback.get(runId),
@@ -4094,7 +4192,7 @@ export function App(): React.JSX.Element {
   // the bar's content at a fixed width, like a browser minimum font size. Both live in
   // `observeTopbar`, with the reasoning, because telling those apart from the fit's own
   // settling is the subtle part and it belongs beside the fit.
-  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), []);
+  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), [standalone]);
 
   // The palette does NOT close when the page changes - that is the whole difference between
   // it and the settings-only search it replaced. It navigates for a living, and a row that
@@ -4167,7 +4265,7 @@ export function App(): React.JSX.Element {
       // bare-key rebinding must stay behind the typing guard, or that character would open
       // the palette from inside any input.
       if (
-        chord === bindings.settingsSearch &&
+        route.page !== "voice-card" && chord === bindings.settingsSearch &&
         (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
         overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
       ) {
@@ -4420,7 +4518,7 @@ export function App(): React.JSX.Element {
         return;
       }
       if ((chord === "Tab" || chord === "shift+Tab") && (
-        target?.closest(".line-dock") || (inIdleSections && !target?.closest(".rail-row"))
+        target?.closest(".line-dock, .voice-card, .voice-card-surface") || (inIdleSections && !target?.closest(".rail-row"))
       )) return;
 
       if (readerSession && !typing) {
@@ -5081,6 +5179,48 @@ export function App(): React.JSX.Element {
           />
         );
 
+  useEffect(() => {
+    if (!openVoiceQuestion) return;
+    if (route.page === "voice-card") consumeVoiceQuestion(openVoiceQuestion);
+    else {
+      window.missionDesktop?.revealVoiceDashboard?.();
+      setReviewSessionId(openVoiceQuestion.sessionId);
+    }
+  }, [openVoiceQuestion, setReviewSessionId, consumeVoiceQuestion, route.page]);
+
+  const voiceCardHost = <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
+    surface={route.page === "voice-card" ? route.placement : surfaceRoot && voicePlacement !== "toast" ? voicePlacement : undefined}
+    sound={alertSettings.sound} notifications={alertSettings.notifications}
+    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention, dismiss: dismissVoiceCard,
+      openRecentlyHeard: () => trayHistory ? openTrayHistory() : openSettingsAnchor("voice", "voice/heard"),
+      openQuestion: (sessionId, questionId) => { if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.(); navigate({ page: "fleet" }, allowed => {
+        if (allowed) setReviewRequest({ sessionId, questionId });
+      }); },
+      followUp: async taskId => {
+        const id = newRequestId();
+        pendingVoiceFollowUp.current = id;
+        const superseded = { ok: false, error: "Another Dispatch opening took precedence." };
+        const task = await api.voiceFollowUpRepository(taskId);
+        if (pendingVoiceFollowUp.current !== id) return superseded;
+        if (!task.ok || !task.repoRoot) return { ok: false, error: task.error ?? "The task repository is unavailable." };
+        const repoRoot = task.repoRoot;
+        if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.();
+        return new Promise(resolve => navigate({ page: "fleet" }, allowed => {
+          if (pendingVoiceFollowUp.current !== id) return resolve(superseded);
+          if (allowed) requestDispatch({ kind: "new", followUp: { id, repoRoot } });
+          resolve(allowed ? { ok: true } : { ok: false, error: "Follow-up stayed closed. Your draft is still open." });
+        }));
+      },
+      relaunch: async (target, requestId) => {
+        const profile = residentProfiles.find(p => "resident:" + p.id === target.key);
+        if (!profile) return { ok: false, error: "The resident profile is unavailable." };
+        const { defaultRepoRoot, additionalRepoRoots } = profile.settings.workspace;
+        const result = await launchResident(profile.id, { repoRoot: defaultRepoRoot, additionalRepoRoots, requestId, answerWhen: "accepted" }, { profile });
+        return result.state === "failed" || result.state === "refused" ? { ok: false, error: result.error } : { ok: true };
+      },
+    }} /></VoiceHintsContext.Provider>;
+  const history = <RecentlyHeard roster={voiceRoster} mode={voice?.mode ?? "off"} />;
+
   return (
     <OverlayHost value={overlays}>
       <FeatureFlagsContext.Provider value={featureFlags}>
@@ -5088,7 +5228,8 @@ export function App(): React.JSX.Element {
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
-      <VoiceWindowProvider enabled={spokenNames} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
+      <VoiceWindowProvider enabled={spokenNames && !standalone} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
+      <VoiceAnswersContext.Provider value={voiceHints ? { planFormsByVoice: voice?.planFormsByVoice ?? true, answers: voiceAnswers, windowId: connected ? voiceWindowId : undefined } : null}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
@@ -5098,8 +5239,12 @@ export function App(): React.JSX.Element {
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
         activeRunId={activeTourBinding?.activeRunId ?? null}
       >
-      <ContextMenuHost ref={contextMenuRef} />
-      <div className={`app app-${layout}`}>
+      {!standalone && <ContextMenuHost ref={contextMenuRef} />}
+      <div className={route.page === "voice-card" ? `voice-standalone voice-${route.placement}` : `app app-${layout}`} role={standalone ? "main" : undefined}>
+        {spokenNames && <VoiceCardOutlet root={voiceCards.size ? surfaceRoot : null} placement={voicePlacement}
+          hidden={voicePlacement === "popover" && historyOpen}>{voiceCardHost}</VoiceCardOutlet>}
+        {historyOpen && popRoot && voicePortal(popRoot, <div className="voice-standalone voice-popover">{history}</div>)}
+        {!standalone && <>
         <VoiceIndicator id="edge" />
         <Topbar
           barRef={topbarRef}
@@ -5400,6 +5545,7 @@ export function App(): React.JSX.Element {
               voiceConfig={voiceConfig}
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
+              shapingSignIns={shapingSignIns}
               reportMutes={reportMutes}
               voice={voice}
               sessions={sessions}
@@ -5795,6 +5941,9 @@ export function App(): React.JSX.Element {
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
                   pinned={pinnedBand}
+                  files={files}
+                  // The question stays pending; "to answer" brings the operator back to decide.
+                  onOpenPath={openSessionPathOnFleet}
                 />
               )}
               {/* Open report: an agent report's attached document, from its stored copy. Opened from
@@ -5806,6 +5955,8 @@ export function App(): React.JSX.Element {
               {modalSession && (modalReviews.length > 0 || modalDialog) && (
                 <ReviewModal
                   session={modalSession}
+                  focusQuestion={openVoiceQuestion}
+                  onQuestionFocused={consumeVoiceQuestion}
                   reviews={modalReviews}
                   dialog={modalDialog}
                   onClose={() => {
@@ -5825,33 +5976,6 @@ export function App(): React.JSX.Element {
                   onOpenPath={openSessionPath}
                 />
               )}
-
-              <DispatchLayer
-                opening={dispatchOpening}
-                tasks={tasks}
-                sessions={sessions}
-                personas={personas}
-                workflowSummaries={workflowSummaries}
-                foremanEnabled={foreman.config?.enabled ?? false}
-                harnessesRevision={harnessesRevision}
-                stackingDefault={settingsStatus?.shipping.stacking}
-                pipelinesRevision={
-                  settingsStatus?.pipelines.observedRepoKeys
-                    ? JSON.stringify({
-                        repos: settingsStatus.pipelines.observedRepoKeys,
-                        launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
-                      })
-                    : `count:${settingsStatus?.pipelines.observing ?? 0}`
-                }
-                onClose={closeDispatch}
-                onOpenSchedule={onOpenSchedule}
-                onOpenLaunchFix={openLaunchFix}
-                onOpenEnvironmentFix={openEnvironmentFix}
-                onEnsembleLaunched={openEnsembleRun}
-                residentProfiles={residentProfiles}
-                onEditResidentProfile={(profileId) =>
-                  navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
-              />
 
               <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
 
@@ -5990,12 +6114,48 @@ export function App(): React.JSX.Element {
         />
         <VoiceIndicator id="floating" />
         <VoiceIndicator id="status-line" />
+        </>}
+        <DispatchLayer
+          opening={dispatchOpening}
+          suspended={standalone}
+          repairFollowUpId={dispatchRequest?.kind === "repair-follow-up" ? dispatchRequest.followUp.id : undefined}
+          tasks={tasks}
+          sessions={sessions}
+          personas={personas}
+          workflowSummaries={workflowSummaries}
+          foremanEnabled={foreman.config?.enabled ?? false}
+          harnessesRevision={harnessesRevision}
+          stackingDefault={settingsStatus?.shipping.stacking}
+          pipelinesRevision={
+            settingsStatus?.pipelines.observedRepoKeys
+              ? JSON.stringify({
+                  repos: settingsStatus.pipelines.observedRepoKeys,
+                  launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
+                })
+              : `count:${settingsStatus?.pipelines.observing ?? 0}`
+          }
+          onClose={closeDispatchOpening}
+          onOpenSchedule={onOpenSchedule}
+          onOpenLaunchFix={fix => {
+            if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+            openLaunchFix(fix);
+          }}
+          onOpenEnvironmentFix={check => {
+            if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+            openEnvironmentFix(check);
+          }}
+          onEnsembleLaunched={openEnsembleRun}
+          residentProfiles={residentProfiles}
+          onEditResidentProfile={(profileId) =>
+            navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+        />
       </div>
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
       </InboxReplyBoxesContext.Provider>
       </VoiceRosterContext.Provider>
+      </VoiceAnswersContext.Provider>
       </VoiceWindowProvider>
       </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>

@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -10,6 +9,7 @@ import type { MissionSchedule } from "../src/shared/schedules.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { lineStage } from "../src/shared/line.ts";
 import { mkEnsembleSummary, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the strip is the fleet page's permanent header, so it has exactly two
 // ways to be wrong on the wire, and this file pins both.
@@ -30,7 +30,7 @@ import { mkEnsembleSummary, mkTask } from "./helpers/session-fixture.ts";
 // first - that is what `settle()` is, and a missing `await` on it asserts on a fold that has
 // not run.
 
-const home = mkdtempSync(join(tmpdir(), "mission-line-sse-"));
+const home = tempDir("mission-line-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

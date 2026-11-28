@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The one file that touches the REAL `@earendil-works/pi-coding-agent`.
 //
@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 // cannot exist, which fails in the local catalog before any auth or network path is
 // reached.
 
-const home = mkdtempSync(join(tmpdir(), "pi-vendor-seam-"));
+const home = tempDir("pi-vendor-seam-");
 process.env.HARNESS_HOME = join(home, "state");
 const agentDir = join(home, "agent");
 process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -48,15 +48,25 @@ test("a custom Mission home loads its checked extension alongside normal Pi disc
   const tools = (names: string[]) => `pi => { for (const name of ${JSON.stringify(names)}) pi.registerTool({
     name, label:name, description:name, parameters:{type:'object',properties:{}},
     execute:async()=>({content:[{type:'text',text:'fixture'}]}) }); }`;
-  writePiIntegration(integration, piMetadataSource.replace("() => {}", tools(["create_task", "dispatch_task"])));
+  writePiIntegration(integration, piMetadataSource.replace("() => {}", tools(["terminal_only_fixture"])) +
+    `
+export function managedMissionExtension(caller, env) {
+      if (caller.sessionId !== "sdk:pi-fixture" || caller.locator !== "private-locator" || env.FIXTURE !== "bridge") {
+        throw new Error("managed Mission bridge received the wrong launch binding");
+      }
+      return ${tools(["create_task", "dispatch_task"])};
+    }
+`);
   process.env.MISSION_PI_EXTENSION = join(integration, "extension.js");
   process.env.MISSION_MCP_SERVER = join(integration, "mcp-server.mjs");
   const link = piExtensionLinkPath();
   assert.ok(link.startsWith(join(home, "state")), "the checked extension is outside Pi's discovery directory");
   const discovered = join(agentDir, "extensions", "normal-discovery.js");
+  const defaultMissionLink = join(agentDir, "extensions", "mission-test.js");
   t.after(() => {
     rmSync(link, { force: true });
     rmSync(discovered, { force: true });
+    rmSync(defaultMissionLink, { force: true });
     for (const [key, value] of Object.entries(prior)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
@@ -64,6 +74,7 @@ test("a custom Mission home loads its checked extension alongside normal Pi disc
   mkdirSync(dirname(link), { recursive: true });
   symlinkSync(join(integration, "extension.js"), link);
   mkdirSync(dirname(discovered), { recursive: true });
+  symlinkSync(join(integration, "extension.js"), defaultMissionLink);
   writeFileSync(discovered, `export default ${tools(["normally_discovered_tool"])};`);
   assert.equal(await piExtensionHealthyForDispatch(), true, "the extension the daemon checked is healthy");
   const launchedTools: string[][] = [];
@@ -74,11 +85,13 @@ test("a custom Mission home loads its checked extension alongside normal Pi disc
       return created;
     },
   }, { cwd: checkout("mission-extension-runtime"), sessionPath: null, model: null, missionToolsRequired: true,
-    thinkingLevel: null, projectTrust: false, appendSystemPrompt: [], toolEnv: {} });
+    thinkingLevel: null, projectTrust: false, appendSystemPrompt: [], toolEnv: { FIXTURE: "bridge" },
+    missionToolCaller: { sessionId: "sdk:pi-fixture", locator: "private-locator" } });
   try {
     for (const replacement of [false, true]) {
       if (replacement) await runtime.newSession();
       const names = launchedTools.at(-1)!;
+      assert.ok(!names.includes("terminal_only_fixture"));
       for (const name of ["create_task", "dispatch_task", "normally_discovered_tool"]) {
         assert.equal(names.filter((value) => value === name).length, 1, `${name} is available exactly once`);
       }

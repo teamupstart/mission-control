@@ -22,7 +22,7 @@ import { ResidentControlStatus, residentControlBadge } from "./ResidentControlSt
 import { ResidentLoopControls, ResidentLoopStatusLine, type ResidentLoopFeedback, type ResidentLoopFeedbackBinding } from "./ResidentLoopControls.tsx";
 import { residentLoopActions, residentLoopSearchFields } from "./loop-presentation.ts";
 import { ResidentProfileLaunchList } from "./ResidentProfileLaunchList.tsx";
-import { residentAccentStyle, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
+import { residentAccentStyle, residentActionName, residentMarksBySession, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import type { ResidentLaunches } from "./useResidentLaunches.ts";
@@ -46,16 +46,22 @@ export function residentDrawerEntries(
   runs: readonly ResidentRunSummary[],
   profiles: readonly ResidentProfile[],
   sessions: readonly Session[],
+  listening = false,
+  marksBySession = residentMarksBySession(sessions, runs, profiles, listening),
 ): ResidentDrawerEntry[] {
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
   const sessionByTask = new Map<string, Session>();
   for (const session of sessions) if (session.task) sessionByTask.set(session.task.id, session);
-  return runs.map((run, index) => ({
-    run,
-    mark: residentSessionMark(run, profileById.get(run.profileId) ?? null),
-    session: sessionByTask.get(run.taskId) ?? null,
-    shortcut: index < 9 ? index + 1 : null,
-  }));
+  return runs.map((run, index) => {
+    const session = sessionByTask.get(run.taskId) ?? null;
+    const mark = session && marksBySession.get(session.id);
+    return {
+      run,
+      mark: mark ?? residentSessionMark(run, profileById.get(run.profileId) ?? null, listening),
+      session,
+      shortcut: index < 9 ? index + 1 : null,
+    };
+  });
 }
 
 /**
@@ -120,6 +126,7 @@ export function matchesResidentDrawerFilter(
 ): boolean {
   const { mark, run, session, shortcut } = entry;
   const fields = [
+    mark.listeningTitle,
     mark.name,
     mark.label,
     mark.pin ? "⤒" : null,
@@ -135,8 +142,8 @@ export function matchesResidentDrawerFilter(
       ...residentLoopActions(mark).map(({ label }) => label),
       actionError ?? null,
     );
-    if (mark.controlOtherSessions || session.sessionControlEnabled === true) {
-      fields.push(residentControlBadge(session.sessionControlEnabled === true));
+    if (mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) {
+      fields.push(session.sessionInspectionOnly ? "Read-only inspection" : residentControlBadge(session.sessionControlEnabled === true));
     }
   }
   return matchesEveryWord(fields, query);
@@ -437,6 +444,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
   loopFeedback: ResidentLoopFeedbackBinding;
 }): React.JSX.Element {
   const { mark, session, run, shortcut } = entry;
+  const name = residentActionName(mark, mark.name);
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
   const needsYou = residentEntryAmber(entry);
   // The tone the Board files this session under, so a working resident's card is edged in the
@@ -450,15 +458,15 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
       data-resident-card={session?.id}
     >
       <Tooltip label={session
-        ? `${collapsed ? "Expand" : "Compress"} ${mark.name}; Enter or a double-click opens its conversation`
-        : `${mark.name} is still starting`}
+        ? `${collapsed ? "Expand" : "Compress"} ${name}; Enter or a double-click opens its conversation`
+        : `${name} is still starting`}
       >
         <button
           type="button"
           className="residents-drawer-card-head"
           aria-expanded={session ? !collapsed : undefined}
           aria-current={selected ? "true" : undefined}
-          aria-label={`${mark.name}, ${state.label}`}
+          aria-label={`${name}, ${state.label}`}
           disabled={!session}
           onClick={() => {
             if (!session) return;
@@ -468,7 +476,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
           onDoubleClick={() => session && onOpen(session.id)}
         >
           <ResidentChip mark={mark} tooltip={false} />
-          <span className="residents-drawer-name">{mark.name}</span>
+          <span className="residents-drawer-name">{name}</span>
           <span
             className="residents-drawer-dot"
             style={{ "--tone": `var(--${state.tone})` } as CSSProperties}
@@ -481,7 +489,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
       {session ? (
         <ResidentDrawerCardBody
           session={session}
-          name={mark.name}
+          name={name}
           compressed={collapsed}
           status={status}
           onOpen={() => onOpen(session.id)}
@@ -492,11 +500,11 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
           reviews={residentPendingReviews(session, reviews)}
         >
           <div className="residents-drawer-actions">
-            <Tooltip label={`Open ${mark.name}'s conversation${shortcut !== null ? ` (${residentShortcutLabel(shortcut)})` : ""}`}>
+            <Tooltip label={`Open ${name}'s conversation${shortcut !== null ? ` (${residentShortcutLabel(shortcut)})` : ""}`}>
               <button
                 type="button"
                 className="btn residents-pop-action"
-                aria-label={`Open ${mark.name}`}
+                aria-label={`Open ${name}`}
                 onClick={() => onOpen(session.id)}
               >
                 Open
@@ -504,8 +512,8 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
             </Tooltip>
             <ResidentLoopControls mark={mark} feedback={loopFeedback} />
             <span className="residents-pop-spacer" aria-hidden />
-            {(mark.controlOtherSessions || session.sessionControlEnabled === true) && (
-              <ResidentControlStatus session={session} name={mark.name} badge />
+            {(mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) && (
+              <ResidentControlStatus session={session} name={name} badge />
             )}
           </div>
         </ResidentDrawerCardBody>

@@ -11,26 +11,28 @@ if (args[0] === "--version") { console.log(script.old ? "0.9.0" : script.reviewe
 if (args[0] === "auth" && args[1] === "status" && script.authFails) { process.stderr.write("fake coderabbit: auth status crashed\n"); process.exit(1); }
 if (args[0] === "auth" && args[1] === "status") { console.log(JSON.stringify({ type: "status", phase: "auth", authenticated: !script.unauthenticated })); process.exit(0); }
 if (args[0] !== "review" || !args.includes("--agent") || args.includes("--use-credits")) { process.exit(1); }
+let reviewNumber = 0;
+if (script.findingsOnFirstReview || script.connectionFailures) {
+ const calls = readFileSync(`${process.env.MC_E2E_RECORD_DIR}/coderabbit.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line));
+ reviewNumber = calls.filter(call => call.args[0] === "review").length;
+}
 const emit = e => process.stdout.write(JSON.stringify(e) + "\n");
 process.stderr.write("CodeRabbit diagnostic: deliberately not NDJSON\n");
 emit({ type: "review_context", expectedDuration: "15 minutes" });
 const findings = script.longTitles ? Array.from({ length: 8 }, (_, i) => ({
  type: "finding", severity: "major", fileName: "README.md", title: `Finding ${i + 1}: ${"x".repeat(250)}`, comment: "Retain this complete finding",
-})) : script.mode === "findings" ? [
+})) : script.mode === "findings" && (!script.findingsOnFirstReview || reviewNumber === 1) ? [
  { type: "finding", severity: "major", fileName: "README.md", title: "Early retained finding", comment: "Verify the actual behavior before changing it", codegenInstructions: "Inspect the complete retained findings", suggestions: ["untrusted suggestion"], startLine: 1, endLine: 2 },
  { type: "finding", severity: "minor", fileName: "README.md", title: "Advisory retained finding", comment: "Keep this advisory too" },
 ] : [];
 for (const finding of findings) emit(finding);
 if (script.largeRaw) for (let i = 0; i < 40; i++) emit({ type: "future_additive_event", diagnostic: "x".repeat(60000) });
 if (script.mode === "incomplete") { emit({ type: "error", errorType: "rate_limit", retryAfterSeconds: script.retryAfterSeconds ?? 60 }); process.exit(1); }
-if (script.connectionFailures) {
- const calls = readFileSync(`${process.env.MC_E2E_RECORD_DIR}/coderabbit.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line));
- if (calls.filter(call => call.args[0] === "review").length <= script.connectionFailures) {
-  emit({ type: "heartbeat", status: "reviewing" });
-  emit({ type: "error", errorType: "connection", message: "Connection failed: WebSocket closed", recoverable: true,
-   retryAfterSeconds: script.retryAfterSeconds ?? 0 });
-  process.exit(1);
- }
+if (script.connectionFailures && reviewNumber <= script.connectionFailures) {
+ emit({ type: "heartbeat", status: "reviewing" });
+ emit({ type: "error", errorType: "connection", message: "Connection failed: WebSocket closed", recoverable: true,
+  retryAfterSeconds: script.retryAfterSeconds ?? 0 });
+ process.exit(1);
 }
 const threshold = args[args.indexOf("--gate") + 1];
 const blocking = findings.filter(f => ["critical","major","minor","trivial","info"].indexOf(f.severity) <= ["critical","major","minor","trivial","info"].indexOf(threshold)).length;

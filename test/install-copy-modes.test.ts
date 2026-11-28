@@ -2,8 +2,7 @@
 // copy path under the installer's `umask 077` against a bundle at ordinary 0755/0644 modes.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, lstatSync, readdirSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, lstatSync, readdirSync, chmodSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { prepareStagedInstall, installStagedApp, inspectBundle } from '../scripts/install-staged-app.mjs';
 import { prepareInPlaceInstall, runMigration, migrationReceipt } from '../scripts/install-migration.mjs';
@@ -11,6 +10,7 @@ import { spawnBundledUpdateHelper } from '../scripts/update-helper-runtime.mjs';
 import { realApplyOperations, runApplyUpdate } from '../scripts/apply-update.mjs';
 import { waitForBundleExit, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
 import { processFingerprint } from '../scripts/update-process-owners.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 /** Every entry's path and permission bits, which is what the install digest hashes. */
 function bundleModes(bundle: string) {
@@ -53,7 +53,7 @@ function underInstallerUmask(t: test.TestContext) {
 }
 
 function fixture(t: test.TestContext, rename = false) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'install-copy-modes-')));
+  const root = realpathSync(tempDir('install-copy-modes-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const stateDirectory = join(root, 'state'); mkdirSync(stateDirectory);
   const apps = join(root, 'apps'); mkdirSync(apps);
@@ -142,7 +142,7 @@ test('the bundle swap copy keeps the staged modes under the installer umask', (t
 });
 
 test('the helper runtime snapshot copy keeps the source runtime modes under the installer umask', async (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'install-copy-modes-helper-')));
+  const root = realpathSync(tempDir('install-copy-modes-helper-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const stateDirectory = join(root, 'state'); mkdirSync(stateDirectory);
   const runtimeBundle = join(root, 'Runtime source.app');
@@ -162,7 +162,7 @@ test('the helper runtime snapshot copy keeps the source runtime modes under the 
 });
 
 test('the update helper backup and restore copies keep the app at its own modes under the installer umask', (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'install-copy-modes-apply-')));
+  const root = realpathSync(tempDir('install-copy-modes-apply-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const app = join(root, 'Mission Control.app');
   mkdirSync(join(app, 'Contents/Resources/app'), {recursive: true});

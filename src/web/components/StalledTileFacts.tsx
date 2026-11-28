@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useId, useState } from "react";
 import { canMessage } from "@shared/pane.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { Session } from "@shared/types.ts";
@@ -35,7 +35,44 @@ type StalledFactsProps = {
  * Clicks stop at this panel: the tile's own click opens the session, and a fix pressed on a card
  * must not also drill into it.
  */
-export function StalledTileFacts({
+export function StalledTileFacts(props: StalledFactsProps): React.JSX.Element | null {
+  const { session, stall } = props;
+  const { actions, feedback } = useStalledFixes(props);
+  const name = session.name || "this session";
+
+  return (
+    <div
+      className="stalled-facts"
+      role="group"
+      aria-label={`Why ${name} stalled`}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <StalledFactList rows={stalledFactRows(session, stall)} />
+      {actions}
+      {feedback}
+    </div>
+  );
+}
+
+function StalledFactList({ rows }: { rows: ReturnType<typeof stalledFactRows> }): React.JSX.Element {
+  return (
+    <dl>
+      {rows.map((row) => (
+        <Fragment key={row.label}>
+          <dt>{row.label}</dt>
+          <dd className={row.tone ? `is-${row.tone}` : undefined}>{row.value}{row.detail && <span className="stalled-task-status"> · {row.detail}</span>}</dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+}
+
+/**
+ * The stall's fixes and the outcome of the last one pressed, returned apart so the band can draw
+ * the fixes in its always-visible row and the outcome under it, while the tile stacks both under
+ * its facts. One `useStallActions` backs both, so a fix and its outcome cannot disagree.
+ */
+function useStalledFixes({
   session,
   stall,
   onOpenRun,
@@ -43,7 +80,7 @@ export function StalledTileFacts({
   onOpenQueue,
   onComplete,
   onDismiss,
-}: StalledFactsProps): React.JSX.Element | null {
+}: StalledFactsProps): { actions: React.JSX.Element; feedback: React.JSX.Element | null } {
   const { busy, error, done, run, fixed } = useStallActions(session.id, stall);
   const facts = stall.facts ?? null;
   const name = session.name || "this session";
@@ -55,105 +92,94 @@ export function StalledTileFacts({
   const showMessage = !facts
     || (facts.kind === "unfinished-work" && facts.task)
     || (facts.kind === "workflow-parked" && parkedStep(facts) === "new-head");
-  const rows = stalledFactRows(session, stall);
 
-  return (
-    <div
-      className="stalled-facts"
-      role="group"
-      aria-label={`Why ${name} stalled`}
-      onClick={(event) => event.stopPropagation()}
-    >
-      <dl>
-        {rows.map((row) => (
-          <Fragment key={row.label}>
-            <dt>{row.label}</dt>
-            <dd className={row.tone ? `is-${row.tone}` : undefined}>{row.value}{row.detail && <span className="stalled-task-status"> · {row.detail}</span>}</dd>
-          </Fragment>
-        ))}
-      </dl>
-      <div className="stalled-actions">
-        {stall.kind === "unfinished-work" && messageable && (
-          <InboxActionButton
-            action="nudge"
-            name={name}
-            className="btn btn-primary"
-            tooltip="Ask what it is doing and whether anything is blocking it"
-            disabled={disabled}
-            onClick={fixed("nudge")}
-          />
-        )}
-        {showMessage && messageable && onMessage && (
-          <Tooltip label="Open the session and focus its message box">
-            <button type="button" className="btn btn-ghost" onClick={onMessage}>Message…</button>
-          </Tooltip>
-        )}
-        {facts?.kind === "unfinished-work" && facts.queueOpen > 0 && onOpenQueue && (
-          <Tooltip label="Open this session's work queue">
-            <button type="button" className="btn btn-ghost" onClick={onOpenQueue}>Open queue</button>
-          </Tooltip>
-        )}
-        {facts?.kind === "unfinished-work" && facts.task && onComplete && (
-          <InboxActionButton
-            action="mark-done"
-            name={name}
-            tooltip="Open the Complete dialog: the work is finished and nothing more is owed. It marks the task done, closes the session, and offers a retro when one is worth running"
-            disabled={disabled}
-            onClick={onComplete}
-          />
-        )}
-        {facts?.kind === "workflow-parked" && parkedStep(facts) === "resubmit" && (
-          <InboxActionButton
-            action="resubmit"
-            name={name}
-            className="btn btn-primary"
-            tooltip="Open the run's next repair round from the session's current work"
-            disabled={disabled}
-            onClick={run("resubmit", () => api.resubmitWorkflowRun(facts.runId))}
-          />
-        )}
-        {facts?.kind === "workflow-parked" && parkedStep(facts) === "push" && messageable && (
-          <InboxActionButton
-            action="push"
-            name={name}
-            className="btn btn-primary"
-            tooltip="Tell it to push: the review waits for a pushed head on this branch"
-            disabled={disabled}
-            onClick={fixed("push")}
-          />
-        )}
-        {facts?.kind === "workflow-parked" && parkedStep(facts) === "next-turn" && messageable && (
-          <InboxActionButton
-            action="continue"
-            name={name}
-            className="btn btn-primary"
-            tooltip="Ask it to take its next turn on the parked run"
-            disabled={disabled}
-            onClick={fixed("continue")}
-          />
-        )}
-        {runId && onOpenRun && (
-          <InboxActionButton
-            action="open-run"
-            name={name}
-            tooltip="Open this workflow run on the Runs page"
-            onClick={() => onOpenRun(runId)}
-          />
-        )}
-        {onDismiss && (
-          <InboxActionButton
-            action="dismiss"
-            name={name}
-            tooltip="Return this card to the rest of Idle without resolving it. It comes back if the session stalls on something new"
-            ariaLabel={`Dismiss ${name} from Stalled`}
-            onClick={onDismiss}
-          />
-        )}
-      </div>
-      {error && <p className="stalled-feedback is-error" role="alert">{error}</p>}
-      {done && !error && <p className="stalled-feedback" role="status">{done}</p>}
+  const feedback = error
+    ? <p className="stalled-feedback is-error" role="alert">{error}</p>
+    : done
+      ? <p className="stalled-feedback" role="status">{done}</p>
+      : null;
+
+  const actions = (
+    <div className="stalled-actions">
+      {stall.kind === "unfinished-work" && messageable && (
+        <InboxActionButton
+          action="nudge"
+          name={name}
+          className="btn btn-primary"
+          tooltip="Ask what it is doing and whether anything is blocking it"
+          disabled={disabled}
+          onClick={fixed("nudge")}
+        />
+      )}
+      {showMessage && messageable && onMessage && (
+        <Tooltip label="Open the session and focus its message box">
+          <button type="button" className="btn btn-ghost" onClick={onMessage}>Message…</button>
+        </Tooltip>
+      )}
+      {facts?.kind === "unfinished-work" && facts.queueOpen > 0 && onOpenQueue && (
+        <Tooltip label="Open this session's work queue">
+          <button type="button" className="btn btn-ghost" onClick={onOpenQueue}>Open queue</button>
+        </Tooltip>
+      )}
+      {facts?.kind === "unfinished-work" && facts.task && onComplete && (
+        <InboxActionButton
+          action="mark-done"
+          name={name}
+          tooltip="Open the Complete dialog: the work is finished and nothing more is owed. It marks the task done, closes the session, and offers a retro when one is worth running"
+          disabled={disabled}
+          onClick={onComplete}
+        />
+      )}
+      {facts?.kind === "workflow-parked" && parkedStep(facts) === "resubmit" && (
+        <InboxActionButton
+          action="resubmit"
+          name={name}
+          className="btn btn-primary"
+          tooltip="Open the run's next repair round from the session's current work"
+          disabled={disabled}
+          onClick={run("resubmit", () => api.resubmitWorkflowRun(facts.runId))}
+        />
+      )}
+      {facts?.kind === "workflow-parked" && parkedStep(facts) === "push" && messageable && (
+        <InboxActionButton
+          action="push"
+          name={name}
+          className="btn btn-primary"
+          tooltip="Tell it to push: the review waits for a pushed head on this branch"
+          disabled={disabled}
+          onClick={fixed("push")}
+        />
+      )}
+      {facts?.kind === "workflow-parked" && parkedStep(facts) === "next-turn" && messageable && (
+        <InboxActionButton
+          action="continue"
+          name={name}
+          className="btn btn-primary"
+          tooltip="Ask it to take its next turn on the parked run"
+          disabled={disabled}
+          onClick={fixed("continue")}
+        />
+      )}
+      {runId && onOpenRun && (
+        <InboxActionButton
+          action="open-run"
+          name={name}
+          tooltip="Open this workflow run on the Runs page"
+          onClick={() => onOpenRun(runId)}
+        />
+      )}
+      {onDismiss && (
+        <InboxActionButton
+          action="dismiss"
+          name={name}
+          tooltip="Return this card to the rest of Idle without resolving it. It comes back if the session stalls on something new"
+          ariaLabel={`Dismiss ${name} from Stalled`}
+          onClick={onDismiss}
+        />
+      )}
     </div>
   );
+  return { actions, feedback };
 }
 
 /**
@@ -161,15 +187,41 @@ export function StalledTileFacts({
  * Board's drill-in (`idle-stalled`). The rail row shows only the first fact, and an idle stall the
  * Stalled section draws is no longer an inbox row, so without this an operator who works in the
  * Console would see the mark with no way to act on it or dismiss it.
+ *
+ * It collapses like the blocker band above it (`SessionBlockerBand`): one row that always shows
+ * the rule, the first fact and every fix, expanding in place to the whole fact sheet. The fixes
+ * never hide with the facts, so a collapsed band still moves the session in one click, and the
+ * outcome of a fix prints under the row whether or not it is expanded.
  */
 export function StalledBand(props: StalledFactsProps): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const factsId = useId();
+  const { actions, feedback } = useStalledFixes(props);
+  const rows = stalledFactRows(props.session, props.stall);
+  const summary = rows[0]?.value ?? props.stall.reason;
   return (
-    <section className="stalled-band" aria-label="Session stalled">
-      <div className="stalled-band-top">
-        <span className="stalled-band-flag">Stalled</span>
-        <span className="stalled-band-rule">{STUCK_RULE_LABELS[props.stall.kind]}</span>
+    <section className={open ? "stalled-band is-open" : "stalled-band"} aria-label="Session stalled">
+      <div className="stalled-band-row">
+        <Tooltip label={open ? "Hide why this session stalled" : "Show what is open, what it last did and what Foreman made of it"}>
+          <button
+            type="button"
+            className="stalled-band-toggle"
+            aria-expanded={open}
+            aria-controls={factsId}
+            onClick={() => setOpen((v) => !v)}
+          >
+            <span className="stalled-band-flag">Stalled</span>
+            <span className="stalled-band-rule">{STUCK_RULE_LABELS[props.stall.kind]}</span>
+            <span className="stalled-band-summary">{summary}</span>
+            <span className="stalled-band-chevron" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        {actions}
       </div>
-      <StalledTileFacts {...props} />
+      <div id={factsId} className="stalled-band-more stalled-facts" hidden={!open}>
+        <StalledFactList rows={rows} />
+      </div>
+      {feedback && <div className="stalled-band-more">{feedback}</div>}
     </section>
   );
 }

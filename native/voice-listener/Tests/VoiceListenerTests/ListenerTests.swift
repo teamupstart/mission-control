@@ -3,7 +3,7 @@ import XCTest
 @testable import VoiceListener
 
 // The test drives tap callbacks explicitly so it can release between two buffers.
-private final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
+final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
     private var started = false
     override var isRunning: Bool { started }
     override func start() throws { started = true }
@@ -11,6 +11,114 @@ private final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
 }
 
 final class ListenerTests: XCTestCase {
+    func testNativePreviewDiscoversFocusAfterSpeechOnset() async throws {
+        // Only a mid-phrase focus check gets a positive response. Preview delivery
+        // models a subsequent blur, so the same capture must be able to check again.
+        final class FocusProtocol: URLProtocol {
+            override class func canInit(with request: URLRequest) -> Bool { true }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+            override func startLoading() {
+                var body = request.httpBody ?? Data()
+                if let stream = request.httpBodyStream {
+                    stream.open()
+                    defer { stream.close() }
+                    var buffer = [UInt8](repeating: 0, count: 1024)
+                    let size = stream.read(&buffer, maxLength: buffer.count)
+                    if size > 0 { body = Data(buffer.prefix(size)) }
+                }
+                struct Phase: Decodable { let phase: String }
+                let focused = (try? JSONDecoder().decode(Phase.self, from: body).phase) == "focus"
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                               headerFields: focused ? ["x-voice-dictation": "1"] : [:])!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            override func stopLoading() {}
+        }
+        let token = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("test".utf8).write(to: token)
+        defer { try? FileManager.default.removeItem(at: token) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FocusProtocol.self]
+        let daemon = Daemon(environment: ["MISSION_VOICE_DAEMON_URL": "http://127.0.0.1",
+                                          "MISSION_VOICE_TOKEN_FILE": token.path, "MISSION_VOICE_MODEL_DIR": token.deletingLastPathComponent().path],
+                            configuration: configuration)
+        _ = try await daemon.request("voice/listener/hello")
+        daemon.startSpeech(10, revision: "test")
+        let gained = await daemon.shouldPreview(10, revision: "test")
+        XCTAssertTrue(gained)
+        try await daemon.preview("Steve", onset: 10, revision: "test")
+        XCTAssertFalse(daemon.isDictating(10, revision: "test"))
+        let regained = await daemon.shouldPreview(10, revision: "test")
+        XCTAssertTrue(regained)
+        daemon.settleSpeech(10, revision: "test", accepted: true)
+        let finished = await daemon.shouldPreview(10, revision: "test")
+        XCTAssertFalse(finished)
+    }
+
+    @MainActor func testPreviewLoopPublishesGrowingWordsBeforeFinalSpeech() async throws {
+        var gate = SpeechGate(endOfSpeechMs: 500)
+        var ticks = 0
+        var phases: [String] = []
+        var texts: [String] = []
+        var onsets: [Int64] = []
+        var decodedLengths: [Int] = []
+        let frame = Array(repeating: Float(0.25), count: 320)
+        var endNs: Int64 = 1_000_000_000
+        await runTranscriptPreview(isRunning: { ticks < 4 }, snapshot: { gate.preview }, pendingOnset: { nil },
+            decode: { segment in
+                decodedLengths.append(segment.samples.count)
+                if decodedLengths.count == 1 { throw URLError(.cannotDecodeContentData) }
+                return decodedLengths.count == 2 ? "ordinary" : "ordinary words"
+            }, report: { phase, onset, text in
+                phases.append(phase)
+                if let text { texts.append(text) }
+                if let onset { onsets.append(onset) }
+                return true
+            }, pause: {
+                while decodedLengths.count < ticks { await Task.yield() }
+                ticks += 1
+                if ticks <= 3 {
+                    endNs += 20_000_000
+                    XCTAssertNil(gate.feed(frame, active: true, endNs: endNs, toUnixMs: { $0 / 1_000_000 }))
+                }
+            })
+        XCTAssertEqual(phases, ["ready", "audio", "audio", "words", "audio", "words"])
+        XCTAssertEqual(texts, ["ordinary", "ordinary words"])
+        XCTAssertEqual(decodedLengths, [320, 640, 960])
+        var completed: Segment?
+        for _ in 0..<25 {
+            endNs += 20_000_000
+            completed = gate.feed(Array(repeating: 0, count: 320), active: false, endNs: endNs,
+                                  toUnixMs: { $0 / 1_000_000 })
+        }
+        let final = try XCTUnwrap(completed)
+        XCTAssertEqual(onsets, Array(repeating: final.speechStartHostUs, count: 5))
+        XCTAssertEqual(Array(final.samples.prefix(960)), frame + frame + frame)
+    }
+
+    @MainActor func testAudioHeartbeatContinuesWhilePreviewDecodeIsSuspended() async {
+        var gate = SpeechGate(endOfSpeechMs: 500)
+        _ = gate.feed(Array(repeating: Float(0.25), count: 320), active: true, endNs: 1_000_000_000,
+                      toUnixMs: { $0 / 1_000_000 })
+        var resume: CheckedContinuation<Void, Never>?
+        var beats = 0
+        var attempts = 0
+        await runTranscriptPreview(isRunning: { beats < 10 }, snapshot: { gate.preview }, pendingOnset: { nil },
+            decode: { _ in
+                attempts += 1
+                await withCheckedContinuation { resume = $0 }
+                return nil
+            }, report: { phase, _, _ in
+                XCTAssertEqual(phase, "audio")
+                beats += 1
+                return true
+            }, pause: { while resume == nil { await Task.yield() } })
+        resume?.resume()
+        XCTAssertEqual(beats, 10)
+        XCTAssertEqual(attempts, 1)
+    }
+
     func testHeldPostDeadlineCancelsAnUnansweredRequest() async throws {
         let cancelled = expectation(description: "pending send cancelled")
         do {
@@ -45,21 +153,116 @@ final class ListenerTests: XCTestCase {
         }
         fill(0.1)
         for _ in 0..<15 { XCTAssertTrue(consume().isEmpty) }
+        XCTAssertNotNil(tap.preview, "Detected PCM is available before end of speech")
         tap = try InputSegmenter(source: stereo) // Discard partial speech and converter history on mute.
         fill(0)
         for _ in 0..<90 { XCTAssertTrue(consume().isEmpty) }
+        XCTAssertNil(tap.preview, "Silent frames do not start a transcript")
         fill(0.1)
         for _ in 0..<15 { XCTAssertTrue(consume().isEmpty) }
+        let preview = try XCTUnwrap(tap.preview)
         fill(0)
-        let segments = (0..<90).flatMap { _ in consume() }
+        let segments = (0..<110).flatMap { _ in consume() }
         XCTAssertEqual(segments.count, 1)
         let segment = try XCTUnwrap(segments.first)
+        XCTAssertEqual(preview.speechStartHostUs, segment.speechStartHostUs)
+        XCTAssertEqual(preview.samples, Array(segment.samples.prefix(preview.samples.count)))
         // The 300 ms stereo tone spans 4,800 output samples, regardless of when
         // the detector starts treating the steady part of the tone as background.
         let firstTone = try XCTUnwrap(segment.samples.firstIndex { abs($0) > 0.05 })
         let lastTone = try XCTUnwrap(segment.samples.lastIndex { abs($0) > 0.05 })
         XCTAssertEqual(Double(lastTone - firstTone + 1), 4_800, accuracy: 40)
         XCTAssertGreaterThan(segment.startedAtHostMs, 3000)
+    }
+
+    func testRosterCorrectionPreservesStandaloneCancelAndItsPunctuation() {
+        for original in ["Cancel.", "CANCEL!", "cancel", "“Cancel”"] {
+            var text = original
+            var words = [TimedWord(text: original, startMs: 80, endMs: 320)]
+            Recognizer.applyAddressCorrection("Voice", in: 0..<1, roster: ["Voice"], text: &text, words: &words)
+            XCTAssertEqual(text, original)
+            XCTAssertEqual(words.map(\.text), [original])
+        }
+    }
+
+    func testRosterCorrectionPreservesAnOpeningSeparatorWord() {
+        for original in ["Bagel.", "bagel Carol, check the build", "BAGEL, Carol"] {
+            var text = original
+            var words = original.split(separator: " ").enumerated().map {
+                TimedWord(text: String($1), startMs: Double($0) * 300, endMs: Double($0) * 300 + 250)
+            }
+            let decoded = words.map(\.text)
+            Recognizer.applyAddressCorrection("Carol", in: 0..<1, roster: ["Carol"], separator: "bagel", text: &text, words: &words)
+            XCTAssertEqual(text, original)
+            XCTAssertEqual(words.map(\.text), decoded)
+        }
+        // A quoted opening word is ordinary text to the daemon, so CTC may still correct it.
+        for quoted in ["\"Bagel\" check it", "“Bagel” check it"] {
+            var text = quoted
+            var words = quoted.split(separator: " ").enumerated().map {
+                TimedWord(text: String($1), startMs: Double($0) * 300, endMs: Double($0) * 300 + 250)
+            }
+            Recognizer.applyAddressCorrection("Carol", in: 0..<1, roster: ["Carol"], separator: "bagel", text: &text, words: &words)
+            XCTAssertNotEqual(text, quoted, quoted)
+            XCTAssertTrue(text.contains("Carol"), text)
+        }
+        // Without a separator, or with a call sign spelled like it, the opening word is still corrected.
+        var text = "Bagel."
+        var words = [TimedWord(text: "Bagel.", startMs: 0, endMs: 250)]
+        Recognizer.applyAddressCorrection("Carol", in: 0..<1, roster: ["Carol"], text: &text, words: &words)
+        XCTAssertEqual(text, "Carol.")
+        text = "bagle, run it"
+        words = [TimedWord(text: "bagle,", startMs: 0, endMs: 250), TimedWord(text: "run", startMs: 300, endMs: 400), TimedWord(text: "it", startMs: 450, endMs: 500)]
+        Recognizer.applyAddressCorrection("Bagel", in: 0..<1, roster: ["Bagel"], separator: "bagel", text: &text, words: &words)
+        XCTAssertEqual(text, "Bagel, run it")
+    }
+
+    @MainActor func testSeparatorEditWhileListeningReachesTheNextDecodeAndKeepsTheMicrophoneOpen() async throws {
+        // Records the separator each decode is given, standing in for the speech model.
+        final class RecordingTranscriber: SegmentTranscriber, @unchecked Sendable {
+            var separators: [String?] = []
+            func transcribe(_ segment: Segment, boosting: Never?, separator: String?) async throws -> Utterance? {
+                separators.append(separator)
+                return Utterance(text: "Steve, check the build", words: [], capturedAt: segment.capturedAt)
+            }
+        }
+        let token = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("test".utf8).write(to: token)
+        defer { try? FileManager.default.removeItem(at: token) }
+        let daemon = Daemon(environment: ["MISSION_VOICE_DAEMON_URL": "http://127.0.0.1",
+                                          "MISSION_VOICE_TOKEN_FILE": token.path, "MISSION_VOICE_MODEL_DIR": token.deletingLastPathComponent().path])
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let engine = TapFixtureEngine()
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+        XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+        engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
+        let mic = try Microphone(selection: "system-default", endOfSpeechMs: 500, devices: [], engine: engine)
+        XCTAssertTrue(mic.isRunning)
+
+        // An Always-on capture opened with the default word, as the directive loop opens it.
+        let capture = Capture("capture-1", daemon: daemon)
+        capture.separator = "bagel"
+        capture.mic = mic
+        let recognizer = RecordingTranscriber()
+        let segment = Segment(samples: [Float](repeating: 0, count: 160), startNs: 0, capturedAt: 0, firstVoicedSample: 0)
+        _ = try await capture.transcribe(segment, using: recognizer, boosting: nil)
+
+        // The operator edits the word while the same capture is listening.
+        XCTAssertTrue(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "pineapple", firstPreviewVoicedMs: nil))
+        XCTAssertTrue(mic.isRunning, "a live edit must not close the microphone")
+        XCTAssertTrue(capture.mic === mic, "a live edit keeps the same open input")
+        _ = try await capture.transcribe(segment, using: recognizer, boosting: nil)
+        XCTAssertEqual(recognizer.separators, ["bagel", "pineapple"], "the decode after the edit uses the edited word")
+
+        // A directive for another capture, or a held capture, reopens instead and leaves the word alone.
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-2", held: false, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil))
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: true, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil))
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: nil, held: false, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil))
+        XCTAssertEqual(capture.separator, "pineapple")
+        mic.stop()
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "kiwi", firstPreviewVoicedMs: nil),
+                       "a stopped microphone cannot take a live edit")
+        XCTAssertEqual(capture.separator, "pineapple")
     }
 
     func testMultiWordRosterCorrectionAlignsTimingLabelsWithinDecoderSpan() {
@@ -145,6 +348,22 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testDictationSnapshotGrowsBeforeSilenceWithoutConsumingFinalAudio() throws {
+        var gate = SpeechGate(endOfSpeechMs: 500)
+        let frame = Array(repeating: Float(0.2), count: 320)
+        XCTAssertNil(gate.preview)
+        XCTAssertNil(gate.feed(frame, active: true, endNs: 20_000_000))
+        let first = try XCTUnwrap(gate.preview)
+        XCTAssertNil(gate.feed(frame, active: true, endNs: 40_000_000))
+        XCTAssertEqual(first.samples, frame)
+        XCTAssertEqual(gate.preview?.samples, frame + frame)
+        let silence = Array(repeating: Float(0), count: 8000)
+        let final = try XCTUnwrap(gate.feed(silence, active: false, endNs: 540_000_000))
+        XCTAssertEqual(first.speechStartHostUs, final.speechStartHostUs)
+        XCTAssertEqual(final.samples, frame + frame + silence)
+        XCTAssertNil(gate.preview)
+    }
+
     func testFirstVoicedSampleOrdersSpeechIndependentlyOfThePCMLeadIn() throws {
         var gate = SpeechGate(held: true)
         let quiet = Array(repeating: Float(0), count: 2400)
@@ -157,8 +376,112 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(released.endedAt, 1160)
     }
 
+    func testAutomaticSpeechResumingBeforeSelectedBoundaryStaysInOneUtterance() throws {
+        for duration in [500, 2000, 5000] {
+            var gate = duration == 2000 ? SpeechGate() : SpeechGate(endOfSpeechMs: duration)
+            let pause = Array(repeating: Float(0), count: duration * 16 - 1)
+            var now: Int64 = 0
+            func feed(_ frame: [Float], voiced: Bool) -> Segment? {
+                now += Int64(frame.count) * Segment.sampleNs
+                return gate.feed(frame, active: voiced, endNs: now)
+            }
+            XCTAssertNil(feed([0.1], voiced: true))
+            XCTAssertNil(feed(pause, voiced: false))
+            XCTAssertNil(feed([0.2], voiced: true))
+            XCTAssertNil(feed(pause, voiced: false))
+            let complete = try XCTUnwrap(feed([0], voiced: false))
+            XCTAssertEqual(complete.samples, [0.1] + pause + [0.2] + pause + [0])
+            XCTAssertNil(feed([0], voiced: false))
+        }
+    }
+
+    func testLiveDelayChangeCountsSilenceAlreadyRecorded() throws {
+        var gate = SpeechGate(endOfSpeechMs: 2000)
+        let speech: [Float] = [0.25, 0.5]
+        let quiet = Array(repeating: Float(0), count: 16_000)
+        XCTAssertNil(gate.feed(speech, active: true, endNs: Int64(speech.count) * Segment.sampleNs))
+        XCTAssertNil(gate.feed(quiet, active: false, endNs: Int64(speech.count + quiet.count) * Segment.sampleNs))
+
+        var shortened = gate
+        let early = try XCTUnwrap(shortened.updateEndOfSpeechMs(500))
+        XCTAssertEqual(early.samples, speech + Array(quiet.prefix(8000)))
+        XCTAssertNil(shortened.updateEndOfSpeechMs(500))
+
+        XCTAssertNil(gate.updateEndOfSpeechMs(3000))
+        XCTAssertNil(gate.feed(quiet, active: false, endNs: 2_000_125_000))
+        let later = try XCTUnwrap(gate.feed(quiet, active: false, endNs: 3_000_125_000))
+        XCTAssertEqual(later.samples, speech + Array(repeating: 0, count: 48_000))
+    }
+
+    func testShorteningAnElapsedPauseCarriesOnlyItsBoundedTailIntoTheNextPhrase() throws {
+        for extra in [0, 320, 3200] {
+            var gate = SpeechGate(endOfSpeechMs: 2000)
+            var now: Int64 = 0
+            func feed(_ pcm: [Float], active: Bool) -> Segment? {
+                now += Int64(pcm.count) * Segment.sampleNs
+                return gate.feed(pcm, active: active, endNs: now)
+            }
+            let quiet = Array(repeating: Float(0), count: 8000)
+            let soft = (0..<extra).map { Float($0 + 1) / 2_000_000 }
+            XCTAssertNil(feed([0.2], active: true))
+            XCTAssertNil(feed(quiet + soft, active: false))
+            let first = try XCTUnwrap(gate.updateEndOfSpeechMs(500))
+            XCTAssertEqual(first.samples, [0.2] + quiet)
+            let onset = now
+            XCTAssertNil(feed([0.3], active: true))
+            let second = try XCTUnwrap(feed(quiet, active: false))
+            let retained = Array(soft.suffix(2400))
+            XCTAssertEqual(second.samples, retained + [0.3] + quiet)
+            XCTAssertEqual(second.firstVoicedSample, retained.count)
+            XCTAssertEqual(second.startNs, onset - Int64(retained.count) * Segment.sampleNs)
+        }
+    }
+
+    func testLiveMicrophoneDelayEditsPreserveBothCommandsAndCompleteAnElapsedPause() async throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "../../../..")
+        let speech = try samples(from: root.appending(path: "test/fixtures/voice/steve-check-the-build.wav"))
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let engine = TapFixtureEngine()
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+        XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+        engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
+        let mic = try Microphone(selection: "system-default", endOfSpeechMs: 500, devices: [], engine: engine)
+        var offset = 0
+        func feed(_ pcm: [Float]) throws {
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
+            buffer.frameLength = buffer.frameCapacity
+            buffer.floatChannelData![0].update(from: pcm, count: pcm.count)
+            let time = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1 + Double(offset) / 16_000),
+                                   sampleTime: Int64(offset), atRate: 16_000)
+            mic.consume(buffer, at: time)
+            offset += pcm.count
+        }
+
+        let split = 12_005 // Inside the first command and partway through a 320-sample VAD frame.
+        try feed(Array(speech.prefix(split)))
+        mic.updateEndOfSpeechMs(5000)
+        try feed(Array(speech.dropFirst(split)))
+        try feed(Array(repeating: 0, count: 32_000))
+        try feed(speech)
+        try feed(Array(repeating: 0, count: 16_000))
+        mic.updateEndOfSpeechMs(500)
+        mic.stop() // No more tap frames. Shortening the elapsed pause must already have yielded the segment.
+        var completed: [Segment] = []
+        for await segment in mic.segments { completed.append(segment) }
+        XCTAssertEqual(completed.count, 1)
+        let joined = try XCTUnwrap(completed.first)
+        let voiced = speech.filter { abs($0) > 0.02 }
+        XCTAssertFalse(voiced.isEmpty)
+        XCTAssertTrue(joined.samples.filter { abs($0) > 0.02 }.elementsEqual(voiced + voiced),
+                      "Both commands, including the partial frame at the edit, must survive in capture order")
+    }
+
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
-        var gate = SpeechGate()
+        var dropped: [Int64] = []
+        var gate = SpeechGate(endOfSpeechMs: 800, onSegmentDropped: { onset, reason in
+            XCTAssertEqual(reason, .captureLimit)
+            dropped.append(onset)
+        })
         let speech = Array(repeating: Float(0.1), count: 320)
         let quiet = Array(repeating: Float(0), count: 320)
         var now: Int64 = 0
@@ -166,7 +489,8 @@ final class ListenerTests: XCTestCase {
             now += 20
             return gate.feed(frame, active: frame[0] != 0, endNs: now * 1_000_000)
         }
-        for _ in 0..<1500 { XCTAssertTrue(feed(speech) == nil) } // 30 seconds
+        for _ in 0..<3001 { XCTAssertTrue(feed(speech) == nil) } // First frame beyond 60 seconds
+        XCTAssertEqual(dropped, [0])
         for _ in 0..<39 { XCTAssertTrue(feed(quiet) == nil) } // 780 ms is still inside the utterance.
         for _ in 0..<1510 { XCTAssertTrue(feed(speech) == nil) }
         for _ in 0..<40 { XCTAssertTrue(feed(quiet) == nil) }
@@ -178,46 +502,75 @@ final class ListenerTests: XCTestCase {
         let segment = try XCTUnwrap(feed(quiet))
         XCTAssertEqual(segment.startedAtHostMs, freshStart)
         XCTAssertEqual(segment.samples, fresh + Array(repeating: 0, count: 12_800))
+        XCTAssertEqual(dropped, [0])
     }
 
-    func testSilenceMustCompleteWithinTheSegmentLimit() {
-        let limit = 16_000 * 30
-        let silence = Array(repeating: Float(0), count: 12_801)
-        for extra in [0, 1] {
-            var gate = SpeechGate()
-            XCTAssertTrue(gate.feed(Array(repeating: 0.1, count: limit - 12_800 + extra), active: true, endNs: 29_200 * 1_000_000) == nil)
-            let segment = gate.feed(silence, active: false, endNs: 30_000 * 1_000_000)
-            XCTAssertEqual(segment?.samples.count, extra == 0 ? limit : nil)
-            XCTAssertTrue(gate.feed([0.2], active: true, endNs: 31_000 * 1_000_000) == nil)
-            XCTAssertNotNil(gate.feed(silence, active: false, endNs: 31_800 * 1_000_000), "This frame already supplied a full silence boundary")
-        }
+    func testSixtySecondsOfSpeechRetainsTheFullClosingDelay() throws {
+        let limit = CaptureLimit.oneMinute.samples
+        let quiet = Array(repeating: Float.zero, count: 5_000 * 16)
+        let voiced = Array(repeating: Float(0.2), count: limit)
+        var gate = SpeechGate(endOfSpeechMs: 5000)
+        XCTAssertNil(gate.feed(voiced, active: true, endNs: 60_000_000_000))
+        let result = try XCTUnwrap(gate.feed(quiet, active: false, endNs: 65_000_000_000))
+        XCTAssertEqual(result.samples, voiced + quiet)
+    }
+
+    func testLegacyCaptureCountsLeadAndClosingSilenceTowardsThirtySeconds() {
+        let quiet = Array(repeating: Float.zero, count: 320)
+        var drops: [SpeechDrop] = []
+        var gate = SpeechGate(endOfSpeechMs: 5000, limit: .legacy, onSegmentDropped: { _, reason in drops.append(reason) })
+        XCTAssertNil(gate.feed(quiet, active: false, endNs: 20_000_000))
+        let speech = Array(repeating: Float(0.2), count: 480_000 - 2 * quiet.count)
+        XCTAssertNil(gate.feed(speech, active: true, endNs: 29_980_000_000))
+        XCTAssertTrue(drops.isEmpty)
+        XCTAssertNil(gate.feed(quiet, active: false, endNs: 30_000_000_000))
+        XCTAssertEqual(drops, [.captureLimit])
+        XCTAssertNil(gate.preview)
     }
 
     func testDelayedKeyUpCanRecoverOnlyThePreReleasePartOfAnOverflowedHold() throws {
-        let limit = 30 * 16_000
+        let limit = CaptureLimit.oneMinute.samples
         let start: Int64 = 1_000_000_000
         let samples = Array(repeating: Float(0.3), count: limit - 160)
         let crossing = Array(repeating: Float(0.8), count: 320)
+        var dropped: [Int64] = []
         func overflow() -> SpeechGate {
-            var gate = SpeechGate(held: true)
+            var gate = SpeechGate(held: true, onSegmentDropped: { onset, reason in
+                XCTAssertEqual(reason, .captureLimit)
+                dropped.append(onset)
+            })
             XCTAssertNil(gate.feed(samples, active: true, endNs: start + Int64(samples.count) * Segment.sampleNs))
-            XCTAssertNil(gate.feed(crossing, active: true, endNs: 31_010_000_000))
+            XCTAssertNil(gate.feed(crossing, active: true, endNs: 61_010_000_000))
             return gate
         }
         // The final callback crossed the cap by 10 ms. Key-up was 5 ms before the cap.
         var gate = overflow()
-        let recovered = try XCTUnwrap(gate.finish(at: 30_995))
+        let recovered = try XCTUnwrap(gate.finish(at: 60_995))
         XCTAssertEqual(recovered.samples.count, limit - 80)
         XCTAssertEqual(recovered.samples.suffix(80), crossing.prefix(80))
-        XCTAssertEqual(recovered.endedAt, 30_995)
+        XCTAssertEqual(recovered.endedAt, 60_995)
+        XCTAssertTrue(dropped.isEmpty)
         gate = overflow()
-        XCTAssertNil(gate.finish(at: 31_001))
+        XCTAssertNil(gate.finish(at: 61_001))
+        XCTAssertEqual(dropped, [start / 1000])
+        dropped.removeAll()
         gate = overflow()
         let quiet = Array(repeating: Float(0), count: 320)
         for i in 1...100 {
-            XCTAssertNil(gate.feed(quiet, active: false, endNs: 31_010_000_000 + Int64(i) * 20_000_000))
+            XCTAssertNil(gate.feed(quiet, active: false, endNs: 61_010_000_000 + Int64(i) * 20_000_000))
         }
-        XCTAssertNil(gate.finish(at: 30_995))
+        XCTAssertEqual(dropped, [start / 1000])
+        XCTAssertNil(gate.finish(at: 60_995))
+    }
+
+    func testLateReleaseIncludesTheLastCompleteSampleAtAFractionalCap() throws {
+        // The last permitted sample ends just before the millisecond key-up.
+        let start: Int64 = 999_990_000
+        let count = CaptureLimit.oneMinute.samples
+        var gate = SpeechGate(held: true, onSegmentDropped: { _, _ in XCTFail("Key-up preceded the first excess sample") })
+        XCTAssertNil(gate.feed(Array(repeating: 0.2, count: count + 1), active: true,
+                               endNs: start + Int64(count + 1) * Segment.sampleNs))
+        XCTAssertEqual(gate.finish(at: 61_000)?.samples.count, count)
     }
 
     private func fixtureDirectories() throws -> (models: URL, corpus: URL) {
@@ -239,7 +592,7 @@ final class ListenerTests: XCTestCase {
         let (models, corpus) = try fixtureDirectories()
         let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
         let onset = 32 * 16_000
-        let length = onset + speech.count + 2 * 16_000
+        let length = onset + speech.count + 3 * 16_000
         let detector = try SpeechSegmenter()
         var segments: [Segment] = []
         var random: UInt32 = 123
@@ -288,8 +641,8 @@ final class ListenerTests: XCTestCase {
         let frame = Array(repeating: Float(0.5), count: 320)
         XCTAssertNil(gate.feed(frame, active: true, endNs: 1020 * 1_000_000))
         XCTAssertEqual(gate.finish(at: 1010)?.samples, Array(frame.prefix(160)))
-        XCTAssertNil(gate.feed(Array(repeating: 0.5, count: 30 * 16_000), active: true, endNs: 31_000 * 1_000_000))
-        XCTAssertNil(gate.finish(at: 31_000))
+        XCTAssertNil(gate.feed(Array(repeating: 0.5, count: CaptureLimit.oneMinute.samples + 1), active: true, endNs: 61_001 * 1_000_000))
+        XCTAssertNil(gate.finish(at: 61_001))
     }
 
     func testKeyUpClassifiesOnlyRecordedSamplesOfTheFinalPartialFrame() throws {
@@ -444,7 +797,7 @@ final class ListenerTests: XCTestCase {
 
     func testSampleClockResetWaitsForANewPairedAnchor() throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
-        let tap = try InputSegmenter(source: format, held: true)
+        let tap = try InputSegmenter(source: format, held: true, endOfSpeechMs: 800)
         func feed(_ time: AVAudioTime, frames: Int = 320, tone: Bool = false) throws {
             let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
             frame.frameLength = frame.frameCapacity
@@ -469,7 +822,7 @@ final class ListenerTests: XCTestCase {
         let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
         for hostOnly in [true, false] {
-            let input = try InputSegmenter(source: format)
+            let input = try InputSegmenter(source: format, endOfSpeechMs: 800)
             func callback(_ pcm: [Float], start: Int) throws -> [Segment] {
                 let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
                 frame.frameLength = frame.frameCapacity
@@ -536,16 +889,19 @@ final class ListenerTests: XCTestCase {
         XCTAssertNil(try record(release: 90, resumeAt: 48_000)) // Recovery period elapsed.
     }
 
-    private func captureFourPhrases(held: Bool, onQueueFull: @escaping () -> Void) throws -> (Microphone, Int) {
-        let (_, corpus) = try fixtureDirectories()
-        let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
+    private func captureFourPhrases(held: Bool, speech: [Float]? = nil,
+                                    onSpeechStart: @escaping (Int64) -> Void = { _ in },
+                                    onSegmentDropped: @escaping (Int64) -> Void = { _ in },
+                                    onQueueFull: @escaping () -> Void) throws -> (Microphone, Int) {
+        let speech = try speech ?? samples(from: fixtureDirectories().corpus.appending(path: "Steve-0.wav"))
         let pcm = speech + Array(repeating: Float(0), count: 16_000)
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
         let engine = TapFixtureEngine()
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
         XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
         engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
-        let input = try Microphone(selection: "system-default", held: held, devices: [], engine: engine, onQueueFull: onQueueFull)
+        let input = try Microphone(selection: "system-default", held: held, endOfSpeechMs: 800, devices: [], engine: engine,
+                                   onSpeechStart: onSpeechStart, onSegmentDropped: { onset, _ in onSegmentDropped(onset) }, onQueueFull: onQueueFull)
         let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
         frame.frameLength = frame.frameCapacity
         frame.floatChannelData![0].update(from: pcm, count: pcm.count)
@@ -554,6 +910,40 @@ final class ListenerTests: XCTestCase {
             input.consume(frame, at: when)
         }
         return (input, pcm.count)
+    }
+
+    @MainActor func testMicrophonePreviewsUnfinishedRecordedSpeechInBothCaptureModes() async throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "../../../..")
+        let speech = try samples(from: root.appending(path: "test/fixtures/voice/steve-check-the-build.wav"))
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        for held in [false, true] {
+            let engine = TapFixtureEngine()
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+            XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+            engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
+            let mic = try Microphone(selection: "system-default", held: held, devices: [], engine: engine)
+            defer { mic.stop() }
+            let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12_005))
+            frame.frameLength = frame.frameCapacity
+            frame.floatChannelData![0].update(from: speech, count: Int(frame.frameLength))
+            mic.consume(frame, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1), sampleTime: 0, atRate: 16_000))
+            var received: String?
+            var attempts = 0
+            let deadline = ContinuousClock.now + .seconds(3)
+            await runTranscriptPreview(isRunning: { received == nil && ContinuousClock.now < deadline },
+                snapshot: { mic.preview }, pendingOnset: { nil }, decode: { segment in
+                    XCTAssertFalse(segment.samples.isEmpty)
+                    return "Steve"
+                }, report: { _, _, _ in false }, editorFocused: { _ in true },
+                updateEditor: { _, text in
+                    attempts += 1
+                    if attempts == 1 { throw URLError(.timedOut) }
+                    received = text
+                }, pause: { await Task.yield() })
+            XCTAssertEqual(attempts, 2)
+            XCTAssertEqual(received, "Steve")
+            XCTAssertTrue(mic.isRunning)
+        }
     }
 
     func testHeldMicrophoneKeepsFourPhrasesInOrderUntilRelease() throws {
@@ -588,12 +978,39 @@ final class ListenerTests: XCTestCase {
         XCTAssertTrue(phrases.allSatisfy { $0.endedAt <= Int64((start + 15) / 16) })
     }
 
+    func testOpenMicrophoneReportsEachOverlongSegmentAsDropped() async throws {
+        var onsets: [Int64] = []
+        var dropped: [Int64] = []
+        let tone = (0..<(CaptureLimit.oneMinute.samples + 16_000)).map { 0.2 * sin(Float($0) * .pi / 20) }
+        let (input, _) = try captureFourPhrases(held: false, speech: tone, onSpeechStart: { onsets.append($0) },
+                                              onSegmentDropped: { dropped.append($0) }) { XCTFail("Overlong segments reached the decoder queue") }
+        XCTAssertEqual(onsets.count, 4)
+        XCTAssertFalse(dropped.isEmpty, "Overlong speech must be released while capture is open")
+        input.stop()
+        // The adaptive detector can end a tone early. Only segments it actually
+        // yields to the decoder may keep their reservations.
+        var queued: [Int64] = []
+        for await segment in input.segments { queued.append(segment.speechStartHostUs) }
+        XCTAssertEqual(dropped, onsets.filter { !queued.contains($0) })
+    }
+
     func testBackloggedMicrophoneKeepsOldestPhrasesAndReportsDrops() async throws {
         var warnings = 0
-        let (input, length) = try captureFourPhrases(held: false) { warnings += 1 }
+        var onsets: [Int64] = []
+        var dropped: [Int64] = []
+        let tone = (0..<4800).map { 0.2 * sin(Float($0) * .pi / 20) }
+        let (input, length) = try captureFourPhrases(held: false, speech: tone, onSpeechStart: { onsets.append($0) },
+                                                     onSegmentDropped: { dropped.append($0) }) { warnings += 1 }
         input.stop()
         var starts: [Int64] = []
-        for await segment in input.segments { starts.append(segment.startedAtHostMs) }
+        var queued: [Int64] = []
+        for await segment in input.segments {
+            starts.append(segment.startedAtHostMs)
+            queued.append(segment.speechStartHostUs)
+        }
+        XCTAssertEqual(onsets.count, 4)
+        XCTAssertEqual(queued, Array(onsets.prefix(2)))
+        XCTAssertEqual(dropped, Array(onsets.suffix(2)))
         XCTAssertEqual(warnings, 1)
         XCTAssertEqual(starts.count, 2)
         for (i, start) in starts.enumerated() {
@@ -681,8 +1098,8 @@ final class ListenerTests: XCTestCase {
         let end = onset + Int64(pcm.count) * Segment.sampleNs
         XCTAssertNil(gate.feed(pcm, active: true, endNs: end, toUnixMs: toUnixMs))
         unixAtHostZero += 60_000
-        let silence = Array(repeating: Float(0), count: 12_800)
-        let segment = try XCTUnwrap(gate.feed(silence, active: false, endNs: end + 800_000_000, toUnixMs: toUnixMs))
+        let silence = Array(repeating: Float(0), count: 32_000)
+        let segment = try XCTUnwrap(gate.feed(silence, active: false, endNs: end + 2_000_000_000, toUnixMs: toUnixMs))
         let clipped = try XCTUnwrap(segment.through((end + 999_999) / 1_000_000))
         let recognizer = try await Recognizer(directory: models)
         let words = try await recognizer.transcribe(clipped, boosting: nil)
@@ -704,7 +1121,7 @@ final class ListenerTests: XCTestCase {
                 let name = clip.text.split(whereSeparator: { !$0.isLetter }).first.map(String.init)
                 let url = corpus.appending(path: clip.id + ".wav")
                 var samples = try self.samples(from: url)
-                samples += Array(repeating: 0, count: 16_000)
+                samples += Array(repeating: 0, count: 36_000)
                 let detector = try SpeechSegmenter()
                 let segments = detector.consume(samples, endNs: 1_000_000_000 + Int64(samples.count) * Segment.sampleNs)
                 XCTAssertEqual(segments.count, 1, clip.id)

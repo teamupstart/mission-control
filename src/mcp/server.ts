@@ -1,4 +1,7 @@
 import { resolve } from "node:path";
+import {
+  SettingsRequestSchema, SettingsToolInputSchema, isBoundedSettingsValue, settingsFailure, type SettingsResult,
+} from "@shared/settings-mcp.ts";
 import { McpCreateScheduleSchema, McpSchedulePreviewSchema } from "@shared/protocol.ts";
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { requestInputReview } from "@shared/request-input.ts";
@@ -335,7 +338,7 @@ const server = new McpServer(
 );
 
 server.registerTool("list_workflow_runs", {
-  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
+  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires a read-only inspection or session-control grant. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
   inputSchema: ListWorkflowRunsSchema,
 }, async (input) => {
   try {
@@ -347,7 +350,7 @@ server.registerTool("list_workflow_runs", {
 });
 
 server.registerTool("get_workflow_run", {
-  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires the operator's Control other sessions opt-in on your session. Returns IDs needed by trigger_workflow_action.",
+  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires a read-only inspection or session-control grant. Returns IDs needed by trigger_workflow_action.",
   inputSchema: GetWorkflowRunSchema,
 }, async ({ runId }) => {
   try {
@@ -359,7 +362,7 @@ server.registerTool("get_workflow_run", {
 });
 
 server.registerTool("read_workflow_command_output", {
-  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires Control other sessions.",
+  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires a read-only inspection or session-control grant.",
   inputSchema: ReadWorkflowCommandOutputMcpSchema,
 }, async (input) => {
   try {
@@ -419,7 +422,7 @@ server.registerTool(
   "read_sessions",
   {
     title: "Inspect sessions for delegated control",
-    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    description: "Requires an operator grant for read-only inspection or Control other sessions on THIS session. Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. With sessionId, pass history: 'latest' to read a bounded transcript page, then pass history.next as history for older pages until next is null. Without sessionId, history reports that only the current live list is available. Record unavailable intervals when a session has ended. Use the returned ids, requestIds, labels and revisions when calling control_session.",
     inputSchema: SessionControlReadSchema.shape,
   },
   async (args) => {
@@ -686,7 +689,7 @@ server.registerTool(
       "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
       "labels, callSign, planStorage (plan tasks only), and dependencies as needed. callSign is a short spoken name " +
       "the task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available; " +
-      "it is not the title and is set only when asked for. " +
+      "it is not the title and is set only when asked for; omitted, the task is given a distinctive one when it launches if a safe name is free, and launches without one when every safe name is taken. " +
       "Omitted agent uses the kind default; omitted or null " +
       "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
       "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +
@@ -823,6 +826,28 @@ server.registerTool(
     }
   },
 );
+
+server.registerTool("mission_settings", {
+  title: "Read or change Mission Control settings",
+  description: "Find supported settings with operation find and a short query. Get the current value and choices with its exact key. "
+    + "Set a value only on a human's request. Pass a get result's version as expectedVersion when replacing an object or list. "
+    + "Repeat find with nextCursor as cursor, or get with nextChoiceCursor as choiceCursor, to continue.",
+  inputSchema: SettingsToolInputSchema,
+}, async input => {
+  const reply = (result: SettingsResult) => textResult(JSON.stringify(result), !result.ok);
+  const parsed = SettingsRequestSchema.safeParse(input);
+  if (!parsed.success) return reply(settingsFailure("invalid_request"));
+  if (parsed.data.operation === "set" && !isBoundedSettingsValue(parsed.data.value)) {
+    return reply(settingsFailure("value_too_large"));
+  }
+  try {
+    const response = await http("/mcp/settings", "POST", parsed.data, true, AbortSignal.timeout(10_000));
+    if (!response.headers.get("content-type")?.includes("application/json")) return reply(settingsFailure("unavailable"));
+    return reply(await response.json() as SettingsResult);
+  } catch {
+    return reply(settingsFailure("unavailable"));
+  }
+});
 
 // Schedules use the existing daemon service, never local timers or direct database writes.
 const scheduleToolGuidance =
@@ -1281,7 +1306,7 @@ server.registerTool(
       body: z.string().trim().min(1).max(REPORT_LIMITS.body)
         .describe("Markdown: what you found or did, and what the operator should do with it"),
       file: z.string().trim().min(1).max(REPORT_LIMITS.path).optional()
-        .describe("A checkout-relative .html or .md document to attach. Mission Control keeps a copy."),
+        .describe("A checkout-relative .html or .md document to attach. Mission Control keeps a copy, with the files it links to in its own directory."),
       url: z.string().trim().url().max(REPORT_LIMITS.url)
         .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
         .optional()
@@ -1328,11 +1353,17 @@ server.registerTool(
   {
     title: "Report a Mission Control product issue",
     description:
-      "Prepare a public GitHub issue about Mission Control only after the user explicitly " +
-      "asked you to report it. Mission Control shows the exact public content in the dashboard " +
-      "and BLOCKS until the human selects Submit public issue or dismisses it. Optional screenshot " +
+      "Prepare a public GitHub issue draft when the user explicitly requests a Mission Control report. " +
+      "For the built-in Bug Fix Inspector, the operator's launch is a standing request to prepare drafts " +
+      "for confirmed defects on the first and scheduled passes of that run. Each draft still requires separate " +
+      "human approval: Mission Control shows the exact public content in the dashboard and BLOCKS until " +
+      "the human selects Submit public issue or dismisses it. Optional screenshot " +
       "upload ids must come from Mission Control and require GitHub CLI 2.99.0 or newer.",
-    inputSchema: ProductIssueDraftSchema.shape,
+    inputSchema: {
+      ...ProductIssueDraftSchema.shape,
+      expectedTarget: z.string().min(1).max(140).optional()
+        .describe("GitHub owner/repository already checked for duplicates. A mismatch stops the report before approval."),
+    },
   },
   async (draft, extra) => {
     try {

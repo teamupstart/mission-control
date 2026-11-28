@@ -1,3 +1,5 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
+import { newRequestId } from "./lib/request-id.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, VOICE_PROVIDER_EDIT_TIMEOUT_MS, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
 import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
@@ -45,7 +47,7 @@ async function nextProviderGesture(signal: AbortSignal): Promise<VoiceProviderIn
       const previous = localStorage.getItem(key);
       const [group, value] = previous?.split(":") ?? [];
       const parsed = VoiceProviderGestureSchema.safeParse({ group, order: Number(value) + 1 });
-      const next = parsed.success ? parsed.data : { group: crypto.randomUUID(), order: 1 };
+      const next = parsed.success ? parsed.data : { group: newRequestId(), order: 1 };
       localStorage.setItem(key, `${next.group}:${next.order}`);
       return next;
     });
@@ -98,6 +100,7 @@ interface PendingEdit {
  * The other settings share one queue and retain their edit order.
  */
 export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
+  const settingsRevision = useSettingsConfigRevision("voice");
   const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
   const [pending, setPendingState] = useState<readonly PendingEdit[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +109,7 @@ export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
   const settingsQueue = useRef(Promise.resolve());
   const latestProviderEdit = useRef(0);
   const confirmedProviderEdit = useRef(0);
-  const [writer] = useState(() => crypto.randomUUID());
+  const [writer] = useState(newRequestId);
   const [provider, setProvider] = useState<{ revision: string; selection: VoiceConfig["decisionProvider"] }>();
   const latestProvider = useRef(provider);
   const previousDaemons = useRef(new Set<string>());
@@ -169,7 +172,7 @@ export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
       reads.abort();
       clearInterval(id);
     };
-  }, [clock, pollWhileOpen, observeProvider, setConfirmed, unconfirmedProviderEdit]);
+  }, [clock, pollWhileOpen, observeProvider, setConfirmed, unconfirmedProviderEdit, settingsRevision]);
 
   const update = useCallback((patch: VoiceConfigPatch, observedProviderRevision?: string): Promise<boolean> => {
     const { decisionProvider, ...settings } = patch;

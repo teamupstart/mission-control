@@ -1,9 +1,9 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A fresh state dir BEFORE anything that resolves it is imported. Static imports hoist
 // above assignments, so every module below has to arrive through a dynamic import or the
@@ -12,7 +12,7 @@ import { seedGitRepo } from "./helpers/git-fixture.ts";
 // `realpathSync` because $TMPDIR is a symlink into /private on macOS and the lease manager
 // canonicalizes every path it stores - so a fixture that skipped this would be comparing
 // two spellings of the same directory and calling them different trees.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-lease-")));
+const home = realpathSync(tempDir("mission-check-lease-"));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

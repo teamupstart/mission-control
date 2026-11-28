@@ -1105,7 +1105,17 @@ test("posture: gate waits follow who actually moves them", () => {
   assert.equal(runPosture(detailFor({ status: "waiting_for_pr" }))?.tone, "yours");
 });
 
-test("posture: blocked is yours, and a terminal run has no posture at all", () => {
+test("posture: unresolved check cleanup waits for automatic reclamation", () => {
+  const posture = runPosture(detailFor({
+    status: "blocked",
+    phase: "check_cleanup_unresolved",
+    gateState: { nodeId: "check", attempts: 1, error: "git ls-remote was stopped" },
+  }));
+  assert.equal(posture?.tone, "auto");
+  assert.match(posture?.sentence ?? "", /retries worktree cleanup automatically/);
+});
+
+test("posture: an operator block is yours, and a terminal run has no posture at all", () => {
   assert.equal(runPosture(detailFor({ status: "blocked" }))?.tone, "yours");
   for (const status of WORKFLOW_RUN_STATUSES) {
     const posture = runPosture(detailFor({ status }));

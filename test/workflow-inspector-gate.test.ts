@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -23,11 +22,12 @@ import {
   workflowRunIsOpen,
 } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a successful Persona End is not completion when the published
 // version owns an Inspector gate. Every conclusion must be about an adopted PR and a
 // fresh observation of the exact clean, committed head.
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-gate-"));
+const home = tempDir("mission-workflow-inspector-gate-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -205,7 +205,17 @@ interface SeedOptions {
   inspectorRepoRoot?: string | null;
   /** Replaces the real GitHub re-read a closed-PR recheck makes. */
   reobservePullRequest?: (prKey: string) => Promise<InspectorReobservation>;
+  /** Pins a Local Inspector node and records its attempt on the submission. */
+  localInspector?: LocalInspectorSeed;
+  /** Several Local Inspector nodes, in graph order; wins over `localInspector`. */
+  localInspectors?: LocalInspectorSeed[];
 }
+
+type LocalInspectorSeed = { status: "passed" | "failed" | "skipped"; publicationTree: string; baseRef: string };
+/** The first node and attempt keep their single-stage ids; later ones are numbered from 2. */
+const localNodeId = (index: number) => index === 0 ? "local-inspector" : `local-inspector-${index + 1}`;
+const localAttemptId = (suffix: string, index: number) =>
+  index === 0 ? `local-attempt-${suffix}` : `local-attempt-${suffix}-${index + 1}`;
 
 async function seed(over: SeedOptions = {}) {
   clearWorkflowTables(db);
@@ -236,9 +246,11 @@ async function seed(over: SeedOptions = {}) {
     deliveryMode: over.deliveryMode ?? "preview",
     maxRepairRounds: 3,
   };
+  const locals = over.localInspectors ?? (over.localInspector ? [over.localInspector] : []);
   const graph = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      ...locals.map((_, index) => ({ id: localNodeId(index), kind: "check", slot: "inspector", position: { x: 100, y: index * 50 } })),
       { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
     ],
     edges: [],
@@ -350,6 +362,17 @@ async function seed(over: SeedOptions = {}) {
     fingerprint: `fingerprint-${suffix}`,
     status: "running",
   }, now);
+  for (const [index, local] of locals.entries()) {
+    const attemptId = localAttemptId(suffix, index);
+    store.insertAttempt({ id: attemptId, submissionId: ids.submission, nodeId: localNodeId(index),
+      attempt: 1, state: "running", persona: null, inputFingerprint: `local-${suffix}-${index}`, now });
+    store.finishAttempt(attemptId, { state: "completed", output: workflowJson({
+      slot: "inspector", status: local.status, command: null, exitCode: null, output: "", truncatedBytes: 0,
+      artifacts: [], timeoutMs: null, note: `Local Inspector ${local.status}.`,
+      localInspector: { status: local.status, publicationTree: local.publicationTree, baseRef: local.baseRef,
+        mergeBase: "m".repeat(40), blockingSeverity: "major", findingCount: 0 },
+    }) }, now);
+  }
   store.setRunState(ids.run, "running", "persona_review", null, now);
   const injected: string[] = [];
   if (over.deliveryMode === "live") {
@@ -425,7 +448,7 @@ for (const rootSource of ["binding", "empty-binding", "null-binding"] as const) 
   test(`an abbreviated captured commit recovers after restart and waits for clean publication: ${rootSource}`, async () => {
     const { execFileSync } = await import("node:child_process");
     const { resolveCapturedCommit } = await import("../src/server/workflows/commit-id.ts");
-    const repo = mkdtempSync(join(tmpdir(), "mission-inspector-head-"));
+    const repo = tempDir("mission-inspector-head-");
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
     git("init", "-q");
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "test commit");
@@ -4715,3 +4738,571 @@ test("explicit legacy-grant recovery uses remaining budget and retains both subm
     assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "again", request)).ok, false);
   } finally { await manager.stop(); }
 });
+
+// ---- Phase 5: a head matching a passed Local Inspector review completes without GitHub ----
+
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { setShippingConfig } = await import("../src/server/shipping/config.ts");
+
+const REVIEWED_TREE = "a".repeat(40);
+const OTHER_TREE = "b".repeat(40);
+
+async function seedLocal(over: SeedOptions & { trees?: Record<string, string> } = {}) {
+  applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: true });
+  const trees = over.trees ?? {};
+  const seeded = await seed({
+    localInspector: { status: "passed", publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main" },
+    resolveCommitTree: async (_root, commit) => trees[commit] ?? REVIEWED_TREE,
+    ...over,
+  });
+  setInspectorConfig({ localReview: true });
+  updateInspectorPr(seeded.key, { baseRefName: "main" }, Date.now());
+  return seeded;
+}
+
+function localTeardown(seeded: Awaited<ReturnType<typeof seed>>) {
+  return async () => {
+    await seeded.manager.stop();
+    setInspectorConfig({ localReview: false });
+    setShippingConfig({ repoAllowlist: [] });
+    applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: false });
+  };
+}
+
+function gateOf(seeded: Awaited<ReturnType<typeof seed>>): WorkflowInspectorGateState {
+  return seeded.store.getRun(seeded.ids.run)!.gateState as unknown as WorkflowInspectorGateState;
+}
+
+test("a head whose tree matches the passed local review completes the gate with no GitHub review", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  // Nothing on the ledger: no GitHub round, no reviewed head, no clean publication.
+  assert.equal(getInspectorPr(seeded.key)?.headSha, null);
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "a matched head did not complete the gate");
+  const gate = gateOf(seeded);
+  assert.deepEqual(gate.localReview, {
+    submissionId: seeded.ids.submission, attemptId: `local-attempt-${serial}`, headSha: seeded.head,
+    treeOid: REVIEWED_TREE, baseRef: "refs/remotes/origin/main",
+  });
+  assert.equal(gate.targetHeadSha, seeded.head);
+  const clean = seeded.store.listEvents(seeded.ids.run).find((event) => event.kind === "inspector_gate_clean");
+  assert.equal((clean?.payload as { path?: string } | undefined)?.path, "local");
+  assert.equal(getInspectorPr(seeded.key)?.round, 0, "the gate asked GitHub for nothing");
+  assert.deepEqual(seeded.store.listDeliveries(seeded.ids.run), []);
+});
+
+test("a later commit with the same tree and base still matches the local review", async (t) => {
+  const later = "later-commit-same-tree";
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  signal(seeded, later);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "a re-created commit lost the match");
+  assert.equal(gateOf(seeded).localReview?.headSha, later);
+  assert.equal(gateOf(seeded).targetHeadSha, later);
+});
+
+test("a head whose tree differs keeps the head_mismatch wait and its GitHub review", async (t) => {
+  const pushed = "repair-push-new-tree";
+  const seeded = await seedLocal({ trees: { [pushed]: OTHER_TREE } });
+  t.after(localTeardown(seeded));
+  signal(seeded, pushed);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_head_mismatch",
+    "a different tree was not refused as another head");
+  assert.equal(gateOf(seeded).localReview, undefined);
+  assert.equal(gateOf(seeded).waitReason, "head_mismatch");
+});
+
+test("the matching tree on a different base is another head", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  updateInspectorPr(seeded.key, { baseRefName: "release" }, Date.now());
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "a different base did not fall back to the GitHub review");
+  assert.equal(gateOf(seeded).localReview, undefined);
+});
+
+for (const fallback of ["skipped", "failed", "local-review-off", "no-stage"] as const) {
+  test(`a ${fallback} local review keeps the GitHub review path`, async (t) => {
+    const seeded = await seedLocal(fallback === "no-stage" ? { localInspector: undefined }
+      : fallback === "local-review-off" ? {}
+      : { localInspector: { status: fallback, publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main" } });
+    t.after(localTeardown(seeded));
+    if (fallback === "local-review-off") setInspectorConfig({ localReview: false });
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "the gate did not wait for the GitHub review");
+    assert.equal(gateOf(seeded).localReview, undefined);
+    // And the GitHub review completes it as today, recording the path it took.
+    updateInspectorPr(seeded.key, { headSha: seeded.head, reviewPosture: "live", round: 1, lastAttemptSha: seeded.head,
+      reviewComplete: true, cleanReviewHeadSha: seeded.head }, Date.now());
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the GitHub review did not complete the gate");
+    const clean = seeded.store.listEvents(seeded.ids.run).find((event) => event.kind === "inspector_gate_clean");
+    assert.equal((clean?.payload as { path?: string } | undefined)?.path, "github");
+  });
+}
+
+// A version may carry more than one Local Inspector node. The match needs every one of them
+// passed on the same tree and base; one pass among several is not a local review of the head.
+const PASSED_ON_MAIN: LocalInspectorSeed = { status: "passed", publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main" };
+
+test("two Local Inspector nodes that both passed the same tree and base complete the gate locally", async (t) => {
+  const seeded = await seedLocal({ localInspectors: [PASSED_ON_MAIN, PASSED_ON_MAIN] });
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "two matching passes did not complete the gate");
+  const gate = gateOf(seeded);
+  assert.equal(gate.localReview?.treeOid, REVIEWED_TREE);
+  assert.equal(gate.localReview?.headSha, seeded.head);
+  const clean = seeded.store.listEvents(seeded.ids.run).find((event) => event.kind === "inspector_gate_clean");
+  assert.equal((clean?.payload as { path?: string } | undefined)?.path, "local");
+  assert.equal(getInspectorPr(seeded.key)?.round, 0);
+});
+
+for (const [name, second] of [
+  ["skipped", { ...PASSED_ON_MAIN, status: "skipped" }],
+  ["failed", { ...PASSED_ON_MAIN, status: "failed" }],
+  ["passed on a different tree", { ...PASSED_ON_MAIN, publicationTree: OTHER_TREE }],
+  ["passed on a different base", { ...PASSED_ON_MAIN, baseRef: "refs/remotes/origin/release" }],
+] as const satisfies ReadonlyArray<readonly [string, LocalInspectorSeed]>) {
+  test(`a second Local Inspector node ${name} keeps the GitHub review though the first passed`, async (t) => {
+    const seeded = await seedLocal({ localInspectors: [PASSED_ON_MAIN, second] });
+    t.after(localTeardown(seeded));
+    // The pull request's tree equals the first node's reviewed tree, so only the second decides.
+    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "the gate completed on one passed node of two");
+    assert.equal(gateOf(seeded).localReview, undefined);
+    assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+  });
+}
+
+test("a repository holding the merge grant now takes the local path for a matching head", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  // Shipping accepts a matching local review as merge provenance, so the merge grant no longer
+  // keeps the GitHub review: the gate and the worker take the same local path as anywhere else.
+  setShippingConfig({ repoAllowlist: ["/repo"] });
+  assert.equal((await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }))?.treeOid,
+    REVIEWED_TREE, "the worker sees the match in a merge-grant repository");
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed",
+    "a merge-grant repository did not complete on the local review");
+  assert.equal(gateOf(seeded).localReview?.treeOid, REVIEWED_TREE);
+});
+
+test("the manager's one match answer is what the worker asks, before and after the gate completes", async (t) => {
+  const seeded = await seedLocal({ trees: { "other-tree-head": OTHER_TREE } });
+  t.after(localTeardown(seeded));
+  const ask = (headSha: string, baseRefName: string | null = "main") =>
+    seeded.manager.localReviewMatch(seeded.key, { headSha, baseRefName });
+  assert.equal((await ask(seeded.head))?.treeOid, REVIEWED_TREE, "the worker sees the match before the gate pins");
+  assert.equal(await ask("other-tree-head"), null);
+  assert.equal(await ask(seeded.head, null), null);
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the gate did not complete");
+  assert.equal((await ask(seeded.head))?.headSha, seeded.head, "a completed run still answers for its pull request");
+});
+
+test("a restart keeps the recorded local path", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the gate did not complete");
+  const before = gateOf(seeded);
+  await seeded.manager.stop();
+  seeded.manager.start();
+  signal(seeded, seeded.head);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+  assert.deepEqual(gateOf(seeded).localReview, before.localReview);
+});
+
+test("a newer run still mid-review does not hide a head an earlier run passed locally", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+  // A later run on the same pull request has pinned it, but its own review has not run yet.
+  const later = `${seeded.ids.run}-later`;
+  const clone = (table: string, id: string, patch: Record<string, unknown>) => {
+    const row = { ...(db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<string, unknown>), ...patch };
+    db.prepare(`INSERT INTO ${table} (${Object.keys(row).join(",")}) VALUES (${Object.keys(row).map(() => "?").join(",")})`)
+      .run(...(Object.values(row) as Array<string | number | null>));
+  };
+  const first = db.prepare(`SELECT started_at FROM workflow_runs WHERE id = ?`).get(seeded.ids.run) as { started_at: number };
+  clone("workflow_runs", seeded.ids.run, { id: later, trigger_key: `${later}-trigger`, status: "waiting_for_inspector",
+    current_phase: "inspector_awaiting_fresh_observation", started_at: first.started_at + 1000, completed_at: null });
+  clone("workflow_submissions", seeded.ids.submission, { id: `${later}-submission`, run_id: later,
+    trigger_key: `${later}-submission-trigger` });
+  assert.equal(seeded.store.listAttempts(`${later}-submission`).length, 0);
+  assert.equal(seeded.store.listRunsNamingGatePr(seeded.key)[0]?.id, later, "the later run is the newest owner");
+  const match = await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal(match?.submissionId, seeded.ids.submission, "the earlier run's passed review still vouches for the head");
+});
+
+for (const later of ["skipped", "failed"] as const) {
+  test(`a later ${later} Local Inspector attempt supersedes an earlier pass on the same node`, async (t) => {
+    const seeded = await seedLocal();
+    t.after(localTeardown(seeded));
+    // A retry of the same node on the same submission, recorded after the pass. The node's
+    // current answer is the later attempt, so the earlier pass must not vouch for any head.
+    const at = Date.now();
+    seeded.store.insertAttempt({ id: `local-attempt-${serial}-retry`, submissionId: seeded.ids.submission,
+      nodeId: "local-inspector", attempt: 2, state: "running", persona: null, inputFingerprint: `local-${serial}-retry`, now: at });
+    seeded.store.finishAttempt(`local-attempt-${serial}-retry`, { state: "completed", output: workflowJson({
+      slot: "inspector", status: later, command: null, exitCode: null, output: "", truncatedBytes: 0,
+      artifacts: [], timeoutMs: null, note: `Local Inspector ${later}.`,
+      localInspector: { status: later, publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main",
+        mergeBase: "m".repeat(40), blockingSeverity: "major", findingCount: later === "failed" ? 1 : 0 },
+    }) }, at);
+    const attempts = seeded.store.listAttempts(seeded.ids.submission).filter((row) => row.nodeId === "local-inspector");
+    assert.deepEqual(attempts.map((row) => row.attempt), [1, 2], "the pass is first and the retry is the node's latest");
+
+    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null,
+      "the earlier pass does not match once a later attempt did not pass");
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "the gate did not stay on the GitHub review path");
+    assert.equal(gateOf(seeded).localReview, undefined);
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+  });
+}
+
+test("a pushed head whose Git tree cannot be resolved keeps the GitHub review path", async (t) => {
+  const asked: string[] = [];
+  const seeded = await seedLocal({
+    resolveCommitTree: async (_root, commit) => {
+      asked.push(commit);
+      throw new Error(`fatal: bad object ${commit}`);
+    },
+  });
+  t.after(localTeardown(seeded));
+  // The rejection is no match, never an exception: the worker's question answers null...
+  assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+  // ...and the gate goes on to wait for the GitHub review instead of failing the evaluation.
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "an unresolvable tree did not fall back to the GitHub review");
+  assert.ok(asked.includes(seeded.head), "the gate did try to resolve the pushed head's tree");
+  assert.equal(gateOf(seeded).localReview, undefined);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_inspector");
+  assert.equal(seeded.store.listEvents(seeded.ids.run).some((event) => event.kind === "inspector_adapter_error"), false,
+    "the resolution failure did not surface as a gate error");
+});
+
+/** Copy a row of `table` under new values, for building a second run on the same pull request. */
+function cloneRow(table: string, id: string, patch: Record<string, unknown>): void {
+  const row = { ...(db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<string, unknown>), ...patch };
+  db.prepare(`INSERT INTO ${table} (${Object.keys(row).join(",")}) VALUES (${Object.keys(row).map(() => "?").join(",")})`)
+    .run(...(Object.values(row) as Array<string | number | null>));
+}
+
+/**
+ * A newer run on the same pull request, after the seeded run completed locally. `stage: false`
+ * pins it to a version whose graph has no Local Inspector node; `attempt` records that node's
+ * latest outcome on the newer run's submission.
+ */
+async function newerRunOnSamePullRequest(
+  seeded: Awaited<ReturnType<typeof seed>>,
+  options: { stage: boolean; attempt?: "failed" | "skipped"; status?: "cancelled" | "failed" },
+): Promise<string> {
+  const later = `${seeded.ids.run}-newer`;
+  const first = db.prepare(`SELECT started_at FROM workflow_runs WHERE id = ?`).get(seeded.ids.run) as { started_at: number };
+  let versionId = seeded.ids.version;
+  if (!options.stage) {
+    versionId = `${seeded.ids.version}-no-stage`;
+    const graph = JSON.parse((db.prepare(`SELECT graph_json FROM workflow_versions WHERE id = ?`)
+      .get(seeded.ids.version) as { graph_json: string }).graph_json) as { nodes: Array<{ kind: string }> };
+    graph.nodes = graph.nodes.filter((node) => node.kind !== "check");
+    cloneRow("workflow_versions", seeded.ids.version, { id: versionId, version: 2, graph_json: JSON.stringify(graph) });
+  }
+  cloneRow("workflow_runs", seeded.ids.run, { id: later, trigger_key: `${later}-trigger`, workflow_version_id: versionId,
+    status: options.status ?? "waiting_for_inspector",
+    current_phase: options.status ? "cancelled" : "inspector_awaiting_fresh_observation",
+    started_at: first.started_at + 1000, completed_at: options.status ? first.started_at + 2000 : null });
+  cloneRow("workflow_submissions", seeded.ids.submission, { id: `${later}-submission`, run_id: later,
+    trigger_key: `${later}-submission-trigger` });
+  if (options.attempt) {
+    const at = Date.now();
+    seeded.store.insertAttempt({ id: `${later}-local`, submissionId: `${later}-submission`, nodeId: "local-inspector",
+      attempt: 1, state: "running", persona: null, inputFingerprint: `${later}-local`, now: at });
+    seeded.store.finishAttempt(`${later}-local`, { state: "completed", output: workflowJson({
+      slot: "inspector", status: options.attempt, command: null, exitCode: null, output: "", truncatedBytes: 0,
+      artifacts: [], timeoutMs: null, note: `Local Inspector ${options.attempt}.`,
+      localInspector: { status: options.attempt, publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main",
+        mergeBase: "m".repeat(40), blockingSeverity: "major", findingCount: 0 },
+    }) }, at);
+  }
+  return later;
+}
+
+for (const newer of [
+  { name: "uses a version without the Local Inspector stage", stage: false },
+  { name: "failed its own Local Inspector review", stage: true, attempt: "failed" as const },
+  { name: "skipped its own Local Inspector review", stage: true, attempt: "skipped" as const },
+]) {
+  test(`a newer run on the pull request that ${newer.name} gets the GitHub review even though an older run passed the tree`, async (t) => {
+    const seeded = await seedLocal();
+    t.after(localTeardown(seeded));
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+    const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+    assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the older run alone vouches for the head");
+
+    const later = await newerRunOnSamePullRequest(seeded, newer);
+    assert.equal(seeded.store.listRunsNamingGatePr(seeded.key)[0]?.id, later, "the newer run owns the pull request now");
+    // The newer run decides. Its gate waits for the GitHub review, so the worker must not skip it.
+    assert.equal(await ask(), null);
+  });
+}
+
+test("only direct evidence makes a run the pull request's owner: its Pull Request action's record counts, the session does not", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  // Unpin the gate, as in the moment before it pins: a run that merely shares the session and
+  // repository with the adopted pull request proves nothing about it.
+  const gate = gateOf(seeded);
+  db.prepare(`UPDATE workflow_runs SET gate_state_json = ? WHERE id = ?`)
+    .run(JSON.stringify({ ...gate, prKey: null, prUrl: null }), seeded.ids.run);
+  assert.equal(seeded.store.listRunsNamingGatePr(seeded.key).length, 0);
+  assert.equal(await ask(), null, "no ownership without evidence");
+
+  // The run's own Pull Request action records the pull request it opened.
+  const at = Date.now();
+  seeded.store.insertAttempt({ id: `pr-action-${serial}`, submissionId: seeded.ids.submission, nodeId: "pull-request",
+    attempt: 1, state: "running", persona: null, inputFingerprint: `pr-action-${serial}`, now: at });
+  seeded.store.finishAttempt(`pr-action-${serial}`, { state: "completed", output: workflowJson({
+    outcome: "complete", continuationSubmissionId: null,
+    expectation: { kind: "pull_request", pullRequestKey: seeded.key, pullRequestUrl: seeded.url,
+      pullRequestNumber: Number(seeded.key.split("#")[1]), repositoryRoot: "/repo", branch: "feature",
+      expectedHeadOid: null, acceptedContentTreeOid: null, observedAt: at },
+  }) }, at);
+  assert.deepEqual(seeded.store.listRunsWithPullRequestAction(seeded.key).map((run) => run.id), [seeded.ids.run]);
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "the action's record is ownership");
+});
+
+for (const newer of [
+  { name: "skipped its Local Inspector stage and was then cancelled", stage: true, attempt: "skipped" as const, status: "cancelled" as const },
+  { name: "was cancelled before its Local Inspector review finished", stage: true, status: "cancelled" as const },
+  { name: "failed before its Local Inspector review finished", stage: true, status: "failed" as const },
+]) {
+  test(`a newer owner that ${newer.name} still keeps the GitHub review over an older run's pass`, async (t) => {
+    const seeded = await seedLocal();
+    t.after(localTeardown(seeded));
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+    const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+    assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the older run alone vouches for the head");
+
+    const later = await newerRunOnSamePullRequest(seeded, newer);
+    assert.equal(seeded.store.getRun(later)?.status, newer.status);
+    assert.equal(seeded.store.listRunsNamingGatePr(seeded.key)[0]?.id, later, "the terminal newer run owns the pull request");
+    assert.equal(await ask(), null, "a terminal newer owner decides no, and the older pass does not stand in");
+  });
+}
+
+test("a run repairing GitHub findings keeps the worker on the GitHub path even when its head would match", async (t) => {
+  const seeded = await seedLocal();
+  t.after(localTeardown(seeded));
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the head matches the passed local review");
+  // The gate sent this run to repair published GitHub findings (for example while Local review was
+  // off, and it has since been switched on). The head and its tree are unchanged.
+  db.prepare(`UPDATE workflow_runs SET status = 'waiting_for_new_head', current_phase = 'inspector_findings' WHERE id = ?`)
+    .run(seeded.ids.run);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_new_head");
+  assert.equal(await ask(), null, "the worker's answer agrees with the gate's: stay on the GitHub path");
+});
+
+test("a pull request head that moves during the tree lookup is evaluated afresh, not completed locally", async (t) => {
+  const moved = "moved-during-lookup";
+  let moveOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async (_root, commit) => {
+      // The lookup for the reviewed head is where the gate awaits git; a newer observation of
+      // the pull request commits right then.
+      if (commit !== moved && moveOnce) { const move = moveOnce; moveOnce = null; move(); }
+      return commit === moved ? OTHER_TREE : REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  moveOnce = () => updateInspectorPr(seeded.key, { observedHeadSha: moved, observedState: "OPEN", observedAt: Date.now() + 1 }, Date.now());
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_head_mismatch",
+    "the moved head was not evaluated afresh");
+  assert.equal(moveOnce, null, "the observation did move during the lookup");
+  assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed", "the superseded head did not complete the run");
+  assert.equal(gateOf(seeded).localReview, undefined);
+  assert.equal(gateOf(seeded).observedHeadSha, moved);
+});
+
+test("a newer owner that decides during the tree lookup takes the decision back from an older pass", async (t) => {
+  let decideDuringLookup: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (decideDuringLookup) { const decide = decideDuringLookup; decideDuringLookup = null; decide(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+  const later = await newerRunOnSamePullRequest(seeded, { stage: true });
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the newer run is pending, the older pass stands");
+
+  // The newer run's Local Inspector review fails while the older pass's tree is being resolved.
+  decideDuringLookup = () => {
+    const at = Date.now();
+    seeded.store.insertAttempt({ id: `${later}-late`, submissionId: `${later}-submission`, nodeId: "local-inspector",
+      attempt: 1, state: "running", persona: null, inputFingerprint: `${later}-late`, now: at });
+    seeded.store.finishAttempt(`${later}-late`, { state: "completed", output: workflowJson({
+      slot: "inspector", status: "failed", command: null, exitCode: null, output: "", truncatedBytes: 0,
+      artifacts: [], timeoutMs: null, note: "Local Inspector failed.",
+      localInspector: { status: "failed", publicationTree: REVIEWED_TREE, baseRef: "refs/remotes/origin/main",
+        mergeBase: "m".repeat(40), blockingSeverity: "major", findingCount: 1 },
+    }) }, at);
+  };
+  assert.equal(await ask(), null, "the newer owner's decision, made during the await, wins");
+  assert.equal(decideDuringLookup, null, "the decision did land during the lookup");
+});
+
+test("the matched run cancelled during the tree lookup vouches for nothing", async (t) => {
+  let duringLookup: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (duringLookup) { const apply = duringLookup; duringLookup = null; apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the run's pass matches");
+  // Cancelling keeps the completed attempts, so only the run's own status can say no.
+  duringLookup = () => {
+    db.prepare(`UPDATE workflow_runs SET status = 'cancelled', current_phase = 'cancelled' WHERE id = ?`).run(seeded.ids.run);
+  };
+  assert.equal(await ask(), null, "a run cancelled during the lookup no longer matches");
+  assert.equal(duringLookup, null, "the cancellation did land during the lookup");
+});
+
+test("a newer owner that appears during the tree lookup takes the decision from an older pass", async (t) => {
+  let duringLookup: (() => Promise<void>) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (duringLookup) { const apply = duringLookup; duringLookup = null; await apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the only owner's pass matches");
+  // A newer run pins the same pull request while the older pass's tree is being resolved, and it
+  // has already been cancelled. It was never asked, so the older pass must not stand in for it.
+  duringLookup = async () => { await newerRunOnSamePullRequest(seeded, { stage: true, status: "cancelled" }); };
+  assert.equal(await ask(), null, "an owner that appeared during the lookup decides");
+  assert.equal(duringLookup, null, "the newer owner did appear during the lookup");
+});
+
+test("a pull request retargeted during the tree lookup is evaluated on its new base, not completed locally", async (t) => {
+  let retargetOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      // The head is unchanged; only the base moves while the gate awaits git.
+      if (retargetOnce) { const retarget = retargetOnce; retargetOnce = null; retarget(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  retargetOnce = () => updateInspectorPr(seeded.key, { baseRefName: "release" }, Date.now());
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "the retargeted pull request was not sent to the GitHub review");
+  assert.equal(retargetOnce, null, "the base did move during the lookup");
+  assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed", "no local completion against the old base");
+  assert.equal(gateOf(seeded).localReview, undefined);
+  assert.equal(getInspectorPr(seeded.key)?.observedHeadSha ?? seeded.head, seeded.head, "the head itself never moved");
+});
+
+test("eligibility that changes during the tree lookup (Local review switched off) keeps the GitHub review", async (t) => {
+  let changeOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  const apply = () => setInspectorConfig({ localReview: false });
+  // The shared answer: what the worker asks.
+  changeOnce = apply;
+  assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+  assert.equal(changeOnce, null, "the change did land during the lookup");
+  // Restore, then the same race on the gate's path.
+  setInspectorConfig({ localReview: true });
+  changeOnce = apply;
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "the gate did not wait for the GitHub review");
+  assert.equal(changeOnce, null);
+  assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+  assert.equal(gateOf(seeded).localReview, undefined);
+});
+
+test("the merge grant given during the tree lookup no longer takes the match away", async (t) => {
+  let changeOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  changeOnce = () => setShippingConfig({ repoAllowlist: ["/repo"] });
+  assert.equal((await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }))?.treeOid,
+    REVIEWED_TREE);
+  assert.equal(changeOnce, null, "the grant did land during the lookup");
+});
+
+const { localReviewBaseBranch } = await import("../src/shared/workflow.ts");
+
+test("localReviewBaseBranch reads the branch from each recorded ref form and refuses the rest", () => {
+  assert.equal(localReviewBaseBranch("refs/remotes/origin/main"), "main");
+  assert.equal(localReviewBaseBranch("refs/remotes/upstream/release/2026"), "release/2026");
+  assert.equal(localReviewBaseBranch("refs/heads/main"), "main");
+  assert.equal(localReviewBaseBranch("origin/feature/x"), "feature/x");
+  for (const refused of ["refs/remotes/origin/HEAD", "origin/HEAD", "refs/heads/HEAD", "main", "refs/tags/v1", "upstream/main", ""]) {
+    assert.equal(localReviewBaseBranch(refused), null, refused);
+  }
+});
+
+for (const baseRef of ["refs/heads/main", "origin/main", "refs/remotes/upstream/main"]) {
+  test(`a passed review recorded against ${baseRef} matches a pull request based on main`, async (t) => {
+    const seeded = await seedLocal({ localInspector: { status: "passed", publicationTree: REVIEWED_TREE, baseRef } });
+    t.after(localTeardown(seeded));
+    const match = await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+    assert.equal(match?.baseRef, baseRef, "the worker's answer is a match");
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the gate did not complete locally");
+    assert.equal(gateOf(seeded).localReview?.baseRef, baseRef);
+  });
+}
+
+for (const baseRef of ["refs/remotes/origin/HEAD", "main", "refs/tags/v1"]) {
+  test(`a passed review recorded against unreadable base ref ${baseRef} keeps the GitHub review`, async (t) => {
+    const seeded = await seedLocal({ localInspector: { status: "passed", publicationTree: REVIEWED_TREE, baseRef } });
+    t.after(localTeardown(seeded));
+    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+    signal(seeded, seeded.head);
+    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+      "an unreadable recorded base did not fall back to the GitHub review");
+    assert.equal(gateOf(seeded).localReview, undefined);
+  });
+}

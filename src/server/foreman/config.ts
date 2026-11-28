@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "../config-patch-storage.ts";
 import { randomUUID } from "node:crypto";
 import type { ForemanPlannerHealth, ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
@@ -137,19 +138,22 @@ export function getForemanConfig(): ForemanConfig {
 /**
  * Merge a patch over the current config, persist, and return the result.
  *
- * Backlog launch defaults are keyed by harness, so merge that one nested map rather
- * than replacing it wholesale. The settings panel edits one agent at a time.
+ * Merge backlog launch defaults per harness and effort overrides per role. The settings
+ * panel edits one row at a time.
  */
 export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
   const cur = getForemanConfig();
+  const merged = {
+    backlogDefaultModel: { ...cur.backlogDefaultModel, ...patch.backlogDefaultModel },
+    ...(patch.efforts && { efforts: { ...cur.efforts, ...patch.efforts } }),
+  };
   const next = ForemanConfigSchema.parse({
     ...cur,
     ...patch,
     ...pinRoleProviders(cur, patch),
-    backlogDefaultModel: { ...cur.backlogDefaultModel, ...patch.backlogDefaultModel },
-    ...(patch.efforts && { efforts: { ...cur.efforts, ...patch.efforts } }),
+    ...merged,
   });
-  setAppConfig(CONFIG_ENTRY, next);
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, Object.keys(merged));
   return next;
 }
 

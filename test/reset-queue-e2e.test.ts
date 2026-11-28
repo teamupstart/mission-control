@@ -1,12 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { gitIn, mkCloneOnBranch } from "./helpers/git-fixture.ts";
 
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-reset-queue-"));
+process.env.MISSION_HOME = tempDir("mission-reset-queue-");
 
 const { openDb, getQueueRow, listQueueItems } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -17,6 +14,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 openDb();
 const TOKEN = ensureToken();

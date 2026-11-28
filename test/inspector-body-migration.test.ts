@@ -1,13 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: findings created before Phase 5 must remain readable, while new
 // repair packets need the exact already-scrubbed detail that Inspector reviewed.
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-body-"));
+const home = tempDir("mission-inspector-body-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

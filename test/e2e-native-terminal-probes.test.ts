@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { after, test } from "node:test";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
@@ -10,8 +9,9 @@ import { cmuxControlProbe } from "../src/server/terminal/cmux.ts";
 import { createHerdrClient } from "../src/server/terminal/herdr-client.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "native-probe-fakes-"));
+const root = tempDir("native-probe-fakes-");
 after(() => rmSync(root, { recursive: true, force: true }));
 const blockedRuntime = join(root, "blocked-runtime.cjs");
 writeFileSync(blockedRuntime, "process.stderr.write('JavaScript startup unavailable\\n'); process.exit(77);\n");

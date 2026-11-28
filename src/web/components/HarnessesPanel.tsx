@@ -398,6 +398,7 @@ function HarnessCard({
   const resolved = runtime === null ? null : resolveSessionRuntime(agent, runtime);
   const resolvedTerminal = resolveTerminalBackend(terminalBackend);
   const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
+  // oxlint-disable-next-line repository/agent-comparison -- The panel reports readiness for the Pi SDK installation.
   const piSdkBlocked = agent === "pi" && !piSdkReady;
   const hasAdvisor = capabilitiesFor(agent).advisor !== null;
   const runtimeNote =

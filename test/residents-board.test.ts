@@ -1,20 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ResidentProfile, ResidentRunSummary } from "../src/shared/residents.ts";
 import type { ReviewItem, Session, SessionGoalSummary } from "../src/shared/types.ts";
 import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Phase 2 of residents: how a resident is FOUND. The board section of a profile revision, the
 // pinned partition the board, the rail and the arrow keys all walk, the join from a session to
 // its live run, and the two run frames' deliberate absence from the Line's inputs.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-board-"));
+const home = tempDir("mission-residents-board-");
 process.env.HARNESS_HOME = home;
 
 const {
@@ -34,6 +32,7 @@ const {
   residentMarksBySession,
   residentProfileMark,
   residentReplacementsBySession,
+  residentSessionMark,
 } = await import("../src/web/residents/marker.ts");
 const { DISPLAY_ITEMS } = await import("../src/web/lib/board-card.ts");
 const { UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
@@ -125,6 +124,21 @@ test("the palette ids are append-only and each names a CSS token", async () => {
 });
 
 // ---- the run summary and the join ----
+
+test("a resident card quotes the current reference name only while listening", () => {
+  const run = summary({ taskId: "t1" });
+  run.settings.identity.referenceName = "Original";
+  const current = profile();
+  current.settings.identity.referenceName = "Marlowe";
+
+  assert.equal(residentSessionMark(run, current, true).listeningTitle, '"Marlowe"');
+  assert.equal(residentSessionMark(run, current, false).listeningTitle, undefined);
+  assert.equal(residentSessionMark(run, null, true).listeningTitle, '"Original"');
+
+  const cleared = residentSessionMark(run, profile(), true);
+  assert.equal(cleared.listeningTitle, undefined);
+  assert.equal(cleared.name, "Triage Bot");
+});
 
 test("only a live run has a wire summary", () => {
   const run = {
@@ -232,6 +246,19 @@ test("a session joins its run through its task id; every other session is absent
   assert.equal(marks.get("s-res")!.name, "Triage Bot");
   assert.equal(marks.get("s-res")!.changedTo, null);
   assert.equal(residentMarksBySession([resident], [], [profile()]).size, 0);
+});
+
+test("only colliding listening titles are marked as shared across live resident sessions", () => {
+  const runs = ["Marlowe", "MARLOWE", "Robin"].map((referenceName, index) => {
+    const run = summary({ taskId: `task-${index}` });
+    run.settings.identity.referenceName = referenceName;
+    return run;
+  });
+  const sessions = runs.map(run => mkSession({ id: run.id, task: mkTaskSummary({ id: run.taskId, kind: "resident" }) }));
+  const marks = residentMarksBySession(sessions, runs, [], true);
+  assert.deepEqual([...marks.values()].map(mark => Boolean(mark.sharedListeningTitle)), [true, true, false]);
+  const muted = residentMarksBySession(sessions, runs, [], false);
+  assert.ok([...muted.values()].every(mark => !mark.sharedListeningTitle));
 });
 
 test("a profile's marker is a chip mark, with no run fields to fill in", () => {
@@ -900,7 +927,6 @@ test("the edge tab lights for working, for needs you, and for both at once", () 
 
 test("a visitor card says it opens the resident's conversation, on the Board and in the rail", async () => {
   const { ResidentVisitorCard } = await import("../src/web/residents/ResidentVisitorCard.tsx");
-  const { residentSessionMark } = await import("../src/web/residents/marker.ts");
   const mark = residentSessionMark(summary({ taskId: "t1" }), profile());
   const session = mkSession({ id: "s1", pendingReviews: 1, task: mkTaskSummary({ id: "t1", kind: "resident" }) });
   for (const variant of ["tile", "rail"] as const) {

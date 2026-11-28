@@ -23,13 +23,13 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // A fresh state dir BEFORE anything that resolves it is imported, and `realpathSync` because
 // $TMPDIR is a symlink into /private on macOS and the lease manager canonicalizes every path
 // it stores (see workflow-check-lease.test.ts).
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-provider-")));
+const home = realpathSync(tempDir("mission-check-provider-"));
 process.env.HARNESS_HOME = home;
 
 /**

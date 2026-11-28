@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { REPORT_GUIDANCE, REPORT_LIMITS } from "../src/shared/reports.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The MCP child's half of `post_report`: one request to `/mcp/reports` carrying the caller's own
 // identity, the daemon's receipt handed back verbatim, nothing long-polled, and a flag-off refusal
@@ -15,7 +14,7 @@ import { REPORT_GUIDANCE, REPORT_LIMITS } from "../src/shared/reports.ts";
 //
 // Drives the real MCP server over stdio against a stub daemon that records every request.
 
-const home = mkdtempSync(join(tmpdir(), "post-report-mcp-"));
+const home = tempDir("post-report-mcp-");
 type Seen = { method: string; path: string; body: Record<string, unknown> };
 const seen: Seen[] = [];
 let mode: "ok" | "flag-off" | "refused" | "unreachable" = "ok";

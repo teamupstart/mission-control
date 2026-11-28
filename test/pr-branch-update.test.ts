@@ -1,14 +1,14 @@
 // A branch update writes to GitHub even when shipping is off. Claim once, fail closed,
 // and never reuse checks or reviews from the previous commit.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { after, beforeEach, test } from "node:test";
 import { openDb, closeDb } from "../src/server/db.ts";
 import { branchUpdateEligible, reconcileBranchUpdate, type BranchSnapshot, type BranchUpdateDeps } from "../src/server/github/branch-update.ts";
 import type { PrBranchUpdate } from "../src/shared/pr-branch-update.ts";
+import { tempDir } from "./temp-root.mjs";
 const url = "https://github.com/acme/demo/pull/1545";
 function snapshot(patch: Partial<BranchSnapshot> = {}): BranchSnapshot {
   return { state: "OPEN", isDraft: false, headRefOid: "a".repeat(40), baseRefOid: "b".repeat(40), baseRefName: "main",
@@ -62,7 +62,7 @@ test("claims before writing, deduplicates concurrent polls and persists across r
   await f.tick(); assert.equal(f.writes, 2, "returning to an attempted pair is still deduplicated");
 });
 test("a new ready head on the same target gets one fresh guarded update through the real adapter", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-pr-update-new-head-"));
+  const dir = tempDir("mission-pr-update-new-head-");
   const gh = join(dir, "gh.cjs");
   const calls = join(dir, "calls.jsonl");
   const snapshotPath = join(dir, "snapshot.json");
@@ -220,7 +220,7 @@ for (const outcome of [
   { label: "non-conflict GitHub refusal", reason: "Resource not accessible by integration (HTTP 403)", unknown: false },
   { label: "unknown command outcome", reason: "Branch update outcome unknown. GitHub may have accepted the update; check the PR before retrying.", unknown: true },
 ]) test(`real update adapter publishes a ${outcome.label} and never retries the commit pair`, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-pr-update-refusal-"));
+  const dir = tempDir("mission-pr-update-refusal-");
   const gh = join(dir, "gh.cjs");
   const calls = join(dir, "calls.jsonl");
   const previousGh = process.env.MISSION_GH_BIN;

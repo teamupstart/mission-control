@@ -1,4 +1,6 @@
-import { backup, type DatabaseSync } from "node:sqlite";
+import { dirname } from "node:path";
+import { backup, type BackupProgressInfo, type DatabaseSync } from "node:sqlite";
+import { availableBackupBytes, requireBackupSpace } from "./space.ts";
 
 /**
  * Keep native backup completions moving even when the rest of the process is idle.
@@ -10,10 +12,28 @@ import { backup, type DatabaseSync } from "node:sqlite";
  * Do not unref it: a quiet caller must still finish. Do not race a timeout against the
  * backup either: SQLite could still be using the source/destination during cleanup.
  */
-export async function onlineDatabaseBackup(source: DatabaseSync, destination: string): Promise<void> {
+export async function onlineDatabaseBackup(
+  source: DatabaseSync,
+  destination: string,
+  availableBytes = availableBackupBytes,
+): Promise<void> {
   const wake = setInterval(() => {}, 10);
   try {
-    await backup(source, destination);
+    const pageSize = Number(source.prepare("PRAGMA page_size").get()!.page_size);
+    let checkedPages = -Infinity;
+    let checkedTotal = 0;
+    const root = dirname(destination);
+    function progress({ totalPages, remainingPages }: BackupProgressInfo): void {
+      const copied = totalPages - remainingPages;
+      // Recheck on growth/restart and every 8 MiB while the destination fills.
+      if (totalPages === checkedTotal && copied >= checkedPages &&
+          (copied - checkedPages) * pageSize < 8 * 1024 * 1024) return;
+      checkedPages = copied;
+      checkedTotal = totalPages;
+      requireBackupSpace(availableBytes(root),
+        BigInt(remainingPages + 2 * totalPages) * BigInt(pageSize), "online copy");
+    }
+    await backup(source, destination, { progress });
   } finally {
     clearInterval(wake);
   }

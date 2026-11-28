@@ -735,19 +735,21 @@ test("5. an unticked drain trigger does not CONSUME the ask - re-ticking it stil
 });
 
 
-test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
-  assert.equal(
-    tick({
-      items: DRAINED(),
-      cfg: { wrapup: "pr" },
-      intent: { promptRevision: 2, resolvedPromptRevision: 1, relationship: null },
-    }).kind,
-    "none",
-  );
-  assert.equal(
-    tick({ items: DRAINED(), cfg: { wrapup: "pr" }, intent: { relationship: "unclear" } }).kind,
-    "none",
-  );
+test("5. a drain waits while the latest intent is unresolved, even with an artifact task title", () => {
+  for (const wrapup of ["pr", "ask"] as const) {
+    for (const intent of [
+      { promptRevision: 2, resolvedPromptRevision: 1, relationship: null },
+      { relationship: "unclear" as const },
+    ]) {
+      const action = tick({
+        items: DRAINED(),
+        session: { task: mkTaskSummary({ title: "Create mockups for the viewer" }) },
+        cfg: { wrapup },
+        intent,
+      });
+      assert.equal(action.kind, "none");
+    }
+  }
 });
 
 test("5. a scout drain retires without a Straight-to-PR action", () => {
@@ -861,6 +863,55 @@ test("5. an implementation that cites mockups keeps the configured automatic act
       cfg: { wrapup: "pr" },
     });
     assert.equal(action.kind, "auto-wrapup", objective);
+  }
+});
+
+test("5. a resolved implementation supersedes a stale title and completed artifact item", () => {
+  const action = tick({
+    items: DRAINED().map((item) => ({ ...item, intent: "Output: mockups" })),
+    session: { task: mkTaskSummary({ title: "Output: mockups" }) },
+    intent: { objective: "Heading counts in the Idle rail are live in the product.", relationship: "replace", objectiveVersion: 2 },
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(action.kind, "auto-wrapup");
+  assert.equal(action.kind === "auto-wrapup" && action.intentGuard.objective, "Heading counts in the Idle rail are live in the product.");
+});
+
+test("5. old implementation items and title cannot authorize shipping under a current artifact-only objective", () => {
+  const action = tick({
+    items: DRAINED().map((item) => ({ ...item, intent: "Output: source code" })),
+    session: { task: mkTaskSummary({ title: "Implement the navigation feature" }) },
+    intent: { objective: "Output: mockups", relationship: "replace", objectiveVersion: 2 },
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(action.kind, "skip-wrapup");
+});
+
+test("5. a drained implementation with an explicit no-PR restriction neither claims nor retires", () => {
+  for (const wrapup of ["pr", "ask"] as const) {
+    for (const objective of [
+      "Implement heading counts.\nAutomatic handoff: operator only",
+      "Implement heading counts. Do not open a PR.",
+    ]) {
+      const action = tick({
+        items: DRAINED(),
+        intent: { objective },
+        cfg: { wrapup, skipReviewArtifactWrapup: false, skipScoutWrapup: false },
+      });
+      assert.equal(action.kind, "none");
+    }
+  }
+});
+
+test("5. a drained report the operator kept off a PR still retires instead of waiting forever", () => {
+  // #1807: the hold reserves an automatic handoff, and a review artifact has none to reserve.
+  for (const objective of [
+    "Write the weekly dependency report. Do not open a PR.",
+    "Write the weekly dependency report.\nAutomatic handoff: operator only",
+  ]) {
+    const action = tick({ items: DRAINED(), intent: { objective }, cfg: { wrapup: "pr" } });
+    assert.equal(action.kind, "skip-wrapup", objective);
+    assert.match(action.kind === "skip-wrapup" ? action.reason : "", /review artifact/);
   }
 });
 
@@ -1664,4 +1715,84 @@ test("a session awaiting its own background process holds its queue until its de
   const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
   assert.deepEqual(tick({ session: { awaiting }, items: [mkItem({ state: "verified" })] }), { kind: "none" });
   assert.equal(tick({ session: { awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
+});
+
+test("drain retains a delivered item restriction until a standalone release", () => {
+  const items = DRAINED().map((item) => ({
+    ...item, sentAt: NOW - 5_000, intent: "Do not open a PR.",
+  }));
+  const intent = { objective: "Implement heading counts.", updatedAt: NOW - 10_000 };
+  assert.equal(tick({ items, intent, cfg: { wrapup: "ask" } }).kind, "none");
+  assert.equal(tick({ items, intent: { ...intent, updatedAt: NOW }, cfg: { wrapup: "ask" } }).kind, "none");
+  assert.equal(tick({ items, intent: { ...intent, handoffReleasedAt: NOW }, cfg: { wrapup: "ask" } }).kind, "ask-wrapup");
+  assert.equal(tick({ items: items.map((item) => ({ ...item, sentAt: NOW + 1 })), intent: {
+    ...intent, handoffReleasedAt: NOW,
+  }, cfg: { wrapup: "ask" } }).kind, "none");
+});
+
+test("a fenced item example cannot hide a drained queue's Ship it card", () => {
+  const decide = (intent: string) => tick({
+    items: DRAINED().map((item) => ({ ...item, intent })),
+    intent: null,
+    cfg: { wrapup: "ask" },
+  });
+  assert.equal(decide("Implement heading counts.\n```text\nAutomatic handoff: operator only\n```").kind, "ask-wrapup");
+  assert.equal(decide("Implement heading counts.\nAutomatic handoff: operator only").kind, "none");
+});
+
+test("a delivered bulleted no-PR or no-shipping instruction holds until release", () => {
+  const intent = { objective: "Implement heading counts.", updatedAt: NOW - 10_000 };
+  for (const instruction of [
+    "- Do not open a PR.",
+    "Do not ship this yet.",
+    "Do not open a PR. Let the bound Workflow open it after I approve.",
+    "Do not submit this for review. Let the bound Workflow open the PR.",
+  ]) {
+    const items = DRAINED().map((item) => ({ ...item, sentAt: NOW - 5_000, intent: instruction }));
+    assert.equal(tick({ items, intent, cfg: { wrapup: "ask" } }).kind, "none", instruction);
+    assert.equal(tick({
+      items, intent: { ...intent, handoffReleasedAt: NOW }, cfg: { wrapup: "ask" },
+    }).kind, "ask-wrapup", instruction);
+  }
+});
+
+
+test("a delivered mockup item stays artifact-only after release, until the deliverable changes", () => {
+  const items = DRAINED().map((item) => ({
+    ...item, sentAt: NOW - 5_000, intent: "Output: mockups",
+  }));
+  const objective = "Implement heading counts.";
+  assert.equal(tick({ items, intent: { objective, updatedAt: NOW - 10_000 } }).kind, "skip-wrapup");
+  const afterRelease = { objective, updatedAt: NOW, handoffReleasedAt: NOW, deliverableUpdatedAt: NOW - 10_000 };
+  assert.equal(tick({ items, intent: afterRelease }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: { ...afterRelease, handoffReleasedAt: undefined } }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: {
+    ...afterRelease, objective: "Implement counts for collapsed headings.", deliverableUpdatedAt: NOW,
+  } }).kind, "ask-wrapup");
+});
+
+test("a standalone release before the first Goal leaves the drained item contract in force", () => {
+  const items = DRAINED().map((item) => ({
+    ...item, sentAt: NOW - 5_000, intent: "Output: mockups\nDo not open a PR.",
+  }));
+  assert.equal(tick({ items, intent: null }).kind, "none");
+  const releaseOnly = { objective: null, promptRevision: 0, handoffReleasedAt: NOW };
+  assert.equal(tick({ items, intent: { ...releaseOnly, resolvedPromptRevision: 0 } }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: {
+    ...releaseOnly, objective: "", relationship: "replace", promptRevision: 2, resolvedPromptRevision: 2,
+  } }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: { ...releaseOnly, promptRevision: 2 } }).kind, "none");
+});
+
+test("a retry of an earlier queue instruction does not renew its handoff authority", () => {
+  const oldDelivery = { firstDeliveredAt: NOW - 10_000, sentAt: NOW - 1_000 };
+  const intent = {
+    objective: "Implement heading counts.",
+    deliverableUpdatedAt: NOW - 5_000,
+    handoffReleasedAt: NOW - 5_000,
+  };
+  for (const restriction of ["Output: mockups", "Do not open a PR."]) {
+    const items = DRAINED().map((item) => ({ ...item, ...oldDelivery, intent: restriction }));
+    assert.equal(tick({ items, intent }).kind, "ask-wrapup");
+  }
 });

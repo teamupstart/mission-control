@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach } from "node:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SdkSupervisor } from "../../src/server/sdk/supervisor.ts";
 import type { HeardEntry, VoiceCard } from "../../src/shared/voice-routing.ts";
@@ -10,13 +9,15 @@ import type { SpokenName } from "../../src/shared/voice-names.ts";
 
 import { ensureNativeStateLockAddon } from "./native-state-lock.ts";
 import type { VoiceDecisionResult, VoiceQuestion } from "../../src/shared/voice-decide.ts";
+import { tempDir } from "../temp-root.mjs";
 
 before(() => ensureNativeStateLockAddon());
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
+const home = tempDir("mission-voice-routing-");
 process.env.MISSION_HOME = home;
 const { buildApp } = await import("../../src/server/routes.ts");
 const { Registry } = await import("../../src/server/registry.ts");
+const { ReportManager } = await import("../../src/server/reports.ts");
 const { ReviewManager } = await import("../../src/server/reviews.ts");
 const { TaskManager } = await import("./task-manager-fixture.ts");
 const { QueueManager } = await import("../../src/server/queue.ts");
@@ -37,8 +38,16 @@ const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000, no
 const reviews = new ReviewManager(registry);
 export const model = { decide: (questions: readonly VoiceQuestion[]): VoiceDecisionResult =>
   ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" }) };
-const app = buildApp({ registry, pendingTurns: pending, sdkSessions: sdk, reviews,
+export const reports = new ReportManager(registry);
+const app = buildApp({ registry, reports, pendingTurns: pending, sdkSessions: sdk, reviews,
   tasks: new TaskManager(registry), queues: new QueueManager(registry), voiceDecider: { ask: async questions => model.decide(questions) } });
+// Stand in for the live DOM response from browser streams used by the routing tests.
+registry.subscribe(event => {
+  if (event.type !== "voice_dictation_probe") return;
+  const cards = registry.voiceRouter!.openCards;
+  const report = cards.current;
+  cards.acknowledgeDictation(event.windowId, event.sequence, report?.windowId === event.windowId ? report.dictationTarget : undefined);
+});
 const cards: VoiceCard[] = [];
 registry.subscribe((event) => { if (event.type === "voice_card") cards.push(event.card); });
 const stop = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
@@ -61,9 +70,10 @@ const queued = (agent: string) => registry.getSession("sdk:" + agent)!.pendingTu
 
 beforeEach(async () => {
   voiceStateStore.reset();
+  rmSync(join(home, "voice/capture-grants"), { recursive: true, force: true });
   for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });
+    body: JSON.stringify({ listeningMode: "always-on", muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });
   const hello = await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
     devices: [], microphone: "granted", modelLoaded: true }, token);
   assert.equal(hello.status, 200);
@@ -75,6 +85,6 @@ afterEach(() => {
     for (const turn of session.pendingTurns.toReversed()) pending.recall(session.id, turn.id, turn.revision);
   }
 });
-after(() => { stop(); pending.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
+after(() => { stop(); pending.stop(); reports.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
 
 export { act, app, applyFeatureFlagIntent, capture, cards, home, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk, token, voiceStateStore };

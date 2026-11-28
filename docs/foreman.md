@@ -577,6 +577,11 @@ dependencies.
 Claude uses one fresh Agent SDK query by default; [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md)
 keeps the one-shot `claude -p` path available as an operator-pinned escape hatch.
 
+Tool-less also means connector-less: headless Claude calls never load the connectors you added on
+claude.ai (Gmail, Slack, Vercel and so on), apart from a run that asks for a connector tool by name.
+Why, and which caller is the exception, is recorded once, on `CLAUDE_AI_CONNECTORS_ENV` in
+[`src/server/claude-cli.ts`](../src/server/claude-cli.ts).
+
 | Call | Default | Config key | What it does |
 |---|---|---|---|
 | Review | `claude-opus-5-5` | `reviewModel` | Judges a stuck session's pending question - answer, escalate, or leave it |

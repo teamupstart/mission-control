@@ -6,7 +6,7 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkUserMessage,
 } from "../harness/claude/sdk-types.ts";
-import { CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
+import { CLAUDE_AI_CONNECTORS_ENV, CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
 import { CLAUDE_SANDBOX, claudeGrantSettings } from "./claude-grant.ts";
 import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
@@ -270,7 +270,12 @@ export async function runClaudeSdkOneShot(
         // one. Strip every inherited pane identity and add the independent marker that
         // lets a current hook decline the event entirely. Both layers matter because the
         // installed hook may come from an older checkout.
-        env: { ...subprocessEnv, MISSION_HEADLESS: "1" },
+        //
+        // claude.ai connectors are off for the same reason built-in tools are, and also
+        // because their schemas alone can exceed a small model's context (see
+        // `CLAUDE_AI_CONNECTORS_ENV`). A grant holds only built-in tools, so no run here needs
+        // a connector.
+        env: { ...subprocessEnv, MISSION_HEADLESS: "1", [CLAUDE_AI_CONNECTORS_ENV]: "false" },
         abortController: controller,
         stderr: (data) => {
           stderr = (stderr + data).slice(-4_096);

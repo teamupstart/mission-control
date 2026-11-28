@@ -341,10 +341,18 @@ Code Mode's transport wrappers remain, but their callable registry contains only
 repository tools. MCP annotations declare closed, non-destructive reads. A preflight rejects
 any extra enabled MCP server.
 
-Native inventories are not a stable SDK API. These adapters therefore fail closed unless the
-executable is a verified build: `codex-cli 0.166.0` or `2.1.319 (Claude Code)`. This exact allowlist,
-rather than an assumed minimum version, is a deliberate Phase 1 deviation. An upgrade requires
-rerunning the executable probe and updating the allowlist after its isolation assertions pass.
+Native inventories are not a stable SDK API. These adapters therefore fail closed unless
+`<cli> --version` names a build at or above the oldest verified build for its provider:
+`codex-cli 0.166.0` for Codex and `2.1.319 (Claude Code)` for Claude Code. The version is
+parsed from that provider's own banner and compared numerically by major, minor and patch
+component, so `2.1.1000` is newer than `2.1.319`. An older build, a prerelease suffix, or output
+in any other shape fails with `unverified_build`. Newer builds are trusted to keep the read-only
+repository tool setup, but the minimum does not replace the other isolation checks: every build
+still faces the Claude initialization inventory check, the Codex MCP server preflight and the
+effort checks, so a build that exposes an extra tool is refused with its own reason. To raise a
+floor, run `node --import tsx scripts/probe-repository-providers.mjs` against the new build, then
+update `MINIMUM_PROVIDER_BUILDS` in `src/server/workflows/persona-workload/providers.ts` after its
+isolation assertions pass.
 An unsupported build, tool inventory or effort returns `capability_mismatch` with a closed
 reason code. Script-based CLI launchers resolve `env node` through a private link to the
 configured Node runtime.

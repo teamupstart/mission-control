@@ -24267,6 +24267,35 @@ button.wf-carried.is-link:focus-visible {
    `.skill-switch` control, section-specific only in its label's badge alignment. Below
    it the per-harness defaults are cards (`.harness-card*`), one per harness, so a
    harness's model and effort read as one thing. */
+.agent-environment-settings {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.agent-environment-settings h4 { margin: 0; }
+.agent-environment-entry {
+  display: flex;
+  gap: 8px;
+  margin-top: 5px;
+}
+.agent-environment-entry input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+}
+.agent-environment-settings ul { padding: 0; margin: 12px 0 0; list-style: none; }
+.agent-environment-settings li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(15ch, auto) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-environment-settings li code { justify-self: start; color: var(--fg); overflow-wrap: anywhere; }
 .harnesses-row .kb-row-label {
   display: flex;
   align-items: center;
@@ -43179,10 +43208,80 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-mcp-all-body ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .resident-mcp-all-body strong { color: var(--fg); font-weight: 600; }
 
-.resident-state { font-size: 12px; }
-.resident-state-path { overflow-wrap: anywhere; }
-.resident-state pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
-.resident-state ul { max-height: 240px; overflow: auto; }
+/* A profile's durable state, read over the editor: files on the left, the preview beside them.
+   Each column scrolls on its own so a long note never pushes the file list or the close control
+   out of reach. */
+.resident-state-notice { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.resident-state-viewer {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, 100%);
+  height: min(760px, calc(100dvh - 96px));
+}
+.resident-state-viewer .modal-head { flex: 0 0 auto; gap: 12px; }
+.resident-state-viewer-title { min-width: 0; overflow-wrap: anywhere; }
+.resident-state-viewer-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.resident-state-viewer-path {
+  flex: 0 0 auto;
+  margin-block: 0;
+  padding: 8px var(--modal-inset);
+  border-bottom: 1px solid var(--border-soft);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.resident-state-viewer-path > span { display: block; }
+.resident-state-viewer-error { flex: 0 0 auto; margin-top: 8px; }
+.resident-state-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+}
+.resident-state-viewer-empty { grid-column: 1 / -1; padding: 18px var(--modal-inset); }
+.resident-state-viewer-empty p { margin: 0; font-size: 12.5px; }
+.resident-state-viewer-files {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 8px 8px var(--modal-inset);
+  border-right: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.resident-state-viewer-files ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.resident-state-viewer-file {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.resident-state-viewer-file:hover:not(:disabled) { background: var(--panel); }
+.resident-state-viewer-file.is-active { border-color: var(--border); background: var(--panel); }
+.resident-state-viewer-file:disabled { cursor: default; }
+.resident-state-viewer-preview { min-width: 0; min-height: 0; overflow: auto; padding: 12px var(--modal-inset) 18px; }
+.resident-state-viewer-preview > p { margin: 0; font-size: 12.5px; }
+.resident-state-viewer-preview pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.resident-state-viewer .markdown.resident-state-viewer-markdown { padding: 0; }
+@media (max-width: 640px) {
+  .resident-state-viewer-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .resident-state-viewer-files { max-height: 160px; border-right: none; border-bottom: 1px solid var(--border-soft); }
+}
 
 /* ---- backlog search and filters ----
 

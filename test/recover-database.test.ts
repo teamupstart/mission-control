@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -19,6 +18,7 @@ import type {
   DurableDatabaseOperations,
   DurableWriteOperations,
 } from "../scripts/recover-database.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 function database(path: string, marker: string): void {
   const db = new DatabaseSync(path);
@@ -39,7 +39,7 @@ function marker(path: string): string {
 }
 
 function fixture(t: test.TestContext) {
-  const root = mkdtempSync(join(tmpdir(), "mission-recovery-test-"));
+  const root = tempDir("mission-recovery-test-");
   const home = join(root, "state");
   const candidate = join(root, "candidate.db");
   const live = join(home, "harness.db");

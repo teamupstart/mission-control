@@ -1,9 +1,8 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
@@ -12,7 +11,8 @@ import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import type { LineStageSummary, LineSummary } from "../src/shared/line.ts";
 import type { LineDensity } from "../src/shared/protocol.ts";
 import { DEFAULT_SKIN, SKIN_IDS } from "../src/shared/skins.ts";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What the Line strip does to the fleet's height.
@@ -206,8 +206,8 @@ before(() => {
   const electron = require("electron") as string;
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const dir = mkdtempSync(join(tmpdir(), "mission-line-strip-"));
-  const userData = mkdtempSync(join(tmpdir(), "mission-line-strip-profile-"));
+  const dir = tempDir("mission-line-strip-");
+  const userData = tempDir("mission-line-strip-profile-");
   try {
     const styles =
       readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8") + skinStyles();
@@ -216,7 +216,7 @@ before(() => {
       writeFileSync(path, page(styles, body, skin));
       return path;
     });
-    const output = execFileSync(electron, [
+    const output = execFileSync(...electronGuiCommand(electron, [
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/line-strip-browser.cjs", import.meta.url)),
@@ -227,7 +227,7 @@ before(() => {
       // Last, because it takes the rest of the line.
       "--pages",
       ...paths,
-    ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+    ]), { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
     measured = JSON.parse(output.trim()) as Record<string, Measured>;
   } finally {
     rmSync(dir, { force: true, recursive: true });

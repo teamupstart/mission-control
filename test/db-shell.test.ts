@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -8,10 +7,11 @@ import {
   openDatabaseShell,
   sqliteShellArgs,
 } from "../scripts/db-shell.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 test("databasePath follows the shared MISSION_HOME resolution", () => {
   const before = process.env.MISSION_HOME;
-  const home = mkdtempSync(join(tmpdir(), "mission-db-shell-"));
+  const home = tempDir("mission-db-shell-");
   process.env.MISSION_HOME = home;
   try {
     assert.equal(databasePath(), join(home, "harness.db"));
@@ -22,7 +22,7 @@ test("databasePath follows the shared MISSION_HOME resolution", () => {
 });
 
 test("the operator database shell is read-only and enables query-only mode", () => {
-  const home = mkdtempSync(join(tmpdir(), "mission-db-shell-"));
+  const home = tempDir("mission-db-shell-");
   const path = join(home, "harness.db");
   writeFileSync(path, "");
   let command: string | undefined;
@@ -55,7 +55,7 @@ test("the HTML database guide catalogs every application table exactly once", ()
     .map((match) => match[1]!)
     .sort();
 
-  assert.equal(schemaTables.length, 144);
+  assert.equal(schemaTables.length, 145);
   assert.deepEqual(documentedTables, schemaTables);
 });
 

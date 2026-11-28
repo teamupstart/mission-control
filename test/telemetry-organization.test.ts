@@ -1,8 +1,8 @@
 import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // A recognized organization's managed telemetry lane: first application, the pilot invariant,
 // keeping in step with a newer preset, withdrawal, the resource environment and the managed
@@ -10,7 +10,7 @@ import { join } from "node:path";
 // routes, so nothing here opens a socket, and the organization is forced onto a loopback
 // endpoint, which is the only way any test can make one active.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-organization-"));
+const home = tempDir("mission-telemetry-organization-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { closeDb, openDb, getAppConfig, setAppConfig } = await import("../src/server/db.ts");

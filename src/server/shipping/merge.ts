@@ -1,12 +1,13 @@
 import { getInspectorPr, updateInspectorPr } from "../db.ts";
 import { mergePr } from "../inspector/github.ts";
 import { mergeVerdict } from "@shared/shipping.ts";
-import type { WorkflowGateStanding } from "@shared/shipping.ts";
+import type { MergeInput, WorkflowGateStanding } from "@shared/shipping.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import type { PrSnapshot } from "../inspector/github.ts";
 import type { InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
 import { getShippingConfig } from "./config.ts";
+import { getInspectorConfig } from "../inspector/config.ts";
 
 // YOLO mode's one action: land a pull request that the Inspector reviewed clean, CI
 // passed, and nobody objected to inside the soak window.
@@ -30,6 +31,11 @@ import { getShippingConfig } from "./config.ts";
 // gate and land on the default branch. Both the current `inspectorPosture` and the posture
 // persisted with that reviewed head now have to be live; changing the setting later
 // cannot promote an unpublished review.
+//
+// The one other posture a merge may rest on is `local`: a head whose tree and base a passed
+// Local Inspector review read. The worker records it only under a live Inspector, and this
+// passes the manager's match for the observed head so the predicate can refuse a record the
+// match no longer backs. The current posture must still be live, so Dry run stays dry.
 
 /** Findings the Inspector is currently carrying, by the same rule the panel counts them. */
 function openFindings(rows: Map<string, InspectorComment>): number {
@@ -71,9 +77,21 @@ export async function maybeMerge(
   rows: Map<string, InspectorComment>,
   now: number,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
+  /**
+   * The workflow manager's answer, asked this sweep, to "does this head match a passed local
+   * review". Read only for a head recorded with the `local` posture; null is no match.
+   */
+  localMatch: { headSha: string } | null = null,
+  /**
+   * Asks the workflow manager the same question again, for the observed head. Used right before
+   * the merge request when the merge rests on a `local` record, because the sweep has awaited
+   * GitHub since `localMatch` was read and an owning run may have decided meanwhile. Absent, or
+   * failing, is no match.
+   */
+  rematchLocal: () => Promise<{ headSha: string } | null> = async () => null,
 ): Promise<boolean> {
   const cfg = getShippingConfig();
-  const verdict = mergeVerdict({
+  const input: MergeInput = {
     cfg,
     // Current consent is a separate veto from the posture stored with the reviewed SHA.
     // Both must be live: changing a setting now cannot rewrite how an earlier review ran.
@@ -101,14 +119,42 @@ export async function maybeMerge(
     reviewedBase: pr.reviewedBaseRef ?? null,
     reviewedSha: pr.headSha,
     reviewPosture: pr.reviewPosture,
+    localReview: { enabled: inspector.localReview, matchedHeadSha: localMatch?.headSha ?? null },
     rounds: pr.round,
     openFindings: openFindings(rows),
     workflowGate: workflowGate(pr.key),
     now,
-  });
+  };
+  const verdict = mergeVerdict(input);
 
   if (!verdict.merge) {
     recordBlock(pr, verdict.block, now);
+    return false;
+  }
+
+  // A merge resting on a local record asks the manager again: an owning run cancelled, failed or
+  // sent to repair GitHub findings since `localMatch` was read takes the match back. Its rules are
+  // the manager's own (`localReviewMatch`), so nothing here re-derives them.
+  let matchedHeadSha = input.localReview.matchedHeadSha;
+  if (pr.reviewPosture === "local") {
+    matchedHeadSha = (await rematchLocal().catch((error: unknown) => {
+      console.error("[shipping] local review recheck failed:", pr.key, error);
+      return null;
+    }))?.headSha ?? null;
+  }
+
+  // `inspector` is the config this sweep started with, and the sweep has awaited GitHub and the
+  // workflow manager since. Consent switched off, to Dry run, or Local review off in that time
+  // must stop this merge, so the same gate is asked again with the setting as it is right now -
+  // last, after every await, so nothing changes between this read and the merge request.
+  const current = getInspectorConfig();
+  const consent = mergeVerdict({
+    ...input,
+    inspector: inspectorPosture(current, pr.cwd, pr.repoRoot),
+    localReview: { enabled: current.localReview, matchedHeadSha },
+  });
+  if (!consent.merge) {
+    recordBlock(pr, consent.block, now);
     return false;
   }
 

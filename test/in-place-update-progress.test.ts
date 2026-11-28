@@ -11,18 +11,18 @@
 //     are the same bundle in place, so that advice pointed at the app the person just opened.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { prepareStagedInstall } from '../scripts/install-staged-app.mjs';
 import { migrationRollbackMessage, prepareInPlaceInstall, runMigration, readMigrationJournal } from '../scripts/install-migration.mjs';
 import { MIGRATION_IN_PROGRESS_NOTICE, migrationStartupGate } from '../scripts/migration-runtime.mjs';
 import { waitForBundleExit, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
 import { CHECK_SUPERVISOR_MARKER } from '../src/shared/owned-runtime.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 /** `rename` asks for the app-name migration: the same transaction, published under the new name. */
 function inPlaceFixture(t: test.TestContext, {rename = false} = {}) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'in-place-progress-')));
+  const root = realpathSync(tempDir('in-place-progress-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const stateDirectory = join(root, 'state'); mkdirSync(stateDirectory);
   const apps = join(root, 'apps'); mkdirSync(apps);

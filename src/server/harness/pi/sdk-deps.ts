@@ -654,11 +654,11 @@ export const defaultPiSdkDeps: PiSdkDeps = {
       createRuntime: (options) => createRuntime(pi, options),
     };
   },
-  toolEnv(cwd, stateHome) {
+  toolEnv(cwd, stateHome, named) {
     // `sdkSubprocessEnv` for exactly the reasons it documents, shared with Claude's and
     // Codex's drivers rather than restated: it is a fact about the DAEMON's environment,
     // not about any one harness. What it removes matters more here than anywhere else,
     // because nothing else stands between this process and the agent's shell.
-    return sdkSubprocessEnv(process.env, cwd, stateHome) as Record<string, string>;
+    return sdkSubprocessEnv(process.env, cwd, stateHome, named) as Record<string, string>;
   },
 };

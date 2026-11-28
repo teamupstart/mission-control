@@ -1,13 +1,13 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ServerEvent, Session } from "../src/shared/types.ts";
 import { reportAuthorLabel, type ReportItem } from "../src/shared/reports.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: an agent says "done, read this", and the operator reads it - including after
 // the session that said it has gone.
@@ -23,7 +23,7 @@ import { mkMuxHandle, mkSession, mkTaskSummary } from "./helpers/session-fixture
 // that is not this author's own report still waiting to be read is refused with the ones it could
 // have meant, so a resident that lost the id can retry. `markRead` is the one writer of `readAt`.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reports-"));
+const home = tempDir("mission-reports-");
 process.env.HARNESS_HOME = home;
 
 const db = await import("../src/server/db.ts");

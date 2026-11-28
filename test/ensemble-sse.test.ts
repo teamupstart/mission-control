@@ -1,13 +1,13 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 import type { EnsembleSummary } from "../src/shared/ensemble.ts";
 import type { ServerEvent, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: ensembles are SSE state, not a second polling subsystem, and the
@@ -23,7 +23,7 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
  *     its own comparator and would be a second denormalized copy of group state.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-sse-"));
+const home = tempDir("mission-ensemble-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

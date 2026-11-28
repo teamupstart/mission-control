@@ -1,8 +1,7 @@
 // A failed/concurrent build may never truncate the machine-wide load target.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { appendFile, cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { buildPiExtension } from "../scripts/build-pi-extension.ts";
 import { piExtensionPath } from "../src/server/config.ts";
@@ -15,11 +14,12 @@ import { syncBuiltinESMExports } from "node:module";
 import { writePiIntegration } from "./helpers/pi-integration.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mockSymlinkPublication } from "./helpers/symlink-publication.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
 test("directory publication refuses to discard unrelated output-directory contents", async () => {
-  const root = await mkdtemp(join(tmpdir(), "pi-build-foreign-"));
+  const root = await tempDirAsync("pi-build-foreign-");
   const dir = join(root, "integration"); writePiIntegration(dir);
   const prior = verifyPiIntegration(dir);
   await writeFile(join(dir, "operator.txt"), "keep me");
@@ -32,7 +32,7 @@ test("directory publication refuses to discard unrelated output-directory conten
 
 for (const failure of ["swap", "rollback"] as const) {
   test(`failed build ${failure} preserves the previous integration for recovery`, async t => {
-    const root = await mkdtemp(join(tmpdir(), "pi-build-swap-"));
+    const root = await tempDirAsync("pi-build-swap-");
     const dir = join(fs.realpathSync(root), "integration"); writePiIntegration(dir);
     const prior = verifyPiIntegration(dir);
     let calls = 0, retained = "";
@@ -63,7 +63,7 @@ for (const failure of ["swap", "rollback"] as const) {
 }
 
 test("failed final build verification restores the previous complete integration", async t => {
-  const root = await mkdtemp(join(tmpdir(), "pi-build-rollback-"));
+  const root = await tempDirAsync("pi-build-rollback-");
   const dir = join(fs.realpathSync(root), "integration"); writePiIntegration(dir);
   const prior = verifyPiIntegration(dir);
   const read = fs.readFileSync;
@@ -79,7 +79,7 @@ test("failed final build verification restores the previous complete integration
 });
 
 test("configured and explicit non-.js targets are rejected before touching the destination", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-suffix-"));
+  const dir = await tempDirAsync("pi-suffix-");
   const prior = process.env.MISSION_PI_EXTENSION;
   try {
     for (const name of ["index.mjs", "index.cjs", "index", "index.JS", "index.js.map"]) {
@@ -108,7 +108,7 @@ test("configured and explicit non-.js targets are rejected before touching the d
 });
 
 test("configured and explicit .js targets not named extension.js are rejected without filesystem changes", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-output-name-"));
+  const dir = await tempDirAsync("pi-output-name-");
   const prior = process.env.MISSION_PI_EXTENSION;
   const existing = join(dir, "custom.js");
   try {
@@ -129,7 +129,7 @@ test("configured and explicit .js targets not named extension.js are rejected wi
 });
 
 test("concurrent publishers expose only the old or complete .js bundle", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-publish-"));
+  const dir = await tempDirAsync("pi-publish-");
   const output = join(dir, "extension.js");
   await writeFile(output, "previous");
   const samples: string[] = [];
@@ -151,7 +151,7 @@ test("concurrent publishers expose only the old or complete .js bundle", async (
 });
 
 test("different process builds cannot interleave integration publication", { timeout: 120_000 }, async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-build-race-"));
+  const dir = await tempDirAsync("pi-build-race-");
   const output = join(dir, "integration", "extension.js");
   const release = join(dir, "release");
   const startSecond = join(dir, "start-second-publication");

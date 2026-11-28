@@ -355,6 +355,12 @@ read**, **Accept**, **Nudge** and the rest work exactly as described above.
   marked ↗, and their pane shows what the inbox knows with the button that goes there.
 - **Parked menus are answered in the pane.** A session parked on a terminal menu shows the menu's
   numbered options in the pane, the same prompt the review modal draws.
+- **Plan forms keep every control.** A managed plan's final bundle shows **Approve all future
+  bundles for this task** beside **Submit** in the pane, as it does in the review modal, and
+  checking it while approving grants the same standing approval (see
+  [managed plans](managed-plans.md)). It appears only on a final bundle bound to a task; a
+  bundle already approved by a standing approval asks only its remaining questions, without it.
+  `e2e/specs/inbox-split-standing-approval.spec.ts` covers this.
 - **Dismiss narrows to one question.** A question row's **Dismiss** in the pane hides that one
   question, because a row's dismissal is kept per question.
 - **Reports stay in step.** Selecting a report opens it on screen, the same open report a voice

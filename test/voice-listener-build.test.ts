@@ -3,9 +3,8 @@ import { execFile, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, hash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
@@ -14,9 +13,10 @@ import { playerScratchDirectory } from "../src/server/voice/recovery-files.ts";
 import { supervisorIssuer, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
 import { VOICE_MODELS, VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("ordinary native builds run the app addon builders without the optional listener", t => {
-  const cwd = mkdtempSync(join(tmpdir(), "voice-build-"));
+  const cwd = tempDir("voice-build-");
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const scripts = join(cwd, "scripts");
   mkdirSync(scripts);
@@ -30,7 +30,7 @@ test("ordinary native builds run the app addon builders without the optional lis
 });
 
 test("the launcher names the explicit build command when the listener is missing", t => {
-  const cwd = mkdtempSync(join(tmpdir(), "voice-launch-"));
+  const cwd = tempDir("voice-launch-");
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const launch = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), resolve("scripts/run-voice-listener.ts")],
     { cwd, encoding: "utf8" });
@@ -46,7 +46,7 @@ test("a clean desktop build includes the voice helper before packaging dist", as
 test("Swift artifact cache publishes verified downloads, reuses them, and rejects corrupt replacements", {
   skip: process.platform === "win32",
 }, t => {
-  const cwd = mkdtempSync(join(tmpdir(), "voice-swift-cache-"));
+  const cwd = tempDir("voice-swift-cache-");
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const fixture = join(cwd, "archive.zip");
   const archive = "fixture binary archive";
@@ -91,7 +91,7 @@ test("Swift artifact cache publishes verified downloads, reuses them, and reject
 test("the staged sherpa addon loads in the macOS app layout and refuses file playback", {
   skip: process.platform !== "darwin" || !["arm64", "x64"].includes(process.arch),
 }, t => {
-  const cwd = mkdtempSync(join(tmpdir(), "sherpa-package-"));
+  const cwd = tempDir("sherpa-package-");
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const dist = join(cwd, "Mission Control.app", "Contents", "Resources", "app", "dist");
   const build = spawnSync(process.execPath, ["scripts/build-voice-sherpa.mjs", dist], { encoding: "utf8" });
@@ -105,7 +105,7 @@ test("the staged sherpa addon loads in the macOS app layout and refuses file pla
 test("a failed rebuild preserves the published sherpa entry and complete versioned runtime", {
   skip: !["linux", "darwin"].includes(process.platform) || !["arm64", "x64"].includes(process.arch),
 }, t => {
-  const cwd = mkdtempSync(join(tmpdir(), "sherpa-upgrade-"));
+  const cwd = tempDir("sherpa-upgrade-");
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const dist = join(cwd, "dist");
   const args = [resolve("scripts/build-voice-sherpa.mjs"), dist];
@@ -129,7 +129,7 @@ test("a failed rebuild preserves the published sherpa entry and complete version
 test("rebuilds publish and reuse a complete replacement when a sherpa shared library is missing", {
   skip: !["linux", "darwin"].includes(process.platform) || !["arm64", "x64"].includes(process.arch),
 }, async t => {
-  const dist = mkdtempSync(join(tmpdir(), "sherpa-repair-"));
+  const dist = tempDir("sherpa-repair-");
   t.after(() => rmSync(dist, { recursive: true, force: true }));
   const build = () => promisify(execFile)(process.execPath, [resolve("scripts/build-voice-sherpa.mjs"), dist]);
   await build();
@@ -153,7 +153,7 @@ test("rebuilds publish and reuse a complete replacement when a sherpa shared lib
 
 for (const selection of ["automatic", "explicit auto", "explicit", "credential-configured"] as const) {
   test(`the development launcher forwards the verified model and WAV to sherpa on ${selection} selection`, async t => {
-    const cwd = mkdtempSync(join(realpathSync(tmpdir()), "voice-launch-"));
+    const cwd = realpathSync(tempDir("voice-launch-"));
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
     const directory = join(cwd, "dist", "voice-listener");
     mkdirSync(directory, { recursive: true });
@@ -191,7 +191,7 @@ for (const selection of ["automatic", "explicit auto", "explicit", "credential-c
 }
 
 test("an empty --input-file is refused before daemon lookup or FluidAudio capture", async t => {
-  const cwd = mkdtempSync(join(tmpdir(), "voice-empty-path-"));
+  const cwd = tempDir("voice-empty-path-");
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const native = join(cwd, "dist", "native");
   mkdirSync(native, { recursive: true });
@@ -215,7 +215,7 @@ test("an empty --input-file is refused before daemon lookup or FluidAudio captur
 
 for (const credential of [false, true]) {
   test(`daemon-selected FluidAudio refuses a WAV before launching a microphone listener ${credential ? "with" : "without"} a dev credential`, async t => {
-    const cwd = mkdtempSync(join(tmpdir(), "voice-file-mode-"));
+    const cwd = tempDir("voice-file-mode-");
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
     const native = join(cwd, "dist", "native");
     mkdirSync(native, { recursive: true });
@@ -260,7 +260,7 @@ test("credentialed FluidAudio live input reports OS-confirmed exits on state rea
   skip: process.platform !== "darwin",
 }, async t => {
   ensureNativeStateLockAddon();
-  const home = mkdtempSync(join(realpathSync(tmpdir()), "voice-live-launch-"));
+  const home = realpathSync(tempDir("voice-live-launch-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const native = join(home, "dist", "native");
   const manifest = VOICE_MODELS.fluidaudio;
@@ -363,7 +363,7 @@ for (const [description, args, error] of [
   ["an unknown backend", ["--backend", "unknown"], /^Error: Unknown voice backend: unknown$/m],
 ] as const) {
   test(`the development launcher rejects ${description}`, t => {
-    const cwd = mkdtempSync(join(tmpdir(), "voice-launch-"));
+    const cwd = tempDir("voice-launch-");
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
     const native = join(cwd, "dist", "native");
     mkdirSync(native, { recursive: true });

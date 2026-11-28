@@ -1,15 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // A version-40 database, written before review-message deliveries existed: the real schema, made
 // in a child process by this build, then wound back to what a version-40 daemon left on disk - no
 // `session_review_deliveries` table and neither of its indexes.
-const home = mkdtempSync(join(tmpdir(), "mission-review-deliveries-migration-"));
+const home = tempDir("mission-review-deliveries-migration-");
 process.env.MISSION_HOME = home;
 execFileSync(process.execPath, ["--import", "tsx", "-e", "await import(process.env.DB_MODULE).then(m => m.openDb())"], {
   env: { ...process.env, DB_MODULE: new URL("../src/server/db.ts", import.meta.url).href }, stdio: "pipe",

@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // When the grace period before exporter silence is a fault STARTS, and the one path that has
 // to start it without ever being told to.
@@ -23,7 +23,7 @@ import { join } from "node:path";
 // scenario the backfill exists for and a test that only used `setCostConfig` would never
 // exercise it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-cost-enable-"));
+const home = tempDir("mission-cost-enable-");
 process.env.MISSION_HOME = home;
 const settingsPath = join(home, "claude-settings.json");
 process.env.CLAUDE_SETTINGS_PATH = settingsPath;

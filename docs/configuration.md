@@ -562,6 +562,32 @@ See [orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.
 
+## Agent environment
+
+Enable **Agent environment** in Settings > Feature flags. In Settings > Harnesses, find **Agent environment** below
+the per-harness model and effort controls. Enter a name and select **Add variable**. Each addition
+is saved immediately. Select **Delete** beside a name to remove it from future launches. For example, a repository can reference `MY_TOKEN` in a
+Claude MCP header or as a Codex `bearer_token_env_var`.
+
+Each managed launch or managed resume reads the listed names from the daemon, then probes the
+login shell for any empty or unset names. Changes to shell exports take effect on the next
+launch. Settings reports presence and source. A missing variable leaves the session running
+and appears in its details. A running terminal session keeps its launch warning across daemon
+restarts. The setting and its backups contain only names. `CODEX_HOME` is
+reserved because Mission Control selects the Codex profile for each session.
+
+If another Settings tab saves a different list first, the older tab reloads the saved names
+and shows a conflict message. You can then edit the current list.
+
+The preview adds selected variables to the usual launch environment. Terminal launches
+transfer them through a private one-use Unix socket. The pane must present the random ticket
+delivered with its launch command. An invalid ticket leaves the handoff available to the pane.
+The terminal backend and processes that can inspect its launch command are trusted. A pane has two minutes to collect its
+environment. If the handoff expires, the pane reports the failure and you can start a new
+launch. Resuming an unmanaged terminal conversation skips the lookup. Embedded Pi receives
+the variables in its shell tool environment. Residents continue to use profile secrets.
+Disabling the preview stops future lookups and retains the saved list.
+
 ## Voice listener backend
 
 Set `MISSION_VOICE_BACKEND` to `auto`, `fluidaudio` or `sherpa-onnx` to override

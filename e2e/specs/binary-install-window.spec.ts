@@ -1,5 +1,4 @@
-import {mkdir, mkdtemp, rm} from "node:fs/promises";
-import {tmpdir} from "node:os";
+import { mkdir, rm } from "node:fs/promises";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {buildSync} from "esbuild";
@@ -7,13 +6,14 @@ import {_electron as electron, type ElectronApplication} from "playwright";
 import {expect, test} from "../fixtures/test.ts";
 import {expectContentClearsBorder} from "../fixtures/modal-inset.ts";
 import {assertElectronGuiLaunchAllowed} from "../../test/helpers/electron-gui.ts";
+import { tempDirAsync } from "../../test/temp-root.mjs";
 
 test.skip(process.platform !== "darwin", "the desktop shell requires the macOS GUI");
 
 for (const choice of ["install", "quit", "escape", "close", "unrelated navigation"] as const) {
   test(`temporary installation consent handles ${choice} without a daemon or platform sheet`, async () => {
     assertElectronGuiLaunchAllowed();
-    const directory = await mkdtemp(join(tmpdir(), "binary-consent-"));
+    const directory = await tempDirAsync("binary-consent-");
     let application: ElectronApplication | undefined;
     try {
       const module = join(directory, "window.cjs");

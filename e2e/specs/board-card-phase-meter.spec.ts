@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 import type { Locator, Page } from "@playwright/test";
@@ -15,6 +14,7 @@ import {
   seedConductorRun,
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * The phase meter on a real board card, driven end to end.
@@ -61,7 +61,7 @@ interface Pane {
 }
 
 function startPane(cwd: string, tag: string): Pane {
-  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-meter-"));
+  const dir = tempDir("mc-e2e-meter-");
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   symlinkSync(execPath, join(bin, "claude"));

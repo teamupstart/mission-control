@@ -1,20 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ResidentProfile, ResidentRunSummary } from "../src/shared/residents.ts";
 import type { ReviewItem, Session, SessionGoalSummary } from "../src/shared/types.ts";
 import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Phase 2 of residents: how a resident is FOUND. The board section of a profile revision, the
 // pinned partition the board, the rail and the arrow keys all walk, the join from a session to
 // its live run, and the two run frames' deliberate absence from the Line's inputs.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-board-"));
+const home = tempDir("mission-residents-board-");
 process.env.HARNESS_HOME = home;
 
 const {

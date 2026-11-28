@@ -1,14 +1,14 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Resident profiles in the logical settings backup: captured with their current revision,
 // restored as NEW revisions (so a pinned run keeps its revision), archived when absent from
 // the snapshot, and left untouched by a snapshot written before the domain existed.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-backup-"));
+const home = tempDir("mission-residents-backup-");
 process.env.HARNESS_HOME = join(home, "state");
 process.env.CLAUDE_SETTINGS_PATH = join(home, "claude-settings.json");
 

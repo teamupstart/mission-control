@@ -14,11 +14,11 @@
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "session-action-legacy-pr-"));
+const home = tempDir("session-action-legacy-pr-");
 process.env.HARNESS_HOME = join(home, "state");
 after(() => rmSync(home, { recursive: true, force: true }));
 

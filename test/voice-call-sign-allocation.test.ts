@@ -1,17 +1,17 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SpokenName } from "../src/shared/voice-names.ts";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Automatic call signs: a task dispatched without one takes a distinctive name from a curated
 // dictionary as it launches, chosen against every name already spoken for, inside the launch's
 // synchronous claim so simultaneous dispatches cannot take the same name.
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-call-sign-allocation-"));
+const home = tempDir("mission-voice-call-sign-allocation-");
 process.env.HARNESS_HOME = home;
 // A binary that exists, so agent-binary resolution is never what stops a launch here (CI has no
 // `claude` on PATH): the launches below must reach the provisioning seam each test stubs.

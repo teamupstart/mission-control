@@ -26,7 +26,9 @@ import {
 import { WORK_UNIT_ENV_VAR } from "../shared/work-unit.ts";
 import { executableChildEnv } from "./executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
-import { shellCommand } from "./terminal/shell.ts";
+import { WRAPPER_EXIT_FILE } from "./terminal/dispatch-observation.ts";
+export { observeTerminalWrapperExit } from "./terminal/dispatch-observation.ts";
+import { probePadding, shellCommand } from "./terminal/shell.ts";
 
 /** Every spelling that can redirect normal Mission Control state resolution. */
 export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
@@ -47,6 +49,8 @@ const GO_CACHE_UID = userInfo().uid;
 const SHARED_GO_BUILD_CACHE = join(tmpdir(), `mission-control-go-build-${GO_CACHE_UID}`);
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const liveDisposableStateHomes = new Set<string>();
+const pendingTerminalHomeChecks = new Set<() => void>();
+
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -135,6 +139,7 @@ function hookProcessCleanup(): void {
   if (cleanupHooked) return;
   cleanupHooked = true;
   process.once("exit", () => {
+    for (const release of pendingTerminalHomeChecks) release();
     for (const stateHome of liveDisposableStateHomes) {
       rmSync(stateHome, { recursive: true, force: true });
     }
@@ -165,6 +170,44 @@ export function cleanupDisposableAgentStateHome(stateHome: string | undefined): 
   liveDisposableStateHomes.delete(stateHome);
 }
 
+/** While the backend can still start the wrapper, restart recovery owns a journaled home.
+ * Generic process-exit cleanup must leave its receipt and PID claim intact for the next daemon. */
+export async function withSubmittedTerminalHome<T>(stateHome: string, submit: () => Promise<T>): Promise<T> {
+  const tracked = liveDisposableStateHomes.delete(stateHome);
+  try {
+    return await submit();
+  } finally {
+    if (tracked && existsSync(stateHome)) liveDisposableStateHomes.add(stateHome);
+  }
+}
+
+/**
+ * Keep a named dispatch home across backend timeouts and interrupted socket reads. At the
+ * deadline (or shutdown), the daemon and shell compete to create the same private PID file.
+ * A winning wrapper has installed its EXIT trap and owns cleanup for the rest of its life.
+ */
+export function retainPendingTerminalHome(stateHome: string, timeoutMs: number, revokeUnstarted: () => boolean) {
+  const deadline = Date.now() + timeoutMs;
+  if (!liveDisposableStateHomes.delete(stateHome)) return { deadline, release() {}, unstarted: Promise.resolve(false) };
+  let reportUnstarted!: (value: boolean) => void;
+  const unstarted = new Promise<boolean>((resolve) => { reportUnstarted = resolve; });
+  const release = () => {
+    if (!pendingTerminalHomeChecks.delete(release)) return;
+    clearTimeout(timer);
+    try {
+      reportUnstarted(revokeUnstarted());
+    } catch (error) {
+      // A missing home can belong to a wrapper that started and already exited.
+      reportUnstarted(false);
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EEXIST") console.warn("Could not release an unstarted terminal launch home.");
+    }
+  };
+  const timer = setTimeout(release, timeoutMs).unref();
+  pendingTerminalHomeChecks.add(release);
+  return { deadline, release, unstarted };
+}
+
 /** Release the disposable home named by a child environment. */
 export function cleanupAgentSubprocessEnv(env: NodeJS.ProcessEnv | undefined): void {
   cleanupDisposableAgentStateHome(env?.MISSION_HOME);
@@ -175,6 +218,12 @@ export function dropPaneIdentityEnv(env: Record<string, string | undefined>): vo
   for (const name of PANE_IDENTITY_ENV_NAMES) delete env[name];
 }
 
+/** Session overrides must never supply the terminal identity. A pane supplies its own. */
+export function dropTerminalIdentityEnv(env: Record<string, string | undefined>): void {
+  dropPaneIdentityEnv(env);
+  delete env.TERM_PROGRAM;
+}
+
 export interface AgentSubprocessEnvOptions {
   /** Reuse one home across the cooperating processes that make up a session launch. */
   stateHome?: string;
@@ -183,8 +232,7 @@ export interface AgentSubprocessEnvOptions {
   /** Checkout whose already-provisioned scoped scout capability should follow the launch. */
   cwd?: string;
   /**
-   * Harness launch variables a capability rendered for this session (the advisor's Off
-   * switch, today). Applied over the inherited environment and BEFORE the isolation below,
+   * Launch variables selected for this agent, including capability overrides and named credentials. Applied over the inherited environment and BEFORE the isolation below,
    * so nothing here can name a state home, a token or a credential back into the child.
    */
   extraEnv?: Readonly<Record<string, string>>;
@@ -290,28 +338,21 @@ function launchAndCleanupScript(
         ? `if [ -z "\${GOCACHE:-}" ]; then ${assignment}; fi`
         : assignment;
     }),
-    `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
-    `printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}"`,
+    // Install cleanup before competing for the start record. An interrupted contender
+    // can reach EXIT at any point, so only the recorded owner may remove the home.
+    "cleanup_owned_home() {",
+    `  IFS= read -r launch_pid 2>/dev/null < "$MISSION_HOME/${LAUNCH_PID_FILE}" || return`,
+    '  [ "$launch_pid" = "$$" ] || return',
+    `  exit_record="$MISSION_HOME/${WRAPPER_EXIT_FILE}"`,
+    '  if [ -f "$exit_record" ] && [ ! -L "$exit_record" ]; then printf x >> "$exit_record"; fi',
+    '  /bin/rm -rf -- "$MISSION_HOME"',
+    "}",
+    "trap cleanup_owned_home EXIT",
+    `(set -C; printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}") || exit 1`,
     ...(fallbackArgv ? fittingLaunch(argv, fallbackArgv, turnOneOutcomePath(env.MISSION_HOME!)) : [shellCommand(argv)]),
     "",
   ].join("\n");
 }
-
-/**
- * Bytes a probe adds beyond the argv it carries, so it costs at least what the real exec does:
- * the kernel's copy of the program's pathname and, for a `#!` entry point such as Pi's CLI, the
- * interpreter, its argument and the script path it re-inserts, each bounded by the 256-byte
- * `#!` line. Counted with each string's terminator and pointer, as `execve` counts them. Plus one
- * `PATH_MAX`: an interpreter that execs another - `#!/usr/bin/env node` - hands the kernel the
- * resolved interpreter's own path, which a version manager can make long.
- */
-function probePadding(program: string): string {
-  const pathname = Buffer.byteLength(program, "utf8") + 1 + 8;
-  return "p".repeat(2 * pathname + 2 * (256 + 1 + 8) + PATH_MAX_BYTES);
-}
-
-/** The longest pathname `execve` accepts on Linux (`PATH_MAX`); macOS allows 1024. */
-const PATH_MAX_BYTES = 4096;
 
 /**
  * Run `argv` only if it fits under the platform's argument limit in THIS shell's environment -

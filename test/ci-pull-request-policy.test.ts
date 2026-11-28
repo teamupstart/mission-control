@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 const checker = fileURLToPath(new URL("../scripts/check-pull-request-policy.mjs", import.meta.url));
 
 test("the CI pull request gate checks incoming trailers and changed paths against the merge base", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-pr-policy-"));
+  const root = tempDir("mission-pr-policy-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const git = (...args: string[]) => execFileSync("git", [

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "../temp-root.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -32,7 +32,7 @@ const PROBE_TSCONFIG = {
  * resolution finds the real dependencies without copying them.
  */
 export function typecheckWithPatch(patch: ((dir: string) => void) | null): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "session-contract-probe-"));
+  const dir = tempDir("session-contract-probe-");
   try {
     cpSync(path.join(REPO, "src"), path.join(dir, "src"), { recursive: true });
     // Setup reuses the standalone installer's durable-checkout preflight.

@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The parked-run stall's unpushed clause, with every link REAL except the registry.
 //
@@ -26,7 +26,7 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 // unit test can have, and the daemon's own wiring of these parts is two lines in
 // `src/server/index.ts`.
 
-const home = mkdtempSync(join(tmpdir(), "mission-parked-unpushed-"));
+const home = tempDir("mission-parked-unpushed-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

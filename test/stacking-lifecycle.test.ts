@@ -1,20 +1,19 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import type { PrRefs, PrSnapshot } from "../src/server/inspector/github.ts";
 import type { StackGitHub } from "../src/server/stacking/github.ts";
 import type { StackLifecycleContext } from "../src/server/stacking/state.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The stack lifecycle against real SQLite and a scripted GitHub: what the Inspector tick
 // observes and records, base reconciliation, the replacement-parent transition, the prompt
 // claims, the standing the merge queue reads, and the delivery guards.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-lifecycle-"));
+const home = tempDir("mission-stacking-lifecycle-");
 process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
 const { recordStackObservation } = db;

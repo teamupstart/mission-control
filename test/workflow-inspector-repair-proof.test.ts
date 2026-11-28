@@ -9,14 +9,14 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { captureWorktreeTree, LocalArtifactChangedError } from "../src/server/git/worktree-tree.ts";
 import { resolveCommitTree } from "../src/server/workflows/commit-id.ts";
 import { acceptedInspectorRepair, inspectorRepairTriggerKey } from "../src/server/workflows/inspector-repair-proof.ts";
 import type { WorkflowCompletionPolicy, WorkflowInspectorGateState, WorkflowSubmission } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const RUN = "run-1";
 const PUBLISHED = "a".repeat(40);
@@ -123,7 +123,7 @@ for (const [name, patch] of [
 
 // ---- the repository facts the claim compares, against real Git ----------------------------------
 
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-repair-"));
+const home = tempDir("mission-inspector-repair-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function git(root: string, ...args: string[]): string {

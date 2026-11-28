@@ -1,12 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The status code this route returns IS the durability contract.
 //
@@ -19,7 +18,7 @@ import type { QueueManager } from "../src/server/queue.ts";
 // So the route has to separate "there was nothing to record" from "I could not record
 // this". Only the first may be acknowledged.
 
-const home = mkdtempSync(join(tmpdir(), "mission-automation-http-"));
+const home = tempDir("mission-automation-http-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 

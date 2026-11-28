@@ -4,10 +4,9 @@ import assert from 'node:assert/strict';
 import { buildSync } from 'esbuild';
 import test from 'node:test';
 import { execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { UPDATE_HELPER_FILES } from '../scripts/update-helper-files.mjs';
 import { MIGRATION_ACK, readMigrationJournal } from '../scripts/install-migration.mjs';
@@ -17,9 +16,15 @@ import { cleanupHelperSnapshots } from '../scripts/update-helper-runtime.mjs';
 import { processIdentity, processIsAlive, type ProcessRecord } from '../scripts/update-lock.mjs';
 import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 import { binaryPreparationScript, createBinaryFixtureArchive, prepareBinaryFixtureRuntime } from './helpers/binary-update-detached.ts';
+import { processesUnder, tempDir } from "./temp-root.mjs";
+import { processLines, teardownFixtureTree } from "./helpers/fixture-tree.ts";
 
 ensureNativeStateLockAddon();
 const require = createRequire(import.meta.url);
+
+/** Every fixture tree this file made, for the final check that nothing outlived teardown. */
+const fixtureRoots: string[] = [];
+
 
 /**
  * What the helper and fixture left behind, for a wait that timed out.
@@ -74,7 +79,8 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   const binary = mode.startsWith('binary-');
   const rename = mode === 'binary-rename';
   const failure = mode === 'readiness-failure' || mode === 'interrupted-after-swap';
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mission-detached-electron-')));
+  const root = realpathSync(tempDir('mission-detached-electron-'));
+  fixtureRoots.push(root);
   const ownedProcesses: ProcessRecord[] = [];
   let interruptedTarget: ProcessRecord | null = null;
   let completed = false;
@@ -93,7 +99,9 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     for (const record of ownedProcesses) {
       if (record.identity && processIdentity(record.pid) === record.identity && processIsAlive(record.pid)) process.kill(record.pid, 'SIGKILL');
     }
-    rmSync(root, {recursive: true, force: true});
+    // The records above name only the processes this test learned about; the rest are reaped
+    // by path. `test/fixture-tree-teardown.test.ts` proves this for a failure before handoff.
+    teardownFixtureTree(root, mode);
   });
   const state = join(root, 'state'); mkdirSync(state);
   const apps = join(root, 'apps'); mkdirSync(apps);
@@ -444,4 +452,12 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   console.log(`Detached complete-bundle proof: parent exited; original replaced; ${failure ? `${mode} restored exact prior app and receipt` : 'GUI readiness before state, durable success, dead snapshot reclaimed'}; no host runtime traps.`);
   if (mode === 'preparation-retry') console.log('Snapshot preparation proof: partial copy and digest-verification failures reclaimed; app and receipt unchanged; pre-existing attempt retained; same transaction retried to completion.');
   completed = true;
+});
+
+test('no fixture process outlives the copied-bundle tests', {skip: process.platform !== 'darwin'}, () => {
+  // Runs after every mode above, passed or failed: each teardown reaped its own tree, and this
+  // is the file-level statement that none of them left an app, helper or target running.
+  assert.ok(fixtureRoots.length > 0, 'the copied-bundle tests made no fixture trees');
+  assert.deepEqual(processLines(processesUnder(fixtureRoots, {anywhere: true})), []);
+  for (const root of fixtureRoots) assert.equal(existsSync(root), false, `${root} outlived its test`);
 });

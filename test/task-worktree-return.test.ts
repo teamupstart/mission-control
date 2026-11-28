@@ -2,16 +2,16 @@ import { SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID } from "../src/shared/feature-flag-r
 import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { TaskManagerStartupDeps } from "../src/server/tasks.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-return-"));
+const home = tempDir("mission-task-return-");
 process.env.MISSION_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 const { disposableWorktreeCensus } = await import("../src/server/worktrees/disposable-census.ts");

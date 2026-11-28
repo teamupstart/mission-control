@@ -92,6 +92,8 @@ export const OVERLAY_IDS = {
   // A resident profile's confirmation before it imports all native MCP sources. Opened over the
   // Residents editor, so the fleet's `k` and `r` must not reach a session behind it.
   residentMcpAllSources: "resident-mcp-all-sources",
+  // A resident profile's durable state files, read over the Residents editor.
+  residentState: "resident-state",
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
   prChecks: "pr-checks",

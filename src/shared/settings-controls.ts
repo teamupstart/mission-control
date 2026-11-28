@@ -1,6 +1,6 @@
 import { SESSION_SETTINGS_ACCESS, SKIN_SETTING } from "@shared/session-settings-metadata.ts";
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
-import { type FeatureFlagDefinition, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import { resolveFeatureFlag, type FeatureFlagDefinition, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 // The settings search index: one flat, control-level list of everything the settings
 // page can be told to do.
 //
@@ -519,6 +519,10 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "toggle",
     backup: backupDomains("harnesses"),
   },
+  { id: "agent-environment-names", label: "Agent environment variables", category: "harnesses",
+    description: "Choose the daemon or login-shell variables available to agent sessions.",
+    anchor: "harnesses/agent-environment", keywords: ["service token", "login shell", "MCP"],
+    kind: "jump", backup: backupDomains("agent-environment") },
   ...HARNESS_CONTROLS,
   ...FEATURE_FLAG_CONTROLS,
   { id: "feature-flags-enable-all", label: "Enable all feature flags",
@@ -708,10 +712,10 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "voice-spoken-replies",
     label: "Spoken replies",
-    description: "Choose a voice and play a sample of an ask.",
+    description: "Turn spoken replies on or off, choose a voice and play a sample of an ask.",
     category: "voice",
     anchor: "voice/spoken-replies",
-    keywords: ["voice picker", "automatic", "play sample", "Apple", "system voice", "download", "Supertonic", "OpenRAIL-M"],
+    keywords: ["voice picker", "automatic", "play sample", "speak aloud", "playback", "mute speech", "Apple", "system voice", "download", "Supertonic", "OpenRAIL-M"],
     kind: "jump",
     backup: backupDomains("voice"),
   },
@@ -1462,7 +1466,8 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
  * category gate, live, never frozen at module load.
  */
 export function settingsControls(flags: FeatureFlagsConfig): readonly SettingsControl[] {
-  return ALL_SETTINGS_CONTROLS.filter((control) => settingsCategoryAvailable(control.category, flags));
+  return ALL_SETTINGS_CONTROLS.filter((control) => settingsCategoryAvailable(control.category, flags) &&
+    (control.id !== "agent-environment-names" || resolveFeatureFlag("agent-environment", flags)));
 }
 
 /**

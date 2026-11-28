@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: every Mission Control tool call a packaged-app agent makes.
 //
@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 // inside Electron is at least what `build:mcp` compiles the bundle for. A checkout pinning an
 // old Node must change neither.
 
-const home = mkdtempSync(join(tmpdir(), "mission-mcp-runtime-electron-"));
+const home = tempDir("mission-mcp-runtime-electron-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { resolveMissionMcpRuntime } = await import("../src/server/mission-mcp.ts");

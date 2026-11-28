@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ServerEvent, Session } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The Foreman-invite foundation (docs/plans/foreman-invite/phase-1-invite-foundation.md):
 // every session carries a truthful, durable `foremanInvite`, resolved by the registry from
@@ -16,7 +15,7 @@ import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 // dispatched, which is indistinguishable on the dashboard from "Foreman chose to ignore
 // this" - no error, no event, just a quiet session.
 
-const home = mkdtempSync(join(tmpdir(), "mission-foreman-invite-"));
+const home = tempDir("mission-foreman-invite-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

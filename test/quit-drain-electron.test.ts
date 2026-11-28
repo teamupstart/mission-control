@@ -17,12 +17,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
+import { acquireElectronStartupSlot, releaseAfterStartup } from "./helpers/electron-startup-slot.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -123,7 +124,7 @@ for (const mode of ["send-only", "drain"] as const) {
     skip: process.platform !== "darwin", timeout: 90_000,
   }, async (t) => {
     assertElectronGuiLaunchAllowed();
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "quit-drain-electron-")));
+    const root = realpathSync(tempDir("quit-drain-electron-"));
     const attemptId = `quit-drain-${mode}-${process.pid}-${Date.now()}`;
     let supervisor: {pid: number} | null = null;
     t.after(() => {
@@ -134,7 +135,9 @@ for (const mode of ["send-only", "drain"] as const) {
     const app = fixtureApp(root);
     const env: NodeJS.ProcessEnv = {...process.env, FIXTURE_OUT: out, FIXTURE_MODE: mode, FIXTURE_ATTEMPT: attemptId};
     delete env.ELECTRON_RUN_AS_NODE;
+    const releaseStartup = await acquireElectronStartupSlot();
     const electron = spawn(require("electron") as string, [app], {env, stdio: ["ignore", "pipe", "pipe"]});
+    releaseAfterStartup(electron, releaseStartup);
     let output = "";
     electron.stdout.on("data", (chunk) => { output += chunk; });
     electron.stderr.on("data", (chunk) => { output += chunk; });

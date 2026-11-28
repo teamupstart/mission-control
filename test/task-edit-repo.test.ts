@@ -1,22 +1,22 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway state dir, set before anything opens the DB - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-task-edit-repo-"));
+const home = tempDir("mission-task-edit-repo-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 
-const repos = mkdtempSync(join(tmpdir(), "mission-task-edit-repos-"));
+const repos = tempDir("mission-task-edit-repos-");
 after(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(repos, { recursive: true, force: true });

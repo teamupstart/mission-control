@@ -2,14 +2,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { execPath } from "node:process";
 
@@ -34,6 +32,7 @@ import {
 } from "../../src/shared/pipeline.ts";
 
 import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
 
@@ -247,7 +246,7 @@ const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 
 /** A cost-free provider worker whose cwd lets the real discovery pass correlate it. */
 function startProviderWorker(cwd: string): { name: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-pipeline-adoption-"));
+  const dir = tempDir("mc-e2e-pipeline-adoption-");
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   symlinkSync(execPath, join(bin, "claude"));

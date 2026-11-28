@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import { cwdAllowlisted } from "../src/shared/allowlist.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What a task says its repo IS, and why a worktree is never the answer.
 //
@@ -21,7 +21,7 @@ import { cwdAllowlisted } from "../src/shared/allowlist.ts";
 // So the two halves pinned here are: resolution walks a worktree back to its owner, and
 // a root that CANNOT be walked back is refused at the door instead of being written.
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-repo-root-home-"));
+const home = tempDir("mission-task-repo-root-home-");
 process.env.HARNESS_HOME = home;
 
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -30,7 +30,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { resolveRepoRoot, resolveTaskRepoRoot } = await import("../src/server/repos.ts");
 
-const scratch = mkdtempSync(join(tmpdir(), "mission-task-repo-root-"));
+const scratch = tempDir("mission-task-repo-root-");
 
 after(() => {
   rmSync(home, { recursive: true, force: true });

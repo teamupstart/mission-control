@@ -1,17 +1,17 @@
 // A build must survive deletion of the checkout that produced it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { inspectMissionMcpTools } from "../src/server/mission-mcp.ts";
 import { execFileSync } from "node:child_process";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const nativeAddon = ensureNativeStateLockAddon();
 
 test("two absolute source roots produce identical integration bytes that load after source removal", async () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-relocation-"));
+  const root = tempDir("pi-relocation-");
   try {
     const builds: string[] = [];
     for (const name of ["first", "second"]) {

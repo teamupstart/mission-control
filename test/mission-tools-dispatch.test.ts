@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-tools-dispatch-")));
+const home = realpathSync(tempDir("mission-tools-dispatch-"));
 process.env.MISSION_HOME = home;
 process.env.MISSION_PI_EXTENSION = join(home, "missing-extension.js");
 process.env.MISSION_PORT = "7317";

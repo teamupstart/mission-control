@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type {
@@ -8,13 +7,14 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkOneShotQuery,
 } from "../src/server/harness/claude/sdk-types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Every model runner whose timeout became awake-time (issue #1734), driven through a sleep it
 // cannot cause: the host-suspend clock is scripted, everything else is the real runner. The
 // subprocess runners get fake CLIs and the SDK runners get fake SDKs. By default none of them
 // answers; `answerAfterMs` makes each answer once that long has passed. Both binaries are
 // resolved from the environment, so they are in place before the imports below.
-const home = mkdtempSync(join(tmpdir(), "runner-host-sleep-"));
+const home = tempDir("runner-host-sleep-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /** When set, every fake answers this long after its call starts; otherwise it never answers. */

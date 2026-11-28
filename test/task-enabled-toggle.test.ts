@@ -1,16 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway state dir, set before anything opens the DB - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-task-enabled-"));
+const home = tempDir("mission-task-enabled-");
 process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

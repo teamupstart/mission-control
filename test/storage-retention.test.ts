@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
 import {
@@ -13,13 +12,14 @@ import {
   type RetentionCopy,
 } from "../src/shared/database-backups.ts";
 import { backupDraftEffect, spanLabel } from "../src/web/lib/storage-view.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the size and age limits are the first backup limits that can delete a
 // kind's NEWEST copies. The minimum recovery set is what keeps "fewer backups" from ever
 // meaning "no way back", and the page's "Saving deletes N copies" preview must name exactly
 // the copies the daemon's prune then deletes.
 
-const stateHome = mkdtempSync(join(tmpdir(), "mission-storage-retention-"));
+const stateHome = tempDir("mission-storage-retention-");
 process.env.MISSION_HOME = stateHome;
 after(() => rmSync(stateHome, { recursive: true, force: true }));
 

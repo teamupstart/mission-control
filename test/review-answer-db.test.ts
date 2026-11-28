@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway home BEFORE config.ts resolves the state dir at module load, so this never
 // touches the real ~/.mission-control db (db must be imported dynamically after).
-const home = mkdtempSync(join(tmpdir(), "mission-review-answer-db-"));
+const home = tempDir("mission-review-answer-db-");
 process.env.MISSION_HOME = home;
 
 const {

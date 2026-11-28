@@ -104,3 +104,48 @@ Nothing depends on this phase. It completes the plan.
   locally reviewed head, and the tests cover a matching local pass in Dry run.
 - 2026-11-23: Plan Validation review, second round. Section 6 and the tests use the plan's
   tree-based match for a later push: the same tree still matches, a changed tree does not.
+
+## 11. Implementation record
+
+What was built, and where it follows or departs from the route above.
+
+### The predicate
+
+`MergeInput` gained `localReview: { enabled, matchedHeadSha }`: whether
+`InspectorConfig.localReview` is on (it reads as off while the `local-inspector` flag is off), and
+the head the workflow manager's `localReviewMatch` reported a match for on this sweep. `maybeMerge`
+fills it from the sweep's Inspector config and the match `processPr` already asked for, so the
+predicate reads Phase 5's single owner and adds no second one.
+
+In `mergeVerdict` a recorded `local` posture is accepted at the recorded-posture check only when
+Local review is on and the reported match names the observed head. The current-posture gate stays
+first and unchanged, so Dry run, an Inspector switched off and a repository off its list refuse
+first, a matching local pass included. A recorded `dry-run` or `not-allowlisted` posture is still
+`review-unpublished`. The appended block reason is `local-review-missing`.
+
+### Deviations from the route
+
+- The round count is asked only of a GitHub review. A head recorded from a local match has no
+  GitHub round (`round` stays 0), and the existing `rounds < 1` arm of `not-reviewed` would
+  otherwise refuse every local head.
+- "The recorded head is the observed head" and "the reviewed base is the pull request's base" are
+  answered by the existing `not-reviewed` check, which already runs before the posture check, so a
+  later commit with the same tree reads `not-reviewed` until the worker records it rather than the
+  new reason. `local-review-missing` is reserved for a head recorded `local` on this push whose
+  backing is gone: Local review switched off, or the manager no longer matching it.
+- `repositoryHoldsMergeGrant` and its test were removed with the exception: nothing else read it.
+- Open Inspector findings and unresolved threads from an earlier GitHub round still block a local
+  head. Every other gate stays as it was.
+- Trust explains the review a merge relies on in the YOLO merges column's description
+  (`mergeGrantTitle`), naming the local review only while Local review is on. The Inspector's
+  Local review card drops the merge-grant sentence and says Live may merge a locally reviewed
+  head and Dry run merges nothing.
+
+### Verification surfaces
+
+- The fake `gh` gained an opt-in `mergeGate` (check rollup and mergeability on the Inspector's
+  read) and the merge endpoint, a compare-and-swap on the head, so the end-to-end spec drives a
+  real YOLO merge of a locally reviewed head.
+- The merge queue's `local-review-missing` copy is read from a seeded row in the end-to-end spec;
+  the daemon producing that verdict is covered by the worker tests, because the GitHub review that
+  replaces the record lands one sweep later.

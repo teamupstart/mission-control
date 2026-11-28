@@ -1,17 +1,17 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: Inspector-only repair is a narrow, published bypass. It may advance
 // only to a genuinely new PR head, creates no Persona attempt, and leaves enough audit
 // to prove exactly which failed head and findings were bypassed.
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-bypass-"));
+const home = tempDir("mission-workflow-inspector-bypass-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

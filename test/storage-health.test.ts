@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -13,12 +12,13 @@ import {
   type StorageView,
 } from "../src/shared/storage-health.ts";
 import { databaseBackupStatusFrom } from "../src/shared/database-backups.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: Settings > Storage reads one aggregate, and each problem is one occurrence
 // with a stable id. An id that changed across a daemon restart would report one failure as two;
 // one that stayed after its failure cleared would hide the next one.
 
-const stateHome = mkdtempSync(join(tmpdir(), "mission-storage-health-"));
+const stateHome = tempDir("mission-storage-health-");
 // Set the supported test home before importing any server module that can resolve the DB.
 process.env.MISSION_HOME = stateHome;
 after(() => rmSync(stateHome, { recursive: true, force: true }));

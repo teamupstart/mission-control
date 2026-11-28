@@ -14,12 +14,12 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-action-migration-"));
+const home = tempDir("mission-session-action-migration-");
 process.env.MISSION_HOME = home;
 
 const LEGACY_IDS = {

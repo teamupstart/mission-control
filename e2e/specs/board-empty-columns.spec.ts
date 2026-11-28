@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 import type { Locator, Page } from "@playwright/test";
@@ -9,6 +8,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { dispatchedSdkHookIdentity } from "../fixtures/sdk-hook-identity.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * The Board's empty columns: every column exists, and it is drawn only while it has a card in
@@ -282,7 +282,7 @@ test.describe("an agent with no lifecycle reading", () => {
     dashboard: page,
     daemon,
   }) => {
-    const dir = mkdtempSync(join(tmpdir(), "mc-e2e-unconfirmed-"));
+    const dir = tempDir("mc-e2e-unconfirmed-");
     const bin = join(dir, "fake-bin");
     mkdirSync(bin);
     symlinkSync(execPath, join(bin, "claude"));

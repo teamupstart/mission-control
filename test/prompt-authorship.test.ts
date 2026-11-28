@@ -19,11 +19,11 @@
  */
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-prompt-authorship-"));
+const home = tempDir("mission-prompt-authorship-");
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
 process.env.HARNESS_HOME = join(home, "state");
 after(() => rmSync(home, { recursive: true, force: true }));

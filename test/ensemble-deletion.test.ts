@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: explicit deletion is the ONE act that destroys an ensemble's evidence - its
@@ -13,7 +13,7 @@ import { join } from "node:path";
  * the deletion and its recovery are exercised end to end.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-delete-"));
+const home = tempDir("mission-ensemble-delete-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

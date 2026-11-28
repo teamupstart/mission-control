@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { weztermEmulator } from "../e2e/fixtures/wezterm-boundary.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("WezTerm fixture freezes discovery even when an interrupted observation completes later", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "wzf-"));
+  const home = tempDir("wzf-");
   const previousHome = process.env.MISSION_HOME;
   process.env.MISSION_HOME = home;
   const socket = join(home, "sock");

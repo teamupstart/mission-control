@@ -1,19 +1,18 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReportAwaitingBody, ReportBlockerBody } from "../src/shared/protocol.ts";
 import type { Session } from "../src/shared/types.ts";
 import { SESSION_AWAITING_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
 import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A session idle on purpose while a background process finishes (issue #1596). The record is
 // keyed by the note key like a blocker, but it ends on the session's own next turn, on exit,
 // with its task, or on a clear, and its hold lifts by itself at the deadline it declared.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-awaiting-"));
+const home = tempDir("mission-session-awaiting-");
 process.env.MISSION_HOME = home;
 
 const {

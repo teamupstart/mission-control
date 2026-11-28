@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-readiness-"));
+const home = tempDir("mission-workflow-readiness-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

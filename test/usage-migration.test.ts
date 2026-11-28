@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-usage-migrate-"));
+const home = tempDir("mission-usage-migrate-");
 process.env.MISSION_HOME = home;
 
 const raw = new DatabaseSync(join(home, "harness.db"));

@@ -1,13 +1,12 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ServerEvent, Session } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a session with no terminal-discovery identity, tty or pane has to live in
 // the same map, leave by the same door, and be reasoned about by the same code as every
@@ -29,7 +28,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // The supervisor is driven here on a scripted handle - the `PaneDeps` pattern, one axis over:
 // real registry, real supervisor, a fake driver whose events a test writes.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-runtime-"));
+const home = tempDir("mission-session-runtime-");
 // MISSION_HOME *is* the state dir, so the db lands at <home>/harness.db. Set before
 // importing anything that resolves it, which is why every server import below is dynamic.
 process.env.MISSION_HOME = home;

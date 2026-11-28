@@ -1,14 +1,12 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -29,8 +27,9 @@ import {
   type SettingsBackupEnvelopeV1,
 } from "../src/shared/settings-backups.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-settings-restore-"));
+const home = tempDir("mission-settings-restore-");
 process.env.HARNESS_HOME = join(home, "state");
 process.env.CLAUDE_SETTINGS_PATH = join(home, "claude-settings.json");
 

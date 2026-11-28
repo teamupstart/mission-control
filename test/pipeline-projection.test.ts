@@ -3,16 +3,15 @@ import assert from "node:assert/strict";
 import {
   appendFileSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: `pipeline_runs` is a CACHE of files another program owns, and the whole
 // integration rests on that being true rather than merely intended. Three things follow, and
@@ -29,7 +28,7 @@ import type { PipelineRun } from "../src/shared/pipeline.ts";
 // Plus the one durable thing that is NOT re-derivable: the events offset. A restart that
 // re-read every ledger from byte zero would double-count every run's token spend.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-projection-"));
+const home = tempDir("mission-pipeline-projection-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { automationSpendSince, openDb, loadPipelineRuns, pipelineEventCursors } = await import(

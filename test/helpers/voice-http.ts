@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach } from "node:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SdkSupervisor } from "../../src/server/sdk/supervisor.ts";
 import type { HeardEntry, VoiceCard } from "../../src/shared/voice-routing.ts";
@@ -10,10 +9,11 @@ import type { SpokenName } from "../../src/shared/voice-names.ts";
 
 import { ensureNativeStateLockAddon } from "./native-state-lock.ts";
 import type { VoiceDecisionResult, VoiceQuestion } from "../../src/shared/voice-decide.ts";
+import { tempDir } from "../temp-root.mjs";
 
 before(() => ensureNativeStateLockAddon());
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
+const home = tempDir("mission-voice-routing-");
 process.env.MISSION_HOME = home;
 const { buildApp } = await import("../../src/server/routes.ts");
 const { Registry } = await import("../../src/server/registry.ts");

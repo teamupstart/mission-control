@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { APP_BUNDLE_NAME } from '../src/shared/app-naming.mjs';
@@ -9,6 +8,7 @@ import { dmgRootProblem } from '../src/shared/binary-distribution.mjs';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
 import { verifyDistributionArchives, verifyDistributionDmgRoot } from '../scripts/verify-distribution.mjs';
 import { native, releaseFixtureImage } from './helpers/native-dmg.ts';
+import { tempDir } from "./temp-root.mjs";
 
 const macOnly = {skip: process.platform !== 'darwin' ? 'Requires real macOS disk image tools' : false};
 // The root of alpha-80b1258e's published DMG, which every installer before this contract refused.
@@ -30,7 +30,7 @@ function installerAcceptsRoot(mount: string): {accepted: boolean; stderr: string
   return {accepted: result.status === 0, stderr: result.stderr};
 }
 function layout(t: test.TestContext, entries: readonly string[]): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'dmg-root-')));
+  const dir = realpathSync(tempDir('dmg-root-'));
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   for (const entry of entries) {
     if (entry.endsWith('.app')) mkdirSync(join(dir, entry, 'Contents'), {recursive: true});
@@ -89,7 +89,7 @@ function hdiutil(args: readonly string[], beforeAttempt: (attempt: number) => vo
 
 function image(t: test.TestContext, entries: readonly string[], retainWriter = false): {work: string; dmg: string} {
   const source = layout(t, entries);
-  const work = realpathSync(mkdtempSync(join(tmpdir(), 'dmg-root-image-')));
+  const work = realpathSync(tempDir('dmg-root-image-'));
   const dmg = join(work, 'fixture.dmg');
   t.after(() => { releaseFixtureImage(dmg); rmSync(work, {recursive: true, force: true}); });
   // Building the image is fixture setup, not the contract under test, and `hdiutil create`

@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -10,6 +9,7 @@ import type { Task } from "../src/shared/types.ts";
 // Pure and browser-safe (no `node:` imports), so a static import cannot open the DB ahead
 // of the HARNESS_HOME preamble below.
 import { TaskSourcesConfigSchema } from "../src/shared/task-source.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `POST /api/tasks/:id/push` as an HTTP client sees it. What is at stake is the STATUS
 // CODE, and specifically one distinction inside it: 502 means GitHub refused and nothing
@@ -29,7 +29,7 @@ import { TaskSourcesConfigSchema } from "../src/shared/task-source.ts";
 // The refusals that happen BEFORE anything is spawned need no fake at all, and that they
 // need none is itself the property: a 400/404/409 from here published nothing.
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-push-http-"));
+const home = tempDir("mission-task-push-http-");
 process.env.HARNESS_HOME = home;
 
 const { openDb, countTaskSourceSeen, getTask } = await import("../src/server/db.ts");
@@ -45,8 +45,8 @@ const { setTaskSourcesConfig } = await import("../src/server/task-sources/config
  * fake reports back is the resolved one. Comparing an unresolved path against it fails on
  * a machine where the code is perfectly correct.
  */
-const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-task-push-repo-")));
-const bin = mkdtempSync(join(tmpdir(), "mission-task-push-bin-"));
+const repo = realpathSync(tempDir("mission-task-push-repo-"));
+const bin = tempDir("mission-task-push-bin-");
 const record = join(bin, "gh-argv.txt");
 
 after(() => {

@@ -46,9 +46,18 @@ node --test --import ./test/setup-state.mjs --import tsx test/session-contracts.
 ```
 
 Include `--import ./test/setup-state.mjs` in hand-typed test commands. Keep the preload
-contract here and link to it from other guides. It gives each test worker its own
-`mission-test-state-*` directory before the test module loads and removes it on normal
-exit. Both `npm test` and `npm run test:electron` include the preload.
+contract here and link to it from other guides. Before the test module loads, it gives each
+test worker a private temp root (`mctmp-*`), points `TMPDIR` inside it for the worker and its
+children, and creates the worker's `mission-test-state-*` directory there. The root is removed
+when the worker exits or is stopped by SIGINT, SIGTERM or SIGHUP. A root left by a SIGKILL is
+removed by the sweep that starts each `npm test` and `npm run test:electron`, or by
+`npm run test:sweep-temp`, once its owner is dead and the root is older than the sweep's age
+threshold; a sweep that runs sooner leaves it for a later one.
+Both `npm test` and `npm run test:electron` include the preload. Create fixture directories
+with `tempDir` from `test/temp-root.mjs`; Oxlint rejects a bare `tmpdir()` in `test/` and
+`e2e/` (`repository/test-temp-dirs`). [Test temp directories](docs/test-temp-dirs.md) states
+the root, sweep and cleanup contract, including the opt-in cleaner for machines that leaked
+fixtures before it existed.
 
 A test worker must load the preload or inherit its capture for `openDb` to accept even
 a temp home. An operator can configure a live state home inside the temp directory.

@@ -1,9 +1,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-const home = mkdtempSync(join(tmpdir(), 'mission-dashboard-health-'));
+import { rmSync } from 'node:fs';
+import { tempDir } from "./temp-root.mjs";
+const home = tempDir('mission-dashboard-health-');
 process.env.MISSION_HOME = home;
 const { openDb, closeDb } = await import('../src/server/db.ts');
 const { captureTelemetryHealth } = await import('../src/server/telemetry/health.ts');

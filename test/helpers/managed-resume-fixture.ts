@@ -1,8 +1,22 @@
 import { after, afterEach } from "node:test";
 import { build } from "esbuild";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeMcpFixture } from "./mcp-fixture.ts";
+
+/** Give the guard an unambiguous inventory so unrelated host processes cannot keep a fixture lease alive. */
+export function writeResumeProcessInventory(home: string): string {
+  const ps = join(home, "unambiguous-ps");
+  writeFileSync(ps, `#!/bin/sh
+date='Wed Sep 30 12:34:56 2026'
+if [ "$1" = '-p' ]; then
+  printf '%s\\n' "$date"
+else
+  printf '1 0 %s\\n%s 1 %s\\n' "$date" "$PPID" "$date"
+fi
+`, { mode: 0o755 });
+  return ps;
+}
 
 /** Source-only tests build the guard into their fixture, never depend on dist/. */
 export async function managedResumeFixture(home: string): Promise<void> {

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { MEANWHILE_MAX_CHARS } from "../src/shared/async-input.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The MCP child's half of `async-input`: `request_input` always says it can take a receipt,
 // returns the daemon's receipt verbatim without one long poll when told `wait: "message"`, and
@@ -15,7 +15,7 @@ import { MEANWHILE_MAX_CHARS } from "../src/shared/async-input.ts";
 //
 // Drives the real MCP server over stdio against a stub daemon that records every request.
 
-const home = mkdtempSync(join(tmpdir(), "async-input-mcp-"));
+const home = tempDir("async-input-mcp-");
 type Seen = { method: string; path: string; body: Record<string, unknown> };
 const seen: Seen[] = [];
 let mode: "message" | "call" | "legacy" | "limit" | "revision-refused" = "message";

@@ -171,6 +171,7 @@ function voiceSettings(changed: (key: string) => void): SettingDescriptor[] {
       field("voice", "cancelWindow.enabled", "voice-cancel-window", { label: "Enable voice cancel window" }),
       field("voice", "cancelWindow.seconds", "voice-cancel-window", { label: "Voice cancel window in seconds" }),
       field("voice", "whenUnsure", "voice-when-unsure", { choices: choices(VOICE_WHEN_UNSURE) }),
+      field("voice", "speech.playback", "voice-spoken-replies", { label: "Speak replies aloud" }),
       field("voice", "planFormsByVoice", "voice-plan-forms"),
       field("voice", "backend", "setup-checks", {
         label: "Voice recognition backend", choices: choices(VOICE_BACKEND_CHOICES),

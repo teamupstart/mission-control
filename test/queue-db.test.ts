@@ -1,16 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { WorkItem, WorkItemState } from "../src/shared/types.ts";
 import { shipRecoveryMarker } from "../src/shared/ship-recovery.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Point the daemon's state dir at a throwaway home BEFORE anything reads config,
 // so this never touches the real ~/.mission-control db (config.ts resolves the
 // state dir at module load, so db must be imported dynamically after).
-const home = mkdtempSync(join(tmpdir(), "mission-queue-db-"));
+const home = tempDir("mission-queue-db-");
 process.env.MISSION_HOME = home;
 
 const {
@@ -126,7 +125,7 @@ test("a queue row round-trips and upserts in place", () => {
 });
 
 test("a legacy prompted guard without an activity watermark records a cutover ceiling", () => {
-  const legacy = mkdtempSync(join(tmpdir(), "mission-prompted-evidence-upgrade-"));
+  const legacy = tempDir("mission-prompted-evidence-upgrade-");
   const env = { ...process.env, MISSION_HOME: legacy };
   execFileSync(
     process.execPath,
@@ -783,7 +782,7 @@ test("the single-flight index is rebuilt when its predicate drifts from the shar
   //
   // Across two PROCESSES on one db file, because that's the only way the repair can
   // actually happen: openDb caches its handle, so migrate runs once per start.
-  const drifted = mkdtempSync(join(tmpdir(), "mission-drift-"));
+  const drifted = tempDir("mission-drift-");
   const run = (src: string): string =>
     execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", src], {
       env: { ...process.env, MISSION_HOME: drifted },
@@ -836,7 +835,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
   //
   // Hence THREE starts: the bug is invisible on the start that drops the index and
   // only bites on the one after it.
-  const stuck = mkdtempSync(join(tmpdir(), "mission-stuck-"));
+  const stuck = tempDir("mission-stuck-");
   const run = (src: string): string =>
     execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", src], {
       env: { ...process.env, MISSION_HOME: stuck },
@@ -1348,7 +1347,7 @@ test("an undelivered direct handoff is corrected in place, and only ever narrowe
 });
 
 test("a database that predates the decision column upgrades, reads null, and stays consumed", () => {
-  const legacy = mkdtempSync(join(tmpdir(), "mission-prompted-decision-upgrade-"));
+  const legacy = tempDir("mission-prompted-decision-upgrade-");
   const env = { ...process.env, MISSION_HOME: legacy };
   execFileSync(
     process.execPath,

@@ -184,6 +184,38 @@ export default {
         };
       },
     },
+    "test-temp-dirs": {
+      create(context) {
+        const message = "Make test temp dirs with tempDir() from test/temp-root.mjs: it lands in this process's " +
+          "temp root, which is removed on exit and swept after a kill. See docs/test-temp-dirs.md.";
+        // A bare base path for mkdtemp: a string or template literal ("/tmp/x-", "/private/tmp"),
+        // or an environment variable (process.env.TMPDIR), used directly or as the first segment
+        // of join()/resolve(). A directory the helper handed out, held in a variable, is fine.
+        const bareBase = (argument) => {
+          if (!argument) return false;
+          if (argument.type === "Literal" || argument.type === "TemplateLiteral") return true;
+          if (argument.type === "MemberExpression" && member(argument.object, "env")) return true;
+          const callee = argument.type === "CallExpression" ? argument.callee : undefined;
+          const called = callee?.type === "Identifier" ? callee.name
+            : callee?.type === "MemberExpression" ? name(callee.property, callee.computed) : undefined;
+          return (called === "join" || called === "resolve") && bareBase(argument.arguments[0]);
+        };
+        return {
+          CallExpression(node) {
+            const callee = node.callee;
+            if ((callee.type === "Identifier" && callee.name === "tmpdir") || member(callee, "tmpdir")) {
+              context.report({ node, message });
+              return;
+            }
+            const called = callee.type === "Identifier" ? callee.name
+              : callee.type === "MemberExpression" ? name(callee.property, callee.computed) : undefined;
+            if ((called === "mkdtemp" || called === "mkdtempSync") && bareBase(node.arguments[0])) {
+              context.report({ node, message });
+            }
+          },
+        };
+      },
+    },
     "parse-request-body": {
       create(context) {
         return {

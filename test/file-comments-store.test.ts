@@ -1,8 +1,7 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: every invariant the walkthrough rests on is enforced HERE, in SQL and in
 // one declared operation per transition, rather than by the caller remembering. The two that
@@ -10,7 +9,7 @@ import { join } from "node:path";
 // live agent) and the edit refusal (the dashboard's copy of a comment diverging from the
 // bytes already committed to the outbox).
 
-const home = mkdtempSync(join(tmpdir(), "mission-file-comments-store-"));
+const home = tempDir("mission-file-comments-store-");
 process.env.MISSION_HOME = home;
 
 const {

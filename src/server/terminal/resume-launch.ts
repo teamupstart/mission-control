@@ -1,11 +1,16 @@
+import { openTerminalEnvironmentHandoff } from "./environment-handoff.ts";
 import type { PreparedResume } from "../harness/resume.ts";
 import { TerminalLaunchError } from "./launch-error.ts";
-import { resumeLeaseStatus } from "./resume-lease.ts";
+import { RESUME_START_MS, resumeLeaseStatus, writeResumeEnvironmentSocket } from "./resume-lease.ts";
 import {
   expectTerminalLaunchWorkUnit,
   settleTerminalLaunchWorkUnit,
   type TerminalLaunchWorkUnit,
 } from "../terminal-launch-work-units.ts";
+
+// The daemon owns preparation. A second caller must not revoke the first caller's lease
+// while it is still resolving its environment and has not yet published launch intent.
+const startingLeases = new Set<string>();
 
 /** A managed launch has no second argv, cwd or state-home input to disagree with preparation. */
 export interface ManagedResumeLaunch {
@@ -30,9 +35,10 @@ export async function launchPreparedResume<T>(
 ): Promise<ResumeLaunchResult<T>> {
   const { prepared } = input;
   // A repeated call does not own an earlier attempt's pending or claimed environment.
-  if (resumeLeaseStatus(prepared.lease).state !== "preparing") {
+  if (startingLeases.has(prepared.lease.home) || resumeLeaseStatus(prepared.lease).state !== "preparing") {
     throw new TerminalLaunchError("Managed resume launch was already attempted; recheck its status", true);
   }
+  let handoff: Awaited<ReturnType<typeof openTerminalEnvironmentHandoff>> | undefined;
   let attempted = false;
   // The resume's work unit decision, handed over before the pane exists so the registry can
   // install it as the resumed session's launch record when it first sees the agent beneath this
@@ -40,19 +46,32 @@ export async function launchPreparedResume<T>(
   // that opened confirms it; a definite non-launch started nothing, so it is withdrawn. An
   // uncertain outcome leaves it waiting: only the agent this launch started can take it.
   let expected: TerminalLaunchWorkUnit | null = null;
+  startingLeases.add(prepared.lease.home);
   try {
-    prepared.beginLaunch();
+    const named = prepared.resolveNamedEnvironment ? await prepared.resolveNamedEnvironment(prepared.stateHome) : undefined;
+    const startedAt = Date.now();
+    prepared.beginLaunch(startedAt);
+    if (named) {
+      handoff = await openTerminalEnvironmentHandoff(prepared, named, startedAt + RESUME_START_MS);
+      writeResumeEnvironmentSocket(prepared.lease, handoff.path);
+    }
     attempted = true;
-    expected = expectTerminalLaunchWorkUnit(prepared.stateHome, prepared.workUnitId, prepared.conversationKey);
+    expected = expectTerminalLaunchWorkUnit(prepared.stateHome, prepared.workUnitId, prepared.conversationKey, named?.missing);
     const result = await launch({ name: input.name, cwd: prepared.cwd,
-      argv: prepared.wrappedArgv, stateHome: prepared.stateHome });
+      argv: handoff ? handoff.authorize(prepared.wrappedArgv) : prepared.wrappedArgv, stateHome: prepared.stateHome });
     if (result.outcome === "launched") settleTerminalLaunchWorkUnit(expected, "succeeded");
-    if (result.outcome === "refused") settleTerminalLaunchWorkUnit(expected, "not-started");
+    if (result.outcome === "refused") {
+      await handoff?.dispose();
+      settleTerminalLaunchWorkUnit(expected, "not-started");
+    }
     if (result.outcome === "refused" && !prepared.dispose()) return { ...result, outcome: "unknown" };
     return result;
   } catch (error) {
     const definite = !attempted || (error instanceof TerminalLaunchError && !error.outcomeUnknown);
-    if (definite) settleTerminalLaunchWorkUnit(expected, "not-started");
+    if (definite) {
+      await handoff?.dispose();
+      settleTerminalLaunchWorkUnit(expected, "not-started");
+    }
     let revoked = false;
     if (definite) {
       try { revoked = prepared.dispose(); } catch { /* Failed cleanup cannot establish a safe retry. */ }
@@ -60,5 +79,7 @@ export async function launchPreparedResume<T>(
     const message = !attempted ? "Managed resume could not record its launch intent"
       : error instanceof Error ? error.message : "Managed terminal launch failed";
     throw new TerminalLaunchError(message, !revoked);
+  } finally {
+    startingLeases.delete(prepared.lease.home);
   }
 }

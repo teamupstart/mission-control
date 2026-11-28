@@ -1,11 +1,11 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-legacy-treehouse-")));
+const home = realpathSync(tempDir("mission-legacy-treehouse-"));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

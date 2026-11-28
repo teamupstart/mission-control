@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { PipelineCommission, PipelineRun } from "../src/shared/pipeline.ts";
@@ -11,6 +10,7 @@ import {
   pipelineCommissionKey,
   pipelineRunKeyOf,
 } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the pipeline projection is SSE state, not a second polling subsystem. A
 // reconnect snapshot and the incremental stream have to converge on the same set, and the
@@ -22,7 +22,7 @@ import {
 // which the `never` exhaustiveness check cannot see: it proves an arm EXISTS, not that the
 // arm keys the collection correctly or that nobody added a poll beside it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-sse-"));
+const home = tempDir("mission-pipeline-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { createResumeLease, reconcileResumeLeases, resumeLeaseRoot, revokeResumeLease } from "../src/server/terminal/resume-lease.ts";
+import { tempDir } from "./temp-root.mjs";
 
 for (const operation of ["write", "publish"] as const) test(`failed lease ${operation} cannot publish a partial journal`, (t) => {
-  const home = fs.mkdtempSync(join(tmpdir(), "resume-publication-"));
+  const home = tempDir("resume-publication-");
   const root = resumeLeaseRoot(home);
   const preparing = new Set<string>();
   const originalOpen = fs.openSync, originalRename = fs.renameSync;
@@ -38,7 +38,7 @@ for (const operation of ["write", "publish"] as const) test(`failed lease ${oper
 });
 
 test("a crash before writing the lease leaves no visible malformed journal", () => {
-  const home = fs.mkdtempSync(join(tmpdir(), "resume-publication-crash-"));
+  const home = tempDir("resume-publication-crash-");
   const root = resumeLeaseRoot(home);
   const module = pathToFileURL(join(process.cwd(), "src/server/terminal/resume-lease.ts")).href;
   const script = `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';

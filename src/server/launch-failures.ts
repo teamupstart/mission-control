@@ -72,6 +72,7 @@ const OUTCOME_COPY: Record<LaunchFailureOutcome, string> = {
   "not-started": "failed before its session started; nothing is running",
   returned: "failed while provisioning and was put back in the Backlog",
   kept: "failed after its session was created; that session was kept",
+  "worktree-kept": "the terminal launch is inactive and its worktree was retained",
 };
 
 function when(at: number): string {

@@ -1,10 +1,10 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PI_PRICE_VERSION, piUsage } from "../src/server/harness/pi/usage.ts";
 import type { UsageCursor } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -21,7 +21,7 @@ function jsonl(...records: unknown[]): string {
   return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
 }
 function file(contents: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "pi-usage-"));
+  const dir = tempDir("pi-usage-");
   dirs.push(dir);
   const path = join(dir, "session.jsonl");
   writeFileSync(path, contents);

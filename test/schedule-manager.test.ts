@@ -1,10 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { MissionSchedule } from "../src/shared/schedules.ts";
 import type { Task, TaskStatus } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the engine that spends money. Every defect it can have costs
 // something real and shows up as nothing on screen - a catch-up that files fifty agent
@@ -20,7 +19,7 @@ import type { Task, TaskStatus } from "../src/shared/types.ts";
 // can be pointed at deliberately), and the repository resolver (so a repo can vanish
 // between saving a schedule and firing it).
 
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-manager-"));
+const home = tempDir("mission-schedule-manager-");
 process.env.MISSION_HOME = home;
 
 const db = await import("../src/server/db.ts");

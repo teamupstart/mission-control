@@ -72,6 +72,22 @@ export function trustRows(lists: TrustLists): TrustRow[] {
 }
 
 /**
+ * What a YOLO merge in a repository relies on, for the merge column's explanation.
+ *
+ * The same rule `mergeVerdict` applies: a Live GitHub Inspector review of the exact push, or,
+ * while Local review is on, a passed Local Inspector review whose content and base match it.
+ * Local review reads as off while its preview flag is off, so the second clause appears only
+ * where the daemon would accept it.
+ */
+export function mergeGrantTitle(localReview: boolean): string {
+  const base = "Clean, soaked PRs in this repo merge themselves to the base branch";
+  return localReview
+    ? `${base}, on a Live GitHub Inspector review of the exact push or a passed Local Inspector `
+      + "review of its exact content and base. Either way GitHub Inspector must be Live here."
+    : `${base}, on a Live GitHub Inspector review of the exact push.`;
+}
+
+/**
  * The rows where the merge-without-review blind spot is live: YOLO would merge here, but
  * the Inspector may not review here, so nothing will ever qualify and nothing merges.
  *

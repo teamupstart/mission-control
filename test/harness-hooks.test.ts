@@ -1,11 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "@shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: push instrumentation is the ONLY signal that says a session is
 // working, idle, or waiting on you, and it belongs to exactly one of the two agents we
@@ -29,7 +29,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Set before importing anything that resolves the state dir / opens the db, and before
 // the dispatcher module reads its timing constants at load.
-const home = mkdtempSync(join(tmpdir(), "mission-harness-hooks-"));
+const home = tempDir("mission-harness-hooks-");
 process.env.HARNESS_HOME = join(home, "state");
 /** Long enough that spending it is unmistakable next to the settle below. */
 const HOOK_READY_MS = 800;

@@ -2,10 +2,10 @@ import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Persona } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Resident MCP servers below the drivers: custom servers and their write-only secrets, the
 // global catalog's projection, the effective set a launch resolves, the run snapshot, and the
@@ -14,7 +14,7 @@ import type { Persona } from "../src/shared/workflow.ts";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-mcp-"));
+const home = tempDir("mission-residents-mcp-");
 process.env.HARNESS_HOME = home;
 
 const { openDb, getAppConfig } = await import("../src/server/db.ts");

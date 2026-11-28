@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -8,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { expect } from "@playwright/test";
 
 import type { DaemonHandle } from "./daemon.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * An idle, hook-instrumented agent that holds no task resources: the one kind of session
@@ -66,7 +66,7 @@ export interface PaneAgent {
 export function startPaneAgent(daemon: DaemonHandle, opts: { prefix?: string; turns?: boolean; cwd?: string } = {}): PaneAgent {
   const prefix = opts.prefix ?? "mc-e2e-pane";
   const cwd = opts.cwd ?? daemon.repo;
-  const dir = mkdtempSync(join(tmpdir(), `${prefix}-`));
+  const dir = tempDir(`${prefix}-`);
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   // argv0's basename is what `harnessOf` matches, so the link's name is the whole disguise.

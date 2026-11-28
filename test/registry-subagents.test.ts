@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { SubagentSummary } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-registry-subagents-"));
+const home = tempDir("mission-registry-subagents-");
 process.env.MISSION_HOME = home;
 const { Registry, SESSION_FIELD_COMPARATORS } = await import("../src/server/registry.ts");
 const { HookIngestSchema } = await import("../src/shared/protocol.ts");

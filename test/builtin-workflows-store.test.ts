@@ -1,7 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   PublishedWorkflowNode,
@@ -10,6 +9,7 @@ import type {
   WorkflowVersion,
 } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a built-in workflow is app data merged into reads, and the merge rules are
 // what make that safe. There are two projections and they are NOT interchangeable - the
@@ -23,7 +23,7 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 // the four shipped documents happen to say, and asserting them against the real shipped
 // review workflow would make "a name an operator already took" mean whatever that graph is called.
 
-const home = mkdtempSync(join(tmpdir(), "mission-builtin-workflows-store-"));
+const home = tempDir("mission-builtin-workflows-store-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

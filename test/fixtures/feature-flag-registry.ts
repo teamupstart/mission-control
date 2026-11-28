@@ -6,6 +6,7 @@ export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as 
 import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 
 // The shipped registry also exports these ids; a build that substitutes the registry keeps the export.
+export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;

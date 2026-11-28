@@ -1,8 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 // Pure and browser-safe (no `node:` imports), so a static import cannot open the DB ahead
@@ -12,6 +10,7 @@ import {
   type TaskSourcesView,
   type WritebackNotice,
 } from "../src/shared/task-source.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The two write-back queue routes as an HTTP client sees them, and the summary the panel
 // reads in the same GET it already made.
@@ -29,7 +28,7 @@ import {
 // here moved no row, so a mistyped id cannot empty a queue that belongs to a source that
 // does exist.
 
-const home = mkdtempSync(join(tmpdir(), "mission-writeback-http-"));
+const home = tempDir("mission-writeback-http-");
 process.env.HARNESS_HOME = home;
 
 const { openDb, enqueueWriteback, countWritebacks, settleWriteback } = await import(

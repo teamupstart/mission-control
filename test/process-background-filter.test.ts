@@ -1,8 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake, in both directions: a dispatched agent that silently disappears from the
 // dashboard, or a background worker that shows up in it as a phantom session.
@@ -28,7 +28,7 @@ import { join } from "node:path";
 // real invocations, over tokens, and cannot be reached by an operator's paths or by prompt
 // prose - while every background form actually observed still matches.
 
-const home = mkdtempSync(join(tmpdir(), "mission-bg-filter-"));
+const home = tempDir("mission-bg-filter-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readUnpushedCommits } from "../src/server/git/unpushed.ts";
 import type { UnpushedDeps } from "../src/server/git/unpushed.ts";
 import { unpushedClause, hasUnpushedCommits } from "../src/shared/unpushed.ts";
 import { run, stubRun } from "../src/server/util/exec.ts";
 import { gitIn, mkCloneOnBranch, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What a checkout can say about commits origin has never seen, and - far more of this file -
 // what it must REFUSE to say.
@@ -129,7 +129,7 @@ test("a clone whose remote is not named `origin` is not accused of its whole his
   // whatever the branch actually tracks, so the comparison is against a ref that exists
   // whatever the remote is called. This is the case that must keep passing under any future
   // change to the comparison.
-  const root = mkdtempSync(join(tmpdir(), "harness-unpushed-fork-"));
+  const root = tempDir("harness-unpushed-fork-");
   const origin = join(root, "origin");
   gitInit(origin);
   writeFileSync(join(origin, "keep.txt"), "base\n");
@@ -180,7 +180,7 @@ test("a detached HEAD is UNKNOWN", async () => {
 });
 
 test("a path outside any repository is UNKNOWN", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "harness-unpushed-bare-"));
+  const dir = tempDir("harness-unpushed-bare-");
 
   assert.deepEqual(await readUnpushedCommits(dir), { state: "unknown", why: "not_a_repo" });
 });

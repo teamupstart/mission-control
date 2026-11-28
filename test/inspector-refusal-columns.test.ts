@@ -1,15 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // The refusal record a drafted finding carries toward the cap: `post_refusals` and
 // `last_post_error`. What is at stake is the cap itself. A migration that left existing rows
 // with anything but zero would start them part-way to retirement, and a writer that dropped
 // the pair would hand a draft GitHub keeps refusing a fresh three tries.
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-refusals-"));
+const home = tempDir("mission-inspector-refusals-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

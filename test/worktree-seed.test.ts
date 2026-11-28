@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { cp, lstat } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { WorktreeClaimSchema, WorktreesConfigPatchSchema, type WorktreeClaim } from "../src/shared/protocol.ts";
@@ -31,6 +30,7 @@ import {
 } from "../src/server/worktrees/seed.ts";
 import { WORKTREE_POOL_MARKER } from "../src/server/worktrees/marker.ts";
 import { cachedGitTree, gitIn, originAndCloneAt } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Seeding through the real manager, real Git and real files. Only the clone itself is faked:
 // the test copies a tree where production asks `cp` for copy-on-write, so the suite behaves the
@@ -78,7 +78,7 @@ const SEED = { paths: ["deps", "more"], exclude: ["deps/cache", "**/*.tmp"] };
 
 /** A repository whose `deps/`, `more/` and `logs/` are ignored, with a tracked `tracked/`. */
 function repository(prefix: string): { origin: string; clone: string; sha: string } {
-  return cachedGitTree("seed-repository", mkdtempSync(join(tmpdir(), prefix)), (root) => {
+  return cachedGitTree("seed-repository", tempDir(prefix), (root) => {
     const { origin, clone } = originAndCloneAt(root);
     writeFileSync(join(origin, ".gitignore"), "deps/\nmore/\nlogs/\n");
     writeFileSync(join(origin, "lock.txt"), "v1\n");
@@ -240,7 +240,7 @@ test("a seed is not a fingerprint input", () => {
 // ---- the pieces ----
 
 test("seed globs expand level by level, keep the outermost match, and never name .git", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-seed-expand-"));
+  const root = tempDir("mission-seed-expand-");
   for (const directory of ["node_modules/a", "apps/web/node_modules", "apps/api/node_modules", "apps/.hidden/node_modules", ".git/x", "packages/p"]) {
     mkdirSync(join(root, directory), { recursive: true });
   }
@@ -263,7 +263,7 @@ test("seed globs expand level by level, keep the outermost match, and never name
 });
 
 test("expansion never yields .git, whatever its letter case or however it is matched", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-seed-dotgit-"));
+  const root = tempDir("mission-seed-dotgit-");
   mkdirSync(join(root, ".git", "objects"), { recursive: true });
   mkdirSync(join(root, ".github"));
   mkdirSync(join(root, "apps", "web", ".git"), { recursive: true });
@@ -277,11 +277,11 @@ test("expansion never yields .git, whatever its letter case or however it is mat
 /** A source with `deps/{keep,x.tmp}` beside a target clone that ignores `deps/`. */
 function stagingFixture(prefix: string) {
   const { clone } = repository(prefix);
-  const source = mkdtempSync(join(tmpdir(), `${prefix}source-`));
+  const source = tempDir(`${prefix}source-`);
   mkdirSync(join(source, "deps"));
   writeFileSync(join(source, "deps", "keep"), "keep");
   writeFileSync(join(source, "deps", "x.tmp"), "excluded");
-  const staging = mkdtempSync(join(tmpdir(), `${prefix}staging-`));
+  const staging = tempDir(`${prefix}staging-`);
   return { source, target: clone, staging };
 }
 
@@ -371,7 +371,7 @@ test("a Stop or the deadline landing during exclusion work ends the seed, not th
 });
 
 test("expansion fails closed when it cannot inspect the tree, and only real absence is no match", { skip: ROOT_SKIP }, async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-seed-expand-unreadable-"));
+  const root = tempDir("mission-seed-expand-unreadable-");
   mkdirSync(join(root, "pkgs", "a", "node_modules"), { recursive: true });
   mkdirSync(join(root, "locked"));
   writeFileSync(join(root, "locked", "x"), "x");
@@ -446,16 +446,16 @@ test("copy-on-write is the only copy: the argv clones or refuses, and a refusal 
   assert.equal(copyOnWriteArgv("win32", "/s", "/d"), null);
 
   // A `cp` that, like macOS cp on a volume without clonefile, refuses -c rather than falling back.
-  const bin = mkdtempSync(join(tmpdir(), "mission-seed-fake-cp-"));
+  const bin = tempDir("mission-seed-fake-cp-");
   const fakeCp = join(bin, "cp");
   writeFileSync(
     fakeCp,
     `#!/bin/sh\nfor a in "$@"; do [ "$a" = "-c" ] && { echo "cp: failed to clone: Operation not supported" >&2; exit 1; }; done\nexit 0\n`,
   );
   chmodSync(fakeCp, 0o755);
-  const source = mkdtempSync(join(tmpdir(), "mission-seed-source-"));
+  const source = tempDir("mission-seed-source-");
   writeFileSync(join(source, "file"), "data");
-  const destination = join(mkdtempSync(join(tmpdir(), "mission-seed-dest-")), "copy");
+  const destination = join(tempDir("mission-seed-dest-"), "copy");
   const refused = await copyOnWriteClone({ platform: "darwin", cp: fakeCp })({
     source,
     destination,
@@ -503,7 +503,7 @@ test("the interrupted wipe removes only paths Git confirms are ignored, and refu
 });
 
 test("leftover staging is removed unless a live seed owns it", async () => {
-  const pool = mkdtempSync(join(tmpdir(), "mission-seed-staging-"));
+  const pool = tempDir("mission-seed-staging-");
   for (const name of ["dead", "live"]) mkdirSync(join(seedStagingRoot(pool), name, "0"), { recursive: true });
   assert.deepEqual(await removeLeftoverStaging(pool, new Set(["live"])), ["dead"]);
   assert.deepEqual(readdirSync(seedStagingRoot(pool)), ["live"]);
@@ -597,7 +597,7 @@ test("a stale slot seeds only from a sibling that matches its commit exactly", a
 test("with no idle sibling, or where the disk cannot clone, there is no seed and the steps run", async () => {
   const fixture = repository("mission-seed-none-");
   const claim = claimWith(SEED);
-  const bin = mkdtempSync(join(tmpdir(), "mission-seed-fake-cp-"));
+  const bin = tempDir("mission-seed-fake-cp-");
   const fakeCp = join(bin, "cp");
   writeFileSync(fakeCp, `#!/bin/sh\necho "cp: failed to clone: Operation not supported" >&2\nexit 1\n`);
   chmodSync(fakeCp, 0o755);
@@ -820,7 +820,7 @@ test("a Stop or the deadline that lands while a seed path is being deleted ends 
   // The delete is one killable child now, not one `fs.rm` per entry, so the budget has to reach
   // into it. A stand-in `rm` that announces itself and never finishes is interrupted mid-delete.
   const { clone } = repository("mission-seed-wipe-interrupted-");
-  const bin = realpathSync(mkdtempSync(join(tmpdir(), "mission-seed-rm-")));
+  const bin = realpathSync(tempDir("mission-seed-rm-"));
   const started = join(bin, "started");
   const rm = join(bin, "rm");
   writeFileSync(rm, `#!/bin/sh\n: > ${JSON.stringify(started)}\nexec /bin/sleep 60\n`, { mode: 0o755 });
@@ -1380,8 +1380,8 @@ test("a seed source left leased by a crash and still occupied is quarantined, ne
 // ---- the cold check fallback ----
 
 test("a placement failure says whether it changed the target", async () => {
-  const target = mkdtempSync(join(tmpdir(), "mission-seed-place-target-"));
-  const staging = mkdtempSync(join(tmpdir(), "mission-seed-place-staging-"));
+  const target = tempDir("mission-seed-place-target-");
+  const staging = tempDir("mission-seed-place-staging-");
   const staged = join(staging, "0", "deps");
   mkdirSync(staged, { recursive: true });
   const exdev = async () => {
@@ -1426,7 +1426,7 @@ test("a cold check tree on another volume gets no seed, so its steps run instead
   }, 1);
   await warmPool(m, fixture.clone, fixture.sha, 1, "cold-xdev");
   // Physical, so it matches the working directory the steps report on a /var -> /private/var Mac.
-  tree = join(realpathSync(mkdtempSync(join(tmpdir(), "mission-seed-cold-xdev-tree-"))), "check");
+  tree = join(realpathSync(tempDir("mission-seed-cold-xdev-tree-")), "check");
   gitIn(fixture.clone, "worktree", "add", "-q", "--detach", tree, fixture.sha);
   const result = await m.claimDisposableTree({
     repositoryPath: fixture.clone,
@@ -1447,7 +1447,7 @@ test("the cold check fallback seeds its disposable tree from an idle slot and sk
   const sources: string[] = [];
   const m = manager(claim, { cloneTree: recordingClone(sources) }, 1);
   await warmPool(m, fixture.clone, fixture.sha, 1, "cold");
-  const tree = join(mkdtempSync(join(tmpdir(), "mission-seed-cold-tree-")), "check");
+  const tree = join(tempDir("mission-seed-cold-tree-"), "check");
   gitIn(fixture.clone, "worktree", "add", "-q", "--detach", tree, fixture.sha);
   const result = await m.claimDisposableTree({
     repositoryPath: fixture.clone,

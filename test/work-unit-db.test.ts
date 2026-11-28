@@ -1,13 +1,13 @@
 // Schema 40: `tasks.work_unit_id`. A schema 39 file opens and gains the column and its index, an
 // older row reads as having no work unit, and no write changes an id once one is stored.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-work-unit-db-"));
+const home = tempDir("mission-work-unit-db-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

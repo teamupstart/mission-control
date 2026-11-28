@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The review half of retiring a spent Foreman note.
 //
@@ -21,7 +20,7 @@ import type { PlanDecision } from "../src/shared/types.ts";
 // status. What that buys is the two cases below that must NOT retire: Foreman answering on
 // its own behalf, and the daemon orphaning reviews for a session that went away.
 
-const home = mkdtempSync(join(tmpdir(), "mission-note-retire-review-"));
+const home = tempDir("mission-note-retire-review-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");

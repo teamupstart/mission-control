@@ -3,8 +3,7 @@ import test from "node:test";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { copyFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -17,6 +16,7 @@ import {
 import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
 import { sanitizeDiagnostic } from "../scripts/update-diagnostic.mjs";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 // `realMacAppOps().processArguments` reads through the shipped state-lock addon.
 const stateLockAddon = ensureNativeStateLockAddon();
@@ -112,7 +112,7 @@ test("preflight finds dormant shell respawners after options that consume operan
 });
 
 test("preflight finds a dormant job whose program or executable argument is a symlink into the bundle", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-launch-alias-"));
+  const root = await tempDirAsync("mission-launch-alias-");
   t.after(() => rm(root, {recursive: true, force: true}));
   const app = join(root, "Mission Control.app");
   const executableDirectory = join(app, "Contents", "MacOS");
@@ -147,7 +147,7 @@ test("unregistered main processes block but their Electron children are not mist
 });
 
 test("preflight finds dormant shell jobs that exec a symlinked app through quoted or escaped words", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-shell-alias-"));
+  const root = await tempDirAsync("mission-shell-alias-");
   t.after(() => rm(root, {recursive: true, force: true}));
   const app = join(root, "Mission Control.app");
   const executableDirectory = join(app, "Contents", "MacOS");
@@ -613,8 +613,10 @@ test("a real command reads output past the old 8MB cap, and refuses past its own
   const read = await realMacAppOps().run("/bin/sh", ["-c", `head -c ${nineMegabytes} /dev/zero | tr '\\0' x`]);
   assert.equal(read.code, 0);
   assert.equal(read.stdout.length, nineMegabytes);
+  // A generous timeout, because the subject is the buffer cap: streaming 129MB through a pipe
+  // on a loaded machine can outlast the default budget and report a time limit instead.
   await assert.rejects(
-    realMacAppOps().run("/bin/sh", ["-c", `head -c ${129 * 1024 * 1024} /dev/zero | tr '\\0' x`]),
+    realMacAppOps().run("/bin/sh", ["-c", `head -c ${129 * 1024 * 1024} /dev/zero | tr '\\0' x`], 120_000),
     {message: "macOS launch state was larger than this inspection reads (sh)."},
   );
 });
@@ -921,7 +923,7 @@ test("preflight finds dormant arch jobs that execute the bundle", async (t) => {
 });
 
 test("preflight finds dormant open jobs that launch the bundle through LaunchServices", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-open-launcher-"));
+  const root = await tempDirAsync("mission-open-launcher-");
   t.after(() => rm(root, {recursive: true, force: true}));
   const app = join(root, "Mission Control.app");
   const alias = join(root, "app alias");
@@ -1112,7 +1114,7 @@ test("launch proof rejects stale or mismatched acknowledgment fields", async (t)
 });
 
 test("launch proof accepts an acknowledgment of the same bundle through a symlink", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "mission-launch-ack-alias-"));
+  const root = await tempDirAsync("mission-launch-ack-alias-");
   t.after(() => rm(root, {recursive: true, force: true}));
   const app = join(root, "Mission Control.app");
   const alias = join(root, "Alias.app");
@@ -1441,7 +1443,7 @@ test("retry cleanup skips a main process that exited after the snapshot, but not
 test("on this Mac, the real kernel record tells a Node-mode satellite from unregistered instances of the same binary", {skip: process.platform !== "darwin"}, async (t) => {
   // A disposable bundle whose main binary is this Node: it runs a script whether or not the flag
   // is set, which is exactly what makes the environment, not the arguments, the only evidence.
-  const root = await mkdtemp(join(tmpdir(), "mission-node-mode-"));
+  const root = await tempDirAsync("mission-node-mode-");
   const app = join(root, "Mission Control.app");
   const executable = join(app, "Contents", "MacOS", "Mission Control");
   const server = join(app, "Contents", "Resources", "app", "dist", "mcp", "server.mjs");

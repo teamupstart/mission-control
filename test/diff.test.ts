@@ -1,15 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { computePinnedRefDiff, computeSessionDiff, sourceRef } from "../src/server/diff.ts";
 import { parsePatch } from "../src/web/lib/diff.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function mkRepo(): string {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "harness-diff-")));
+  const repo = realpathSync(tempDir("harness-diff-"));
   seedGitRepo(repo, { branch: "main", files: { "keep.txt": "line1\nline2\nline3\n" } });
   return repo;
 }
@@ -118,7 +118,7 @@ test("computePinnedRefDiff fails closed for missing and unrelated commit evidenc
 });
 
 test("computeSessionDiff degrades gracefully outside a repo / with no cwd", async () => {
-  const nogit = realpathSync(mkdtempSync(join(tmpdir(), "harness-nogit-")));
+  const nogit = realpathSync(tempDir("harness-nogit-"));
   const a = await computeSessionDiff(nogit);
   assert.equal(a.ok, false);
   assert.equal(a.error, "not a git repository");
@@ -256,7 +256,7 @@ test("computeSessionDiff reports the repo TOPLEVEL, even when run from a subdire
 });
 
 test("computeSessionDiff reports no repoRoot outside a git repo", async () => {
-  const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-norepo-")));
+  const notRepo = realpathSync(tempDir("harness-norepo-"));
   const d = await computeSessionDiff(notRepo);
   assert.equal(d.ok, false);
   assert.equal(d.repoRoot, null);

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -10,6 +9,7 @@ import {
   validateReceipt,
 } from "../src/shared/install-receipt-schema.mjs";
 import { readReceipt, receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 function receipt(overrides: Record<string, unknown> = {}) {
   return {
@@ -25,7 +25,7 @@ function receipt(overrides: Record<string, unknown> = {}) {
 }
 
 function stateHome() {
-  return mkdtempSync(join(tmpdir(), "mission-receipt-"));
+  return tempDir("mission-receipt-");
 }
 
 test("the install receipt round-trips through the state directory", () => {

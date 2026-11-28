@@ -5,12 +5,12 @@ import assert from "node:assert/strict";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { randomUUID } from "node:crypto";
 import { after, beforeEach, mock, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
+const home = tempDir("mission-voice-http-");
 process.env.MISSION_HOME = home;
 const { closeDb, setAppConfig, getAppConfig, deleteAppConfig, openDb, upgradeDatabaseToCurrentSchema, upsertTask } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
@@ -24,7 +24,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { voiceStateStore, wireVoiceStateEvents } = await import("../src/server/voice/state.ts");
 const { reloadVoiceConfig } = await import("../src/server/voice/config.ts");
 const { onVoiceIndicatorsChanged } = await import("../src/server/ui-config.ts");
-const { VOICE_CONFIG_DEFAULTS, VOICE_INDICATORS_MAX, VOICE_LISTENER_PROTOCOL_VERSION } = await import("../src/shared/voice.ts");
+const { VOICE_CONFIG_DEFAULTS, VOICE_INDICATORS_MAX, VOICE_LISTENER_PROTOCOL_VERSION, VoiceConfigSchema } = await import("../src/shared/voice.ts");
 type VoiceState = import("../src/shared/voice.ts").VoiceState;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
 
@@ -216,6 +216,33 @@ test("only a confirmed replacement becomes the saved hotkey, including across a 
   await propose(null);
   await snapshot("alt+Space");
   assert.equal(await saved(), null);
+});
+
+test("Speak replies aloud off survives a daemon restart and a later voice choice", async t => {
+  // Leave the shared config as the next test expects it, whatever order the file runs in.
+  t.after(async () => {
+    assert.equal((await json("/api/voice/config", "PUT", { speech: { voice: null, playback: true } })).status, 200);
+  });
+  const saved = async () => (await (await json("/api/voice/config")).json()).config.speech;
+  assert.equal((await saved()).playback, true, "spoken replies are on by default");
+  assert.equal((await json("/api/voice/config", "PUT", { speech: { playback: false } })).status, 200);
+  // A new process opens the state database on its own connection and parses the row with the schema.
+  const reopened = new DatabaseSync(join(home, "harness.db"), { readOnly: true });
+  try {
+    const row = reopened.prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.voice.key);
+    assert.equal(VoiceConfigSchema.parse(JSON.parse(String(row?.value))).speech.playback, false,
+      "a fresh read of the state database restores the switch as off");
+  } finally { reopened.close(); }
+
+  // The daemon's own startup path: the config is reloaded from storage and the state store starts over.
+  reloadVoiceConfig();
+  voiceStateStore.reset();
+  assert.deepEqual(await saved(), { voice: null, playback: false });
+  assert.equal(voiceStateStore.state().capabilities["speech-output"]?.code, "speech_playback_off");
+
+  const voice = { engine: "system", id: "fixture" };
+  assert.equal((await json("/api/voice/config", "PUT", { speech: { voice } })).status, 200);
+  assert.deepEqual(await saved(), { voice, playback: false }, "choosing a voice keeps spoken replies off");
 });
 
 test("the schema upgrade replaces only the stored legacy default and preserves later explicit selections", t => {

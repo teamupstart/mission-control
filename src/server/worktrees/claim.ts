@@ -3,7 +3,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { matchesGlob } from "node:path";
 import type { WorktreeClaim } from "@shared/protocol.ts";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
-import type { WorktreeClaimVariableSource, WorktreeClaimVariableView } from "@shared/worktrees.ts";
+import { resolveNamedVariable, type NamedVariableSources as ClaimVariableSources } from "../executables/named-variable.ts";
+export type { NamedVariableSources as ClaimVariableSources } from "../executables/named-variable.ts";
+import type { WorktreeClaimVariableView } from "@shared/worktrees.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { executableLocator, loginShellVariables } from "../executables/locator.ts";
@@ -90,7 +92,7 @@ export function buildClaimEnvironment(input: ClaimVariableSources & {
   const received: string[] = [];
   const missing: string[] = [];
   for (const name of input.names) {
-    const resolved = resolveClaimVariable(name, input);
+    const resolved = resolveNamedVariable(name, input);
     if (!resolved) {
       missing.push(name);
       continue;
@@ -101,33 +103,6 @@ export function buildClaimEnvironment(input: ClaimVariableSources & {
   return { env, received, missing };
 }
 
-/** Where a claim variable's value may come from, in the order they are consulted. */
-export interface ClaimVariableSources {
-  daemonEnv: NodeJS.ProcessEnv;
-  daemonToken: string;
-  loginShell: Readonly<Record<string, string>>;
-}
-
-/**
- * The one rule for a claim variable's value, shared by the step environment and the settings
- * presence check so the two can never disagree: the daemon's environment, else the login
- * shell's, and nothing when the value is empty or carries the daemon's own token.
- */
-function resolveClaimVariable(
-  name: string,
-  sources: ClaimVariableSources,
-): { value: string; source: WorktreeClaimVariableSource } | null {
-  const token = sources.daemonToken.trim();
-  const daemon = sources.daemonEnv[name] || "";
-  const resolved = daemon
-    ? { value: daemon, source: "daemon" as const }
-    : sources.loginShell[name]
-      ? { value: sources.loginShell[name]!, source: "loginShell" as const }
-      : null;
-  if (!resolved || (token.length > 0 && resolved.value.includes(token))) return null;
-  return resolved;
-}
-
 /**
  * Whether each name would reach a claim step, and from where. Never the value: this is what
  * Settings shows, and a value must not reach the browser.
@@ -136,7 +111,7 @@ export function describeClaimVariables(
   input: ClaimVariableSources & { names: readonly string[] },
 ): WorktreeClaimVariableView[] {
   return input.names.map((name) => {
-    const source = resolveClaimVariable(name, input)?.source ?? null;
+    const source = resolveNamedVariable(name, input)?.source ?? null;
     return { name, present: source !== null, source };
   });
 }

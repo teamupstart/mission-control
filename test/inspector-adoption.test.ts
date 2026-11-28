@@ -1,18 +1,18 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 // Type-only, so it is erased rather than resolved before the state-dir preamble below.
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the state dir BEFORE any value import that can resolve it - static imports are
 // hoisted above this line, so every server module below must load dynamically. Without
 // this, the beforeEach below ran `DELETE FROM app_config` against the operator's real
 // `~/.mission-control/harness.db` on every `npm test`, wiping every saved setting on the
 // machine (foreman, ui, harnesses, cost, skills) each time this suite ran.
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-adoption-"));
+const home = tempDir("mission-inspector-adoption-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const {

@@ -30,6 +30,7 @@ Mission Control's product reference is organized by feature below.
 - [Grafana dashboards and demo](observability-dashboards.md): six provisioned views, exact cohorts, trace drill-down and isolated acceptance.
 - [Analytical telemetry](telemetry-analytics.md): bounded cohorts, exact denominators, explicit gaps and coherent receiver queries.
 - [Skills and settings](skills-and-settings.md)
+- [Agent environment](configuration.md#agent-environment)
 - [Managed repository plans](managed-plans.md)
 - [Automatic settings snapshots](configuration.md#automatic-settings-snapshots)
 - [Repository memory](repository-memory.md)
@@ -65,6 +66,7 @@ Mission Control's product reference is organized by feature below.
 - [Contributing](../CONTRIBUTING.md)
 - [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
 - [Test suite process churn](runbooks/test-process-churn.md): measure how many processes the suite starts, and the fixture rules that keep endpoint security agents quiet.
+- [Test temp directories](test-temp-dirs.md): the private temp root each test process gets, the sweep that clears crashed runs, and the cleaner for machines that already leaked fixtures.
 
 ## Support
 

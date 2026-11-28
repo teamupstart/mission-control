@@ -2,10 +2,10 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A dispatched terminal launch binds only the worker its own spawn started.
 //
@@ -19,7 +19,7 @@ import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 // timer: a timer's boundary moves under CI contention, and the test then either fails for no
 // reason or passes without exercising the order it claims to.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-launch-discovery-"));
+const home = tempDir("mission-dispatch-launch-discovery-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_MCP_SERVER = join(home, "server.mjs");

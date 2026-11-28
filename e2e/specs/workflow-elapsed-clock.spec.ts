@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * Every member of a run's stage, and the stage itself, says how long it ran.
@@ -133,7 +133,7 @@ test("each member and its stage show a live clock that freezes when it finishes"
   dashboard,
   daemon,
 }) => {
-  const scratch = mkdtempSync(join(tmpdir(), "mc-e2e-clock-"));
+  const scratch = tempDir("mc-e2e-clock-");
   const gate = join(scratch, "release");
   try {
     const runId = await seedRun(dashboard, daemon, gate);

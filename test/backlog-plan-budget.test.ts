@@ -1,8 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What stands between a growing backlog and an autopilot that silently stops scheduling.
 //
@@ -21,11 +21,11 @@ import { join } from "node:path";
 
 // Pinned before importing anything that reads it: `claude-cli.ts` resolves CLAUDE_BIN at
 // module load, so a test cannot swap binaries afterwards.
-const home = mkdtempSync(join(tmpdir(), "mission-backlog-budget-"));
+const home = tempDir("mission-backlog-budget-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 
-const bin = mkdtempSync(join(tmpdir(), "fake-claude-budget-"));
+const bin = tempDir("fake-claude-budget-");
 const fake = join(bin, "claude.sh");
 // Sleeps, then answers a valid plan for the two ids the case below asks about. The sleep
 // is what makes the budget observable: under it the run returns a plan, over it the run

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { readUpdatePreferences, writeUpdatePreferences } from "../src/main/update-preferences.ts";
 import { createDefaultUpdaterPort, UpdateController } from "../src/main/updater.ts";
 import { binaryOffer } from "./helpers/binary-update.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("alpha defaults off, persists across reads, and rejects invalid writes without losing the preference", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-alpha-preferences-"));
+  const dir = tempDir("mission-alpha-preferences-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "update-preferences.json");
   assert.deepEqual(readUpdatePreferences(path), { alpha: false, snoozedUntil: {} });
@@ -32,7 +32,7 @@ test("alpha defaults off, persists across reads, and rejects invalid writes with
 });
 
 test("update snoozes survive a controller restart and alpha preference changes", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-update-snooze-"));
+  const dir = tempDir("mission-update-snooze-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "update-preferences.json");
   let now = Date.parse("2026-10-28T12:00:00Z");

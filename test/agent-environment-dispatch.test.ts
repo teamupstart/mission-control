@@ -1,0 +1,457 @@
+import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
+import { registerHooks } from "node:module";
+import { tempDir } from "./temp-root.mjs";
+import { promisify } from "node:util";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { after, test, type TestContext } from "node:test";
+import { build } from "esbuild";
+import { originAndCloneAt } from "./helpers/git-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { fakeEmulator, fakeMultiplexer, fakeTerminals, OK } from "./helpers/terminal-fakes.ts";
+import { launchFailureOutcome, type PendingTerminalLaunch } from "../src/shared/launch-failure.ts";
+import { restoredTerminalInactive, WRAPPER_EXIT_FILE } from "../src/server/terminal/dispatch-observation.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { shellWords, wrapperAgentCommand } from "../src/server/terminal/shell.ts";
+import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
+
+const dir = tempDir("mission-dispatch-environment-");
+after(() => rmSync(dir, { recursive: true, force: true }));
+
+// Residents normally force the SDK. Override only the dispatcher's runtime selection so a
+// regression in the terminal branch cannot be hidden by that independent policy.
+const dispatcherUrl = new URL("../src/server/dispatcher.ts", import.meta.url).href;
+const fixtureUrl = new URL("./fixtures/resident-terminal-task.ts", import.meta.url).href;
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (context.parentURL === dispatcherUrl && specifier === "@shared/task.ts") {
+      return { url: fixtureUrl, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+after(() => hooks.deregister());
+
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "already-exited" | "default-timeout" | "never-started-dirty" | "settled" | "cancel-probe" | "cancel-inventory" | "cancel-retry" | "exited" | "exited-dirty" | "late-dirty" | "late-settled") {
+  const timesOut = scenario === "already-exited" || scenario === "default-timeout" || scenario === "unconfirmed" || scenario === "never-started" || scenario === "never-started-dirty" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty" || scenario === "late-dirty" || scenario === "late-settled";
+  const kind = scenario === "resident" ? "resident" : "ship";
+  process.env.MISSION_HOME = join(dir, "state");
+  process.env.SHELL = join(dir, "login-shell");
+  process.env.MISSION_PI_BIN = join(dir, "pi");
+  process.env.MISSION_RESUME_GUARD = join(dir, "guard.mjs");
+  const lookupMarker = join(dir, `${scenario}-named-lookup`);
+  process.env.MC_DISPATCH_LOOKUP_MARKER = lookupMarker;
+  for (const key of ["MC_DISPATCH_LISTED", "MC_DISPATCH_UNLISTED", "MC_DISPATCH_MISSING"]) delete process.env[key];
+  writeFileSync(process.env.SHELL, `#!/bin/sh
+case "$2" in *MC_DISPATCH_LISTED*)
+  : > "$MC_DISPATCH_LOOKUP_MARKER"
+  ${scenario === "cancel-probe" ? 'while [ ! -f "$MC_DISPATCH_LOOKUP_MARKER.release" ]; do sleep 0.02; done' : ""}
+;; esac
+export MC_DISPATCH_LISTED=profile-example MC_DISPATCH_UNLISTED=unlisted-example
+exec /bin/sh -c "$2"
+`, { mode: 0o700 });
+  writeFileSync(process.env.MISSION_PI_BIN, `#!/usr/bin/env node
+console.log(JSON.stringify({
+  pid: process.pid, home: process.env.MISSION_HOME, sessionId: process.argv[process.argv.indexOf("--session-id") + 1],
+  listedPresent: Object.hasOwn(process.env, "MC_DISPATCH_LISTED"),
+  listedMatches: process.env.MC_DISPATCH_LISTED === "profile-example",
+  unlistedPresent: Object.hasOwn(process.env, "MC_DISPATCH_UNLISTED"),
+  missingPresent: Object.hasOwn(process.env, "MC_DISPATCH_MISSING")
+}));
+${scenario === "already-exited" ? "" : "process.stdin.resume();"}
+`, { mode: 0o700 });
+  await build({ entryPoints: ["src/server/terminal/resume-guard.ts"], outfile: process.env.MISSION_RESUME_GUARD,
+    bundle: true, platform: "node", format: "esm", target: "node24" });
+
+  const { Registry } = await import("../src/server/registry.ts");
+  const { Dispatcher, spawnUniquely } = await import("../src/server/dispatcher.ts");
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { launchAgentEnvironment, saveAgentEnvironment } = await import("../src/server/agent-environment.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "agent-environment", enabled: true });
+  saveAgentEnvironment(["MC_DISPATCH_LISTED", "MC_DISPATCH_MISSING"]);
+  if (scenario === "cleared") {
+    saveAgentEnvironment([]);
+    assert.equal(await launchAgentEnvironment(), undefined);
+  }
+
+  if (scenario === "default-timeout") applyFeatureFlagIntent({ kind: "flag", id: "agent-environment", enabled: false });
+
+  const registry = new Registry();
+  const { clone: repo } = originAndCloneAt(join(dir, scenario));
+  const task = mkTask({ id: `fresh-terminal-${scenario}`, kind, status: "dispatching", agent: "pi", repoRoot: repo });
+  const discoveredId = `proc:${task.id}`;
+  registry.upsertTask(task);
+  if (scenario === "cancel-probe") {
+    const watcher = watch(dir, () => {
+      if (!existsSync(lookupMarker)) return;
+      watcher.close();
+      registry.upsertTask({ ...registry.getTask(task.id)!, status: "cancelled" });
+      writeFileSync(lookupMarker + ".release", "");
+    });
+    t.after(() => watcher.close());
+  }
+
+  let observedEnvironment: Record<string, boolean> | undefined;
+  let discovered: DiscoveredSession | undefined;
+  let spawnCount = 0;
+  let delayed: { argv: readonly string[]; cwd: string } | undefined;
+  const cancelAfterHandoff = scenario === "cancel-inventory" || scenario === "cancel-retry";
+  let launchHome: string | undefined;
+  let handoffSocket: string | undefined;
+  let socketWasOpen = false;
+  const mux = fakeMultiplexer({ list: async () => {
+    if (cancelAfterHandoff && launchHome && !handoffSocket) {
+      const script = readFileSync(join(launchHome, "launch-and-cleanup.sh"), "utf8");
+      const reader = shellWords(wrapperAgentCommand(script));
+      handoffSocket = reader[reader.indexOf("--dispatch-agent") + 1];
+      socketWasOpen = !!handoffSocket && existsSync(handoffSocket);
+      if (scenario === "cancel-inventory") registry.upsertTask({ ...registry.getTask(task.id)!, status: "cancelled" });
+    }
+    return [];
+  }, sessions: {
+    names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
+    async spawnDetached({ argv, cwd, name }) {
+      spawnCount++;
+      if (cancelAfterHandoff) {
+        registry.upsertTask({ ...registry.getTask(task.id)!, status: "cancelled" });
+        return { ok: false, outcomeUnknown: false, error: "terminal declined this name" };
+      }
+      if (timesOut) {
+        if (scenario === "already-exited") {
+          const child = spawn(argv[0]!, argv.slice(1), { cwd, stdio: "ignore" });
+          assert.deepEqual(await once(child, "close"), [0, null]);
+        }
+        delayed = { argv, cwd };
+        return { ok: false, outcomeUnknown: true, error: "terminal reply timed out" };
+      }
+      // Execute exactly what the launcher gives the pane. The probe stays alive until
+      // dispatch binds the task so discovery can claim this wrapper's missing-name warning.
+      if (scenario === "ship") {
+        const wrapper = argv.find((word) => word.endsWith("/launch-and-cleanup.sh"));
+        assert.ok(wrapper);
+        // Observe the real dispatch wrapper at entry and in its EXIT trap. Record only
+        // the phase if a variable intended for the final agent reaches either boundary.
+        const marker = join(dir, "unexpected-wrapper-environment");
+        const check = (phase: string) => `if [ "\${MC_DISPATCH_LISTED+x}" = x ]; then echo ${phase} >> "${marker}"; fi`;
+        const script = readFileSync(wrapper, "utf8").replace("#!/bin/sh", `#!/bin/sh\n${check("entry")}`)
+          .replace("cleanup_owned_home() {", `cleanup_owned_home() {\n${check("cleanup")}`);
+        writeFileSync(wrapper, script);
+      }
+      const child = spawn(argv[0]!, argv.slice(1), { cwd, env: { PATH: process.env.PATH }, timeout: 30_000 });
+      const exited = once(child, "close");
+      t.after(async () => {
+        child.stdin.end();
+        const [code] = await exited;
+        assert.equal(code, 0, "the terminal wrapper and its agent exited cleanly");
+        if (scenario === "ship") assert.equal(existsSync(join(dir, "unexpected-wrapper-environment")), false,
+          "selected variables belong only to the final agent");
+      });
+      const lines = createInterface({ input: child.stdout });
+      const report = await lines[Symbol.asyncIterator]().next();
+      lines.close();
+      assert.ok(!report.done, "the dispatched agent reported its own environment");
+      const { pid, home, sessionId, ...observed } = JSON.parse(report.value);
+      observedEnvironment = observed;
+      discovered = { syntheticId: discoveredId, agent: "pi", name, nameSource: "process",
+        cwd, repoRoot: repo, gitRoot: cwd, gitBranch: null, pid, tty: "ttys123", startedAt: 1,
+        terminals: [mkMuxHandle({ session: name })], missionLaunched: true, missionLaunchHome: home };
+      registry.applyDiscovery([discovered]);
+      registry.applyHook({ agent: "pi", event: "SessionStart", sessionId, cwd, transcriptPath: null, env: { tmuxPane: "%1" } });
+      return { ...OK, session: name };
+    },
+  } });
+  const { RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
+  let earlyReceipt: PendingTerminalLaunch | undefined;
+  let restoredExit: Promise<boolean> | undefined;
+  const retained = new Promise<void>((resolve) => {
+    t.after(registry.subscribe(() => {
+      const failure = registry.getTask(task.id)?.launchFailure;
+      if (!failure?.sessionKept) return;
+      if (scenario === "already-exited" && failure.pendingTerminal && !earlyReceipt) {
+        earlyReceipt = failure.pendingTerminal;
+        // At this point the wrapper already removed its home. Restart has only the persisted receipt.
+        restoredExit = restoredTerminalInactive(earlyReceipt, () => true);
+      }
+      resolve();
+    }));
+  });
+  if (timesOut) t.mock.timers.enable({ apis: ["setTimeout"] });
+  const dispatch = new Dispatcher(registry, undefined, {
+    resolveRuntime: () => "terminal", resolveTerminalBackend: () => "tmux",
+    residentLaunch: (_task, instructions) => instructions,
+    ...(cancelAfterHandoff && { spawn: (...args: Parameters<typeof spawnUniquely>) => {
+      launchHome = args[5];
+      return spawnUniquely(...args);
+    } }),
+    homeDeps: fakeTerminals(mux, fakeEmulator()), piExtensionInstalled: () => true,
+    verifyMissionMcpTools: async () => ({ ok: true }), sleep: async () => {},
+  }).dispatch(task.id);
+
+  if (timesOut && scenario !== "already-exited") {
+    await Promise.race([retained, dispatch]);
+    const returned = await Promise.race([dispatch.then(() => true), new Promise<boolean>((r) => setImmediate(() => r(false)))]);
+    assert.ok(returned, "the dispatch caller returns before the two-minute startup deadline");
+  } else await dispatch;
+  const launched = registry.getTask(task.id)!;
+  const { openDb } = await import("../src/server/db.ts");
+  assert.equal(openDb().prepare("SELECT pending_terminal_submission FROM tasks WHERE id = ?").get(task.id)?.pending_terminal_submission,
+    null, "the committed outcome cleared the in-flight receipt");
+  if (cancelAfterHandoff) {
+    assert.ok(socketWasOpen && handoffSocket && launchHome, "the handoff was listening before cancellation");
+    assert.equal(spawnCount, scenario === "cancel-inventory" ? 0 : 1, "no backend launch after cancellation");
+    assert.equal(launched.status, "cancelled");
+    assert.equal(existsSync(handoffSocket), false, "the unused socket was disposed");
+    assert.equal(existsSync(launchHome), false, "the unstarted wrapper home was released");
+    return;
+  }
+  if (scenario === "cancel-probe") {
+    assert.equal(launched.status, "cancelled");
+    assert.equal(spawnCount, 0);
+    assert.equal(launched.worktreeLeaseId, null);
+    return;
+  }
+  if (scenario === "already-exited") {
+    assert.ok(earlyReceipt && await restoredExit, "restart can prove the exit before the live dispatcher settles it");
+    assert.equal(await restoredTerminalInactive(earlyReceipt, () => true), false, "settlement released the receipt");
+    assert.equal(launched.status, "failed");
+    assert.equal(launched.launchFailure?.terminalInactive, true, "the confirmed exit was handled before the startup deadline");
+    assert.equal(launched.worktreePath, null);
+    return;
+  }
+  if (timesOut) {
+    assert.equal(launched.status, "failed");
+    assert.equal(launched.launchFailure?.sessionKept, true);
+    assert.ok(delayed && existsSync(delayed.cwd), "an unconfirmed pane retains its checkout");
+    assert.ok(launched.launchFailure.pendingTerminal?.receipt, "the failed dispatch persisted its private observation");
+    const waitForReclaim = async (dirty: boolean) => {
+      const reconciled = () => {
+        const latest = registry.getTask(task.id)!;
+        return dirty ? latest.error?.includes("resource cleanup failed") : latest.launchFailure?.sessionKept === false && !latest.worktreePath;
+      };
+      if (!reconciled()) await new Promise<void>((resolve) => {
+        const unsubscribe = registry.subscribe(() => {
+          if (reconciled()) { unsubscribe(); resolve(); }
+        });
+        t.after(unsubscribe);
+      });
+    };
+    if (scenario === "settled") {
+      registry.upsertTask({ ...launched, status: "done" });
+      t.mock.timers.tick(RESUME_START_MS);
+      await dispatch;
+      assert.equal(registry.getTask(task.id)?.status, "done");
+      assert.equal(registry.getTask(task.id)?.worktreeLeaseId, launched.worktreeLeaseId);
+      assert.ok(existsSync(delayed.cwd));
+      return;
+    }
+    if (scenario === "never-started" || scenario === "default-timeout" || scenario === "never-started-dirty") {
+      const edit = join(delayed.cwd, "operator-edit.txt");
+      if (scenario === "never-started-dirty") writeFileSync(edit, "work during startup");
+      t.mock.timers.tick(RESUME_START_MS);
+      await waitForReclaim(scenario === "never-started-dirty");
+      const expired = registry.getTask(task.id)!;
+      assert.equal(expired.status, "failed");
+      if (scenario === "never-started-dirty") {
+        assert.equal(expired.launchFailure?.sessionKept, false);
+        assert.equal(launchFailureOutcome(expired), "worktree-kept");
+        assert.equal(expired.worktreeLeaseId, launched.worktreeLeaseId);
+        assert.equal(expired.worktreePath, launched.worktreePath);
+        assert.ok(existsSync(edit));
+        return;
+      }
+      assert.equal(expired.launchFailure?.sessionKept, false);
+      assert.equal(expired.worktreePath, null, expired.error ?? undefined);
+      assert.equal(expired.worktreeLeaseId, null);
+      return;
+    }
+    const child = spawn(delayed.argv[0]!, delayed.argv.slice(1), { cwd: delayed.cwd, env: { PATH: process.env.PATH }, timeout: 30_000 });
+    const exited = once(child, "close");
+    const lines = createInterface({ input: child.stdout });
+    try {
+      const report = await lines[Symbol.asyncIterator]().next();
+      assert.ok(!report.done, "the late pane ran the original wrapper");
+      const observed = JSON.parse(report.value);
+      assert.equal(observed.listedMatches, true);
+      assert.ok(existsSync(observed.home));
+      if (scenario === "exited" || scenario === "exited-dirty") {
+        const work = join(delayed.cwd, "agent-work.txt");
+        if (scenario === "exited-dirty") writeFileSync(work, "saved work");
+        child.stdin.end();
+        assert.deepEqual(await exited, [0, null]);
+        assert.equal(existsSync(observed.home), false);
+        t.mock.timers.tick(RESUME_START_MS);
+        await waitForReclaim(scenario === "exited-dirty");
+        const failed = registry.getTask(task.id)!;
+        assert.equal(failed.status, "failed");
+        if (scenario === "exited-dirty") {
+          assert.equal(failed.launchFailure?.sessionKept, false);
+          assert.equal(launchFailureOutcome(failed), "worktree-kept");
+          assert.equal(failed.worktreeLeaseId, launched.worktreeLeaseId);
+          assert.ok(existsSync(work));
+        } else {
+          assert.equal(failed.launchFailure?.sessionKept, false, failed.error ?? undefined);
+          assert.equal(failed.worktreeLeaseId, null);
+        }
+        return;
+      }
+      t.mock.timers.tick(RESUME_START_MS);
+      await dispatch;
+      assert.equal(registry.getTask(task.id)?.launchFailure?.sessionKept, true);
+      assert.ok(existsSync(delayed.cwd));
+      const work = join(delayed.cwd, "late-work.txt");
+      if (scenario === "late-dirty") writeFileSync(work, "work after startup");
+      if (scenario === "late-settled") registry.upsertTask({ ...launched, status: "done" });
+      child.stdin.end();
+      assert.deepEqual(await exited, [0, null]);
+      assert.equal(existsSync(observed.home), false);
+      t.mock.timers.tick(RESUME_START_MS);
+      if (scenario === "late-settled") {
+        await Promise.resolve();
+        assert.equal(registry.getTask(task.id)?.status, "done");
+        assert.equal(registry.getTask(task.id)?.worktreeLeaseId, launched.worktreeLeaseId);
+        return;
+      }
+      await waitForReclaim(scenario === "late-dirty");
+      const latest = registry.getTask(task.id)!;
+      if (scenario === "late-dirty") {
+        assert.ok(existsSync(work));
+        assert.equal(latest.launchFailure?.sessionKept, false);
+        assert.equal(launchFailureOutcome(latest), "worktree-kept");
+        assert.equal(latest.worktreeLeaseId, launched.worktreeLeaseId);
+      } else {
+        assert.equal(latest.worktreeLeaseId, null);
+        assert.equal(latest.worktreePath, null);
+      }
+    } finally {
+      lines.close();
+      child.stdin.end();
+    }
+    return;
+  }
+  assert.equal(launched.status, "running", launched.error ?? "fresh dispatch reached running");
+  assert.equal(launched.sessionId, discoveredId);
+  const passesNames = scenario === "ship";
+  assert.deepEqual(observedEnvironment, { listedPresent: passesNames, listedMatches: passesNames, unlistedPresent: false, missingPresent: false });
+  assert.equal(existsSync(lookupMarker), passesNames, "only a managed launch with configured names should probe them");
+  const session = registry.getSession(discoveredId);
+  assert.ok(session, "the registry retained the dispatched agent");
+  assert.deepEqual(session.missingEnvironment, passesNames ? ["MC_DISPATCH_MISSING"] : undefined);
+  assert.ok(discovered);
+  const restarted = new Registry();
+  restarted.applyDiscovery([discovered]);
+  assert.deepEqual(restarted.getSession(discoveredId)?.missingEnvironment, session.missingEnvironment,
+    "rediscovering the running agent preserves its original launch warning");
+}
+
+test("fresh terminal dispatch delivers the listed shell-only value, excludes the unlisted export and warns on the missing name",
+  (t) => checkTerminalDispatch(t, "ship"));
+test("fresh resident terminal dispatch skips named shell lookups, variable injection and missing-name warnings",
+  (t) => checkTerminalDispatch(t, "resident"));
+test("clearing the enabled list gives the next dispatched agent no named environment or missing-name warning",
+  (t) => checkTerminalDispatch(t, "cleared"));
+
+test("a late wrapper runs beyond the startup deadline and releases its clean checkout on exit", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "unconfirmed"));
+
+test("a late wrapper exit preserves work written after the deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "late-dirty"));
+test("a late wrapper exit preserves a task settled after the deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "late-settled"));
+
+test("a backend timeout releases the failed task's checkout when its wrapper never starts",
+  (t) => checkTerminalDispatch(t, "never-started"));
+
+test("a timed-out backend whose wrapper already exited settles without advancing the launch deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "already-exited"));
+test("a timeout with the preview disabled returns to the caller before the background release deadline", { timeout: 15000 },
+  (t) => checkTerminalDispatch(t, "default-timeout"));
+
+test("an edit made while waiting for an unstarted terminal wrapper survives the deadline",
+  (t) => checkTerminalDispatch(t, "never-started-dirty"));
+
+test("a timed-out wrapper that exits before the deadline releases its clean checkout",
+  (t) => checkTerminalDispatch(t, "exited"));
+test("a timed-out wrapper that exits before the deadline retains unpublished work",
+  (t) => checkTerminalDispatch(t, "exited-dirty"));
+
+test("expiry preserves the checkout of a task marked done during the startup window",
+  (t) => checkTerminalDispatch(t, "settled"));
+
+test("cancelling during the login shell probe never sends a command to the terminal backend",
+  (t) => checkTerminalDispatch(t, "cancel-probe"));
+
+test("cancelling during terminal inventory disposes the handoff before the first backend launch",
+  (t) => checkTerminalDispatch(t, "cancel-inventory"));
+test("cancelling during a declined terminal launch disposes the handoff before the name retry",
+  (t) => checkTerminalDispatch(t, "cancel-retry"));
+
+test("dispatch state-home cleanup follows wrapper startup across the handoff deadline", async (t) => {
+  const { spawnUniquely } = await import("../src/server/dispatcher.ts");
+  const { RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
+  const { createDisposableAgentStateHome, cleanupDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
+  process.env.MISSION_RESUME_GUARD = join(dir, "expiry-guard.mjs");
+  await build({ entryPoints: ["src/server/terminal/resume-guard.ts"], outfile: process.env.MISSION_RESUME_GUARD,
+    bundle: true, platform: "node", format: "esm" });
+
+  async function accepted(t: TestContext, bin: string, args: string[]) {
+    const stateHome = createDisposableAgentStateHome();
+    t.after(() => cleanupDisposableAgentStateHome(stateHome));
+    let command: readonly string[] = [];
+    const mux = fakeMultiplexer({ sessions: {
+      names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
+      async spawnDetached({ argv, name }) {
+        assert.equal(statSync(join(stateHome, WRAPPER_EXIT_FILE)).nlink, 2, "receipt pinned before backend submission");
+        command = argv;
+        return { ...OK, session: name };
+      },
+    } });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await spawnUniquely("delayed", "1", dir, bin, args, stateHome, "tmux", {}, null,
+      { extraEnv: { LISTED: "fixture" }, missing: [] }, fakeTerminals(mux, fakeEmulator()));
+    assert.ok(existsSync(stateHome));
+    assert.equal(statSync(join(stateHome, WRAPPER_EXIT_FILE)).nlink, 1, "successful submission released its pin");
+    return { command, stateHome };
+  }
+
+  await t.test("an unopened socket expires before a delayed pane can start", async (t) => {
+    const marker = join(dir, "late-dispatch-started");
+    const { command, stateHome } = await accepted(t, "/usr/bin/touch", [marker]);
+    t.mock.timers.tick(RESUME_START_MS);
+    assert.equal(existsSync(stateHome), false);
+    await assert.rejects(promisify(execFile)(command[0]!, command.slice(1)), { code: 1, stderr: /handoff.*expired/ });
+    assert.equal(existsSync(marker), false);
+  });
+
+  await t.test("a reader that consumes the socket but never starts its wrapper still expires", async (t) => {
+    const { command, stateHome } = await accepted(t, "/bin/true", []);
+    const socket = createConnection(command[command.indexOf("mission-dispatch") + 1]!);
+    const ticket = command.find((arg) => arg.startsWith("MISSION_TERMINAL_HANDOFF_TICKET="))!;
+    socket.write(Buffer.from(ticket.split("=")[1]!, "hex"));
+    socket.resume();
+    await once(socket, "close");
+    assert.ok(existsSync(stateHome));
+    t.mock.timers.tick(RESUME_START_MS);
+    assert.equal(existsSync(stateHome), false);
+  });
+
+  await t.test("a running wrapper owns its home beyond the deadline and cleans it on exit", async (t) => {
+    const { command, stateHome } = await accepted(t, "/bin/sh", ["-c", "echo ready; read -r line"]);
+    const child = spawn(command[0]!, command.slice(1));
+    const exited = once(child, "close");
+    const lines = createInterface({ input: child.stdout });
+    try {
+      assert.equal((await lines[Symbol.asyncIterator]().next()).value, "ready");
+      t.mock.timers.tick(RESUME_START_MS);
+      assert.ok(existsSync(stateHome));
+    } finally {
+      lines.close();
+      child.stdin.end("done\n");
+      await exited;
+    }
+    assert.equal(existsSync(stateHome), false);
+  });
+});

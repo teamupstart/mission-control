@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Where work ARRIVES in the backlog: the bottom, always, however it was filed.
@@ -29,7 +28,7 @@ import { join } from "node:path";
  * real state dir under the test runner.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-backlog-arrival-"));
+const home = tempDir("mission-backlog-arrival-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");

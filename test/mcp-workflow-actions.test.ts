@@ -1,9 +1,8 @@
 // Exercise the agent-facing stdio protocol through HTTP to the real workflow owner and SQLite.
 import assert from "node:assert/strict";
 import { after, test, type TestContext } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -18,8 +17,9 @@ import { WORKFLOW_ACTION_ROUTES } from "../src/shared/workflow-actions.ts";
 import type { WorkflowManagerOptions } from "../src/server/workflows/manager.ts";
 import type { WorkflowBinding, WorkflowCompletionPolicy, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-mcp-workflow-"));
+const home = tempDir("mission-mcp-workflow-");
 const successfulActions = new Set<string>();
 process.env.MISSION_HOME = home;
 // Capabilities are namespaced by daemon port. Reserve the fixture's port before
@@ -554,7 +554,7 @@ test("a session inspects a repository without a Makefile, confirms its command t
       return;
     }
   }
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-no-makefile-")));
+  const repo = realpathSync(tempDir("mission-no-makefile-"));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   writeFileSync(join(repo, "package.json"), `${JSON.stringify({
     name: "no-makefile-fixture", version: "1.0.0", private: true,

@@ -17,8 +17,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
@@ -31,8 +30,9 @@ import type {
 } from "../src/server/workflows/session-action-adapters.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { prCreationFixture } from "./helpers/pr-creation-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
+const home = tempDir("session-action-runtime-");
 process.env.MISSION_HOME = home;
 // The Foreman worker reads its settle window at import. Its own decision still requires a
 // settled idle; this file states that idle through hooks rather than waiting ten seconds.

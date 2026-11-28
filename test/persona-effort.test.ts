@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { PersonaSnapshot, WorkflowDraftGraph } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: an operator picks how hard a workflow reviewer thinks, and that choice has
 // to (1) reach the provider in the documented order - node override, then Persona, then the
@@ -12,7 +12,7 @@ import type { PersonaSnapshot, WorkflowDraftGraph } from "../src/shared/workflow
 // with no effort, and every version published before effort existed, must behave exactly as
 // they did.
 
-const home = mkdtempSync(join(tmpdir(), "mission-persona-effort-"));
+const home = tempDir("mission-persona-effort-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

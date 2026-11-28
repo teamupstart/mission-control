@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
 // What is at stake: by default the dashboard shows only sessions Mission Control started.
 // Discovery admits a session before it reads anything expensive about it, and a session it
@@ -11,7 +9,7 @@ import { join } from "node:path";
 // an injected process table, so the policy, the annotation seams, and the eviction are each
 // observed where they actually happen.
 
-const home = mkdtempSync(join(tmpdir(), "mission-discovery-admission-"));
+const home = tempDir("mission-discovery-admission-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -38,6 +36,7 @@ import type { Proc } from "../src/server/discovery/processes.ts";
 import type { AgentType, ServerEvent } from "../src/shared/types.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 openDb();
 

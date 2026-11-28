@@ -159,6 +159,8 @@ if (recordDir) {
       residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
       // The variable a real `codex app-server` turns into the header of an MCP server whose
       // config maps one to it (`env_http_headers`).
+      listedEnvironmentMatches: process.env.E2E_LISTED_TOKEN === "synthetic-profile-credential",
+      unlistedEnvironmentAbsent: process.env.E2E_UNLISTED_TOKEN === undefined,
       workUnitId: process.env.WORK_UNIT_ID ?? null,
     }, null, 2),
   );

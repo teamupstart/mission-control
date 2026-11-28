@@ -2,14 +2,14 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 ensureNativeStateLockAddon();
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import test, { after, beforeEach } from "node:test";
 import { ARCHIVE_PRIMARY_REPORT_PATH } from "../src/shared/archives.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * A plan outlives the checkout it was written in.
@@ -28,7 +28,7 @@ import type { Session, Task } from "../src/shared/types.ts";
  * that they were right about the disk.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-plan-capture-"));
+const home = tempDir("mission-plan-capture-");
 process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
 

@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeSdkSpec } from "../src/server/harness/claude/sdk.ts";
 import { defaultClaudeSdkDeps } from "../src/server/harness/claude/sdk-deps.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("the real Claude SDK transport exposes its child lifetime and still drains on stop", { timeout: 15_000 }, async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-sdk-process-"));
+  const root = tempDir("mission-sdk-process-");
   let childPid: number | null = null;
   t.after(() => {
     if (childPid) { try { process.kill(childPid, "SIGKILL"); } catch { /* Already reaped. */ } }

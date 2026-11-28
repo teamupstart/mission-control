@@ -2,8 +2,7 @@
 // operator receipt, agent process, login setting or integration config is touched.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, renameSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
@@ -16,9 +15,10 @@ import {
   readMigrationJournal, migrationReceipt, recoverMigration, repairMigration,
   MIGRATION_JOURNAL, type MigrationPorts,
 } from '../scripts/install-migration.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(t: test.TestContext) {
-  const root = mkdtempSync(join(tmpdir(), 'mission-migration-'));
+  const root = tempDir('mission-migration-');
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, 'Jo sé');
   const systemDirectory = join(root, 'System Applications');

@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
 import type {
@@ -9,8 +8,9 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkOneShotQueryOptions,
 } from "../src/server/harness/claude/sdk-types.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "foreman-codex-runner-"));
+const home = tempDir("foreman-codex-runner-");
 const argvPath = join(home, "argv");
 const schemaPath = join(home, "schema.json");
 const replyPath = join(home, "reply.json");

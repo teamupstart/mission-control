@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrMatch } from "../src/server/registry.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
 import { pullRequestUrlIn, pullRequestUrlsIn } from "../src/shared/pr-command.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 // Discovering, adopting and showing one pull request per changed repository.
 //
@@ -22,7 +22,7 @@ import { pullRequestUrlIn, pullRequestUrlsIn } from "../src/shared/pr-command.mj
 // The two behaviours the per-repo review phase depends on are the ones pinned hardest here:
 // multi-url sniffing, and the poller fanning out over every attached worktree.
 
-const home = mkdtempSync(join(tmpdir(), "mission-multi-pr-tracking-"));
+const home = tempDir("mission-multi-pr-tracking-");
 process.env.HARNESS_HOME = home;
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");

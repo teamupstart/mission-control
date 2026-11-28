@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: `panel_review@1` is the first review driver that asks more than one model, and
@@ -18,7 +18,7 @@ import { join } from "node:path";
  * the move to the human decision boundary - runs without a real model or real Git.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-panel-review-"));
+const home = tempDir("mission-panel-review-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

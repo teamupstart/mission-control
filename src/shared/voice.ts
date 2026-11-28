@@ -26,6 +26,14 @@ export const VOICE_FLAG = "voice" as const;
 export const VOICE_FIRST_PREVIEW_HOLD_FLAG = "voice-first-preview-hold" as const;
 
 /**
+ * The preview flag for prefix recovery: an utterance the opening-name rule dropped gets a
+ * bounded second look past one or two stray leading words ("Um, Steve, check the build."). It
+ * routes a clear exact call sign after known filler, asks on an unsure card when the address is
+ * plausible, and leaves everything else dropped. Routes that work with it off never change.
+ */
+export const VOICE_PREFIX_RECOVERY_FLAG = "voice-prefix-recovery" as const;
+
+/**
  * Voiced audio an Always-on phrase must hold before its first live preview, while
  * `VOICE_FIRST_PREVIEW_HOLD_FLAG` is on. 300 ms is the knee the phantom-filler scout measured:
  * most of the false previews gone, for no measured median latency to the first correct preview.
@@ -124,7 +132,11 @@ export const VoiceConfigSchema = z.object({
   endOfSpeechMs: EndOfSpeechMsSchema.default(2000),
   /** The standalone word that splits one Always-on capture into separate messages. */
   separatorWord: SeparatorWordSchema.default(VOICE_SEPARATOR_DEFAULT).catch(VOICE_SEPARATOR_DEFAULT),
-  speech: z.object({ voice: SpeechVoiceSchema.nullable().default(null) }).prefault({}),
+  speech: z.object({
+    voice: SpeechVoiceSchema.nullable().default(null),
+    /** Whether a listener that can play speech may speak samples and questions aloud. */
+    playback: z.boolean().default(true),
+  }).prefault({}),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE).default("show"),
   /** Whether speech may fill a plan-decision form. Voice stays on elsewhere when this is off. */
   planFormsByVoice: z.boolean().default(true),
@@ -157,7 +169,7 @@ export const VoiceConfigPatchSchema = z.object({
     enabled: z.boolean(),
     seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max),
   }).partial().strict(),
-  speech: z.object({ voice: SpeechVoiceSchema.nullable() }).partial().strict(),
+  speech: z.object({ voice: SpeechVoiceSchema.nullable(), playback: z.boolean() }).partial().strict(),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE),
   planFormsByVoice: z.boolean(),
   inputDevice: z.string().trim().min(1).max(VOICE_LIMITS.deviceIdChars),
@@ -331,7 +343,7 @@ export interface VoiceCapability {
   /** Why it is not available, when it is not; null when it is. */
   reason: string | null;
   /** Daemon-owned reason for a specific recovery action. The reason text is for display. */
-  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED | "speech_playback_unsupported" | "speech_voice_unavailable";
+  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED | "speech_playback_off" | "speech_playback_unsupported" | "speech_voice_unavailable";
 }
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */

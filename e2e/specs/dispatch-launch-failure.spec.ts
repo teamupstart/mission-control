@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
@@ -322,6 +322,36 @@ test("a launch that failed but kept its session says so, offers Report bug, and 
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.id }),
   });
   expect(forced.status).toBe(409);
+});
+
+test("an inactive terminal launch shows its retained worktree and refuses a destructive retry", async ({ dashboard, daemon }) => {
+  await useLayout(dashboard, daemon, "board");
+  const title = "Recover the checkout edits";
+  const task = await api<{ id: string }>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title, intent: title, kind: "ship", agent: "claude", workflowId: null, backlog: true,
+  });
+  const tree = join(daemon.repo, "..", "retained-checkout");
+  execFileSync("git", ["-C", daemon.repo, "worktree", "add", "-q", "--detach", tree]);
+  const edit = join(tree, "operator-edit.txt");
+  writeFileSync(edit, "work in progress");
+  await daemon.crash();
+  withDaemonDb(daemon, (db) => db.prepare(
+    "UPDATE tasks SET status = 'failed', worktree_path = ?, error = ?, launch_failure = ? WHERE id = ?",
+  ).run(tree, "Terminal launch timed out. The checkout contains unpublished work.", JSON.stringify({
+    at: Date.now(), phase: "launch", dismissedAt: null, reportTaskId: null, residentProfileId: null,
+    sessionKept: false, terminalInactive: true,
+  }), task.id));
+  await daemon.restart();
+  await dashboard.reload();
+
+  const tile = dashboard.getByRole("list", { name: "Did not start" }).getByRole("listitem").filter({ hasText: title });
+  await expect(tile).toContainText("Launch failed, worktree kept");
+  await expect(tile).toContainText("unpublished work");
+  await expect(tile.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  const retry = await dashboard.request.post(`${daemon.baseURL}/api/launch-failures/retry`, { data: { taskId: task.id } });
+  expect(retry.status()).toBe(409);
+  expect(readFileSync(edit, "utf8")).toBe("work in progress");
+  await shoot(dashboard, "round20-worktree-kept", tile);
 });
 
 /**

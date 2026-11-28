@@ -1,16 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A task's call sign (contract C of the voice plan): an optional spoken name on every task-writing
 // schema, the dispatch form's, an update's and the MCP tools'. It is annotation, like priority:
 // nothing is provisioned from it, so it can be set or taken off while the agent runs, where a
 // provisioning field is refused.
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-call-sign-"));
+const home = tempDir("mission-voice-call-sign-");
 process.env.HARNESS_HOME = home;
 
 const {

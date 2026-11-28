@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { refreshProcessPathFromLoginShell, run } from "../src/server/util/exec.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function script(path: string, body: string): string {
   mkdirSync(dirname(path), { recursive: true });
@@ -14,7 +14,7 @@ function script(path: string, body: string): string {
 }
 
 test("run passes manager precedence through to child hooks with env shebangs", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-hook-path-"));
+  const root = tempDir("mission-hook-path-");
   // A unique interpreter name models the system Ruby collision without running host Ruby.
   const interpreter = "mission-test-hook-runtime";
   const inherited = join(root, "system-bin");

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
@@ -18,6 +17,8 @@ import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 import { supervisorIssuer, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
 import { formatChord } from "../src/shared/keyboard-chords.ts";
 import type { ShellVoiceState } from "../src/main/voice-state-schema.ts";
+import { tempDir } from "./temp-root.mjs";
+import { withElectronStartupSlot } from "./helpers/electron-startup-slot.mjs";
 
 function buildVoiceShellFixture(root: string, contents: string) {
   const native = join(root, "dist", "native");
@@ -33,15 +34,15 @@ function launchVoiceShellFixture(root: string, entry: string) {
   const env = { ...process.env };
   delete env.MISSION_VOICE_SHELL_CREDENTIAL_FD;
   delete env.MISSION_VOICE_SHELL_PUBLIC_KEY;
-  return _electron.launch({ args: [entry, "--user-data-dir=" + join(root, "profile")],
-    env: { ...env, MISSION_HOME: root, MISSION_VOICE_LISTENER_INSTANCE: "inherited-fixture-instance" } });
+  return withElectronStartupSlot(() => _electron.launch({ args: [entry, "--user-data-dir=" + join(root, "profile")],
+    env: { ...env, MISSION_HOME: root, MISSION_VOICE_LISTENER_INSTANCE: "inherited-fixture-instance" } }));
 }
 
 test("packaged shell reloads the same encrypted supervisor key on restart and supplies no verifier without protected storage", {
   skip: process.platform !== "darwin", timeout: 60_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
-  const root = mkdtempSync(join(tmpdir(), "voice-signing-"));
+  const root = tempDir("voice-signing-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const credential = join(root, "voice", "shell-credential.json");
   const entry = buildVoiceShellFixture(root, `
@@ -92,7 +93,7 @@ test("an owned daemon reads the deferred verifier over its private Electron port
   skip: process.platform !== "darwin", timeout: 30_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
-  const root = mkdtempSync(join(tmpdir(), "voice-verifier-"));
+  const root = tempDir("voice-verifier-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const childEntry = join(root, "daemon.cjs");
   buildSync({ stdin: { resolveDir: resolve("."), contents: `
@@ -145,7 +146,7 @@ for (const { title, startStatus, pendingRecovery } of [
   skip: process.platform !== "darwin", timeout: 60_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
-  const root = mkdtempSync(join(tmpdir(), "voice-shell-refusal-"));
+  const root = tempDir("voice-shell-refusal-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "token"), ensureToken());
   const binary = join(root, "dist", "native", "voice-listener");
@@ -301,7 +302,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   skip: process.platform !== "darwin", timeout: 75_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
-  const root = mkdtempSync(join(tmpdir(), "voice-shell-"));
+  const root = tempDir("voice-shell-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "token"), ensureToken());
   const binary = join(root, "voice-listener");
@@ -488,9 +489,9 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
   });
-  const app = await _electron.launch({ args: [entry, "--user-data-dir=" + root], env: {
+  const app = await withElectronStartupSlot(() => _electron.launch({ args: [entry, "--user-data-dir=" + root], env: {
     ...process.env, MISSION_HOME: root, MISSION_PORT: String(address.port),
-  } });
+  } }));
   t.after(() => app.close());
   const page = await app.firstWindow();
   type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; setTestCall(value: boolean): void; tray: Electron.Tray; voice: {state: ShellVoiceState; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; stopResponses: number[]; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number; polls: number };

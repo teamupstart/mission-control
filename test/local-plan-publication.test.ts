@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,8 +12,9 @@ import type { PlanIdentity } from "../src/shared/managed-plans.ts";
 import type { ReviewActor } from "../src/shared/types.ts";
 import { declaredBlockers } from "../src/shared/backlog.ts";
 import { localSourceContent } from "../src/shared/task-source-sync.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-local-publication-")));
+const home = realpathSync(tempDir("mission-local-publication-"));
 process.env.MISSION_HOME = join(home, "state");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");

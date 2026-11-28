@@ -1,8 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a decision the operator made, missing from the log they made it in.
 //
@@ -19,7 +18,7 @@ import { join } from "node:path";
 // to redraw the form (every option, not just the chosen one), attributed to whoever
 // actually answered, and left off entirely for the asks that are not questions.
 
-const home = mkdtempSync(join(tmpdir(), "mission-driver-question-"));
+const home = tempDir("mission-driver-question-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 

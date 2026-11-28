@@ -1,7 +1,6 @@
 /** Isolated synthetic workload. Owners, reducers and exporters are real; model calls are fake. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { SpanDto } from '../../src/server/telemetry/projection.ts';
@@ -23,6 +22,7 @@ import { runPrimaryOwnerFixture } from './primary-telemetry.ts';
 import { recordSafeError, recordAutomationTransition } from '../../src/server/telemetry/experience.ts';
 import { attachSessionTelemetry, observeEffortSelected, observeUsageRecorded, observeDispatchFinished } from '../../src/server/telemetry/sessions.ts';
 import { Registry } from '../../src/server/registry.ts';
+import { tempDir } from "../temp-root.mjs";
 
 export const DAY = 86_400_000;
 export const DASHBOARD_ORACLE = { 'runs.eligible': 6, 'runs.completed': 4, 'runs.pending': 1, 'runs.cancelled': 1,
@@ -53,7 +53,7 @@ export async function seedDashboardFixture(now: number, endpoint: string, export
   let start = now - 7.5 * DAY;
   const wall = performance.now();
   Date.now = () => start + Math.floor(performance.now() - wall);
-  const repo = mkdtempSync(join(tmpdir(), 'mission-dashboard-repo-'));
+  const repo = tempDir('mission-dashboard-repo-');
   const exportedSpans: SpanDto[] = [];
   const rememberSpans = () => {
     for (const row of openDb().prepare("SELECT payload_json FROM telemetry_batches WHERE profile='user' AND signal='traces'").all())

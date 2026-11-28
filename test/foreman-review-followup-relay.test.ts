@@ -1,12 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ForemanConfig, InspectorConfig, InspectorFindingsResponse } from "../src/shared/protocol.ts";
 import type { InspectorComment, InspectorInspection, InspectorSummary, Session } from "../src/shared/types.ts";
 import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
 import { mkInspection } from "./helpers/inspection-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the worker half of the findings relay, driven through the real pass. The
 // decision core says a nudge includes findings; `runReviewFollowup` reads their text through
@@ -19,7 +18,7 @@ import { mkInspection } from "./helpers/inspection-fixture.ts";
 //    a round. Gates decided on the pre-read snapshot would type across all of that.
 
 // Isolate state before the worker's imports can resolve a home.
-const home = mkdtempSync(join(tmpdir(), "mission-foreman-review-relay-"));
+const home = tempDir("mission-foreman-review-relay-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

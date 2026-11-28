@@ -1,18 +1,17 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The asynchronous input inbox, Phase 1, at the daemon: how `/mcp/reviews` negotiates the wait,
 // what a born-detached question counts toward, who its answer is delivered from, and every
 // completion gate an outstanding request_input question holds - and the rows it deliberately
 // does not hold. docs/plans/async-input-inbox/plan.md section 4 is the table these pin.
 
-const home = mkdtempSync(join(tmpdir(), "mission-async-input-daemon-"));
+const home = tempDir("mission-async-input-daemon-");
 process.env.MISSION_HOME = home;
 
 const {

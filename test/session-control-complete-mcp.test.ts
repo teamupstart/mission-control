@@ -1,22 +1,21 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A session holding Control other sessions completes another session through the real
 // `control_session` MCP tool: stdio MCP child -> authenticated HTTP with the caller's signed
 // session credential -> delegated route -> the dashboard's task completion and Kill routes ->
 // the real TaskManager. Only the agent driver is a stub, and it records the stop it was asked for.
 
-const home = mkdtempSync(join(tmpdir(), "mission-control-complete-mcp-"));
+const home = tempDir("mission-control-complete-mcp-");
 process.env.MISSION_HOME = home;
 // Session credentials live in a directory keyed by the daemon's port, so the in-process daemon
 // and the MCP child must agree on one before either resolves it.

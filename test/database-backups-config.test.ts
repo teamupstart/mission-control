@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import fs, { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -16,8 +15,9 @@ import {
   DatabaseBackupsConfigSchema,
   DEFAULT_DATABASE_BACKUPS_CONFIG,
 } from "../src/shared/database-backups.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const stateHome = mkdtempSync(join(tmpdir(), "mission-database-backups-config-"));
+const stateHome = tempDir("mission-database-backups-config-");
 // Set the supported test home before importing any server module that can resolve the DB.
 process.env.MISSION_HOME = stateHome;
 after(() => rmSync(stateHome, { recursive: true, force: true }));

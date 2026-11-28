@@ -96,3 +96,19 @@ export function wrapperAgentCommand(script: string): string {
   const branch = statements.slice(probe + 1);
   return branch.find((statement) => !statement.startsWith("printf ")) ?? "";
 }
+
+/**
+ * Bytes a probe adds beyond the argv it carries, so it costs at least what the real exec does:
+ * the kernel's copy of the program's pathname and, for a `#!` entry point such as Pi's CLI, the
+ * interpreter, its argument and the script path it re-inserts, each bounded by the 256-byte
+ * `#!` line. Counted with each string's terminator and pointer, as `execve` counts them. Plus one
+ * `PATH_MAX`: an interpreter that execs another - `#!/usr/bin/env node` - hands the kernel the
+ * resolved interpreter's own path, which a version manager can make long.
+ */
+export function probePadding(program: string): string {
+  const pathname = Buffer.byteLength(program, "utf8") + 1 + 8;
+  return "p".repeat(2 * pathname + 2 * (256 + 1 + 8) + PATH_MAX_BYTES);
+}
+
+/** The longest pathname `execve` accepts on Linux (`PATH_MAX`); macOS allows 1024. */
+const PATH_MAX_BYTES = 4096;

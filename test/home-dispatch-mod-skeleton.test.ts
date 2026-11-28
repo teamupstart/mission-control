@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -24,6 +23,7 @@ import type {
   HomeSessionRegistrationAnswer,
 } from "../src/shared/home-dispatch.ts";
 import { createFakeModHost } from "./helpers/home-dispatch-fakes.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -49,7 +49,7 @@ test("build:mod refuses an output directory outside dist/ and the temp directory
   mkdirSync(join(root, ".tmp"), { recursive: true });
   const sentinel = mkdtempSync(join(root, ".tmp", "mod-guard-"));
   writeFileSync(join(sentinel, "keep.txt"), "keep");
-  const linkDir = mkdtempSync(join(tmpdir(), "mission-mod-guard-"));
+  const linkDir = tempDir("mission-mod-guard-");
   symlinkSync(sentinel, join(linkDir, "escape"));
   const refused = (out: string): boolean => {
     try {
@@ -73,8 +73,8 @@ test("build:mod refuses an output directory outside dist/ and the temp directory
 });
 
 test("build:mod writes through a symlinked output directory into the directory it resolves to", () => {
-  const real = mkdtempSync(join(tmpdir(), "mission-mod-real-"));
-  const holder = mkdtempSync(join(tmpdir(), "mission-mod-link-"));
+  const real = tempDir("mission-mod-real-");
+  const holder = tempDir("mission-mod-link-");
   const link = join(holder, "out");
   symlinkSync(real, link);
   try {
@@ -128,7 +128,7 @@ test("PluginState mirrors every MissionControlModState key, each typed from it",
 });
 
 test("npm run build:mod's script writes an installable folder marketplace that carries the pane", async () => {
-  const out = mkdtempSync(join(tmpdir(), "mission-mod-build-"));
+  const out = tempDir("mission-mod-build-");
   try {
     execFileSync(process.execPath, ["--import", "tsx", "scripts/build-mod.ts"], {
       cwd: root, env: { ...process.env, MISSION_MOD_OUT_DIR: out }, stdio: "pipe",

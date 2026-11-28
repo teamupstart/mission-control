@@ -1,12 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The durable half of the worktree activity clock: the ledger's schema, its transitions, and
 // the one thing it must never do - invent a deadline out of a read that failed.
@@ -15,7 +15,7 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 // thing this file proves is that an existing install opens, keeps its rows, and gains the new
 // table without a backfill.
 
-const home = mkdtempSync(join(tmpdir(), "mission-retention-db-"));
+const home = tempDir("mission-retention-db-");
 process.env.HARNESS_HOME = home;
 
 // Build a full, current-schema database in a CHILD process, then remove the retention table

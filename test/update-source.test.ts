@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { appSourceCommit } from "../src/main/bundle-version.ts";
@@ -9,9 +8,10 @@ import { packagedSourceCommit } from "../scripts/install-app.mjs";
 import { bundleSourceCommit } from "../scripts/apply-update.mjs";
 import { isCommitSha, sourceCommitProblem } from "../src/shared/update-source.mjs";
 import { validateReceipt } from "../src/shared/install-receipt-schema.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 test("all source identity readers agree on packaged metadata and reject missing or malformed identity", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-source-identity-"));
+  const dir = tempDir("mission-source-identity-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const appRoot = join(dir, "Contents", "Resources", "app");
   mkdirSync(appRoot, { recursive: true });
@@ -31,7 +31,7 @@ test("all source identity readers agree on packaged metadata and reject missing 
 test("the real installer rejects the wrong same-version commit and records the exact installed SHA", {
   skip: process.platform !== "darwin" || process.arch !== "arm64",
 }, (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-alpha-install-"));
+  const dir = tempDir("mission-alpha-install-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bundle = join(dir, "staged.app");
   const appRoot = join(bundle, "Contents", "Resources", "app");

@@ -109,6 +109,7 @@ test("the operator's config: armed for shipping, unpublished by the Inspector, d
     // A completed, clean review of exactly this head - which dry run produces.
     reviewedSha: "deadbeef",
     reviewPosture: "dry-run",
+    localReview: { enabled: false, matchedHeadSha: null },
     workflowGate: "none",
     rounds: 1,
     openFindings: 0,
@@ -125,34 +126,4 @@ test("a local head that reaches the rerun question is reviewed on GitHub once Li
   assert.equal(reviewNeedsLiveRerun("live", "local"), true);
   // A non-live posture still spends nothing.
   assert.equal(reviewNeedsLiveRerun("dry-run", "local"), false);
-});
-
-test("Shipping still refuses a local posture until it accepts local reviews", () => {
-  const NOW = 1_800_000_000_000;
-  const verdict = (rounds: number) => mergeVerdict({
-    cfg: ShippingConfigSchema.parse({ autoMerge: true, soakMinutes: 0, repoAllowlist: ["/repo"] }),
-    inspector: inspectorPosture(live, "/repo", "/repo"),
-    cwd: "/repo",
-    repoRoot: "/repo",
-    pr: {
-      state: "OPEN", isDraft: false, headSha: "deadbeef", createdAt: NOW - 3_600_000, mergeable: "MERGEABLE",
-      reviewDecision: null, checks: "passing", unresolvedThreads: 0, baseRefName: "main", defaultBranch: "main",
-    },
-    stack: { lineage: false, releasedForHead: false },
-    reviewedBase: "main",
-    reviewedSha: "deadbeef",
-    reviewPosture: "local",
-    workflowGate: "none",
-    rounds,
-    openFindings: 0,
-    now: NOW,
-  });
-  // A locally matched head has no GitHub round, and is refused for that first.
-  const local = verdict(0);
-  assert.equal(local.merge, false);
-  assert.equal(local.block, "not-reviewed");
-  // With a round counted, the posture itself is the refusal.
-  const counted = verdict(1);
-  assert.equal(counted.merge, false);
-  assert.equal(counted.block, "review-unpublished");
 });

@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 const checkout = fileURLToPath(new URL("../", import.meta.url));
 
 test("Oxlint rejects seeded repository policy violations and accepts the owned paths", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-repository-lint-"));
+  const root = tempDir("mission-repository-lint-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   function write(path: string, source: string) {
@@ -27,6 +27,9 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   write("src/server/registry.ts", 'export const evict = (sessions, id, emit) => { sessions.delete(id); emit({ type: "session_remove" as const, id }); };');
   write("test/allowed.ts", 'import "node:test"; import "node:assert/strict";');
   write("e2e/allowed.ts", 'import "@playwright/test";');
+  write("test/temp-root.mjs", 'import { tmpdir } from "node:os"; export const root = () => tmpdir();');
+  write("test/setup-state.mjs", 'import os from "node:os"; export const machine = os.tmpdir();');
+  write("test/uses-helper.ts", 'import { mkdtempSync } from "node:fs"; import { join } from "node:path"; import { tempDir } from "./temp-root.mjs"; export const dir = tempDir("fixture-"); export const nested = mkdtempSync(join(dir, "nested-"));');
   write("src/server/worktrees/file-delete.ts", 'import { rm } from "node:fs/promises"; export const drop = (path) => rm(path, { force: true }); export const flat = (path) => rm(path, { recursive: false });');
   write("src/server/scratch-delete.ts", 'import { rmSync } from "node:fs"; export const drop = (path) => rmSync(path, { recursive: true, force: true });');
 
@@ -89,6 +92,10 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "e2e/locator.ts": 'export const locate = (page) => page["getByTestId"]("view");',
     "src/server/worktrees/raw-delete.ts": 'import { rm } from "node:fs/promises"; export const drop = (path) => rm(path, { recursive: true, maxRetries: 2 });',
     "src/server/archives/nested/sync-delete.ts": 'import fs from "node:fs"; export const drop = (path, deep) => fs.rmSync(path, { recursive: deep });',
+    "test/bare-temp.ts": 'import { mkdtempSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; export const dir = mkdtempSync(join(tmpdir(), "leak-"));',
+    "e2e/namespace-temp.ts": 'import os from "node:os"; export const dir = os.tmpdir();',
+    "test/bare-literal-temp.ts": 'import { mkdtempSync } from "node:fs"; import { join } from "node:path"; export const a = mkdtempSync(join("/private/tmp", "x-")); export const b = mkdtempSync("/tmp/y-");',
+    "e2e/env-temp.ts": 'import fs from "node:fs/promises"; import path from "node:path"; export const c = fs.mkdtemp(path.join(process.env.TMPDIR, "z-"));',
   };
   const run = () => spawnSync(process.execPath, [
     join(checkout, "node_modules/oxlint/bin/oxlint"), "--format", "unix", "--quiet", "src", "test", "e2e",
@@ -108,6 +115,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "agent-comparison": 8,
     "registry-eviction": 20,
     "tree-removal": 2,
+    "test-temp-dirs": 5,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);

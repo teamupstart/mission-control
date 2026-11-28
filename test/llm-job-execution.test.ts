@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -19,7 +18,7 @@ import { z } from "zod";
 // override SET, because with none set the wrong answer and the right one coincide and a test
 // that only covers the default case cannot see the bug at all.
 
-const home = mkdtempSync(join(tmpdir(), "mission-llm-exec-"));
+const home = tempDir("mission-llm-exec-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 
@@ -35,6 +34,7 @@ const { compactWorkflowContext } = await import("../src/server/workflows/context
 import type { ThinkingLevel } from "../src/shared/types.ts";
 import type { LlmRunnerId } from "../src/shared/llm.ts";
 import type { RawWorkflowContext } from "../src/server/workflows/context.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

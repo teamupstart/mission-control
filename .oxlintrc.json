@@ -80,7 +80,12 @@
     },
     {
       "files": ["test/**/*", "e2e/**/*"],
-      "rules": { "repository/test-imports": "error" }
+      "rules": { "repository/test-imports": "error", "repository/test-temp-dirs": "error" }
+    },
+    {
+      // The owner of the temp root, and the preload that installs it before any test runs.
+      "files": ["test/temp-root.mjs", "test/setup-state.mjs"],
+      "rules": { "repository/test-temp-dirs": "off" }
     },
     {
       "files": ["src/**/*", "test/**/*", "e2e/**/*"],

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { builtinModules } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { mcpServerPath } from "../src/server/config.ts";
 import { OPERATOR_SATELLITES } from "../src/shared/owned-runtime.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 // The updater lets an operator-started satellite keep running through a bundle swap
 // (`waitForBundleExit` in `scripts/mac-app-lifecycle.mjs`). That holds only while the list is
@@ -87,7 +87,7 @@ test("the daemon points sessions at the same MCP server the operator list names"
 test("each operator satellite bundles to one file that imports only Node builtins and never opens the database", async (t) => {
   const builds = satelliteBuilds();
   const builtins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
-  const root = mkdtempSync(join(tmpdir(), "operator-satellites-"));
+  const root = tempDir("operator-satellites-");
   t.after(() => rmSync(root, {recursive: true, force: true}));
   for (const [name, path] of Object.entries(OPERATOR_SATELLITES)) {
     await t.test(path, () => {

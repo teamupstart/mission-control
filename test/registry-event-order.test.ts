@@ -1,10 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The order changes reach a browser in.
 //
@@ -19,7 +18,7 @@ import type { ServerEvent } from "../src/shared/types.ts";
 // inside the first announcement. Delivered depth-first, the consequence goes out before its
 // cause. `emitEvent` queues the nested one behind the outer instead.
 
-const home = mkdtempSync(join(tmpdir(), "mission-event-order-"));
+const home = tempDir("mission-event-order-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 

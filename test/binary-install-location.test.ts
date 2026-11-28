@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { assertPersistentDestination, temporaryInstallLocation } from '../scripts/binary-install-policy.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 function inventory(t: test.TestContext, read: () => string) {
   const query = t.mock.method(childProcess, 'execFileSync', ((command: string, args: readonly string[], options: childProcess.ExecFileSyncOptions) => {
@@ -23,7 +23,7 @@ function inventory(t: test.TestContext, read: () => string) {
 }
 
 function fixture(t: test.TestContext) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'binary-mount-location-')));
+  const root = realpathSync(tempDir('binary-mount-location-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const mount = join(root, 'MC-image');
   const app = join(mount, 'Mission Control.app'); mkdirSync(app, {recursive: true});

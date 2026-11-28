@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
@@ -9,6 +8,7 @@ import type { Locator } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * A TERMINAL Claude session's background sub-agents, read from its hooks, hang beneath its card.
@@ -50,7 +50,7 @@ interface Pane {
  * basename is what discovery matches against each harness's `detect.commands`.
  */
 function startPane(agent: Pane["agent"] = "claude"): Pane {
-  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-subagents-pane-"));
+  const dir = tempDir("mc-e2e-subagents-pane-");
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   symlinkSync(execPath, join(bin, agent));

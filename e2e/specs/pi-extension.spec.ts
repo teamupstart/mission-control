@@ -2,17 +2,17 @@ import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { createServer } from "node:http";
+import { tempDir } from "../../test/temp-root.mjs";
 
 // A shared tmux server can restart between concurrent fixtures and reuse its pane ids.
 // Give discovery and this test the same private socket so another fixture's retired pane
 // cannot receive this extension's hooks or review before its eviction timer expires.
 // oxlint-disable-next-line no-empty-pattern -- Playwright requires destructured fixture dependencies.
 test.use({ daemonEnv: async ({}, use) => {
-  const dir = mkdtempSync(join(tmpdir(), "mc-pi-tmux-"));
+  const dir = tempDir("mc-pi-tmux-");
   const bin = join(dir, "tmux-private");
   writeFileSync(bin, `#!/bin/sh\nexec tmux -S ${quote(join(dir, "socket"))} "$@"\n`, { mode: 0o755 });
   try {

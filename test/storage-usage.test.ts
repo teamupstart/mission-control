@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -10,13 +9,14 @@ import type { StorageHealth, StorageVolume } from "../src/shared/storage-health.
 import { databaseBackupStatusFrom } from "../src/shared/database-backups.ts";
 import type { StorageAlertState, StorageLimitsConfig } from "../src/shared/storage-limits.ts";
 import { DEFAULT_STORAGE_LIMITS_CONFIG, storageAlertStateFrom } from "../src/shared/storage-limits.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the operator ran out of disk without warning. These pin that the
 // state directory's categories add up to what was measured, that a low-space or size warning
 // keeps one id for as long as it stands (across a restart, and through a moment with no reading),
 // and that saving a limit warns and never deletes.
 
-const stateHome = mkdtempSync(join(tmpdir(), "mission-storage-usage-"));
+const stateHome = tempDir("mission-storage-usage-");
 process.env.MISSION_HOME = stateHome;
 after(() => rmSync(stateHome, { recursive: true, force: true }));
 
@@ -155,8 +155,8 @@ test("slots removed since the measurement drop out of the totals at once", async
 });
 
 test("a slot recorded through a symlinked home is still matched to its measured size", async () => {
-  const real = mkdtempSync(join(tmpdir(), "mission-storage-real-"));
-  const linked = join(mkdtempSync(join(tmpdir(), "mission-storage-link-")), "home");
+  const real = tempDir("mission-storage-real-");
+  const linked = join(tempDir("mission-storage-link-"), "home");
   symlinkSync(real, linked);
   mkdirSync(join(real, "worktree-pools", "web-0123456789abcdef", "1", "web"), { recursive: true });
   const usage = new StorageUsageMonitor({
@@ -490,8 +490,8 @@ test("settling leaves a listing alone when the folder is unchanged or unreadable
 
 test("a state directory reached through a symlink is measured through it, contents and slots included", async () => {
   const MIB = 1024 ** 2;
-  const real = mkdtempSync(join(tmpdir(), "mission-storage-real-home-"));
-  const linkParent = mkdtempSync(join(tmpdir(), "mission-storage-link-home-"));
+  const real = tempDir("mission-storage-real-home-");
+  const linkParent = tempDir("mission-storage-link-home-");
   const linked = join(linkParent, "home");
   symlinkSync(real, linked);
   const slot = join(real, "worktree-pools", "web-0123456789abcdef", "1", "web");

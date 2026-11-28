@@ -1,16 +1,16 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ResidentProfile, ResidentRunSummary } from "../src/shared/residents.ts";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Where the Residents dock lands, measured in a real browser against the real top bar.
@@ -187,8 +187,8 @@ before(() => {
   delete env.ELECTRON_RUN_AS_NODE;
   const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
   for (const [size, viewport] of Object.entries(VIEWPORTS)) {
-    const dir = mkdtempSync(join(tmpdir(), "mission-residents-dock-"));
-    const userData = mkdtempSync(join(tmpdir(), "mission-residents-dock-profile-"));
+    const dir = tempDir("mission-residents-dock-");
+    const userData = tempDir("mission-residents-dock-profile-");
     try {
       const paths = [
         ["dock", bar(PROFILES)],
@@ -198,7 +198,7 @@ before(() => {
         writeFileSync(path, page(styles, viewport.rung, markup!));
         return path;
       });
-      const output = execFileSync(electron, [
+      const output = execFileSync(...electronGuiCommand(electron, [
         ...(process.platform === "linux" ? ["--no-sandbox"] : []),
         `--user-data-dir=${userData}`,
         fileURLToPath(new URL("fixtures/residents-dock-browser.cjs", import.meta.url)),
@@ -208,7 +208,7 @@ before(() => {
         String(FIXTURE_BUDGET_MS),
         "--pages",
         ...paths,
-      ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+      ]), { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
       Object.assign(measured, JSON.parse(output.trim()) as Record<string, Measured>);
     } finally {
       rmSync(dir, { force: true, recursive: true });

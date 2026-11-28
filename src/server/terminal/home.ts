@@ -298,6 +298,7 @@ export async function launchHome(
   spec: HomeSpec,
   deps: HomeDeps = defaultHomeDeps,
   preferredBackend: string | null = null,
+  ownsLaunch?: () => boolean,
 ): Promise<LaunchResult> {
   using reservation = reserveWorktreeUse([spec.cwd]);
   if (!reservation) return { ok: false, error: "automatic cleanup currently owns this checkout" };
@@ -321,6 +322,8 @@ export async function launchHome(
   }
   let last = "";
   for (const backend of backends) {
+    // Handoff setup, name inventory, or a previous backend can yield to cancellation.
+    if (ownsLaunch && !ownsLaunch()) throw new Error("The task no longer owns this terminal launch.");
     const r = await backend.open(spec);
     if (r.ok) return {
       ok: true,

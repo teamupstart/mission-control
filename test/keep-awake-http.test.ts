@@ -1,8 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { KeepAwakeStatus } from "../src/shared/types.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -13,6 +11,7 @@ import {
   type KeepAwakeChild,
   type KeepAwakePreferenceStore,
 } from "../src/server/keep-awake.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: these two routes are the only write path to host power state, and
 // their status codes are the browser's contract. A 200 must mean the OBSERVED transition
@@ -21,7 +20,7 @@ import {
 // each name a different, non-retriable-in-the-same-way failure. The body schema is
 // strict, so a caller confused about the contract is refused rather than half-honoured.
 
-const home = mkdtempSync(join(tmpdir(), "mission-keep-awake-http-"));
+const home = tempDir("mission-keep-awake-http-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 

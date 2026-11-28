@@ -1,16 +1,16 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
 import type { InspectorComment } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Drive the real Inspector loop through fake `gh` and Claude binaries. Environment
 // overrides must be installed before importing the worker: its runner and poll interval
 // are resolved at module load.
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-resolution-"));
+const temp = tempDir("mission-inspector-resolution-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const reviewCountPath = join(temp, "review-count.txt");

@@ -1,13 +1,13 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, openedResource } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Hiding launch instructions from conversations
 // (docs/plans/hidden-launch-instructions/phase-1-durable-launch-presentation.md): a fresh
@@ -22,7 +22,7 @@ import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
 // into a live session, a `/clear`, and every historical transcript written before the
 // marker table existed all keep their first user turn exactly as they have it today.
 
-const home = mkdtempSync(join(tmpdir(), "mission-launch-presentation-"));
+const home = tempDir("mission-launch-presentation-");
 process.env.MISSION_HOME = home;
 // A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
 // Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`

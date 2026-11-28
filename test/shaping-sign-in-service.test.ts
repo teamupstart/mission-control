@@ -3,18 +3,18 @@
 // in-memory registration key. Fake values only: every token, code and client id is the
 // fixture's `fake-...`, and no Keychain item is written.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, test, type TestContext } from "node:test";
 import type { ShapingSignInClient, ShapingSignInConfig, ShapingSignInView, SignInTarget } from "../src/shared/shaping.ts";
 import type { SignInStore, StoredSignIn } from "../src/server/shaping/sign-in/store.ts";
 import type { BeginAnswer, ShaperSignInService, SignInFlow, SignInRegistrations, SignInUse, TimerHandle } from "../src/server/shaping/sign-in/service.ts";
 import type { FakeOAuthRequest, FakeOAuthServer } from "./fixtures/fake-oauth-server.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 // A fixture state home for the one test that reads the real `app_config` and a settings
 // snapshot. Set before importing anything that resolves the state directory.
-const home = mkdtempSync(join(tmpdir(), "mission-sign-in-service-"));
+const home = tempDir("mission-sign-in-service-");
 process.env.HARNESS_HOME = join(home, "state");
 after(() => rmSync(home, { recursive: true, force: true }));
 

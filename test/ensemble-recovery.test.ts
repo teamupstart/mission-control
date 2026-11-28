@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: the daemon can die at any instant - mid-wave, mid-capture, between a stage
@@ -13,7 +13,7 @@ import { join } from "node:path";
  * durable store, exactly as a restarted daemon rebuilds itself.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-recovery-"));
+const home = tempDir("mission-ensemble-recovery-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

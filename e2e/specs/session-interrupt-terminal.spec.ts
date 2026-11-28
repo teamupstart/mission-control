@@ -1,11 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * What is at stake: the half of the interrupt gesture that phase 1 could not ship.
@@ -87,7 +87,7 @@ interface Pane {
  * earlier run, can never be the card this spec drives.
  */
 function startPane(): Pane {
-  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-esc-pane-"));
+  const dir = tempDir("mc-e2e-esc-pane-");
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   // argv0's basename is what `harnessOf` matches, so the LINK's name is the whole disguise.

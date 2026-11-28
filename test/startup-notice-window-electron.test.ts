@@ -6,11 +6,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
+import { acquireElectronStartupSlot, releaseAfterStartup } from "./helpers/electron-startup-slot.mjs";
 
 const require = createRequire(import.meta.url);
 const HOLD_MS = 3_000;
@@ -19,7 +20,7 @@ test("with notifications unavailable, the update-in-progress notice shows in a w
   skip: process.platform !== "darwin", timeout: 60_000,
 }, async (t) => {
   assertElectronGuiLaunchAllowed();
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "startup-notice-window-")));
+  const root = realpathSync(tempDir("startup-notice-window-"));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const app = join(root, "app"); mkdirSync(app);
   const out = join(root, "out"); mkdirSync(out);
@@ -61,7 +62,9 @@ test("with notifications unavailable, the update-in-progress notice shows in a w
   `);
   const env: NodeJS.ProcessEnv = {...process.env, FIXTURE_OUT: out};
   delete env.ELECTRON_RUN_AS_NODE;
+  const releaseStartup = await acquireElectronStartupSlot();
   const electron = spawn(require("electron") as string, [app], {env, stdio: ["ignore", "pipe", "pipe"]});
+  releaseAfterStartup(electron, releaseStartup);
   let output = "";
   electron.stdout.on("data", (chunk) => { output += chunk; });
   electron.stderr.on("data", (chunk) => { output += chunk; });

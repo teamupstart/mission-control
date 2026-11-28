@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -16,6 +15,7 @@ import {
   verifySettingsBackupDigest,
 } from "../src/server/settings-backups/format.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BOOT_TIMEOUT_MS = 30_000;
@@ -74,7 +74,7 @@ async function dailySnapshotFilename(root: string): Promise<string | null> {
 test("daemon startup creates and verifies today's v1 logical settings snapshot", {
   timeout: BOOT_TIMEOUT_MS + SNAPSHOT_TIMEOUT_MS + 10_000,
 }, async () => {
-  const fixtureRoot = await mkdtemp(join(tmpdir(), "mission-settings-backup-daemon-"));
+  const fixtureRoot = await tempDirAsync("mission-settings-backup-daemon-");
   const stateHome = join(fixtureRoot, "state");
   const fakeBin = join(fixtureRoot, "fake-external.mjs");
   await writeFile(

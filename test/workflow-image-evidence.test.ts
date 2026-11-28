@@ -4,7 +4,6 @@ import { execFileSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import {
   existsSync,
-  mkdtempSync,
   mkdirSync,
   realpathSync,
   renameSync,
@@ -13,14 +12,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScoutRepoTask } from "../src/server/scouts/repos.ts";
 import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-images-"));
+const home = tempDir("mission-workflow-images-");
 process.env.MISSION_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -328,7 +327,7 @@ test("workflow image contracts default historical context and bind image citatio
 });
 
 test("48 images and 48 mixed text artifacts survive intake and capture with independent count limits", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-count-budget-")));
+  const repo = realpathSync(tempDir("mission-workflow-count-budget-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");
@@ -392,7 +391,7 @@ test("48 images and 48 mixed text artifacts survive intake and capture with inde
 });
 
 test("384 KiB of mixed workflow text evidence survives registration and capture", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-text-budget-")));
+  const repo = realpathSync(tempDir("mission-workflow-text-budget-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");
@@ -507,7 +506,7 @@ test("workflow evidence HTTP sizing reserves metadata for every command item", (
 });
 
 test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-frozen", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-text-repo-")));
+  const repo = realpathSync(tempDir("mission-workflow-text-repo-"));
   const original = "\uFEFFTAP version 13\nok 13 - focused regression\n";
   try {
     execFileSync("git", ["init", "-q", repo]);
@@ -614,7 +613,7 @@ test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-
 });
 
 test("completed command output is staged directly and frozen as immutable text evidence", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-command-evidence-")));
+  const repo = realpathSync(tempDir("mission-workflow-command-evidence-"));
   const store = new WorkflowStore();
   const output = "TAP version 13\nok 1 - focused regression\n";
   try {
@@ -689,8 +688,8 @@ test("completed command output is staged directly and frozen as immutable text e
 });
 
 test("parent-directory swaps cannot escape the issued checkout during staging or capture", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-parent-race-repo-")));
-  const outside = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-parent-race-outside-")));
+  const repo = realpathSync(tempDir("mission-workflow-parent-race-repo-"));
+  const outside = realpathSync(tempDir("mission-workflow-parent-race-outside-"));
   const evidenceDirectory = join(repo, "evidence");
   const targetPath = join(evidenceDirectory, "focused.log");
   const imageTargetPath = join(evidenceDirectory, "screen.png");
@@ -814,7 +813,7 @@ test("parent-directory swaps cannot escape the issued checkout during staging or
 });
 
 test("secure agent staging accepts only contained gitignored raster files", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "mission-workflow-image-repo-"));
+  const repo = tempDir("mission-workflow-image-repo-");
   const outside = join(home, "outside.png");
   const outsideDirectory = join(home, "outside-directory");
   try {
@@ -875,7 +874,7 @@ test("secure agent staging accepts only contained gitignored raster files", asyn
 });
 
 test("canonical citations explain when no active workflow run receives the claim", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-no-citation-run-")));
+  const root = realpathSync(tempDir("mission-no-citation-run-"));
   try {
     const store = new WorkflowStore();
     const noteKey = "no-citation-run-note";
@@ -900,9 +899,9 @@ test("canonical citations explain when no active workflow run receives the claim
 });
 
 test("canonical citations must belong to every run receiving the claim's repository scope", async () => {
-  const primary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-primary-")));
-  const secondary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-secondary-")));
-  const unbound = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-unbound-")));
+  const primary = realpathSync(tempDir("mission-citation-primary-"));
+  const secondary = realpathSync(tempDir("mission-citation-secondary-"));
+  const unbound = realpathSync(tempDir("mission-citation-unbound-"));
   try {
     const store = new WorkflowStore();
     const noteKey = "citation-scope-note";
@@ -991,7 +990,7 @@ test("canonical citations must belong to every run receiving the claim's reposit
 });
 
 test("citation validation recognises symlinked binding roots and pending canonical criteria", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-alias-")));
+  const root = realpathSync(tempDir("mission-citation-alias-"));
   const alias = `${root}-alias`;
   try {
     symlinkSync(root, alias, "dir");
@@ -1031,7 +1030,7 @@ test("citation validation recognises symlinked binding roots and pending canonic
 });
 
 test("legacy canonical citations survive failed image captures with empty contexts", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-legacy-citation-")));
+  const root = realpathSync(tempDir("mission-legacy-citation-"));
   try {
     const store = new WorkflowStore();
     const noteKey = "legacy-citation-note";
@@ -1075,8 +1074,8 @@ test("legacy canonical citations survive failed image captures with empty contex
 });
 
 test("reservation freezes immutable bytes, supports all-scope fan-out, and prunes through the cleanup ledger", async () => {
-  const primary = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-image-primary-")));
-  const secondary = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-image-secondary-")));
+  const primary = realpathSync(tempDir("mission-workflow-image-primary-"));
+  const secondary = realpathSync(tempDir("mission-workflow-image-secondary-"));
   try {
     writeFileSync(join(primary, "screen.png"), PNG);
     writeFileSync(join(primary, "swap.png"), PNG);
@@ -1393,7 +1392,7 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
 });
 
 test("a borrowed body reclaimed mid-capture is rewritten, not frozen as a dangling reference", async () => {
-  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-image-borrow-")));
+  const checkout = realpathSync(tempDir("mission-workflow-image-borrow-"));
   try {
     const shared = Buffer.concat([PNG, Buffer.from("borrowed", "utf8")]);
     const other = Buffer.concat([PNG, Buffer.from("other", "utf8")]);

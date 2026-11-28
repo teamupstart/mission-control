@@ -1,10 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitHistory } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: two agents that were supposed to start from the same place, and did not.
 //
@@ -23,7 +23,7 @@ import { seedGitHistory } from "./helpers/git-fixture.ts";
 // and making the suite depend on either would make it pass or fail for reasons that have
 // nothing to do with this code.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pinned-base-"));
+const home = tempDir("mission-pinned-base-");
 // Set before importing anything that resolves the state dir - WORKTREES_DIR hangs off it.
 process.env.HARNESS_HOME = join(home, "state");
 

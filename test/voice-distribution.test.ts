@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { verifyMicrophoneAccess } from "../scripts/verify-distribution.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 test("distribution requires a usage string and a true audio-input entitlement on the signed parent", () => {
   function check(usage: string, value?: boolean | string) {
@@ -26,11 +27,10 @@ test("distribution requires a usage string and a true audio-input entitlement on
 test("read microphone policy from a hardened parent signature, leaving the child policy unchanged", {
   skip: process.platform !== "darwin",
 }, async t => {
-  const { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { cpSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { execFileSync } = await import("node:child_process");
-  const root = mkdtempSync(join(tmpdir(), "voice-signed-policy-"));
+  const root = tempDir("voice-signed-policy-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const app = join(root, "Fixture.app");
   mkdirSync(join(app, "Contents/MacOS"), { recursive: true });

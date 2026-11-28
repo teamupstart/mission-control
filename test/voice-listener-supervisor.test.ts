@@ -5,6 +5,7 @@ import test from "node:test";
 import { VoiceListener } from "../src/main/voice-listener.ts";
 import { ShellVoiceStateSchema } from "../src/main/voice-state-schema.ts";
 import { voiceStateOff, type VoiceState } from "../src/shared/voice.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("the shell owns one granted listener per ready model, retries crashes and drains before shutdown", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -151,15 +152,14 @@ test("confined launch records its OS identity and replays its exit before it can
   skip: process.platform !== "darwin", timeout: 20000,
 }, async t => {
   const { generateKeyPairSync } = await import("node:crypto");
-  const { mkdtempSync, statSync, readFileSync, existsSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { statSync, readFileSync, existsSync, rmSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { MacListenerSupervisor, hasPendingMacListenerRecovery } = await import("../src/server/voice/macos-supervisor.ts");
   const { createVoiceSupervisor, supervisorIssuer } = await import("../src/server/voice/supervisor-auth.ts");
   const { voiceProcessBirth } = await import("../src/server/voice/process-birth.ts");
   const { ensureNativeStateLockAddon } = await import("./helpers/native-state-lock.ts");
   ensureNativeStateLockAddon();
-  const home = mkdtempSync(join(tmpdir(), "mc-speech-supervisor-"));
+  const home = tempDir("mc-speech-supervisor-");
   const slot = join(home, "voice", "supervised", "dev.json");
   const read = () => JSON.parse(readFileSync(slot, "utf8"));
   const signer = createVoiceSupervisor("dev", generateKeyPairSync("ed25519").privateKey);
@@ -221,8 +221,7 @@ test("recovery stops a verified prior process, preserves a live peer, and handle
   skip: process.platform !== "darwin", timeout: 20000,
 }, async t => {
   const { generateKeyPairSync } = await import("node:crypto");
-  const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
+  const { existsSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { spawn, execFileSync } = await import("node:child_process");
   const { MacListenerSupervisor } = await import("../src/server/voice/macos-supervisor.ts");
@@ -230,7 +229,7 @@ test("recovery stops a verified prior process, preserves a live peer, and handle
   const { writeVoiceRecord } = await import("../src/server/voice/recovery-files.ts");
   const { ensureNativeStateLockAddon } = await import("./helpers/native-state-lock.ts");
   ensureNativeStateLockAddon();
-  const home = mkdtempSync(join(tmpdir(), "mc-recovery-"));
+  const home = tempDir("mc-recovery-");
   const helper = join(home, "recovery-player-" + process.pid);
   execFileSync("xcrun", ["clang", "-x", "c", "-", "-o", helper], {
     input: "#include <unistd.h>\nint main(void) { write(1, \"ready\", 5); for (;;) pause(); }",

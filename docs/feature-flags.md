@@ -17,7 +17,8 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Unified split inbox](attention-and-alerts.md#unified-split-inbox-preview) (`inbox-split`),
 [Stalled section in Idle](attention-and-alerts.md#stuck-rows) (`idle-stalled`),
 [Voice addressing](voice.md) (`voice`),
-[Voice first-preview hold](voice.md#first-preview-hold-preview) (`voice-first-preview-hold`) and
+[Voice first-preview hold](voice.md#first-preview-hold-preview) (`voice-first-preview-hold`),
+[Voice prefix recovery](voice.md#prefix-recovery-preview) (`voice-prefix-recovery`) and
 [Markdown questions](sessions.md#markdown-questions-preview) (`markdown-questions`) as previews.
 Settings > Feature flags controls these choices. The ai-conductor integration switch is unchanged.
 

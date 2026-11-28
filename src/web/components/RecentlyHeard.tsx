@@ -15,6 +15,7 @@ const ruleLabels: Record<string, string> = {
   "capture-limit": "duration limit", "nothing-pending": "nothing to cancel", "ambiguous-name": "ambiguous name",
   "second-name": "second name", cancel: "spoken cancel", pick: "spoken selection",
   "separator-only": "separator word only",
+  "recovered-prefix": "name after a filler", "suggested-prefix": "possible name after another word",
 };
 const outcomes: Record<HeardEntry["outcome"], string> = {
   pending: "Pending", resolving: "Resolving", unsure: "Unsure", cancelled: "Cancelled", sent: "Routed",
@@ -22,13 +23,16 @@ const outcomes: Record<HeardEntry["outcome"], string> = {
 };
 
 export function HeardRow({ entry, roster, now, compact }: { entry: HeardEntry; roster: readonly SpokenName[]; now: number; compact?: boolean }) {
-  const { text, matchedName, outcome, rule, detail } = entry;
+  const { text, matchedName, outcome, rule, detail, suggested } = entry;
   const miss = rule === "near-miss";
-  const openingName = rule === "exact" || rule === "phonetic" ? matchedName : null;
-  const count = miss ? 1 : openingName?.trim().split(/\s+/u).length ?? 0;
-  const words = Array.from(text.matchAll(/[\p{L}\p{N}][\p{L}\p{M}\p{N}'’-]*/gu));
-  const last = words[count - 1];
-  const start = words[0]?.index ?? 0;
+  const openingName = rule === "exact" || rule === "phonetic" || rule === "recovered-prefix" ? matchedName : null;
+  const count = miss ? 1 : (openingName ?? suggested?.[0])?.trim().split(/\s+/u).length ?? 0;
+  const wordPattern = /[\p{L}\p{N}][\p{L}\p{M}\p{N}'’-]*/gu;
+  const words = Array.from(text.matchAll(wordPattern));
+  // Recovery's skipped words stay unmarked: the mark shows the name that was matched.
+  const skipped = entry.prefix ? Array.from(entry.prefix.matchAll(wordPattern)).length : 0;
+  const last = count ? words[skipped + count - 1] : undefined;
+  const start = words[skipped]?.index ?? 0;
   const end = last ? last.index + last[0].length : 0;
   const seconds = Math.max(0, Math.floor((now - entry.time) / 1000));
   const ago = seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m" : Math.floor(seconds / 3600) + "h";
@@ -45,7 +49,8 @@ export function HeardRow({ entry, roster, now, compact }: { entry: HeardEntry; r
   return <tr>
     <td className="rh-mono">{ago}</td>
     <td>{end ? <>{text.slice(0, start)}<mark className={miss ? "is-miss" : undefined}>{text.slice(start, end)}</mark>{text.slice(end)}</> : text}</td>
-    <td>{miss ? <>None{matchedName && <>. Closest is {name}, a weak match</>}</> : matchedName ? <>{name}{rule === "exact" ? ", exactly" : rule === "phonetic" ? ", by sound" : ""}</> : "None"}</td>
+    <td>{miss ? <>None{matchedName && <>. Closest is {name}, a weak match</>}</> : matchedName ? <>{name}{rule === "exact" ? ", exactly" : rule === "phonetic" ? ", by sound" : rule === "recovered-prefix" ? `, after “${entry.prefix?.replace(/[\p{P}\s]+$/u, "") ?? ""}”` : ""}</>
+      : suggested?.length ? <>Asked: {suggested.join(" or ")}</> : "None"}</td>
     <td className="rh-mono">{ruleLabels[rule] ?? rule}{detail === "picked" && " · operator selection"}</td>
     <td><span className={`rh-out is-${tone}`}>{outcomes[outcome]}{outcome === "sent" && matchedName && <> to {name}</>}</span>
       {detail && outcome !== "control" && detail !== "picked" && <div>{detail}</div>}

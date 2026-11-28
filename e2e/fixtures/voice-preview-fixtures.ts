@@ -23,9 +23,9 @@ export interface PreviewWindow {
 
 export interface PreviewPlaylist { wav: string; windows: PreviewWindow[] }
 
-const RATE = 16_000;
+export const RATE = 16_000;
 
-function readWav(path: string): Float32Array {
+export function readWav(path: string): Float32Array {
   const bytes = readFileSync(path);
   let offset = 12;
   let format: { code: number; channels: number; rate: number; bits: number } | undefined;
@@ -49,7 +49,7 @@ function readWav(path: string): Float32Array {
   throw new Error(`${path} has no PCM data`);
 }
 
-function writeWav(path: string, samples: Float32Array) {
+export function writeWav(path: string, samples: Float32Array) {
   const bytes = Buffer.alloc(44 + samples.length * 4);
   bytes.write("RIFF", 0); bytes.writeUInt32LE(36 + samples.length * 4, 4); bytes.write("WAVE", 8);
   bytes.write("fmt ", 12); bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(3, 20); bytes.writeUInt16LE(1, 22);
@@ -61,18 +61,20 @@ function writeWav(path: string, samples: Float32Array) {
 
 // A fixed seed: every run plays exactly the same samples, so the flag-off and flag-on runs differ only in the flag.
 let seed = 7;
-const random = () => (seed = (seed * 1_103_515_245 + 12_345) >>> 0) / 2 ** 32;
-const gauss = () => { let sum = 0; for (let i = 0; i < 6; i++) sum += random(); return (sum - 3) / 1.2; };
-const silence = (seconds: number) => new Float32Array(Math.round(RATE * seconds));
-const gain = (samples: Float32Array, db: number) => samples.map(v => v * 10 ** (db / 20));
+/** Restart the noise generator, so a playlist built twice is the same samples. */
+export const reseed = (value: number) => { seed = value; };
+export const random = () => (seed = (seed * 1_103_515_245 + 12_345) >>> 0) / 2 ** 32;
+export const gauss = () => { let sum = 0; for (let i = 0; i < 6; i++) sum += random(); return (sum - 3) / 1.2; };
+export const silence = (seconds: number) => new Float32Array(Math.round(RATE * seconds));
+export const gain = (samples: Float32Array, db: number) => samples.map(v => v * 10 ** (db / 20));
 
-function lowpass(samples: Float32Array, hz: number) {
+export function lowpass(samples: Float32Array, hz: number) {
   const a = Math.exp(-2 * Math.PI * hz / RATE);
   let y = 0, z = 0;
   return samples.map(v => (y = (1 - a) * v + a * y, z = (1 - a) * y + a * z));
 }
 
-function keyClick(amp: number) {
+export function keyClick(amp: number) {
   const out = new Float32Array(Math.round(RATE * 0.025));
   for (let i = 0; i < out.length; i++) {
     out[i] = gauss() * amp * Math.exp(-i / (RATE * 0.004)) + Math.sin(2 * Math.PI * 2200 * i / RATE) * amp * 0.3 * Math.exp(-i / (RATE * 0.002));
@@ -80,7 +82,7 @@ function keyClick(amp: number) {
   return out;
 }
 
-function typing(seconds: number, perSecond: number, amp: number) {
+export function typing(seconds: number, perSecond: number, amp: number) {
   const out = silence(seconds);
   for (let t = 0.1; t < seconds - 0.1; t += (1 / perSecond) * (0.5 + random()) + (random() < 0.08 ? 0.4 : 0)) {
     const click = keyClick(amp * (0.6 + 0.8 * random()));
@@ -90,26 +92,26 @@ function typing(seconds: number, perSecond: number, amp: number) {
   return out;
 }
 
-function knock(amp: number) {
+export function knock(amp: number) {
   const out = new Float32Array(Math.round(RATE * 0.12));
   for (let i = 0; i < out.length; i++) out[i] = (Math.sin(2 * Math.PI * 180 * i / RATE) * 0.7 + gauss() * 0.3) * amp * Math.exp(-i / (RATE * 0.02));
   return out;
 }
 
-function breath(seconds: number, amp: number) {
+export function breath(seconds: number, amp: number) {
   const noise = lowpass(Float32Array.from({ length: Math.round(RATE * seconds) }, gauss), 1500);
   return noise.map((v, i) => v * amp * Math.sin(Math.PI * i / noise.length) ** 2);
 }
 
-function concat(...parts: Float32Array[]) {
+export function concat(...parts: Float32Array[]) {
   const out = new Float32Array(parts.reduce((n, part) => n + part.length, 0));
   let at = 0;
   for (const part of parts) { out.set(part, at); at += part.length; }
   return out;
 }
 
-function speech(directory: string, voice: string, text: string) {
-  const path = join(directory, `say-${voice}-${text.replace(/\W+/gu, "-")}.wav`);
+export function speech(directory: string, voice: string, text: string) {
+  const path = join(directory, `say-${voice.replace(/\W+/gu, "-")}-${text.replace(/\W+/gu, "-")}.wav`);
   execFileSync("/usr/bin/say", ["-v", voice, "-o", path, "--file-format=WAVE", "--data-format=LEF32@16000", text]);
   let samples = readWav(path);
   let start = 0, end = samples.length;
@@ -125,7 +127,7 @@ const GAP_S = 7.5;
 
 /** The synthesized playlist: non-speech, one-word replies, short and normal call signs and spoken Cancel. */
 export function synthesizedPlaylist(directory: string): PreviewPlaylist {
-  seed = 7;
+  reseed(7);
   type Fixture = { id: string; kind: PreviewWindow["kind"]; samples: Float32Array; onsetS?: number; expected?: string; after?: Float32Array };
   const fixtures: Fixture[] = [
     { id: "room-only", kind: "non-speech", samples: silence(6) },

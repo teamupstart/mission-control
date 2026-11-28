@@ -26,6 +26,14 @@ export const VOICE_FLAG = "voice" as const;
 export const VOICE_FIRST_PREVIEW_HOLD_FLAG = "voice-first-preview-hold" as const;
 
 /**
+ * The preview flag for prefix recovery: an utterance the opening-name rule dropped gets a
+ * bounded second look past one or two stray leading words ("Um, Steve, check the build."). It
+ * routes a clear exact call sign after known filler, asks on an unsure card when the address is
+ * plausible, and leaves everything else dropped. Routes that work with it off never change.
+ */
+export const VOICE_PREFIX_RECOVERY_FLAG = "voice-prefix-recovery" as const;
+
+/**
  * Voiced audio an Always-on phrase must hold before its first live preview, while
  * `VOICE_FIRST_PREVIEW_HOLD_FLAG` is on. 300 ms is the knee the phantom-filler scout measured:
  * most of the false previews gone, for no measured median latency to the first correct preview.

@@ -634,7 +634,9 @@ export async function resolveRepoPath(
   // So: take the subpath within the tree the caller named, then re-root it onto the
   // repository. Sessions normally run in pooled worktrees, so this is the common case, not
   // an exotic one.
-  const top = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
+  const top = await run("git", ["-C", p, "rev-parse", "--show-toplevel"], { timeoutMs: REPO_ROOT_TIMEOUT_MS });
+  // Unanswered says nothing about where `p` sits, so it must not fall back to the root.
+  if (top.outcomeUnknown || top.overflowed) return null;
   const toplevel = top.code === 0 ? top.stdout.trim() : "";
   const canonical = (dir: string): string => {
     try {

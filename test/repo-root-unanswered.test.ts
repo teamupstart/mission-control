@@ -12,7 +12,7 @@ import { join } from "node:path";
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-repo-root-")));
 process.env.HARNESS_HOME = join(home, "state");
 
-const { resolveRepoRoot, resolveTaskRepoRoot, REPO_ROOT_TIMEOUT_MS } = await import("../src/server/repos.ts");
+const { resolveRepoPath, resolveRepoRoot, resolveTaskRepoRoot, REPO_ROOT_TIMEOUT_MS } = await import("../src/server/repos.ts");
 const originalGitOverride = process.env.MISSION_GIT_BIN;
 
 after(() => {
@@ -94,5 +94,38 @@ test("a directory git answers 'no' for is still not a git repository", async () 
   assert.deepEqual(await resolveTaskRepoRoot(plain), {
     ok: false,
     error: `not a git repository: ${plain}`,
+  });
+});
+
+/** A fake `git` that answers `--show-toplevel` with `repo`, and on its second call runs `second`. */
+function secondCall(name: string, repo: string, second: string): string {
+  const count = join(home, name, "calls");
+  return [
+    'const { existsSync, readFileSync, writeFileSync } = require("node:fs");',
+    `const count = ${JSON.stringify(count)};`,
+    'const calls = existsSync(count) ? Number(readFileSync(count, "utf8")) : 0;',
+    "writeFileSync(count, String(calls + 1));",
+    `const answer = () => process.stdout.write(${JSON.stringify(`${repo}\n`)});`,
+    `if (calls >= 1) { ${second} } else answer();`,
+    "",
+  ].join("\n");
+}
+
+test("a subdirectory whose second rev-parse is stopped is not reported as the repository root", async () => {
+  const repo = mkRepo("path-stopped");
+  const sub = join(repo, "packages", "web");
+  mkdirSync(sub, { recursive: true });
+  const script = secondCall("bin-path-dies", repo, 'process.kill(process.pid, "SIGKILL");');
+  assert.equal(await withFakeGit("bin-path-dies", script, () => resolveRepoPath(sub)), null);
+});
+
+test("a subdirectory whose second rev-parse is slower than run's 4s default keeps its subpath", async () => {
+  const repo = mkRepo("path-slow");
+  const sub = join(repo, "packages", "web");
+  mkdirSync(sub, { recursive: true });
+  const script = secondCall("bin-path-slow", repo, "setTimeout(answer, 5_000);");
+  assert.deepEqual(await withFakeGit("bin-path-slow", script, () => resolveRepoPath(sub)), {
+    repoRoot: repo,
+    path: realpathSync(sub),
   });
 });

@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { PauseState, SessionPause } from "../src/shared/pause.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -10,12 +8,13 @@ import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import { PauseManager } from "../src/server/pause/manager.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: these routes stop and start real processes. An agent's token must never
 // reach them - an agent pausing its peers, or lifting its own pause, defeats both - and a
 // malformed request must be refused before anything is signalled.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pause-routes-"));
+const home = tempDir("mission-pause-routes-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 after(() => rmSync(home, { recursive: true, force: true }));

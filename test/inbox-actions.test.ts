@@ -487,3 +487,38 @@ test("the report card draws Mute through its action with the spoken hint, and no
   assert.match(muted, /Steve&#x27;s reports are muted/);
   assert.match(muted, /Unmute in Settings &gt; Reports\./);
 });
+
+test("the split inbox adds no card action of its own: its pane draws each card's declared actions, and Mark all read keeps its id", async () => {
+  // The split view's own controls (tabs, rows, Previous and Next, back) move the selection; none
+  // acts on a card, so none is an inbox action and none may pose as one.
+  const source = readFileSync(new URL("../src/web/components/InboxSplitView.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /InboxActionButton|data-inbox-action/, "InboxSplitView draws no inbox action itself");
+
+  const { foldAttention } = await import("../src/web/lib/attention.ts");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { mkReport, mkReportControls } = await import("./helpers/report-fixture.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const fold = foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    reports: [mkReport({ id: "r-1", title: "Audit done", author: { key: "resident:steve", name: "Steve", residentProfileId: "steve" } })],
+  });
+  const html = renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true, "inbox-split": true } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold,
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: mkReportControls("r-1").controls,
+      }))),
+  );
+  const declared = new Set(actions.map((action) => action.id));
+  const drawn = [...html.matchAll(/data-inbox-action="([^"]+)"/g)].map((m) => m[1]!);
+  for (const id of drawn) assert.ok(declared.has(id), `the split inbox draws undeclared action ${id}`);
+  const pane = html.slice(html.indexOf('aria-label="Selected item"'));
+  for (const id of ["toggle", "mark-read", "mute"]) assert.match(pane, new RegExp(`data-inbox-action="${id}"`), `the pane draws ${id}`);
+  assert.match(html, /data-inbox-action="mark-all-read"[^>]*>Mark all read<\/button>/);
+});

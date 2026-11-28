@@ -3,12 +3,12 @@
 // size or timestamps.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-shaping-discovery-"));
+const home = tempDir("mission-shaping-discovery-");
 process.env.MISSION_HOME = home;
 const { scanShaperFolder, shapersFolder, SHAPER_FOLDER_ENTRIES } = await import("../src/server/shaping/discovery.ts");
 const { SHAPING_CONFIG_DEFAULTS } = await import("../src/shared/shaping.ts");

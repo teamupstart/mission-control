@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import fs, { fstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import fs, { fstatSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { once } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import workerThreads, { type WorkerOptions } from "node:worker_threads";
 import { onlineDatabaseBackup } from "../src/server/database-backups/online.ts";
 import { DatabaseBackupService, validateDatabaseBackupForRestore } from "../src/server/database-backups/service.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("ordinary HTTP requests and heartbeat timers run during real backup publication", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-publication-"));
+  const home = tempDir("backup-publication-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());
@@ -74,7 +74,7 @@ test("ordinary HTTP requests and heartbeat timers run during real backup publica
 });
 
 test("capacity refusals preserve recovery points, free staging files and persist scheduled backoff", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-capacity-"));
+  const home = tempDir("backup-capacity-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());
@@ -117,7 +117,7 @@ test("capacity refusals preserve recovery points, free staging files and persist
 });
 
 test("snapshot admission accepts the exact workspace requirement and refuses one byte less", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-workspace-threshold-"));
+  const home = tempDir("backup-workspace-threshold-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());
@@ -145,7 +145,7 @@ test("snapshot admission accepts the exact workspace requirement and refuses one
 });
 
 test("a later online progress check stops a growing copy when available space drops", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-online-space-drop-"));
+  const home = tempDir("backup-online-space-drop-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());
@@ -176,7 +176,7 @@ test("a later online progress check stops a growing copy when available space dr
 });
 
 test("a real worker scrub failure leaves the previous valid copy and reports the failed stage", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-worker-failure-"));
+  const home = tempDir("backup-worker-failure-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());
@@ -190,7 +190,7 @@ test("a real worker scrub failure leaves the previous valid copy and reports the
 });
 
 test("a publication worker that exits cleanly without reporting completion fails the capture", { timeout: 10_000 }, async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-worker-early-exit-"));
+  const home = tempDir("backup-worker-early-exit-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());
@@ -239,7 +239,7 @@ test("a publication worker that exits cleanly without reporting completion fails
 });
 
 test("file sync, rename and directory sync failures preserve the last durable point", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-publish-fsync-"));
+  const home = tempDir("backup-publish-fsync-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());
@@ -280,7 +280,7 @@ test("file sync, rename and directory sync failures preserve the last durable po
 });
 
 test("publication refuses linked staging files before opening or scrubbing their target", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-staging-link-"));
+  const home = tempDir("backup-staging-link-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const sourcePath = join(home, "source.db");
   const db = new DatabaseSync(sourcePath);
@@ -299,7 +299,7 @@ test("publication refuses linked staging files before opening or scrubbing their
 });
 
 test("publication refuses a regular staging file owned by another user before journal conversion", { skip: !process.getuid }, async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "backup-staging-owner-"));
+  const home = tempDir("backup-staging-owner-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, "source.db"));
   t.after(() => db.close());

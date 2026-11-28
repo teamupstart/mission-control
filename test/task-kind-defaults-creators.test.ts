@@ -1,9 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { TaskCandidate, TaskSourceInstance } from "../src/shared/task-source.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The two DURABLE task creators, against a real database and a real `TaskManager`.
 //
@@ -26,7 +25,7 @@ import type { TaskCandidate, TaskSourceInstance } from "../src/shared/task-sourc
 //   - An inheriting template cannot pin a model, for the reason a kind row cannot: a model id
 //     belongs to one harness, and the harness is not known until the run fires.
 
-const home = mkdtempSync(join(tmpdir(), "mission-kind-creators-"));
+const home = tempDir("mission-kind-creators-");
 process.env.MISSION_HOME = home;
 
 const db = await import("../src/server/db.ts");

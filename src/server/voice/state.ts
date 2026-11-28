@@ -14,6 +14,7 @@ import {
   knownVoiceCapabilities,
   VOICE_FLAG,
   VOICE_FIRST_PREVIEW_HOLD_FLAG,
+  VOICE_PREFIX_RECOVERY_FLAG,
   VOICE_FIRST_PREVIEW_VOICED_MS,
   VOICE_MODEL_STATE_NONE,
   VOICE_HELLO_LAPSE_MS,
@@ -68,6 +69,8 @@ export interface VoiceStateDeps {
 export type VoiceHelloResult =
   | { ok: true; protocol: string; captureOffset?: number }
   | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id" | "backend_not_selected" | "listener_exited" | "launch_unavailable"; reason: string; protocol: string };
+
+const SPEECH_PLAYBACK_OFF: VoiceCapability = { available: false, code: "speech_playback_off", reason: "Spoken replies are off." };
 
 function speechListenerBlock(hello: VoiceListenerHello | null, supervised: boolean, hasSystemVoice: boolean): VoiceCapability | null {
   if (!hello) return { available: false, reason: "No listener is running." };
@@ -141,6 +144,7 @@ export class VoiceStateStore {
 
   private manager?: VoiceSpeechManager;
   private muted = false;
+  private playbackOff = false;
   private get speechDirectory() { return this.deps.speechDirectory ?? join(stateDir(), "voice"); }
 
   /** An authenticated drain request can be the first request after restarting with Voice off. */
@@ -427,7 +431,8 @@ export class VoiceStateStore {
         .map(({ id, name, quality }) => ({ id, name, detail: quality })),
     };
     const supervised = !!listener?.speechInstance && manager.announced.has(listener.speechInstance);
-    const blocked = failure ?? speechListenerBlock(hello, supervised, catalog.system.length > 0);
+    // An unconfirmed stop keeps its recovery code. Otherwise the operator's switch comes first.
+    const blocked = failure ?? (config.speech.playback ? speechListenerBlock(hello, supervised, catalog.system.length > 0) : SPEECH_PLAYBACK_OFF);
     const resolved = blocked ? { voice: null, reason: blocked.reason } : resolveSpeechVoice(config, catalog);
     capabilities["speech-output"] = blocked ?? (resolved.voice ? { available: true, reason: null }
       : { available: false, code: "speech_voice_unavailable", reason: resolved.reason });
@@ -501,7 +506,7 @@ export class VoiceStateStore {
     const backend = reported && this.backendSelected(reported) ? reported : null;
     const longCapture = backend === "fluidaudio" && Number(hello?.version.split(".")[1] ?? 0) >= 2;
     return { mode, roster, backend, longCapture, reportsSpeechOnset: hello?.reportsSpeechOnset === true,
-      separatorWord: this.deps.config().separatorWord };
+      separatorWord: this.deps.config().separatorWord, prefixRecovery: this.deps.enabled(VOICE_PREFIX_RECOVERY_FLAG) };
   }
 
   /**
@@ -658,7 +663,10 @@ export class VoiceStateStore {
     const muted = automatic && config.muted;
     const becomingMuted = muted && !this.muted;
     this.muted = muted;
-    if (becomingMuted) this.manager?.stopAll();
+    const playbackOff = config?.speech.playback === false;
+    const becomingOff = playbackOff && !this.playbackOff;
+    this.playbackOff = playbackOff;
+    if (becomingMuted || becomingOff) this.manager?.stopAll();
     else if (config?.listeningMode === "push-to-talk" || (automatic && config.autoMuteDuringCalls &&
         this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS)) {
       this.manager?.stopAll("ask");
@@ -693,6 +701,7 @@ export class VoiceStateStore {
     else this.deps.speechBackend?.synthesizer.stop();
     this.manager = undefined;
     this.muted = false;
+    this.playbackOff = false;
     this.pushToTalkSession = undefined;
     this.lastReportHostUs = -1;
     this.lastPhysicalKeyHostUs = -1;

@@ -4,7 +4,6 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -12,7 +11,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { after, test } from "node:test";
 
@@ -27,8 +25,9 @@ import {
   verifyConductorInstallerCheckout,
 } from "../src/server/pipelines/conductor/installer.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-conductor-installer-")));
+const root = realpathSync(tempDir("mission-conductor-installer-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
 function git(cwd: string, ...args: string[]): void {

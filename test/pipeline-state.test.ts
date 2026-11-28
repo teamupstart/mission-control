@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -20,6 +19,7 @@ import {
   seedConductorDaemon,
   seedConductorRun,
 } from "../e2e/fixtures/conductor.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: every reader here parses files another program writes, concurrently,
 // with atomic renames - so a caller that arrives mid-write meets a path that has just
@@ -35,7 +35,7 @@ import {
 // purpose: that module is what the browser suite seeds with too, so a reader that passes
 // against a shape the real engine never writes fails in both layers or neither.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-state-"));
+const home = tempDir("mission-pipeline-state-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /** A throwaway repository root, one per case, so no test can see another's tree. */

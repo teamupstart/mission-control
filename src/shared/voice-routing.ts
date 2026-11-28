@@ -48,6 +48,8 @@ export interface VoiceCard {
   deadline: number | null;
   candidates: { kind: "agent" | "question"; id: string; title: string; detail: string; target?: SpokenName }[];
   reason: string;
+  /** What an unsure card from prefix recovery heard before the name, verbatim from the capture. */
+  prefix?: string;
   openQuestions: number;
   questionTitle?: string;
   detail?: string;
@@ -61,6 +63,10 @@ export interface HeardEntry {
   rule: string;
   matchedName: string | null;
   matchedReferenceName?: true;
+  /** Words prefix recovery looked past before the name, verbatim from the start of `text`. */
+  prefix?: string;
+  /** The names an unsure card from prefix recovery offered, in the order they were heard. */
+  suggested?: string[];
   pauseMs: number | null;
   detail: string;
 }
@@ -129,16 +135,27 @@ function splitHead(text: string): string {
 export type VoiceAddressedCommand = "stop";
 export type VoiceRouteDecision = Decision;
 
+/**
+ * Present only on a decision prefix recovery produced: the words said before the call sign,
+ * verbatim from the start of the capture up to the name. Every other field describes the rest.
+ */
+interface Recovered { prefix?: string }
+
 type Decision =
-  | { kind: "control"; command: "cancel" }
+  | { kind: "control"; command: "cancel" } & Recovered
   | { kind: "control"; command: "pick"; cardId: string; candidateId: string }
-  | { kind: "addressed"; command?: VoiceAddressedCommand; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
+  | { kind: "addressed"; command?: VoiceAddressedCommand; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null } & Recovered
   | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "ambiguous-name"; match: "exact" | "phonetic"; command?: VoiceAddressedCommand; splits: VoiceSplitPoint[]; pauseMs: number | null }
   | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "second-name"; pauseMs: number | null;
       /** The fixed first target: the model never chooses it (the first-word rule, spike S3). */
       target: SpokenName; match: "exact" | "phonetic";
       /** Each later name that could start a message of its own, in the order it was said. */
-      splits: VoiceSplitPoint[] }
+      splits: VoiceSplitPoint[] } & Recovered
+  /**
+   * Prefix recovery found a possible call sign after a word it cannot vouch for. The operator
+   * confirms the recipient on an unsure card; nothing is sent and no model is asked.
+   */
+  | { kind: "suggest"; candidates: SpokenName[]; text: string; prefix: string; command?: VoiceAddressedCommand; pauseMs: number | null }
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string; closestReferenceName?: true };
 
 const BOUNDARY_PUNCTUATION = /^[\p{P}\s]+|[\p{P}\s]+$/gu;
@@ -272,12 +289,27 @@ function messageAfterAddress(text: string, start: number, end: number): { body: 
   return { body, offset: text.length - body.length, wrappersClosed: wrappers.length === 0 };
 }
 
-export function routeUtterance(utterance: VoiceUtterance, context: {
+export interface VoiceRouteContext {
   roster: readonly SpokenName[];
   unsureCards?: readonly VoiceCard[];
   /** Candidates from a past card state at the time the speech was captured. */
   priorPickNames?: readonly string[];
-}): Decision {
+  /** The `voice-prefix-recovery` preview: look past a stray word or two the opening rule dropped. */
+  prefixRecovery?: boolean;
+}
+
+/**
+ * The opening-name rule (spike S3), then, with `prefixRecovery`, a bounded second look at an
+ * utterance that rule dropped. Every decision the opening rule makes other than dropping for
+ * want of an opening name is final, so recovery never changes a route that works today.
+ */
+export function routeUtterance(utterance: VoiceUtterance, context: VoiceRouteContext): Decision {
+  const decision = routeOpening(utterance, context);
+  if (!context.prefixRecovery || decision.kind !== "ignored" || (decision.reason !== "no-name" && decision.reason !== "near-miss")) return decision;
+  return recoverPrefix(utterance, context.roster) ?? decision;
+}
+
+function routeOpening(utterance: VoiceUtterance, context: VoiceRouteContext): Decision {
   const { text, words } = utterance;
   // Keep offsets into the original capture. Name matching ignores boundary punctuation,
   // while a message made entirely of punctuation still has a body.
@@ -412,4 +444,172 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     return { kind: "needs-model", reason: "second-name", candidates: [...splitCandidates], text: body, pauseMs, target, match, splits };
   }
   return { kind: "addressed", target, text: body, match, pauseMs, ...(command && { command }) };
+}
+
+// ---- prefix recovery (the `voice-prefix-recovery` preview) ----
+//
+// A noise or filler word transcribed before the call sign leaves "Um, Steve, check the build."
+// without an opening name. Recovery looks past at most two such words, routes only when the
+// words are known not to carry meaning and a clear exact call sign with its own boundary follows,
+// asks on an unsure card when the address is plausible but not certain, and otherwise leaves the
+// utterance dropped. It never searches further into the sentence and never asks a model who.
+
+/** Non-lexical fillers: "Um, Steve, check the build." */
+export const VOICE_PREFIX_FILLERS: ReadonlySet<string> = new Set([
+  "um", "umm", "uh", "uhh", "er", "erm", "ah", "hmm", "hm", "mm", "mmm", "mhm", "mm-hmm", "uh-huh", "huh", "eh",
+]);
+/** Discourse openers that introduce a call sign, as in "Okay, Steve, check the build." */
+export const VOICE_PREFIX_OPENERS: ReadonlySet<string> = new Set([
+  "oh", "okay", "ok", "so", "hey", "hi", "hello", "yo", "yeah", "right", "well", "and", "alright",
+]);
+/**
+ * Function words a recognizer writes for a cough or a knock. "The Atlas, our deploy box, is down."
+ * is grammatical, so one of these routes only when its own punctuation cuts it off ("The. Atlas,").
+ */
+export const VOICE_PREFIX_NOISE_WORDS: ReadonlySet<string> = new Set(["the", "a", "an", "you", "i"]);
+/** Before a name these report or relay speech ("Tell Steve, check the build"): never an address. */
+const RELAY_WORDS: ReadonlySet<string> = new Set([
+  "tell", "told", "ask", "asked", "say", "said", "says", "let", "have", "get", "make", "ping", "message", "remind",
+  "call", "text", "email", "show", "give", "send", "thank", "thanks", "dear",
+]);
+
+/** A boundary the recognizer wrote right after the name: a comma or a sentence or clause mark. */
+function delimitedAfter(text: string, token: Token): boolean {
+  return /[\p{Sentence_Terminal};:…][\p{Pe}\p{Pf}"']*$/u.test(token.raw) ||
+    /^[\p{Pe}\p{Pf}"']*\s*[,;:]/u.test(text.slice(token.index + token.raw.length));
+}
+
+/** Timed words after the first `skip` tokens, or none when the timings do not line up with them. */
+function wordsAfter(words: VoiceUtterance["words"], tokens: Token[], skip: number): VoiceUtterance["words"] {
+  let index = 0;
+  for (const [position, word] of words.entries()) {
+    const timedText = normalized(word.text);
+    if (!timedText) continue;
+    if (index === skip) return words.slice(position);
+    if (normalized(tokens[index]?.raw ?? "") !== timedText) return [];
+    index++;
+  }
+  return [];
+}
+
+/**
+ * A recovered address carries one plain clause. After a prefix, the transcript cannot tell a name that is
+ * talked about from a name that is addressed once the rest of the sentence branches:
+ *
+ * - a comma may set off a phrase that describes the name ("So, Steve, who is on call, said the build is
+ *   fine.", "Okay, Steve, our build lead, also approved it.");
+ * - "and" or "or" may continue a list the name began ("Okay, Steve, my brother and Bob approved it.").
+ *
+ * Recovery therefore leaves alone every message with a comma, other than before a closing courtesy word
+ * ("deploy to staging, please"), or with a coordinating word. A compound command after a prefix, such as
+ * "Um, Steve, check the build and run the tests.", is dropped, never sent; without the prefix the opening
+ * rule routes it as before.
+ */
+const COURTESY_CLOSE = /,\s*(?:please|thanks|thank you|okay|ok|now)[\p{P}\s]*$/iu;
+const COORDINATOR = /(?:^|[\s\p{P}])(?:and|or|nor|&)(?=$|[\s\p{P}])/iu;
+
+function describesName(message: string): boolean {
+  return message.replace(COURTESY_CLOSE, "").includes(",") || COORDINATOR.test(message);
+}
+
+function recoverPrefix(utterance: VoiceUtterance, roster: readonly SpokenName[]): Decision | null {
+  const { text } = utterance;
+  const tokens = tokensIn(text, 0);
+  const names = roster.map((target) => ({ target, name: normalized(target.name) }));
+  /** The longest exact roster name starting at token `i`. */
+  const exactAt = (i: number) => {
+    const token = tokens[i];
+    if (!token) return null;
+    const heard = namesStartingAt(text, token, tokens[i + 1]);
+    for (let length = heard.length; length > 0; length--) {
+      const targets = names.filter(({ name }) => name === heard[length - 1]).map(({ target }) => target);
+      if (targets.length) return { targets, last: tokens[i + length - 1]! };
+    }
+    return null;
+  };
+  /**
+   * A second exact name right behind the first, optionally joined by "and" or "or", with its own boundary after
+   * it. Without one, "Um, Steve and Luna said the build is fine." is two people being talked about.
+   */
+  const behind = (i: number) => {
+    const joined = !!tokens[i] && /^(?:and|or|&)$/u.test(normalized(tokens[i]!.raw));
+    const found = exactAt(joined ? i + 1 : i);
+    return found && delimitedAfter(text, found.last) ? found : null;
+  };
+  let suggestion: Decision | null = null;
+  for (const skip of [1, 2]) {
+    const start = tokens[skip];
+    if (!start) break;
+    // A roster name among the skipped words is an address the opening rule already judged.
+    if (skip === 2 && exactAt(1)) break;
+    const said = tokens.slice(0, skip).map(({ raw }) => normalized(raw));
+    const known = said.every((word, i) => VOICE_PREFIX_FILLERS.has(word) || VOICE_PREFIX_OPENERS.has(word) ||
+      (VOICE_PREFIX_NOISE_WORDS.has(word) && delimitedAfter(text, tokens[i]!)));
+    const relayed = said.some((word) => RELAY_WORDS.has(word));
+    const prefix = text.slice(0, start.index);
+    const rest = { ...utterance, text: text.slice(start.index), words: wordsAfter(utterance.words, tokens, skip) };
+    // Unsure cards are not offered to the remainder: a pick needs the name said on its own.
+    const decision = routeOpening(rest, { roster });
+    if (decision.kind === "control") {
+      if (decision.command === "cancel" && known) return { ...decision, prefix };
+      continue;
+    }
+    let candidates: SpokenName[];
+    let message: string;
+    let command: VoiceAddressedCommand | undefined;
+    let pauseMs: number | null = null;
+    let exact = false;
+    if (decision.kind === "addressed") {
+      ({ text: message, command, pauseMs } = decision);
+      candidates = [decision.target];
+      exact = decision.match === "exact";
+    } else if (decision.kind === "needs-model") {
+      // An ambiguous name stays a question for the operator here, never for the model.
+      candidates = decision.reason === "second-name" ? [decision.target] : decision.candidates;
+      ({ text: message, pauseMs } = decision);
+      command = decision.reason === "ambiguous-name" ? decision.command : undefined;
+      exact = decision.reason === "second-name" && decision.match === "exact";
+    } else if (decision.kind === "ignored" && decision.reason === "near-miss" && decision.closest) {
+      candidates = roster.filter((target) => target.name === decision.closest && !!target.isReferenceName === !!decision.closestReferenceName);
+      const after = messageAfterAddress(text, 0, start.index + start.raw.length);
+      message = after.body;
+      command = addressedCommand(after.body, after.wrappersClosed);
+    } else {
+      continue;
+    }
+    if (!candidates.length || !message) continue;
+    // A filler or opener that only sounds like a name ("well" for Will) is the next filler, not an address.
+    const spelled = decision.kind !== "ignored" && decision.match === "exact";
+    const heardWord = normalized(start.raw);
+    if (!spelled && [VOICE_PREFIX_FILLERS, VOICE_PREFIX_OPENERS, VOICE_PREFIX_NOISE_WORDS].some(words => words.has(heardWord))) continue;
+    const nameLength = decision.kind === "ignored" ? 1 : normalized(candidates[0]!.name).split(" ").length;
+    const last = tokens[skip + nameLength - 1];
+    // "Uh Steve's build broke" talks about Steve.
+    if (!last || /[’']s[\p{P}]*$/u.test(last.raw)) continue;
+    const delimited = delimitedAfter(text, last);
+    const second = behind(skip + nameLength);
+    if (second) {
+      // "Tell Steve and Luna, check the build." relays a message; it is not addressed to either.
+      if (relayed) continue;
+      // "Um, Steve and Luna, check the build." Offer every name heard; the message follows them.
+      const after = messageAfterAddress(text, 0, second.last.index + second.last.raw.length);
+      const offered = [...new Set([...candidates, ...second.targets])];
+      if (after.body && !describesName(after.body)) suggestion ??= { kind: "suggest", candidates: offered, text: after.body, prefix, pauseMs,
+        ...(addressedCommand(after.body, after.wrappersClosed) && { command: "stop" as const }) };
+      continue;
+    }
+    // Checked after a second name: "and Luna, check the build." is the rest of an address, not an aside.
+    if (describesName(message)) continue;
+    if (known && exact && delimited && decision.kind === "addressed") return { ...decision, prefix };
+    if (known && exact && delimited && decision.kind === "needs-model" && decision.reason === "second-name") {
+      // Split offsets were measured in the text after the prefix; the model reads the whole capture.
+      return { ...decision, prefix, splits: decision.splits.map(split => ({ ...split, at: split.at + start.index })) };
+    }
+    // With no boundary after the name, "Uh Steve broke it again." reads exactly like "Uh Steve check the
+    // build": ordinary speech that mentions an agent is left alone rather than asked about.
+    if (!relayed && delimited) {
+      suggestion ??= { kind: "suggest", candidates, text: message, prefix, pauseMs, ...(command && { command }) };
+    }
+  }
+  return suggestion;
 }

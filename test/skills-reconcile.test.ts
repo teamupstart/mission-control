@@ -5,7 +5,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -14,19 +13,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SkillCatalogEntry } from "../src/shared/types.ts";
 import type { Catalog } from "../src/server/skills/catalog.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The reconciler writes into ~/.claude/skills - the operator's own directory, next to
 // hand-authored skills the harness must never touch. So these run against a REAL
 // directory with real symlinks: the whole safety argument is about what lstat says and
 // what rm does, and a mocked fs would assert the mock.
 
-const home = mkdtempSync(join(tmpdir(), "mission-skills-rec-"));
+const home = tempDir("mission-skills-rec-");
 const claudeSkills = join(home, "claude-skills");
 // The reconciler folds over EVERY harness's skills directory (`skillsDirs()`). These
 // cases are about the walk over one, so they name one explicitly - which also keeps the

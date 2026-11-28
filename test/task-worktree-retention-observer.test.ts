@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import type { Task } from "../src/shared/types.ts";
 import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-retention-observer-"));
+const home = tempDir("mission-retention-observer-");
 process.env.HARNESS_HOME = home;
 const { upsertTask, getTaskWorktreeRetention, listTaskWorktreeRetention, recordTaskWorktreeObservation, deleteTaskWorktreeRetention, listOrphanedTaskWorktreeRetentionIds, getTask } =
   await import("../src/server/db.ts");

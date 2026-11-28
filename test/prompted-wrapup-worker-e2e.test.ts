@@ -4,8 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
@@ -14,6 +13,7 @@ import type { Session, SessionQueue } from "../src/shared/types.ts";
 import type { WorkflowStagedEvidenceList } from "../src/shared/workflow.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 import { waitForWorkerObservation } from "./helpers/worker-observation.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The `prompted` wrap-up trigger, driven END TO END: the real worker binary, a stub
 // daemon, and a fake `claude`.
@@ -43,7 +43,7 @@ after(() => {
 });
 
 function tmp(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = tempDir(prefix);
   temps.push(dir);
   return dir;
 }

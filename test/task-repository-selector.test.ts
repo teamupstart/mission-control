@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { after, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 // Seeded before anything resolves the repository roots. A real path, so the repository the
 // walk reports compares equal on macOS's /private/var temp dir.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-task-repo-selector-")));
+const home = realpathSync(tempDir("mission-task-repo-selector-"));
 const workspace = join(home, "workspace");
 mkdirSync(workspace, { recursive: true });
 process.env.MISSION_WORKSPACE_DIRS = workspace;

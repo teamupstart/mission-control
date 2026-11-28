@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PrMatch } from "../src/server/registry.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What a phased-plan run actually PUBLISHES, checked on the far side of publication.
@@ -39,8 +39,8 @@ import type { ReviewManager } from "../src/server/reviews.ts";
  * this ordering changes when Mission Control schedules work; do not "fix" it in the fixture.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-phased-plan-intent-home-"));
-const repos = mkdtempSync(join(tmpdir(), "mission-phased-plan-intent-repos-"));
+const home = tempDir("mission-phased-plan-intent-home-");
+const repos = tempDir("mission-phased-plan-intent-repos-");
 process.env.HARNESS_HOME = home;
 
 // Dynamic, so the env above is set before any module reads it.

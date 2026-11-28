@@ -1,15 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: `POST /api/tasks` telling an operator their checkout is "not a git
 // repository" when git simply did not answer. On a loaded machine the task seed's `rev-parse`
 // was stopped at `run`'s 4s default and the route refused a real repository.
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-repo-root-")));
+const home = realpathSync(tempDir("mission-repo-root-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { resolveRepoPath, resolveRepoRoot, resolveTaskRepoRoot, REPO_ROOT_TIMEOUT_MS } = await import("../src/server/repos.ts");

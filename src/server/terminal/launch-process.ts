@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Proc } from "../discovery/processes.ts";
+import type { Proc, ProcessSnapshot } from "../discovery/processes.ts";
 import type { Session } from "@shared/types.ts";
 import { terminalResourceIds } from "@shared/pane.ts";
 // Not `../config.ts`: its module scope freezes the state directory, and this module is
@@ -195,6 +195,31 @@ export function hasMissionLaunchAncestor(
   return false;
 }
 
+/** A missing claim or a complete scan can find no wrapper. An incomplete scan cannot prove its absence. */
+export async function readTerminalWrapperProcess(
+  stateHome: string,
+  knownPid?: number,
+  readSnapshot?: () => Promise<Pick<ProcessSnapshot, "processes" | "unknownReason">>,
+): Promise<LaunchProcess | null | "unknown"> {
+  let pid = knownPid;
+  if (!pid) {
+    try {
+      const value = readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8").trim();
+      pid = /^\d+$/.test(value) ? Number(value) : 0;
+      if (!pid) return null;
+    } catch { return null; } // No readable PID claim yet.
+  }
+  try {
+    const snapshot = await (readSnapshot ?? (await import("../discovery/processes.ts")).listProcessesSnapshot)();
+    const process = snapshot.processes.find((p) => p.pid === pid);
+    // Ghostty uses `exec -l`, which prefixes the shell's argv0 with a dash.
+    if (process?.startMs && process.command.replace(/^-/, "") === `/bin/sh ${join(stateHome, LAUNCH_SCRIPT_FILE)}`) {
+      return { pid, startMs: process.startMs };
+    }
+    return snapshot.unknownReason === null ? null : "unknown";
+  } catch { return "unknown"; }
+}
+
 /** The private wrapper records its own PID before starting the requested command. */
 export async function readLaunchProcess(stateHome: string): Promise<LaunchProcess | null> {
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -205,16 +230,8 @@ export async function readLaunchProcess(stateHome: string): Promise<LaunchProces
       const owner = (await listProcesses()).find((p) => p.pid === marker.pid && p.startMs === marker.startMs);
       if (owner) return marker;
     } catch { /* Legacy launch wrappers have only the PID file below. */ }
-    try {
-      const value = readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8").trim();
-      const pid = /^\d+$/.test(value) ? Number(value) : 0;
-      const { listProcesses } = await import("../discovery/processes.ts");
-      const process = (await listProcesses()).find((p) => p.pid === pid);
-      // Ghostty uses `exec -l`, which prefixes the shell's argv0 with a dash.
-      if (process?.startMs && process.command.replace(/^-/, "") === `/bin/sh ${join(stateHome, LAUNCH_SCRIPT_FILE)}`) {
-        return { pid, startMs: process.startMs };
-      }
-    } catch { /* The wrapper may not have reached its first instruction yet. */ }
+    const wrapper = await readTerminalWrapperProcess(stateHome);
+    if (wrapper && wrapper !== "unknown") return wrapper;
     await delay(50);
   }
   return null;

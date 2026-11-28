@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pending-turn-db-"));
+const home = tempDir("mission-pending-turn-db-");
 process.env.MISSION_HOME = home;
 
 // Open a database containing the previous outbox schema, as an upgrade would.

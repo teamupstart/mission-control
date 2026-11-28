@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tempDir } from "../temp-root.mjs";
 
 // Real git fixtures, built with as few git processes as the result allows.
 //
@@ -73,17 +73,15 @@ interface Template {
   shas: string[];
 }
 
-// One directory per worker for every template it keeps, removed when the worker exits. Never
-// shared between workers: each test file is its own process, and a cache two processes could
+// One directory per worker for every template it keeps, inside the worker's temp root and so
+// removed with it when the worker exits (see docs/test-temp-dirs.md). Never shared between workers: each test file is its own process, and a cache two processes could
 // race to fill would trade exec churn for a flake.
 let templateRoot: string | null = null;
 const templates = new Map<string, Template>();
 
 function templateDir(): string {
   if (templateRoot === null) {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-git-templates-")));
-    templateRoot = root;
-    process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+    templateRoot = realpathSync(tempDir("mission-git-templates-"));
   }
   return mkdtempSync(join(templateRoot, "t-"));
 }
@@ -274,10 +272,12 @@ export interface OriginAndClone {
  * diverge the clone, and exercise a genuine fetch/reset/clean rather than a mock
  * that can't show what a reset does to a branch name.
  *
- * `prefix` names the temp dir so a failing test says which suite left it behind.
+ * `prefix` names the temp dir so a failing test says which suite made it. The directory is
+ * in the worker's temp root, so it is removed when the worker exits whether or not the caller
+ * removes it first.
  */
 export function mkOriginAndClone(prefix: string): OriginAndClone {
-  return originAndCloneAt(realpathSync(mkdtempSync(join(tmpdir(), prefix))));
+  return originAndCloneAt(realpathSync(tempDir(prefix)));
 }
 
 /** `mkOriginAndClone` inside a directory the caller owns - for a `cachedGitTree` build. */

@@ -295,6 +295,7 @@ export function ConsoleDetail({
   const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
   // Agent reports this session posted, every version, where each was posted (`inbox` flag).
+  const environmentOn = useFeatureFlag("agent-environment");
   const reportsOn = useFeatureFlag(INBOX_FLAG) && view.reportControls !== undefined;
   const sessionReports = useSessionReports(session.id, view.reports ?? [], reportsOn);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
@@ -831,6 +832,11 @@ export function ConsoleDetail({
       </dl>
       )}
 
+      {environmentOn && !!session.missingEnvironment?.length && (
+        <p className="settings-error" role="status">
+          Missing agent environment variables at launch: {session.missingEnvironment.join(", ")}
+        </p>
+      )}
       {/* Gated on the invite, not just on `drawerOpen`: this is Foreman's record of a
           session it is in, and the header's one action is to leave. A session it has been
           removed from renders the invite affordance alone (the rail below), so the slot

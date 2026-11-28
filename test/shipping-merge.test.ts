@@ -41,6 +41,7 @@ function ready(over: Partial<MergeInput> = {}): MergeInput {
     inspector: "live",
     reviewedSha: "abc",
     reviewPosture: "live",
+    localReview: { enabled: false, matchedHeadSha: null },
     workflowGate: "none",
     rounds: 1,
     openFindings: 0,
@@ -288,6 +289,7 @@ test("every block code the gate can return has a sentence for the panel", () => 
     "conflicting",
     "mergeability-unknown",
     "soaking",
+    "local-review-missing",
   ];
   for (const c of codes) assert.ok(MERGE_BLOCK_LABEL[c], `no label for ${c}`);
   assert.equal(
@@ -394,4 +396,114 @@ test("the Inspector re-reviews a positive base change, never an unknown base", (
   assert.equal(reviewBaseChanged(null, "feat/parent", "main"), true);
   // One read that came back without a base must not cost a model review every tick.
   assert.equal(reviewBaseChanged("feat/parent", null, "main"), false);
+});
+
+// ---- Shipping on a local review ----
+//
+// A head the Local Inspector passed is recorded `local` with no GitHub round behind it. It is
+// merge provenance only while every one of these holds: the Inspector is live now, Local review
+// is on, the recorded head and base are this push's, and the workflow manager still reports the
+// match for exactly this head. Each test below spoils one.
+
+/** A locally reviewed head with every gate satisfied: no GitHub round, the manager matching it. */
+function locallyReviewed(over: Partial<MergeInput> = {}): MergeInput {
+  return ready({
+    reviewPosture: "local",
+    rounds: 0,
+    localReview: { enabled: true, matchedHeadSha: "abc" },
+    ...over,
+  });
+}
+
+test("a matched local head merges once every other gate passes, with no GitHub round", () => {
+  assert.deepEqual(mergeVerdict(locallyReviewed()), { merge: true, block: null, waitMs: 0 });
+});
+
+test("a matched local head still waits on every other gate", () => {
+  assert.equal(blockOf(locallyReviewed({ pr: { ...ready().pr, checks: "pending" } })), "checks-pending");
+  assert.equal(blockOf(locallyReviewed({ openFindings: 1 })), "findings");
+  assert.equal(blockOf(locallyReviewed({ pr: { ...ready().pr, unresolvedThreads: 1 } })), "threads");
+  assert.equal(blockOf(locallyReviewed({ pr: { ...ready().pr, reviewDecision: "CHANGES_REQUESTED" } })), "changes-requested");
+  assert.equal(blockOf(locallyReviewed({ workflowGate: "pending" })), "workflow-gate-pending");
+  assert.equal(blockOf(locallyReviewed({ pr: { ...ready().pr, createdAt: NOW - 60_000 } })), "soaking");
+  assert.equal(
+    blockOf(locallyReviewed({ pr: { ...ready().pr, baseRefName: "feat/x" }, reviewedBase: "feat/x" })),
+    "base-not-default",
+  );
+  assert.equal(blockOf(locallyReviewed({ stack: { lineage: true, releasedForHead: false } })), "stack-hold");
+  assert.equal(blockOf(locallyReviewed({ cwd: "/elsewhere", repoRoot: "/elsewhere" })), "not-allowlisted");
+});
+
+test("an unreviewed head is refused, whatever the manager says about it", () => {
+  // Nothing recorded for this push: the worker has not recorded the match yet.
+  assert.equal(blockOf(locallyReviewed({ reviewedSha: null, reviewPosture: null })), "not-reviewed");
+});
+
+test("a later push that changes the tree is refused: the manager no longer matches it", () => {
+  // The worker recorded `abc` as local; the branch moved to `def`, whose tree differs, so the
+  // manager reports no match and the recorded head is another commit.
+  const pushed = { ...ready().pr, headSha: "def" };
+  assert.equal(blockOf(locallyReviewed({ pr: pushed, localReview: { enabled: true, matchedHeadSha: null } })), "not-reviewed");
+  // Even once the worker re-records it, a head the manager does not match never merges as local.
+  assert.equal(
+    blockOf(locallyReviewed({ pr: pushed, reviewedSha: "def", localReview: { enabled: true, matchedHeadSha: null } })),
+    "local-review-missing",
+  );
+});
+
+test("a later commit with the same tree merges once the worker has recorded it, and is refused before", () => {
+  const recreated = { ...ready().pr, headSha: "def" };
+  // The manager matches `def` (same tree and base), but the worker's record is still `abc`.
+  assert.equal(
+    blockOf(locallyReviewed({ pr: recreated, reviewedSha: "abc", localReview: { enabled: true, matchedHeadSha: "def" } })),
+    "not-reviewed",
+  );
+  // The next sweep recorded `def` as local.
+  assert.equal(
+    mergeVerdict(locallyReviewed({ pr: recreated, reviewedSha: "def", localReview: { enabled: true, matchedHeadSha: "def" } })).merge,
+    true,
+  );
+});
+
+test("a match reported for another head never stands in for this one", () => {
+  assert.equal(blockOf(locallyReviewed({ localReview: { enabled: true, matchedHeadSha: "zzz" } })), "local-review-missing");
+});
+
+test("Local review off refuses a local posture, even with a match reported", () => {
+  assert.equal(blockOf(locallyReviewed({ localReview: { enabled: false, matchedHeadSha: "abc" } })), "local-review-missing");
+});
+
+test("a base change is refused: the local review read a different diff", () => {
+  // The pull request was retargeted after the head was recorded against main.
+  assert.equal(
+    blockOf(locallyReviewed({ pr: { ...ready().pr, baseRefName: "release", defaultBranch: "release" } })),
+    "not-reviewed",
+  );
+});
+
+test("a matching local pass never merges while the Inspector is in Dry run", () => {
+  // Recorded as `dry-run`, as the worker records a matched head in Dry run.
+  assert.equal(blockOf(locallyReviewed({ inspector: "dry-run", reviewPosture: "dry-run" })), "inspector-dry-run");
+  // And defensively, a head recorded `local` before a switch to Dry run.
+  assert.equal(blockOf(locallyReviewed({ inspector: "dry-run" })), "inspector-dry-run");
+  // The other non-live postures refuse first too.
+  assert.equal(blockOf(locallyReviewed({ inspector: "off" })), "inspector-off");
+  assert.equal(blockOf(locallyReviewed({ inspector: "not-allowlisted" })), "inspector-not-allowlisted");
+  // Back in Live, a head recorded `dry-run` is not promoted: the worker must record it again.
+  assert.equal(blockOf(locallyReviewed({ reviewPosture: "dry-run", rounds: 1 })), "review-unpublished");
+});
+
+test("with Local review off, the predicate behaves exactly as before for GitHub reviews", () => {
+  const off = { localReview: { enabled: false, matchedHeadSha: null } };
+  assert.equal(mergeVerdict(ready(off)).merge, true);
+  assert.equal(blockOf(ready({ ...off, rounds: 0 })), "not-reviewed");
+  assert.equal(blockOf(ready({ ...off, reviewPosture: "dry-run" })), "review-unpublished");
+  // A reported match does not change a GitHub review's verdict either.
+  assert.equal(blockOf(ready({ localReview: { enabled: true, matchedHeadSha: "abc" }, rounds: 0 })), "not-reviewed");
+});
+
+test("the local block reason says what is missing inside the merge queue's one line", () => {
+  const label = MERGE_BLOCK_LABEL["local-review-missing"];
+  assert.match(label.slice(0, 45), /Local Inspector review/);
+  assert.notEqual(label, MERGE_BLOCK_LABEL["review-unpublished"]);
 });

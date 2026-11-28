@@ -1,12 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-retriage-"));
+const home = tempDir("mission-retriage-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_PI_EXTENSION = join(home, "missing-extension.js");
 const { Registry } = await import("../src/server/registry.ts");

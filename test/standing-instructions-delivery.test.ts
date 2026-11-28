@@ -2,13 +2,13 @@ import { isTerminalBackendId } from "../src/shared/terminal.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Repository standing instructions reaching a real launch, on every one of the five shipped
 // harness · runtime pairs.
@@ -28,7 +28,7 @@ import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
 // the operator said once. So every case below asserts the prompt AND the launch payload
 // together - neither a double send nor a silent drop can pass on one of them alone.
 
-const home = mkdtempSync(join(tmpdir(), "mission-standing-delivery-"));
+const home = tempDir("mission-standing-delivery-");
 process.env.HARNESS_HOME = home;
 // Binaries that exist, so bin resolution can never be what fails a launch. The terminal home
 // is faked through the dispatcher's `spawn` seam.

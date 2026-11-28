@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { mock, type TestContext } from 'node:test';
@@ -12,6 +11,7 @@ import { FuseV1Options } from '@electron/fuses';
 import { distributionNames } from '../../scripts/distribution-contract.mjs';
 import { binaryPublisherPolicy } from '../../src/shared/binary-publisher-policy.mjs';
 import { UPDATE_HELPER_FILES } from '../../scripts/update-helper-files.mjs';
+import { tempDir } from "../temp-root.mjs";
 
 // Keep the real producer, app/DMG/archive verifiers, fuse reader, bundle hashing,
 // signed-runtime qualifier and publication-input validator. Only external build,
@@ -62,7 +62,7 @@ function put(path: string, body: string | Buffer) {
 }
 
 export function fixture(t: Pick<TestContext, 'after'>, failure = '', channel = 'alpha') {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mission-package-behavior-')));
+  const root = realpathSync(tempDir('mission-package-behavior-'));
   const output = join(root, 'release/distribution');
   const app = join(output, 'mac-arm64/Agent Mission Control.app');
   const roots: string[] = [], mounts: string[] = [], stages: string[] = [], mcpMethods: string[] = [];

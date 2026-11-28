@@ -6,6 +6,7 @@ import { TrustPanel, TrustGrantSummary } from "../src/web/components/TrustPanel.
 import {
   trustRows,
   mergeBlindSpots,
+  mergeGrantTitle,
   checkExecutionGrants,
   checksArmedReading,
   grantPatch,
@@ -639,4 +640,11 @@ test("TrustGrantSummary reads unknown before the daemon answers, and agrees with
   );
   assert.match(one, /Foreman may send live in 1 repository\b/);
   assert.match(one, /Manage in Trust/);
+});
+
+test("the merge column names the review a merge relies on, and the local one only while Local review is on", () => {
+  assert.match(mergeGrantTitle(false), /on a Live GitHub Inspector review of the exact push\.$/);
+  assert.doesNotMatch(mergeGrantTitle(false), /Local Inspector/);
+  assert.match(mergeGrantTitle(true), /or a passed Local Inspector review of its exact content and base/);
+  assert.match(mergeGrantTitle(true), /GitHub Inspector must be Live here/);
 });

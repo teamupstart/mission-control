@@ -1,11 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexTranscript } from "../src/server/harness/codex/transcript.ts";
 import { claudeTranscript } from "../src/server/harness/claude/transcript.ts";
 import type { TranscriptMessage } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the dashboard's conversation panel, and every reader that asks a
 // harness "what has this session said".
@@ -23,7 +23,7 @@ import type { TranscriptMessage } from "../src/shared/types.ts";
 // conversation buried in tens of kilobytes of tool output per turn - and every assertion
 // here is about turns being COUNTED rather than bytes being budgeted.
 
-const dir = mkdtempSync(join(tmpdir(), "mission-turn-budget-"));
+const dir = tempDir("mission-turn-budget-");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 /** Bytes of tool output written per turn, well past a turn's own few hundred. */

@@ -1,6 +1,5 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareStagedInstall } from "../../scripts/install-staged-app.mjs";
 import { prepareInPlaceInstall, recoverMigration, runMigration } from "../../scripts/install-migration.mjs";
@@ -10,6 +9,7 @@ import { readUpdateOutcome, updateOutcomePath } from "../../src/main/update-outc
 import { updateOutcomeHost } from "../fixtures/update-relaunch.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 // The 2026-11-03 rollback, end to end: a workflow-check supervisor left running from inside the
 // app bundle makes the real in-place transaction's bundle-exit wait time out, the real restore
@@ -74,7 +74,7 @@ function terminalNodeProcesses(bundle: string, otherScript = true): MacAppOps {
 
 test("an in-place update commits and opens the new build while a terminal session's MCP server keeps running", async ({dashboard, daemon}) => {
   const state = realpathSync(daemon.home);
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "in-place-node-mode-success-")));
+  const root = realpathSync(tempDir("in-place-node-mode-success-"));
   try {
     const {app, candidate} = bundles(root);
     const receipt = {schema: 1, repo: "teamupstart/mission-control", releaseTag: "v1.26.0", installedVersion: "1.26.0",
@@ -132,7 +132,7 @@ test("an in-place update commits and opens the new build while a terminal sessio
 
 test("a terminal session's MCP server never blocks the update; another script it runs on the app's Node is named as that, not as the app", async ({dashboard, daemon}) => {
   const state = realpathSync(daemon.home);
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "in-place-node-mode-")));
+  const root = realpathSync(tempDir("in-place-node-mode-"));
   try {
     const {app, candidate} = bundles(root);
     const receipt = {schema: 1, repo: "teamupstart/mission-control", releaseTag: "v1.26.0", installedVersion: "1.26.0",
@@ -176,7 +176,7 @@ test("a terminal session's MCP server never blocks the update; another script it
 
 test("a rolled-back in-place update names the blocking check's pid and cause in the outcome dialog", async ({dashboard, daemon}) => {
   const state = realpathSync(daemon.home);
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "in-place-rollback-")));
+  const root = realpathSync(tempDir("in-place-rollback-"));
   try {
     const {app, candidate} = bundles(root);
     const receipt = {schema: 1, repo: "teamupstart/mission-control", releaseTag: "v1.26.0", installedVersion: "1.26.0",

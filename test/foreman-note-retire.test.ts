@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { episodeOutcome } from "../src/shared/foreman.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { FormOutcome } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Retiring a Foreman note when the human answered the ask themselves.
 //
@@ -25,7 +24,7 @@ import type { FormOutcome } from "../src/shared/protocol.ts";
 // a decision the human still owes, which is strictly worse than the stale note it clears.
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
-const home = mkdtempSync(join(tmpdir(), "mission-note-retire-"));
+const home = tempDir("mission-note-retire-");
 process.env.HARNESS_HOME = home;
 const { formDelivered } = await import("../src/server/actions.ts");
 const { Registry } = await import("../src/server/registry.ts");

@@ -2,10 +2,9 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
-import { tmpdir } from "node:os";
 import { captureWorktreeTree } from "../src/server/git/worktree-tree.ts";
 import { captureWorkflowPublication } from "../src/server/workflows/publication.ts";
 import { captureSubmissionTextArtifacts, WorkflowImageEvidenceError } from "../src/server/workflows/images.ts";
@@ -13,8 +12,9 @@ import { workflowHasUnpublishedChanges, workflowPublicationTree } from "../src/s
 import { probeMatchesEvidence } from "../src/server/workflows/context.ts";
 import { WORKFLOW_TEXT_EVIDENCE_LIMITS, type WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-publication-"));
+const home = tempDir("mission-publication-");
 after(() => rmSync(home, { recursive: true, force: true }));
 let serial = 0;
 function git(root: string, ...args: string[]): string {

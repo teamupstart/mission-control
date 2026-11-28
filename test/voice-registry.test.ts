@@ -1,8 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ServerEvent, Session, Task } from "../src/shared/types.ts";
 import {
   ResidentProfileRevisionSchema,
@@ -11,6 +9,7 @@ import {
 } from "../src/shared/residents.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
 import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The voice name registry (contract C): who can be addressed, computed from the daemon's own
 // catalogs and kept current by their frames. A resident is listed while its profile is live and
@@ -19,7 +18,7 @@ import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
 // another agent takes its name. The last tests run it against the real Registry, to pin the
 // frames a window receives.
 
-const home = mkdtempSync(join(tmpdir(), "mission-voice-registry-"));
+const home = tempDir("mission-voice-registry-");
 process.env.HARNESS_HOME = home;
 
 const { VoiceNameRegistry, VOICE_NAME_RETENTION_MS, computeVoiceRoster, wireVoiceNameEvents } = await import("../src/server/voice/names.ts");

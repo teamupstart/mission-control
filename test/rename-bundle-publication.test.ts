@@ -2,18 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import childProcess, { execFileSync, spawnSync } from 'node:child_process';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { publishRenamedApp, renamedBundlePublicationCommand, reserveRenamedApp } from '../scripts/app-bundle-swap.mjs';
 import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
+import { tempDir } from "./temp-root.mjs";
 
 const native = createRequire(import.meta.url)(ensureNativeStateLockAddon()) as {
   renameNoReplace(source: string, target: string): void;
 };
 
 function fixture(t: test.TestContext) {
-  const root = mkdtempSync(join(tmpdir(), 'rename-publication-'));
+  const root = tempDir('rename-publication-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const target = join(root, 'Agent Mission Control.app');
   const staging = reserveRenamedApp(target);

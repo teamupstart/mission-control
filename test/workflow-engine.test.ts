@@ -1,8 +1,7 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
 import type { PersonaWorkloadEvent } from "../src/shared/repository-access.ts";
@@ -20,15 +19,17 @@ import type {
 } from "../src/shared/workflow.ts";
 import { DEFAULT_WORKFLOW_POLICY, emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import type { HostSuspendClock } from "../src/server/host-suspend.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
+const home = tempDir("mission-workflow-engine-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 // A directory for the one test that needs a real one, kept OUTSIDE the state dir. The daemon
 // owns what lives under `MISSION_HOME` and sweeps parts of it at startup; a test's stand-in
 // worktree planted in there passes or fails depending on what ran before it.
-const checkTree = mkdtempSync(join(tmpdir(), "mission-workflow-engine-tree-"));
+const checkTree = tempDir("mission-workflow-engine-tree-");
 after(() => rmSync(checkTree, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
@@ -47,6 +48,7 @@ const { claudeRunner, configureClaudeRunnerTransport } = await import(
   "../src/server/llm/claude.ts"
 );
 const { ProviderFailure } = await import("../src/server/llm/provider-failure.ts");
+const { HostSuspendMonitor, HOST_SUSPEND_INTERVAL_MS } = await import("../src/server/host-suspend.ts");
 
 function persona(
   id: string,
@@ -1008,6 +1010,297 @@ test("provider token exhaustion blocks immediately without scheduling a retry", 
   assert.equal(store.latestAttemptForNode("submission-provider-token", "p")?.attempt, 1);
   assert.equal(store.listReceipts("submission-provider-token").some((receipt) => receipt.edgeId === "p-fail"), false);
   assert.equal(store.lastPersonaCallErrorCode(store.latestAttemptForNode("submission-provider-token", "p")!.id), "persona_token_exhausted");
+});
+
+/** A host-suspend clock a test flips: every call that fails while `asleep` overlapped a sleep. */
+function scriptedSuspend(): { clock: HostSuspendClock; asleep: boolean } {
+  const state: { clock: HostSuspendClock; asleep: boolean } = {
+    asleep: false,
+    clock: {
+      mark: () => ({ at: 0, suspendedMs: 0 }),
+      suspendedMsSince: () => (state.asleep ? 17 * 60_000 : 0),
+    },
+  };
+  return state;
+}
+
+function hostSuspendEngine(
+  store: InstanceType<typeof WorkflowStore>,
+  runner: LlmRunner,
+  now: () => number,
+  hostSuspend: ReturnType<typeof scriptedSuspend>["clock"],
+): InstanceType<typeof WorkflowEngine> {
+  return new WorkflowEngine(store, () => {}, {
+    runnerFor: () => runner, now, hostSuspend,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+    }),
+  });
+}
+
+function personaCallCodes(runId: string): (string | null)[] {
+  return openDb().prepare(`SELECT error_code FROM workflow_llm_calls
+    WHERE run_id = ? ORDER BY started_at, rowid`).all(runId)
+    .map((row) => (row as { error_code: string | null }).error_code);
+}
+
+test("calls that fail across a host sleep are retried without spending the two-call budget (#1734)", async () => {
+  const store = seedSubmission("host-sleep", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  let clock = 2_000_000;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    // The two failures the issue recorded: each Codex call timed out seconds after a wake.
+    if (calls <= 2) throw new Error("codex exec timed out");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  suspend.asleep = true;
+  const engine = hostSuspendEngine(store, runner, () => clock, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-host-sleep");
+    for (const attempt of [2, 3]) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-host-sleep", "p");
+        return latest?.attempt === attempt && latest.state === "retry_wait";
+      });
+      const waiting = store.latestAttemptForNode("submission-host-sleep", "p")!;
+      assert.equal(waiting.retryAt, clock + 5_000);
+      assert.equal(store.getRun("run-host-sleep")?.status, "running");
+      if (attempt === 3) suspend.asleep = false;
+      clock = waiting.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-host-sleep")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 3);
+  assert.deepEqual(personaCallCodes("run-host-sleep"), ["persona_host_suspended", "persona_host_suspended", null]);
+  const operationId = store.latestAttemptForNode("submission-host-sleep", "p")!.reviewInput!.operationId;
+  assert.equal(store.personaOperationCorrectionCalls(operationId), 1);
+  const scheduled = store.listEvents("run-host-sleep").filter((event) => event.kind === "persona_retry_scheduled");
+  assert.equal(scheduled.length, 2);
+  assert.ok(scheduled.every((event) => (event.payload as { hostSuspended?: boolean }).hostSuspended === true));
+  assert.equal(store.listEvents("run-host-sleep").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+  assert.match(
+    store.listAttempts("submission-host-sleep").find((attempt) => attempt.attempt === 1)?.error ?? "",
+    /host was asleep during this call.*codex exec timed out/,
+  );
+});
+
+test("the same failures with no host sleep still spend the budget and block the run", async () => {
+  const store = seedSubmission("awake-timeout", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    throw new Error("codex exec timed out");
+  });
+  const engine = hostSuspendEngine(store, runner, Date.now, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-awake-timeout");
+    await waitFor(() => store.getRun("run-awake-timeout")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 2);
+  assert.equal(store.getRun("run-awake-timeout")?.currentPhase, "infrastructure_error");
+  assert.deepEqual(personaCallCodes("run-awake-timeout"), ["persona_infrastructure", "persona_infrastructure"]);
+});
+
+test("a token limit during a host sleep still blocks immediately", async () => {
+  const store = seedSubmission("sleep-token", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    throw new ProviderFailure("prompt exceeds model token limit", "prompt_too_long");
+  });
+  const engine = hostSuspendEngine(store, runner, Date.now, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-token");
+    await waitFor(() => store.getRun("run-sleep-token")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 1);
+  assert.equal(store.getRun("run-sleep-token")?.currentPhase, "provider_token_exhausted");
+  assert.deepEqual(personaCallCodes("run-sleep-token"), ["persona_token_exhausted"]);
+});
+
+test("a sleep that ended before a call started cannot excuse that call", async () => {
+  // The real detector on a fake clock, so each call is judged by the windows it overlaps
+  // rather than by a flag: one sleep is recorded during call 1, and calls 2 and 3 run after it.
+  const store = seedSubmission("sleep-stale", providerRetryGraph);
+  let clock = 4_000_000;
+  const monitor = new HostSuspendMonitor({ now: () => clock });
+  const awake = (ms: number): void => {
+    for (let left = ms; left > 0; left -= HOST_SUSPEND_INTERVAL_MS) {
+      clock += Math.min(HOST_SUSPEND_INTERVAL_MS, left);
+      monitor.tick();
+    }
+  };
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    awake(20_000);
+    // Only call 1 has a sleep inside it: seventeen minutes, seen by the next heartbeat.
+    if (calls === 1) {
+      clock += 17 * 60_000;
+      monitor.tick();
+    }
+    throw new Error("codex exec timed out");
+  });
+  const engine = hostSuspendEngine(store, runner, () => clock, monitor);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-stale");
+    await waitFor(() => {
+      const latest = store.latestAttemptForNode("submission-sleep-stale", "p");
+      return latest?.attempt === 2 && latest.state === "retry_wait";
+    });
+    // The host is awake from here on. The earlier window is still on record, which is the point.
+    awake(store.latestAttemptForNode("submission-sleep-stale", "p")!.retryAt! - clock);
+    engine.wake();
+    await waitFor(() => store.getRun("run-sleep-stale")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 3);
+  assert.deepEqual(
+    personaCallCodes("run-sleep-stale"),
+    ["persona_host_suspended", "persona_infrastructure", "persona_infrastructure"],
+  );
+  assert.equal(store.getRun("run-sleep-stale")?.currentPhase, "infrastructure_error");
+  assert.equal(store.listEvents("run-sleep-stale").some((event) => event.kind === "persona_infrastructure_exhausted"), true);
+});
+
+test("a Persona attempt without review input is also excused by a host sleep", async () => {
+  // The legacy path: no frozen review input, so the budget is the node's three infrastructure
+  // attempts rather than the operation's two calls. Three sleeps would have spent all of it.
+  const store = seedSubmission("sleep-legacy", providerRetryGraph);
+  const node = providerRetryGraph.nodes.find((candidate) => candidate.id === "p");
+  assert.ok(node && node.kind === "persona");
+  store.insertAttempt({
+    id: "legacy-attempt-1", submissionId: "submission-sleep-legacy", nodeId: "p", attempt: 1,
+    state: "queued", persona: node.persona, inputFingerprint: "legacy", now: 1,
+  });
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let clock = 12_000_000;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    if (calls <= 3) throw new Error("codex exec timed out");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  const engine = hostSuspendEngine(store, runner, () => clock, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-legacy");
+    for (let excused = 1; excused <= 3; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-sleep-legacy", "p");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      assert.equal(store.latestAttemptForNode("submission-sleep-legacy", "p")?.reviewInput, undefined);
+      assert.equal(store.getRun("run-sleep-legacy")?.status, "running", `still running after sleep ${excused}`);
+      if (excused === 3) suspend.asleep = false;
+      clock = store.latestAttemptForNode("submission-sleep-legacy", "p")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-sleep-legacy")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 4);
+  assert.equal(store.hostSuspendedAttempts("submission-sleep-legacy", "p"), 3);
+  assert.deepEqual(personaCallCodes("run-sleep-legacy"),
+    ["persona_host_suspended", "persona_host_suspended", "persona_host_suspended", null]);
+  assert.equal(store.listEvents("run-sleep-legacy").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+});
+
+test("every call a host sleep overlaps is excused, however many there are", async () => {
+  const store = seedSubmission("sleep-night", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let clock = 3_000_000;
+  let calls = 0;
+  // A night of maintenance wakes: twenty calls in a row fail across a sleep, then the Mac wakes.
+  const sleeps = 20;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    if (calls <= sleeps) throw new Error("codex exec timed out");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  const engine = hostSuspendEngine(store, runner, () => clock, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-night");
+    for (let excused = 1; excused <= sleeps; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-sleep-night", "p");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      assert.equal(store.getRun("run-sleep-night")?.status, "running", `still running after sleep ${excused}`);
+      if (excused === sleeps) suspend.asleep = false;
+      clock = store.latestAttemptForNode("submission-sleep-night", "p")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-sleep-night")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, sleeps + 1);
+  assert.deepEqual(personaCallCodes("run-sleep-night"), [...Array(sleeps).fill("persona_host_suspended"), null]);
+  assert.equal(store.listEvents("run-sleep-night").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+});
+
+test("a run stopped before a host-sleep retry is scheduled cancels the attempt and queues nothing", async () => {
+  const store = seedSubmission("sleep-cancelled", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    // The operator cancels while the call is in flight; the call then fails across the sleep.
+    store.cancelRun("run-sleep-cancelled", "test_cancel", Date.now());
+    throw new Error("codex exec timed out");
+  });
+  const engine = hostSuspendEngine(store, runner, Date.now, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-cancelled");
+    await waitFor(() => calls === 1 && /codex exec timed out/.test(
+      store.latestAttemptForNode("submission-sleep-cancelled", "p")?.error ?? "",
+    ));
+  } finally {
+    await engine.stop();
+  }
+  const attempts = store.listAttempts("submission-sleep-cancelled").filter((attempt) => attempt.nodeId === "p");
+  assert.equal(attempts.length, 1, "no retry attempt may be queued for a stopped run");
+  assert.equal(attempts[0]!.state, "cancelled");
+  // The host-sleep branch records the call's own failure, not the "after the submission
+  // stopped" note the ordinary infrastructure path writes.
+  assert.equal(attempts[0]!.error, "Provider Persona failed: Error: codex exec timed out");
+  assert.doesNotMatch(attempts[0]!.error ?? "", /Audit-only/);
+  assert.equal(store.listEvents("run-sleep-cancelled").some((event) => event.kind === "persona_retry_scheduled"), false);
+  assert.equal(store.getRun("run-sleep-cancelled")?.status, "cancelled");
 });
 
 for (const [kind, code, expectedState] of [
@@ -3139,7 +3432,7 @@ for (const scenario of ["recover", "limit", "resubmit", "cancel", "vendor-wait",
 async function captureRepositoryFixture(t: TestContext, store: InstanceType<typeof WorkflowStore>, submissionId: string) {
   const { execFileSync } = await import("node:child_process");
   const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
-  const directory = mkdtempSync(join(tmpdir(), "mission-repository-review-supervision-"));
+  const directory = tempDir("mission-repository-review-supervision-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", directory]);
   writeFileSync(join(directory, "submitted.txt"), "submitted\n");
@@ -3207,7 +3500,7 @@ test("terminal-run maintenance verifies local lease and home ownership without r
   const request = { workloadId: callId, attemptId, submissionId, digest: snapshot.digest, locator: snapshot.locator };
   service.setActiveRequestLookup(key => key === callId ? request : null);
   const lease = await service.materialize(request, new AbortController().signal);
-  const providerHome = mkdtempSync(join(tmpdir(), "mission-repository-workload-"));
+  const providerHome = tempDir("mission-repository-workload-");
   t.after(() => rmSync(providerHome, { recursive: true, force: true }));
   new LocalRepositoryWorkloadOwnership(store, () => false).recordHome(callId, providerHome);
   const nonce = store.repositoryLocalOwner(callId)!.lease_nonce!;
@@ -3570,7 +3863,7 @@ for (const { id, description, query, severity } of [
       setInspectorConfig(prior);
       applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: false });
     });
-    const repo = mkdtempSync(join(tmpdir(), "mission-local-inspector-engine-"));
+    const repo = tempDir("mission-local-inspector-engine-");
     t.after(() => rmSync(repo, { recursive: true, force: true }));
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
     const commit = (name: string) => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",

@@ -212,7 +212,10 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
         <span className="vc-grow">Asking aloud: <q>{askSentence(card.candidates.map(c => c.kind === "agent" && c.target ? spokenNameLabel(c.target) : c.title))}</q></span>
         {button("Stop", "Stop asking aloud", () => void run(() => api.stopVoiceSpeech(job.id)), "btn-ghost")}</div>
         : <><div className="vc-row"><VoiceIcon name="unsure" /><b>{card.candidates[0]?.kind === "question" ? "Which question?" : "Who is this for?"}</b></div>
-        <Transcript className="vc-heard" text={first?.text ?? ""}><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</Transcript></>}
+        {card.prefix !== undefined && first?.text.startsWith(card.prefix)
+          ? <><Transcript className="vc-heard" text={first.text}><s>{card.prefix}</s><u>{first.text.slice(card.prefix.length).match(/^\S+/u)?.[0]}</u>{first.text.slice(card.prefix.length).replace(/^\S+/u, "")}</Transcript>
+            <span className="vc-meta">Not sent: something came before the name.</span></>
+          : <Transcript className="vc-heard" text={first?.text ?? ""}><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</Transcript>}</>}
         {card.candidates.map(c => {
           if (c.kind === "question") return <Tooltip key={c.id} label="Choose this question for your voice reply">
             <button type="button" className="vc-roster" disabled={busy}

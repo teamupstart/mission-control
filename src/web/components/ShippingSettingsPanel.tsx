@@ -143,7 +143,9 @@ export function ShippingSettingsPanel({
    * and dry-run or a missing repo reviews without publishing, which `mergeVerdict`
    * refuses to act on. Without saying so, all three read as a feature that is broken.
    */
-  inspectorConfig: Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist"> | null;
+  inspectorConfig:
+    | (Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist"> & Partial<Pick<InspectorConfig, "localReview">>)
+    | null;
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
   const { config, inspections, update, error } = state;
@@ -177,12 +179,16 @@ export function ShippingSettingsPanel({
     autoMerge && inspectorConfig?.enabled === true && inspectorConfig.mode !== "live";
   const someRepoUnreviewed = autoMerge && untrustedByInspector.length > 0;
   const anyBlocker = inspectorOff || inspectorQuiet || someRepoUnreviewed;
+  // Local review reads as off while its preview flag is off, so this copy appears only where
+  // the daemon would actually accept a local review as merge provenance.
+  const localReview = inspectorConfig?.localReview === true;
 
   return (
     <section className="settings-section sc-section">
       <p className="settings-hint sc-lede">
         What lands without you. <strong>YOLO mode</strong> merges the pull requests Mission
-        Control opened once GitHub Inspector has reviewed the current push with nothing
+        Control opened once GitHub Inspector has reviewed the current push
+        {localReview && <>, or a passed Local Inspector review matches its exact content and base,</>} with nothing
         outstanding, CI is green, nobody has an unresolved thread on it, and it has been
         open for the soak window below.
       </p>
@@ -334,6 +340,7 @@ export function ShippingSettingsPanel({
                   <span>
                     GitHub Inspector is in dry run, so it reviews but publishes nothing - and YOLO
                     mode will not merge on a review nobody can see.{" "}
+                    {localReview && <>Pull requests the Local Inspector reviewed wait too: Dry run stays dry for the merge.{" "}</>}
                     <Tooltip label="Open the GitHub Inspector panel and flash its mode control">
                       <button
                         type="button"

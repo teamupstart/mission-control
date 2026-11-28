@@ -15,18 +15,18 @@ import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, originAndCloneAt, seedGitRepo } from "./helpers/git-fixture.ts";
 import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
 // assignments, so every module below arrives through a dynamic import (see db-isolation.test.ts).
 // `realpathSync` because $TMPDIR is a symlink into /private on macOS and every path this
 // subsystem stores is canonicalized.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-runtime-")));
+const home = realpathSync(tempDir("mission-check-runtime-"));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

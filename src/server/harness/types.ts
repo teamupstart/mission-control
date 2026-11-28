@@ -1,3 +1,4 @@
+import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
 import type { HookIngest } from "@shared/protocol.ts";
 import type { HookSubagentSignal } from "./hook-subagents.ts";
 import type {
@@ -405,6 +406,8 @@ export interface TranscriptSpec {
   passiveRead(path: string): TranscriptPassiveRead;
   /** Conversation reading, or null when the file carries metadata but no messages. */
   messages: TranscriptMessages | null;
+  /** How the reader presents a submitted user message when its text differs from the sent bytes. */
+  userMessageText?: (raw: string) => string;
   /**
    * Drop cached per-session state for sessions that are no longer live; `null` when
    * `locate` keeps none.
@@ -879,6 +882,8 @@ export interface ResidentMcpLaunch {
 }
 
 export interface SdkLaunchOptions {
+  /** Launch-only. Never persist or project the resolved values. */
+  namedEnvironment?: NamedAgentEnvironment;
   /** Profile-owned state, shared across runs and recreated on SDK restore. */
   residentStateDir?: string;
   residentCompaction?: { threshold: number; /** Previously measured native limit, replayed on resume. */ tokenLimit?: number };

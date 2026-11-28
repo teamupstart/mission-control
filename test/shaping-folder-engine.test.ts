@@ -4,12 +4,12 @@
 // operator, a registered id shadows it, and every launch records which definition ran.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-shaping-folder-"));
+const home = tempDir("mission-shaping-folder-");
 process.env.MISSION_HOME = home;
 const { closeDb, deleteAppConfig, getAppConfig } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");

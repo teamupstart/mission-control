@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shipRecoveryMarker } from "../src/shared/ship-recovery.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-ship-recovery-http-"));
+const root = tempDir("mission-ship-recovery-http-");
 const home = join(root, "home");
 const repo = join(root, "repo");
 process.env.MISSION_HOME = home;

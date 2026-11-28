@@ -1,3 +1,4 @@
+import type { NamedAgentEnvironment } from "../../executables/named-variable.ts";
 import type { SdkLaunchOptions } from "../types.ts";
 import type { PiHostUI } from "./sdk-ui.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
@@ -212,5 +213,5 @@ export interface PiSdkDeps {
   /** Configured GitHub remotes of this checkout, read without contacting GitHub. */
   repositories(cwd: string): Promise<string[]>;
   /** The environment Pi's in-process shell tools should run under. */
-  toolEnv(cwd: string, stateHome: string): Record<string, string>;
+  toolEnv(cwd: string, stateHome: string, namedEnvironment?: NamedAgentEnvironment): Record<string, string>;
 }

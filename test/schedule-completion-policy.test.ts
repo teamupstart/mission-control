@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -14,6 +13,7 @@ import {
 } from "../src/shared/schedules.ts";
 import type { ScheduleDefinition } from "../src/shared/schedules.ts";
 import { PROMPTED_COMPLETION_OUTCOMES } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: a recurring mission that files work for ever, blocked for ever by one
@@ -38,7 +38,7 @@ import { PROMPTED_COMPLETION_OUTCOMES } from "../src/shared/types.ts";
  * assumed. A fresh-schema test would pass with both `addColumn` calls deleted.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-completion-"));
+const home = tempDir("mission-schedule-completion-");
 process.env.MISSION_HOME = home;
 
 /**

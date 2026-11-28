@@ -1,8 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: `runtimes` (pure, browser-readable) and `Harness.sdk` (server-side,
 // holds the driver) are ONE FACT written in two files, and the two failures are opposite
@@ -15,7 +15,7 @@ import { join } from "node:path";
 // This is the `GOAL_UNSUPPORTED` treatment - the same reason `harness-transcript.test.ts`
 // exists - applied to the runtime axis.
 
-const home = mkdtempSync(join(tmpdir(), "harness-sdk-"));
+const home = tempDir("harness-sdk-");
 // Set before importing anything that resolves the state dir: the harness registry reaches
 // specs that read config paths.
 process.env.HARNESS_HOME = join(home, "state");

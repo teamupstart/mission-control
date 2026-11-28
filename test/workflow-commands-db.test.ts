@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the Command catalog is where an executable argv now LIVES, and this file
 // is the one that opens a database written by a build that had no such table. Two things can
@@ -18,7 +18,7 @@ import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 // The fixture is therefore hand-written at the OLD schema. An upgrade test that builds its
 // fixture from `db.ts` would create the tables itself and then assert they exist.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-commands-db-"));
+const home = tempDir("mission-workflow-commands-db-");
 process.env.MISSION_HOME = home;
 
 /** Two overrides and one duplicate, exactly as an operator's `app_config` blob would hold them. */

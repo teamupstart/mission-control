@@ -2,8 +2,7 @@
 // a temporary state directory. No model tokens, no real Claude Code, no real state home.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -18,6 +17,7 @@ import { run as runDoctorStep } from "../src/cli/setup-steps/doctor.ts";
 import { run as runModStep } from "../src/cli/setup-steps/mod.ts";
 import { refuseCheckoutDestination, stageMod } from "../src/server/mod-stage.ts";
 import { createFakeClaude, createFakeDaemon, type FakeClaude, type FakeDaemon } from "./helpers/home-dispatch-fakes.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const MOD_ID = "mission-control@mission-control";
 
@@ -51,7 +51,7 @@ interface Rig {
 }
 
 async function rig(options: { version?: string; flag?: boolean } = {}): Promise<Rig> {
-  const home = mkdtempSync(join(tmpdir(), "mission-setup-"));
+  const home = tempDir("mission-setup-");
   const state = join(home, "state");
   const source = join(home, "built-mod");
   mkdirSync(state, { recursive: true });
@@ -98,7 +98,7 @@ test("claude detection tries MISSION_CLAUDE_BIN, then PATH, then known places, a
   const viaEnv = createFakeClaude({ version: "2.1.400" });
   const viaPath = createFakeClaude({ version: "2.1.329" });
   const old = createFakeClaude({ marketplaceSupported: false });
-  const home = mkdtempSync(join(tmpdir(), "mission-detect-"));
+  const home = tempDir("mission-detect-");
   try {
     const exec = realExec;
     // The explicit override wins over PATH.
@@ -134,7 +134,7 @@ test("claude detection tries MISSION_CLAUDE_BIN, then PATH, then known places, a
     assert.equal(third.claude?.path, known);
     assert.equal(third.claude?.source, "known place");
 
-    const none = await findClaude({ env: { PATH: old.dir, HOME: mkdtempSync(join(tmpdir(), "mission-empty-")) }, exec });
+    const none = await findClaude({ env: { PATH: old.dir, HOME: tempDir("mission-empty-") }, exec });
     assert.equal(none.claude, null);
   } finally {
     for (const fake of [viaEnv, viaPath, old]) fake.cleanup();
@@ -143,7 +143,7 @@ test("claude detection tries MISSION_CLAUDE_BIN, then PATH, then known places, a
 });
 
 test("staging publishes by rename: a new inode, no sibling left, and a bad build leaves the old one in place", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-"));
+  const dir = tempDir("mission-stage-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -220,7 +220,7 @@ test("a stale installed build is reinstalled by uninstall and install, never `pl
 });
 
 test("staging refuses inconsistent marketplace and plugin versions", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-versions-"));
+  const dir = tempDir("mission-stage-versions-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -237,7 +237,7 @@ test("staging refuses inconsistent marketplace and plugin versions", async () =>
 });
 
 test("staging refuses checkout destinations including symlinks", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-checkout-"));
+  const dir = tempDir("mission-stage-checkout-");
   try {
     const checkout = join(dir, "checkout");
     mkdirSync(join(checkout, ".git"), { recursive: true });
@@ -454,7 +454,7 @@ test("setup and doctor take no unknown arguments", async () => {
 });
 
 test("a swap that fails after the old mod is moved aside puts the old mod back and leaves no sibling", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-swap-"));
+  const dir = tempDir("mission-stage-swap-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -614,7 +614,7 @@ test("a plugin listing that is not JSON is reported by setup and by doctor", asy
 });
 
 test("a build whose plugin.json has no usable version is refused before anything is replaced", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-version-"));
+  const dir = tempDir("mission-stage-version-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -717,7 +717,7 @@ test("a build that setup's own checks reject never replaces the working mod or i
 
 // Removal is made to fail by a read-only folder, which root ignores; the test also proves it failed.
 test("a failed cleanup of the staging copy does not stop the old mod being put back", { skip: process.getuid?.() === 0 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-cleanup-"));
+  const dir = tempDir("mission-stage-cleanup-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -749,7 +749,7 @@ test("a failed cleanup of the staging copy does not stop the old mod being put b
 });
 
 test("a build that is invalid once copied is refused before the swap, and the old mod stays published", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-copy-"));
+  const dir = tempDir("mission-stage-copy-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -770,7 +770,7 @@ test("a build that is invalid once copied is refused before the swap, and the ol
 });
 
 test("when publishing fails and putting the old mod back fails too, both errors and the old build's location are reported", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-restore-"));
+  const dir = tempDir("mission-stage-restore-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -826,7 +826,7 @@ test("recovery commands quote a state directory with spaces or shell characters"
 
 test("with HOME unset in the environment, the known places under the resolved home are still searched", async () => {
   const fake = createFakeClaude({ version: "2.1.400" });
-  const home = mkdtempSync(join(tmpdir(), "mission-detect-home-"));
+  const home = tempDir("mission-detect-home-");
   try {
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
     for (const name of ["claude", "state.json"]) writeFileSync(join(home, ".local", "bin", name), readFileSync(join(name === "claude" ? fake.path : join(fake.dir, name))));
@@ -984,7 +984,7 @@ test("a mod-calls record that is null, an array or a scalar is a failed check, n
 });
 
 test("a backup folder that cannot be removed after a successful publish does not turn it into a failure", { skip: process.getuid?.() === 0 }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-backup-"));
+  const dir = tempDir("mission-stage-backup-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -1121,7 +1121,7 @@ test("an installed mod whose staged copy is missing or unreadable fails mod-curr
 });
 
 test("a marketplace manifest that is unreadable or does not list the mod is refused before anything is replaced", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-market-"));
+  const dir = tempDir("mission-stage-market-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -1224,7 +1224,7 @@ test("the by-hand recovery for a stale build starts with the user-scope uninstal
 });
 
 test("the built mod is found beside the bundle or in a source checkout, and MISSION_MOD_SOURCE wins", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-modsrc-"));
+  const dir = tempDir("mission-modsrc-");
   try {
     const layout = (root: string) => {
       mkdirSync(join(root, "dist", "mod", ".claude-plugin"), { recursive: true });
@@ -1281,7 +1281,7 @@ test("setup does not ask claude the same questions twice, while doctor on its ow
 });
 
 test("a later stage sweeps the staging copies and backups an earlier run left, but never the only copy of the mod", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-sweep-"));
+  const dir = tempDir("mission-stage-sweep-");
   try {
     const source = join(dir, "build");
     const state = join(dir, "state");
@@ -1347,7 +1347,7 @@ test("a mod-calls verdict is shared with the closing doctor only after the build
 });
 
 test("two overlapping stages of the same mod are serialized, so neither removes the other's published build", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-race-"));
+  const dir = tempDir("mission-stage-race-");
   try {
     const first = join(dir, "build-a");
     const second = join(dir, "build-b");
@@ -1380,7 +1380,7 @@ test("two overlapping stages of the same mod are serialized, so neither removes 
 });
 
 test("a lock left by a dead run is taken over, and one held by a running run is waited for and then reported", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-stage-lock-"));
+  const dir = tempDir("mission-stage-lock-");
   try {
     const source = join(dir, "build");
     const dest = join(dir, "state", "mod");
@@ -1482,7 +1482,7 @@ test("an install at the right version that failed to load is reported as failed 
 });
 
 test("the checkout guard stops at the user's home, so a git-tracked home does not block the default state directory", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-guard-"));
+  const dir = tempDir("mission-guard-");
   try {
     const gitDir = (root: string) => {
       mkdirSync(join(root, ".git"), { recursive: true });

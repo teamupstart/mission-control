@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { SYSTEM_APPS_DIR } from "../scripts/app-bundle-swap.mjs";
@@ -14,6 +13,7 @@ import {
   resolveInstallDestination,
   userAppsDir,
 } from "../scripts/install-destination.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 const HOME = "/Users/someone";
 const USER_DIR = join(HOME, "Applications");
@@ -266,7 +266,7 @@ test("a file, a foreign owner, and an unwritable folder each stop the install wi
 });
 
 test("the destination inspector reads the real filesystem, spaces and symlinks included", () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-destination-"));
+  const root = tempDir("mission-destination-");
   try {
     const home = join(root, "a home with spaces");
     mkdirSync(join(home, "Applications", "nested"), { recursive: true });

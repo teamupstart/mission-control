@@ -1,8 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -14,13 +13,14 @@ import { captureUpdateProcessOwners } from '../../scripts/update-process-owners.
 import { processIdentity, processIsAlive } from '../../scripts/update-lock.mjs';
 import { withDaemonDb } from '../fixtures/daemon-db.ts';
 import { nativeUpdateProgress } from '../fixtures/native-update-progress.ts';
+import { tempDir } from "../../test/temp-root.mjs";
 
 for (const legacy of [false, true]) test(legacy
   ? 'a legacy update without a migration handoff shows its blocker and closes progress after the wait'
   : 'the visible update progress identifies an owned blocking process and its work', async () => {
   test.skip(process.platform !== 'darwin', 'the helper displays a native macOS progress dialog');
   test.setTimeout(60_000);
-  const root = mkdtempSync(join(tmpdir(), 'mc-update-blocker-progress-'));
+  const root = tempDir('mc-update-blocker-progress-');
   const bundle = join(root, 'Fixture.app');
   const executable = join(bundle, 'Contents/MacOS/background-work');
   mkdirSync(dirname(executable), {recursive: true});

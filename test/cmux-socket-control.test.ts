@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
@@ -13,6 +12,7 @@ import {
 } from "../src/server/setup/cmux-config.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The two facts that stand between an installed cmux and a working one, and the repair for
@@ -122,7 +122,7 @@ test("an existing automation block is added to rather than replaced", () => {
 
 /** A disposable stand-in for `~/.config/cmux/cmux.json`, seeded or absent. */
 function configPath(seed?: string): string {
-  const path = join(mkdtempSync(join(tmpdir(), "mission-cmux-config-")), ".config", "cmux", "cmux.json");
+  const path = join(tempDir("mission-cmux-config-"), ".config", "cmux", "cmux.json");
   if (seed !== undefined) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, seed);

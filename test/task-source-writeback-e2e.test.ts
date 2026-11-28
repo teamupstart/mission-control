@@ -1,8 +1,7 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -11,6 +10,7 @@ import type { QueueManager } from "../src/server/queue.ts";
 // of the HARNESS_HOME preamble below.
 import { TaskSourcesConfigSchema } from "../src/shared/task-source.ts";
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The phase's merge criteria, end to end, against the real chain: the config route stores
 // the write-back consent, a completion through `TaskManager.complete` reaches the ledger,
@@ -31,7 +31,7 @@ import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
 //   3. A restart mid-queue loses nothing: the ledger is on disk, and the rows a fresh
 //      process claims are the ones the old one had not delivered.
 
-const home = mkdtempSync(join(tmpdir(), "mission-writeback-e2e-"));
+const home = tempDir("mission-writeback-e2e-");
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
@@ -51,11 +51,11 @@ const { drainWritebacks, makeWritebackEnqueuer } = await import(
  * Realpath'd, because macOS's temp dir is a symlink into `/private/var` and an unresolved
  * path would not match what the child reports back.
  */
-const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-writeback-repo-")));
+const repo = realpathSync(tempDir("mission-writeback-repo-"));
 // `PUT /api/task-sources/config` resolves every source's repoRoot to a git root, and this
 // file goes through that route rather than around it - so the fixture has to be one.
 execFileSync("git", ["init", "-q"], { cwd: repo });
-const bin = mkdtempSync(join(tmpdir(), "mission-writeback-bin-"));
+const bin = tempDir("mission-writeback-bin-");
 const record = join(bin, "gh-argv.txt");
 
 after(() => {

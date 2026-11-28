@@ -1,17 +1,17 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { SessionAction } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the SessionAction catalog is SSE state, not a second polling subsystem. A
 // reconnect snapshot and the incremental stream must converge on the same catalog, including
 // after an archive - which is an UPSERT, because the row stays addressable by every draft and
 // published version that names it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-actions-sse-"));
+const home = tempDir("mission-session-actions-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

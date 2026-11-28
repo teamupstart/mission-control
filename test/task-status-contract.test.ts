@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { TASK_STATUSES, type TaskStatus } from "../src/shared/types.ts";
 import { ACTIVE_TASK_STATUSES, isActiveTask, isTerminalTask } from "../src/shared/task-status.ts";
 import { statusBlocksOverlap } from "../src/server/schedules/policy.ts";
 import { agentIsFree, type BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-status-contract-"));
+const home = tempDir("mission-task-status-contract-");
 process.env.MISSION_HOME = home;
 const db = await import("../src/server/db.ts");
 const { Registry, completableByMerge } = await import("../src/server/registry.ts");

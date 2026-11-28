@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -17,6 +16,7 @@ import {
   readHalt,
 } from "../src/server/pipelines/conductor/state.ts";
 import { seedConductorDaemon, seedConductorRun } from "../e2e/fixtures/conductor.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the group is the ONE derived fact in this projection - everything else
 // is a field copied out of a file - and it is what the rail will sort runs by. Two of its
@@ -28,7 +28,7 @@ import { seedConductorDaemon, seedConductorRun } from "../e2e/fixtures/conductor
 // true at once. A halted run whose last step is still `in_progress` is the case that decides
 // whether the rail says "working" about something that stopped.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-normalize-"));
+const home = tempDir("mission-pipeline-normalize-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function repo(name: string): string {

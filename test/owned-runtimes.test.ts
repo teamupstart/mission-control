@@ -2,8 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
 import { integrationRuntime, ownedInvocation, ownedHook, ownedStatusline, repairOwnedMcp, INTEGRATION_REPAIR_NONCE } from "../src/main/integration-runtime.ts";
@@ -12,6 +11,7 @@ import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
 import { servingRuntime } from "../src/server/owned-runtime.ts";
 import { resolveMissionMcpRuntime } from "../src/server/mission-mcp.ts";
 import { missionHookScriptPath } from "../src/server/harness/claude/hooks.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const exe = "/Applications/Agent Mission Control.app/Contents/MacOS/Mission Control";
 const runtime = integrationRuntime(exe, "electron");
@@ -52,7 +52,7 @@ test("repair upgrades an old source MCP registration without changing environmen
 });
 
 test("MCP repair preserves JSONC environment comments, disabled records and repeat publication", t => {
-  const home = mkdtempSync(join(tmpdir(), "owned-mcp-"));
+  const home = tempDir("owned-mcp-");
   t.after(() => rmSync(home, {recursive:true, force:true}));
   const path = join(home, ".claude.json");
   writeFileSync(path, '{// top comment\n"mcpServers":{"mission-control":{"command":"/mise/shims/node","args":["/source/dist/mcp/server.mjs"],"env":{// keep env comment\n"CUSTOM":"stay"},"disabledTools":["one"]}}}');
@@ -73,7 +73,7 @@ test("MCP repair preserves JSONC environment comments, disabled records and repe
 });
 
 test("Codex repair adds invocation-scoped Node mode while keeping TOML comments and custom environment", t => {
-  const home = mkdtempSync(join(tmpdir(),"owned-toml-"));
+  const home = tempDir("owned-toml-");
   t.after(()=>rmSync(home,{recursive:true,force:true}));
   mkdirSync(join(home,".codex"));
   const path = join(home,".codex/config.toml");
@@ -94,7 +94,7 @@ test("Codex repair adds invocation-scoped Node mode while keeping TOML comments 
 });
 
 test("Codex repair handles an empty env table without a newline and refuses custom inline env", t => {
-  const home = mkdtempSync(join(tmpdir(), "owned-toml-edge-"));
+  const home = tempDir("owned-toml-edge-");
   t.after(() => rmSync(home, {recursive: true, force: true}));
   mkdirSync(join(home, ".codex"));
   const path = join(home, ".codex/config.toml");

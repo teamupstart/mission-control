@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -23,8 +22,9 @@ import {
 } from "../src/shared/voice.ts";
 import type { PiApi, PiContext, PiTool } from "../src/pi/api.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-mcp-settings-"));
+const home = tempDir("mission-mcp-settings-");
 process.env.MISSION_HOME = home;
 const claudeSkills = join(home, "claude-skills");
 const claudeSettings = join(home, "claude-settings.json");

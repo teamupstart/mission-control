@@ -1,14 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { asyncInputAnswer } from "../src/shared/async-input.ts";
 import { requestInputReview } from "../src/shared/request-input.ts";
 import { reviewToolResult, formatResponse } from "../src/shared/review-item.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "async-lifecycle-"));
+const home = tempDir("async-lifecycle-");
 process.env.MISSION_HOME = home;
 const { openDb, closeDb, insertReview, updateReviewStatus, createReviewContinuationPendingTurn,
   createPendingTurn, loadReviewContinuationCandidates, listPendingTurns, claimNextPendingTurn, MESSAGE_ANSWER_TURN_PREFIX } = await import("../src/server/db.ts");

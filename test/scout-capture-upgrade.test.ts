@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import test, { after } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-upgrade-"));
+const home = tempDir("mission-scout-upgrade-");
 process.env.MISSION_HOME = home;
 const { openDb, closeDb } = await import("../src/server/db.ts");
 const { ArchiveCaptureStore } = await import("../src/server/archives/capture-store.ts");

@@ -2,14 +2,14 @@
 import assert from "node:assert/strict";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { registerHooks } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { FeatureFlagId } from "../src/shared/feature-flags.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-feature-flags-"));
+const home = tempDir("mission-feature-flags-");
 process.env.MISSION_HOME = home;
 // Substitute the same module for HTTP intent validation and daemon gate resolution.
 const registryUrl = new URL("../src/shared/feature-flag-registry.ts", import.meta.url).href;

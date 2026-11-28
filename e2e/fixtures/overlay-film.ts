@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Page } from "@playwright/test";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * Review evidence only: films the corner where the live transcript overlay draws, and turns a stretch
@@ -42,7 +42,7 @@ export async function overlayGif(page: Page, frames: Frame[], options: {
   changes: { ms: number; text: string }[];
 }): Promise<string[]> {
   const chosen = frames.filter(frame => frame.t - options.onsetAt >= options.fromMs && frame.t - options.onsetAt <= options.toMs);
-  const work = mkdtempSync(join(tmpdir(), "overlay-gif-"));
+  const work = tempDir("overlay-gif-");
   const captions: string[] = [];
   const captioner = await page.context().newPage();
   try {

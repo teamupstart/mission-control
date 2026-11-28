@@ -1,13 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TaskSourceInstance } from "../src/shared/task-source.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-source-sweeper-"));
+const home = tempDir("mission-task-source-sweeper-");
 const bin = join(home, "bin");
 mkdirSync(bin);
 writeFileSync(

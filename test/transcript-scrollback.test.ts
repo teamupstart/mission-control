@@ -1,14 +1,14 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import fs, { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptMessage } from "../src/shared/types.ts";
 import { claudeTranscript, toMessage } from "../src/server/harness/claude/transcript.ts";
 import { codexTranscript, parseCodexMessages } from "../src/server/harness/codex/transcript.ts";
 import { piMessages, piToMessages } from "../src/server/harness/pi/transcript.ts";
 import type { TranscriptForwardPage } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: whether the operator can read a conversation they can see the agent
 // having.
@@ -26,7 +26,7 @@ import type { TranscriptForwardPage } from "../src/server/harness/types.ts";
 // synthesized per parse batch and two reads never agree on them. So the assertions below
 // are chained walks compared against the whole conversation, not spot checks on one page.
 
-const dir = mkdtempSync(join(tmpdir(), "mission-scrollback-"));
+const dir = tempDir("mission-scrollback-");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 /** Bytes of tool output per turn, so the fixture is mostly not conversation. */

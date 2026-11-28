@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -10,10 +8,11 @@ import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { MissionSchedule, SchedulePreviewResult } from "../src/shared/schedules.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-mcp-schedules-"));
+const home = tempDir("mission-mcp-schedules-");
 process.env.MISSION_HOME = home;
-const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-schedule-repo-")));
+const repo = realpathSync(tempDir("mission-schedule-repo-"));
 execFileSync("git", ["init", "-q", repo]);
 after(() => { rmSync(home, { recursive: true, force: true }); rmSync(repo, { recursive: true, force: true }); });
 const { Registry } = await import("../src/server/registry.ts");

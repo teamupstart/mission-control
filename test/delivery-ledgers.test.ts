@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { fakeTranscript } from "./helpers/fake-transcript.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The delivery ledgers share one claim space only if every ledger is registered before any of
 // them binds, and every ledger's send listener is installed before any send. This file
 // deliberately imports the delegated-turn module alone - never `review-deliveries.ts` - and still
 // finds a review delivery's turn claimed and its steered echo settled.
 
-const home = mkdtempSync(join(tmpdir(), "mission-delivery-ledgers-"));
+const home = tempDir("mission-delivery-ledgers-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

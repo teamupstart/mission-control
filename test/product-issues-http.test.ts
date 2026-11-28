@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
 // The route boundary owns source attribution and MCP authentication. This isolated app uses
 // one discovered session and an injected product-issue service, never the operator's gh.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-product-issues-http-"));
+process.env.MISSION_HOME = tempDir("mission-product-issues-http-");
 process.env.MISSION_PRODUCT_ISSUES_REPO = "";
 
 const { openDb } = await import("../src/server/db.ts");
@@ -28,6 +25,7 @@ const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ProductIssueService as ProductIssueServiceType } from "../src/server/product-issues.ts";
 import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
+import { tempDir } from "./temp-root.mjs";
 
 openDb();
 const TOKEN = ensureToken();

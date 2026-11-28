@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 test("awaiting the native drag before teardown waits for mouse-up", { skip: process.platform !== "darwin" }, async t => {
-  const directory = mkdtempSync(join(tmpdir(), "window-drag-test-"));
+  const directory = tempDir("window-drag-test-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const addon = join(directory, "drag.node");
   execFileSync("xcrun", ["clang++", "-std=c++17", "-bundle", "-undefined", "dynamic_lookup",

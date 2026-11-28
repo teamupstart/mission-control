@@ -1,13 +1,13 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalExec } from "../../src/server/terminal/exec.ts";
 import { stubRun } from "../../src/server/util/exec.ts";
+import { tempDirAsync } from "../temp-root.mjs";
 
 /** A real socket inode for CLI-shape tests; replacement races live in wezterm-incarnation. */
 export async function weztermSocketFixture() {
-  const directory = await mkdtemp(join(tmpdir(), "mc-wez-socket-test-"));
+  const directory = await tempDirAsync("mc-wez-socket-test-");
   const path = join(directory, "sock");
   const server = createServer((client) => client.end());
   await new Promise<void>((resolve) => server.listen(path, resolve));

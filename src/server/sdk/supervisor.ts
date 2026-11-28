@@ -1,5 +1,7 @@
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
+import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
+import { launchAgentEnvironment } from "../agent-environment.ts";
 import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
 import { launchWorkUnitId } from "../work-unit.ts";
 import type { PauseRelease } from "../pause/release.ts";
@@ -584,12 +586,16 @@ export class SdkSupervisor {
       this.startOwnership.delete(ownership);
     };
     let handle: SdkSessionHandle;
+    let namedEnvironment: NamedAgentEnvironment | undefined;
     try {
+      const residentStateDir = await residentStateForTask(input.taskId);
+      namedEnvironment = await launchAgentEnvironment(!!residentStateDir || !!input.residentMcp);
       handle = await spec.launch({
         cwd: input.cwd,
         stateHome,
         prompt: input.prompt,
-        residentStateDir: await residentStateForTask(input.taskId),
+        residentStateDir,
+        namedEnvironment,
         residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
@@ -635,6 +641,7 @@ export class SdkSupervisor {
         registration: {
           id,
           agent: input.agent,
+          missingEnvironment: namedEnvironment?.missing,
           name: input.name,
           cwd: input.cwd,
           permissionMode: input.permissionMode,
@@ -1777,13 +1784,16 @@ export class SdkSupervisor {
     // started: nothing else owns it, and a retried wake would start a second one.
     let launched: SdkSessionHandle | null = null;
     try {
+      const residentStateDir = await residentStateForTask(row.taskId);
+      const namedEnvironment = await launchAgentEnvironment(!!residentStateDir || task?.kind === "resident");
       const handle = await spec.launch({
+        namedEnvironment,
         cwd: row.cwd,
         stateHome,
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
-        residentStateDir: await residentStateForTask(row.taskId),
+        residentStateDir,
         residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
@@ -1843,6 +1853,7 @@ export class SdkSupervisor {
         registration: {
           id: row.id,
           agent: row.agent,
+          missingEnvironment: namedEnvironment?.missing,
           name: restoredName(row, task?.title ?? null),
           cwd: row.cwd,
           // An idle resume emits a binding but owes no assistant/result frame, so carry the

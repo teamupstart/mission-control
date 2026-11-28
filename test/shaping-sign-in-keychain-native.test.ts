@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +9,7 @@ import {
   type NativeKeychainBinding,
 } from "../src/server/shaping/sign-in/keychain-native.ts";
 import { createSignInStore, stateHomeTag, type SignInStore, type StoredSignIn } from "../src/server/shaping/sign-in/store.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The real addon against the real login Keychain. macOS only: CI is Linux, so the phase's
@@ -59,7 +57,7 @@ before(async () => {
     execFileSync(process.execPath, ["scripts/build-keychain-native.mjs"], { cwd: REPO_ROOT, stdio: "pipe" });
     binding = loadNativeKeychainBinding();
   }
-  const stateHome = mkdtempSync(join(tmpdir(), "mission-keychain-home-"));
+  const stateHome = tempDir("mission-keychain-home-");
   store = createSignInStore({ platform: "darwin", env: {}, stateHome, service: SERVICE });
   account = `${await stateHomeTag(stateHome)}/${ID}`;
 });

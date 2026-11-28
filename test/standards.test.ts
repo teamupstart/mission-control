@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readStandards, readStandardsFromGitTree } from "../src/server/standards.ts";
 import { MEMORY_DIR, MEMORY_INDEX_PATH } from "../src/shared/memory.ts";
 import { StandardsRequestSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What the queue verifier is handed as "this repo's bar". Getting the file set wrong
 // isn't cosmetic in either direction: too few and it misses the repo's contract, too
@@ -14,7 +14,7 @@ import { StandardsRequestSchema } from "../src/shared/protocol.ts";
 // the ways to get it wrong reads files the repo never asserted anything about at all.
 
 function mkRepo(): string {
-  const root = mkdtempSync(join(tmpdir(), "standards-"));
+  const root = tempDir("standards-");
   mkdirSync(join(root, "packages", "app", "src"), { recursive: true });
   return root;
 }
@@ -80,7 +80,7 @@ test("a symlinked doc pointing OUTSIDE the repo is never read", () => {
   // sent to the API. `withinRoot` is a string check; readFileSync follows links, so
   // the containment test has to run on the resolved path.
   const root = mkRepo();
-  const secrets = mkdtempSync(join(tmpdir(), "secrets-"));
+  const secrets = tempDir("secrets-");
   writeFileSync(join(secrets, "id_rsa"), "PRIVATE KEY MATERIAL");
   symlinkSync(join(secrets, "id_rsa"), join(root, "AGENTS.md"));
 
@@ -167,7 +167,7 @@ test("two root docs with IDENTICAL text but separate files are both still read",
 
 test("a `..` escape in a changed path reads nothing outside the root", () => {
   const root = mkRepo();
-  const outside = mkdtempSync(join(tmpdir(), "outside-"));
+  const outside = tempDir("outside-");
   writeFileSync(join(outside, "CLAUDE.md"), "# not this repo's");
 
   const out = readStandards(root, [`../${join(outside, "a.ts")}`, "../../etc/a.ts"]);
@@ -364,7 +364,7 @@ test("a memory index symlinked OUTSIDE the repo is never read", () => {
   // path is newly readable by the daemon: a repo can ship `.agents/memory/MEMORY.md` as a
   // link to anything and the bytes would go straight into a review prompt.
   const root = mkRepo();
-  const secrets = mkdtempSync(join(tmpdir(), "secrets-"));
+  const secrets = tempDir("secrets-");
   writeFileSync(join(secrets, "id_rsa"), "PRIVATE KEY MATERIAL");
   mkdirSync(join(root, MEMORY_DIR), { recursive: true });
   symlinkSync(join(secrets, "id_rsa"), join(root, MEMORY_INDEX_PATH));

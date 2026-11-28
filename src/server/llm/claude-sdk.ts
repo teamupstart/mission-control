@@ -12,6 +12,7 @@ import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
 import { claudeProviderFailure, ProviderFailure } from "./provider-failure.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
+import { setAwakeTimeout } from "../host-suspend.ts";
 
 // One fresh SDK query for one app-owned model call. This is deliberately separate from
 // `harness/claude/sdk.ts`: that adapter owns a long-lived, human-reachable conversation,
@@ -155,10 +156,10 @@ export async function runClaudeSdkOneShot(
   hookExitOnce();
 
   const timeoutMs = opts.timeoutMs ?? CLAUDE_DEFAULT_TIMEOUT_MS;
-  const timer = setTimeout(() => {
+  // Awake time, not wall time (see `host-suspend.ts`).
+  const timer = setAwakeTimeout(() => {
     run.cancel(new Error("Claude Agent SDK one-shot timed out"));
   }, timeoutMs);
-  timer.unref?.();
 
   let stderr = "";
   let subprocessEnv: NodeJS.ProcessEnv | undefined;
@@ -305,7 +306,7 @@ export async function runClaudeSdkOneShot(
     if (cancelError) throw cancelError;
     throw diagnostic(error, stderr);
   } finally {
-    clearTimeout(timer);
+    timer.clear();
     opts.signal?.removeEventListener("abort", onAbort);
     live.delete(run);
     cleanupAgentSubprocessEnv(subprocessEnv);

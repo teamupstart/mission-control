@@ -377,6 +377,8 @@ export class VoiceRouter {
       backend: VoiceBackend | null; reportsSpeechOnset?: boolean; longCapture?: boolean;
       /** The Always-on separator word. Absent or null routes every capture whole. */
       separatorWord?: string | null;
+      /** The `voice-prefix-recovery` preview: recover a call sign after a stray leading word or two. */
+      prefixRecovery?: boolean;
     },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
@@ -840,7 +842,8 @@ export class VoiceRouter {
    */
   private async route(utterance: VoiceUtterance, time: ActionTime, captureKey?: string,
     options: { roster?: SpokenName[]; cancelTarget?: string | null; heldSends?: Set<string> } = {}): Promise<boolean> {
-    const roster = options.roster ?? this.state().roster;
+    const state = this.state();
+    const roster = options.roster ?? state.roster;
     const { id, capturedAt } = utterance;
     const unsureCards = this.picksLostThrough && offsetUs(time, this.picksLostThrough) <= 0 ? [] : Array.from(this.open.values())
       .filter(item => (item.card.state === "unsure" || item.card.state === "resolving") &&
@@ -858,13 +861,15 @@ export class VoiceRouter {
         return window.choices.filter(choice => titlesById.get(choice.id) !== choice.title).map(choice => choice.title);
       });
     // Bind every potential part to the roster session present when the utterance arrived.
-    const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards, priorPickNames });
+    const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards, priorPickNames,
+      prefixRecovery: state.prefixRecovery === true });
     // An unsure card reserves its delivery slot so it can still be picked at capacity.
-    if ((decision.kind === "addressed" || decision.kind === "needs-model") &&
+    if ((decision.kind === "addressed" || decision.kind === "needs-model" || decision.kind === "suggest") &&
         this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return false;
     this.rememberUtterance(id);
     const entry: HeardEntry = { id, time: capturedAt, text: utterance.text, outcome: "ignored",
-      rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
+      rule: decision.kind, matchedName: null, pauseMs: null, detail: "",
+      ...("prefix" in decision && decision.prefix !== undefined && { prefix: decision.prefix }) };
     this.heard.record(entry);
     if (this.questions) {
       const inbox = this.routeInbox(utterance, decision, entry, time, options.heldSends, roster);
@@ -898,7 +903,18 @@ export class VoiceRouter {
       this.startModelStep(decision, utterance, entry, time, options.heldSends);
       return true;
     }
-    entry.rule = decision.match;
+    if (decision.kind === "suggest") {
+      // A possible call sign after a word recovery cannot vouch for: the operator names the
+      // recipient. The card holds the message after the name and sends nothing until picked.
+      entry.rule = "suggested-prefix";
+      entry.suggested = decision.candidates.map(target => target.name);
+      this.openCard({ entry, time, heldSends: options.heldSends, message: decision.text, commands: [decision.command],
+        pickTargets: decision.candidates, choicesOfferedAt: laterTime(time, this.now()),
+        card: { id, state: "unsure", deadline: null, openQuestions: 0, reason: entry.rule, prefix: decision.prefix,
+          candidates: decision.candidates.map(agentRow), parts: [{ target: null, text: utterance.text }] } });
+      return true;
+    }
+    entry.rule = decision.prefix === undefined ? decision.match : "recovered-prefix";
     recordMatchedName(entry, decision.target);
     const card: VoiceCard = {
       id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
@@ -1095,7 +1111,7 @@ export class VoiceRouter {
     const answer = explicitAnswerText(body);
     const choiceCommand = requestedChoice(body) !== undefined;
     const explicit = !reply && (answer !== undefined || choiceCommand);
-    if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
+    if (!explicit && !(reply && this.openCards.replyWindows().length)) return false;
     const monotonicMs = this.questionTime(time);
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit ? answer ?? body : body;
@@ -1184,7 +1200,8 @@ export class VoiceRouter {
   private async routeAnswerContent(item: OpenCard, candidates: ReviewItem[], words: string, choiceCommand: boolean,
     target: SpokenName | null, picked?: ReviewItem): Promise<void> {
     const fixed = picked ?? (target && candidates.length === 1 ? candidates[0] : undefined);
-    const windows = this.openCards.reportingWindows();
+    // An unnamed reply exists only for a live dashboard, which may be suspended under load.
+    const windows = target ? this.openCards.reportingWindows() : this.openCards.replyWindows();
     // A single named or picked question has a destination even with every dashboard
     // closed. Its Other field still needs a confirmed open card to accept dictation.
     if (fixed && (!windows.length || choiceCommand || !fixed.decisions?.[0]?.allowOther)) {

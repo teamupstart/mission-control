@@ -1,10 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import type { Session } from "../src/shared/types.ts";
 import type { SdkSupervisor as SdkSupervisorType } from "../src/server/sdk/supervisor.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a frozen agent answers nothing, so every operation that needs it to - a
 // stop, a kill, an interrupt, a reset - has to thaw it first. That thaw is an explicit
@@ -12,7 +11,7 @@ import type { SdkSupervisor as SdkSupervisorType } from "../src/server/sdk/super
 // module installed: a missing one is visible in the call, and no test or second manager can
 // swap it out from under another.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pause-release-"));
+const home = tempDir("mission-pause-release-");
 process.env.HARNESS_HOME = home;
 const { requestSessionStop, stopSession, interruptSession } = await import("../src/server/sdk/control.ts");
 const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");

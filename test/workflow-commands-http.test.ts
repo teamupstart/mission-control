@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   WORKFLOW_CHECK_SLOTS,
@@ -11,6 +10,7 @@ import {
 } from "../src/shared/workflow.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 import { LOCAL_INSPECTOR_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: HTTP is the write boundary for an argv the daemon will EXECUTE, and there
 // are now two doors into one catalog - the dedicated Command routes and the legacy workflow
@@ -19,7 +19,7 @@ import { LOCAL_INSPECTOR_FLAG_ID } from "../src/shared/feature-flag-registry.ts"
 // actually run. A second stored list, or a projection that disagreed with resolution, would
 // be a gate an operator believes they configured and a command that never runs.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-commands-http-"));
+const home = tempDir("mission-workflow-commands-http-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");

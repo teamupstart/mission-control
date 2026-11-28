@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 const checker = fileURLToPath(new URL("../scripts/check-doc-links.mjs", import.meta.url));
 
 test("documentation link checks ignore code examples and reject broken visible links", () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-doc-links-"));
+  const root = tempDir("mission-doc-links-");
   try {
     mkdirSync(join(root, "docs"));
     mkdirSync(join(root, "e2e"));
@@ -54,7 +54,7 @@ test("documentation link checks ignore code examples and reject broken visible l
 });
 
 test("heading anchors keep underscores the way GitHub renders them", () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-doc-links-"));
+  const root = tempDir("mission-doc-links-");
   try {
     mkdirSync(join(root, "docs"));
     mkdirSync(join(root, "e2e"));

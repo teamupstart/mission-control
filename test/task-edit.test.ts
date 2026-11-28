@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-task-edit-"));
+const home = tempDir("mission-task-edit-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");

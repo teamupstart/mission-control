@@ -121,6 +121,8 @@ the FluidAudio download. Leave the `voice` preview off when working without voic
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
+| `npm run test:sweep-temp` | Removes test temp roots whose owner died. `npm test` runs it first. See [Test temp directories](docs/test-temp-dirs.md). |
+| `npm run test:clean-legacy-temp` | Opt-in dry run, or `-- --delete`, for fixtures leaked before test temp roots. See [Test temp directories](docs/test-temp-dirs.md#cleaning-a-machine-that-already-leaked). |
 | `npm run smoke` | Boots built bundles after `npm run build`, and checks the MCP bundle publishes exactly the tools `MISSION_MCP_TOOLS` declares. |
 | `npm run package` | Builds the macOS application package. |
 | `npm run demo` | Starts a token-free demo. Build first. |

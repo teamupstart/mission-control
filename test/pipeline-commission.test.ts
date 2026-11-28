@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
@@ -9,8 +8,9 @@ import type {
   PipelineCommission,
   PipelineEngineerCapabilities,
 } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-commission-"));
+const home = tempDir("mission-pipeline-commission-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const {

@@ -2,13 +2,12 @@ import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { fixtureVoiceSupervisor } from "../../test/helpers/voice-supervisor.ts";
 import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
 import { VOICE_INSTANCE_HEADER } from "../../src/shared/voice-speech.ts";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureSplitAnswer } from "./voice-split-answer.ts";
 
@@ -21,6 +20,7 @@ import {
   type VoiceState,
 } from "../../src/shared/voice.ts";
 import type { VoiceModelManifest } from "../../src/shared/voice-models.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 interface VoiceDaemon {
   home: string;
@@ -326,7 +326,7 @@ export async function startModelServer(options: { tls?: { key: string; cert: str
       sha256: createHash("sha256").update(entry.body).digest("hex"),
     })),
   };
-  const dir = mkdtempSync(join(tmpdir(), "mission-e2e-voice-model-"));
+  const dir = tempDir("mission-e2e-voice-model-");
   const manifestPath = join(dir, "manifest.json");
   writeFileSync(manifestPath, JSON.stringify({ fluidaudio: manifest, "sherpa-onnx": manifest }));
   return {

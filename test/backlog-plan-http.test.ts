@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import { PLANNABLE_LIMIT } from "../src/shared/backlog.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The channel the Foreman worker stores its reading of the backlog through - it never
 // touches the DB, so this route is the only way a plan reaches disk.
@@ -19,7 +18,7 @@ import { PLANNABLE_LIMIT } from "../src/shared/backlog.ts";
 // daemon (not the worker) stamping the timestamp the board displays.
 
 // Throwaway state dir, set before anything opens the DB - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-backlog-plan-"));
+const home = tempDir("mission-backlog-plan-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 

@@ -1,8 +1,7 @@
 // Drive YAML/allowance precedence, typed tuning and pinned Git identity with no vendor calls.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { execFileSync } from "node:child_process";
@@ -10,7 +9,8 @@ import { createHash } from "node:crypto";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, type CodeRabbitComparison } from "../src/shared/workflow.ts";
 import type { RunCheckInput, CheckRunDeps } from "../src/server/workflows/checks.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
-const home=mkdtempSync(join(tmpdir(),"mc-cr-integration-"));process.env.MISSION_HOME=home;
+import { tempDir } from "./temp-root.mjs";
+const home=tempDir("mc-cr-integration-");process.env.MISSION_HOME=home;
 after(()=>rmSync(home,{recursive:true,force:true}));
 const { runCheck }=await import("../src/server/workflows/checks.ts");
 const { codeRabbitReadiness, resolveCodeRabbitComparison }=await import("../src/server/workflows/coderabbit.ts");

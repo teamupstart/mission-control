@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A hibernated TERMINAL task's Resume, through the production preparation: the managed terminal
 // resume (`prepareTerminalResume`) of the SAME conversation, in the task's own checkout, with
 // the mode it last ran in. Only the terminal itself is scripted - the launch and the agent
 // appearing in discovery - so what is asserted is what a real terminal would have been handed.
 
-const home = mkdtempSync(join(tmpdir(), "hibernation-terminal-resume-"));
+const home = tempDir("hibernation-terminal-resume-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 await managedResumeFixture(home);

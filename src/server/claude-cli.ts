@@ -13,6 +13,7 @@ import {
 import type { LlmImageInput } from "@shared/llm.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
+import { setAwakeTimeout, type AwakeTimeout } from "./host-suspend.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
 // from a clean context. Two very different callers share it, which is why it lives
@@ -282,11 +283,11 @@ async function runClaudeRaw(
     let out = "";
     let err = "";
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: AwakeTimeout | undefined;
     const done = (): boolean => {
       if (settled) return false;
       settled = true;
-      if (timer) clearTimeout(timer);
+      timer?.clear();
       opts.signal?.removeEventListener("abort", onAbort);
       live.delete(child);
       cleanupAgentSubprocessEnv(env);
@@ -296,11 +297,11 @@ async function runClaudeRaw(
       killTree(child);
       if (done()) reject(new Error("claude -p aborted"));
     };
-    timer = setTimeout(() => {
+    // Awake time, not wall time (see `host-suspend.ts`).
+    timer = setAwakeTimeout(() => {
       killTree(child);
       if (done()) reject(new Error("claude -p timed out"));
     }, opts.timeoutMs ?? CLAUDE_DEFAULT_TIMEOUT_MS);
-    timer.unref?.();
     // Decode ONCE, as a stream, rather than coercing each Buffer chunk to a string
     // independently. `claude -p` streams its response, so a multi-byte character
     // landing across a chunk boundary is ordinary rather than exotic - and coerced

@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Phase 2's control surface: the transitions between collection and export states, the
 // concurrency guard on consent, the maintenance operations, and the boundaries a settings
@@ -15,7 +15,7 @@ import { join } from "node:path";
 // those is a sentence this app puts on screen, so each one is asserted here against real
 // storage rather than against a mock that would agree with whatever the code does.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-controls-"));
+const home = tempDir("mission-telemetry-controls-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { closeDb, openDb, getAppConfig } = await import("../src/server/db.ts");

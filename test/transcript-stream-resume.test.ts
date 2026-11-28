@@ -1,9 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -11,6 +10,7 @@ import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Session, TranscriptStreamMsg } from "../src/shared/types.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: whether a dropped connection costs the reader their place.
 //
@@ -27,11 +27,11 @@ import { mkSession } from "./helpers/session-fixture.ts";
 // cannot, because a continuation with a hole in it is indistinguishable to the reader
 // from one without.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stream-resume-"));
+const home = tempDir("mission-stream-resume-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 
-const dir = mkdtempSync(join(tmpdir(), "mission-stream-resume-tx-"));
+const dir = tempDir("mission-stream-resume-tx-");
 after(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });

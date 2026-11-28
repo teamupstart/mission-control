@@ -1,6 +1,6 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
 import { INBOX_FLAG } from "./inbox.ts";
-import { VOICE_FIRST_PREVIEW_HOLD_FLAG, VOICE_FLAG } from "./voice.ts";
+import { VOICE_FIRST_PREVIEW_HOLD_FLAG, VOICE_FLAG, VOICE_PREFIX_RECOVERY_FLAG } from "./voice.ts";
 
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
@@ -24,12 +24,17 @@ export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as co
  */
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 
+export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
+
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
 export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
 
 /** The one owner of the Markdown question body preview's id; the dashboard's question surfaces read it. */
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
+
+/** The one owner of the unified split inbox's id; the attention inbox reads it. */
+export const INBOX_SPLIT_FLAG_ID = "inbox-split" as const;
 
 export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as const;
 
@@ -89,6 +94,14 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "Grants workflow reviewers access to a repository.",
     keywords: ["workflows", "review", "repository", "persona"],
+  },
+  {
+    id: AGENT_ENVIRONMENT_FLAG,
+    label: "Agent environment",
+    description: "Pass selected daemon or login-shell variables to new agent sessions.",
+    stage: "preview",
+    sessionSetting: "Controls access to operator-selected environment variables in future sessions.",
+    keywords: ["harnesses", "environment", "MCP", "token"],
   },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
@@ -233,6 +246,17 @@ export const FEATURE_FLAGS = [
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
   },
   {
+    id: INBOX_SPLIT_FLAG_ID,
+    label: "Unified split inbox",
+    description:
+      "Show the attention inbox as one list with a detail pane: every question, permission, halt, stuck " +
+      "session and report is a row, the selected one opens beside the list with its usual controls, and " +
+      "the next one opens when it is settled. Tabs filter to what is owed, what is to read and what is snoozed.",
+    stage: "preview",
+    sessionSetting: "read-write",
+    keywords: ["inbox", "attention", "split", "reader", "list", "detail", "questions", "reports", "next"],
+  },
+  {
     id: IDLE_RAIL_SECTION_COUNTS_FLAG_ID,
     label: "Counts on Idle rail sections",
     description: "Show a session total in the conversation’s Idle rail and put status counts on expandable section headings.",
@@ -281,6 +305,17 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "read-write",
     keywords: ["voice", "transcript", "preview", "live words", "phantom", "filler", "noise", "always-on"],
+  },
+  {
+    id: VOICE_PREFIX_RECOVERY_FLAG,
+    label: "Voice prefix recovery",
+    description:
+      "When a stray word comes before the call sign, look past it: \"Um, Steve, check the build.\" goes to Steve. " +
+      "When the word might be part of the sentence, such as a cough heard as \"The\", the card asks who it is for " +
+      "instead. Speech that only mentions a name stays unrouted, and routes that already work never change.",
+    stage: "preview",
+    sessionSetting: "read-write",
+    keywords: ["voice", "call sign", "filler", "noise", "um", "prefix", "dropped", "unrouted", "opening name"],
   },
   {
     id: MACOS_TERMINAL_FLAG_ID,

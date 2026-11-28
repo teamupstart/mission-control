@@ -1,15 +1,15 @@
 // `removeTree`'s contract in plain Node. Why it exists at all (Electron's asar layer) can only be
 // shown under Electron: see `test/remove-tree-electron.test.ts`.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { removeTree, TreeRemovalError } from "../src/server/util/remove-tree.ts";
 import { ownWorktreeProcesses } from "../src/server/worktrees/own-processes.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function scratch(t: TestContext): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-remove-tree-")));
+  const root = realpathSync(tempDir("mission-remove-tree-"));
   t.after(() => {
     try { chmodSync(join(root, "tree", "locked"), 0o755); } catch { /* not every case locks it */ }
     rmSync(root, { recursive: true, force: true });

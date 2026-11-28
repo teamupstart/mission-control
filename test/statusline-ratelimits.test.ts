@@ -1,10 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { toBody } from "../hooks/statusline-body.mjs";
 import { StatusLineIngestSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the rate-limit meters are the only local view of a real subscription's
 // limits - OpenTelemetry has no quota metric - and they are also the easiest thing here to
@@ -16,7 +15,7 @@ import { StatusLineIngestSchema } from "../src/shared/protocol.ts";
 // them as headroom they may not have. The two windows also arrive independently, so one
 // present without the other must not blank the one we know.
 
-const home = mkdtempSync(join(tmpdir(), "mission-statusline-rl-"));
+const home = tempDir("mission-statusline-rl-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

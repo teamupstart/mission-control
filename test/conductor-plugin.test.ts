@@ -19,8 +19,7 @@
  *  5. It refuses to guess which run an event belongs to.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -30,6 +29,7 @@ import {
   engineerEnvelope,
   resolveRun,
 } from "../integrations/ai-conductor/mission-control/index.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 const REPO = "/w/demo";
 const WORKTREE = "/w/demo/.worktrees/a-feature";
@@ -630,7 +630,7 @@ test("a rotated daemon token is picked up by the attempt after the 401", async (
   // plugin. Holding the first one it ever read would make the retry loop an infinite retry
   // of a request that cannot succeed, and the buffer ceiling would then drop the events -
   // including the kinds conductor never writes to a file, which nothing else records.
-  const home = mkdtempSync(join(tmpdir(), "mission-plugin-home-"));
+  const home = tempDir("mission-plugin-home-");
   mkdirSync(join(home, ".mission-control"), { recursive: true });
   writeFileSync(join(home, ".mission-control", "token"), "the-old-secret\n");
   const realHome = process.env.HOME;

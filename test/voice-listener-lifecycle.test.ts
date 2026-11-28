@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { describe, it, before, after, type TestContext } from "node:test";
@@ -18,6 +17,7 @@ import { setVoiceConfig } from "../src/server/voice/config.ts";
 import { serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
 import { registerVoiceRoutes } from "../src/server/voice/routes.ts";
 import { VOICE_LISTENER_PROTOCOL_VERSION, VOICE_REQUIRED_FLAGS, voiceStateOff } from "../src/shared/voice.ts";
+import { tempDir } from "./temp-root.mjs";
 
 async function until(condition: () => boolean, description: string, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -30,7 +30,7 @@ async function until(condition: () => boolean, description: string, timeoutMs = 
 describe("voice listener subprocess protocol and Swift microphone lifecycle", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
   let dir: string;
   before(() => {
-    dir = mkdtempSync(join(tmpdir(), "listener-lifecycle-"));
+    dir = tempDir("listener-lifecycle-");
     writeFileSync(join(dir, "token"), "fixture");
     execFileSync("swiftc", ["-parse-as-library", "-module-cache-path", join(dir, "modules"),
       "native/voice-listener/Sources/VoiceListener/Listener.swift", "native/voice-listener/Sources/VoiceListener/Playback.swift",

@@ -1,7 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -14,6 +13,7 @@ import {
   readReviewAttemptReceipt,
   type CompiledEnsemblePlan,
 } from "../src/shared/ensemble.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this store is the durable memory of work that spends real money on an
@@ -27,7 +27,7 @@ import {
  *     build refuses to run - a run nobody can see is a run nobody can cancel.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-store-"));
+const home = tempDir("mission-ensemble-store-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

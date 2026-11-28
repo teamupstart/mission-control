@@ -1,8 +1,8 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The launch flag "auto mode on dispatch" now rides in on - the heart of the setting.
 // `dispatchPermissionModeArgs` is exercised against the REAL harnesses config (a
@@ -22,7 +22,7 @@ import { join } from "node:path";
 //   - ON + pi -> no flag: pi declares no permission modes at all;
 //   - OFF (or unconfigured) -> nothing, for every agent.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-auto-"));
+const home = tempDir("mission-dispatch-auto-");
 // Set before importing anything that resolves the state dir / opens the db.
 process.env.HARNESS_HOME = join(home, "state");
 

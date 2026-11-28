@@ -388,6 +388,7 @@ import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
 import { pruneExpiredSpokenTurns, spokenLedger } from "./delivery-ledgers.ts";
 import { emittedWorkUnitId, isWorkUnitId } from "@shared/work-unit.ts";
+import { pruneTerminalLaunchWarnings, restoreTerminalLaunchWarning } from "./terminal-launch-warnings.ts";
 import { takeTerminalLaunchWorkUnit, type TerminalLaunchWorkUnit } from "./terminal-launch-work-units.ts";
 import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
 
@@ -479,6 +480,8 @@ export interface SdkSessionRegistration {
    * by a registration that launched nothing, which leaves the record as it was.
    */
   launchWorkUnitId?: string | null;
+  /** Only the names unavailable to this launch. */
+  missingEnvironment?: string[];
   /** `sdk:<uuid>`, minted by the supervisor and durable across a daemon restart. */
   id: string;
   agent: AgentType;
@@ -562,6 +565,8 @@ export type PrMatch = {
 };
 
 export type PrObservation = {
+  observedAt: number;
+  checks: PrChecks | null;
   url: string;
   branch: string | null;
   agentSessionId: string | null;
@@ -916,6 +921,8 @@ function bucketedAge(ms: number | null): number | null {
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
+  /** A successful partial lookup (null) is checked again when the wrapper home appears. */
+  private readonly checkedWarningHomes = new Map<string, string | null>();
   /** Accepted steers the agent has not read yet, by note key. See `recordSteeredTurn`. */
   private readonly steered = new Map<string, SteeredTurn[]>();
   /** The last few receipts per note key, for the conversation's "received" label. */
@@ -3151,6 +3158,11 @@ export class Registry extends EventEmitter {
       // keeps the whole dashboard current.
       console.error("[registry] queue prune failed:", err);
     }
+    try {
+      pruneTerminalLaunchWarnings(this.sessions);
+    } catch {
+      console.warn("[registry] Could not prune terminal launch warnings");
+    }
     // Independently caught so housekeeping cannot stop the discovery sweep.
     try {
       pruneEpisodes(now - EPISODE_RETENTION_MS);
@@ -3209,6 +3221,7 @@ export class Registry extends EventEmitter {
       // definition. An SDK session never passes through here at all - it arrives through
       // `registerSdkSession`, which is the only other door into this map.
       runtime: "terminal",
+      missingEnvironment: prev?.missingEnvironment,
       // Resolved below with note/goal, once the overlay may have supplied the binding
       // that decides the key.
       foremanInvite: null,
@@ -3384,7 +3397,20 @@ export class Registry extends EventEmitter {
       this.moveLaunchWorkUnitKey(boundBeforeSight, noteKeyFor(base));
     }
     if (!prev) {
-      takeTerminalLaunchWorkUnit(d.missionLaunchHome, (launched) => this.installHandedLaunchWorkUnit(base, launched, now));
+      takeTerminalLaunchWorkUnit(d.missionLaunchHome, (launched) => {
+        this.installHandedLaunchWorkUnit(base, launched, now);
+        base.missingEnvironment = launched.missingEnvironment;
+      });
+    }
+    const checkedHome = this.checkedWarningHomes.get(d.syntheticId);
+    if (d.startedAt && (checkedHome === undefined || (checkedHome === null && d.missionLaunchHome))) {
+      try {
+        const missing = restoreTerminalLaunchWarning(d.syntheticId, d.missionLaunchHome);
+        if (missing) base.missingEnvironment = missing;
+        if (missing !== null) this.checkedWarningHomes.set(d.syntheticId, d.missionLaunchHome ?? null);
+      } catch {
+        // Publish the session with its current warning and retry the failed read or bind on the next scan.
+      }
     }
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
@@ -3501,6 +3527,7 @@ export class Registry extends EventEmitter {
       id: input.id,
       agent: input.agent,
       runtime: "sdk",
+      missingEnvironment: input.missingEnvironment,
       configuredModel: input.configuredModel ?? null,
       // Resolved below with note/goal. Ordinarily `"sdk"` with no stored row - Mission
       // Control runs this session by definition - unless a `'withdrawn'` tombstone says
@@ -6331,7 +6358,13 @@ export class Registry extends EventEmitter {
    */
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
-      if (skip.has(id) || !taskHasRepository(s.task ?? {})) continue;
+      if (skip.has(id)) {
+        // Keep the association for its existing readers. A failed poll supplies no CI witness.
+        const prior = this.prObservations.get(id);
+        if (prior?.checks) this.prObservations.set(id, { ...prior, checks: null });
+        continue;
+      }
+      if (!taskHasRepository(s.task ?? {})) continue;
       let match = found.get(id) ?? null;
       const currentEpisode = sessionWorkEpisodeFor(id);
       if (
@@ -6387,6 +6420,7 @@ export class Registry extends EventEmitter {
       const checkDetails = match?.checkDetails ?? null;
       if (match && acceptedEpisode) {
         this.prObservations.set(id, {
+          observedAt: at, checks,
           url: match.url,
           branch: match.branch,
           agentSessionId: match.agentSessionId,
@@ -7616,6 +7650,7 @@ export class Registry extends EventEmitter {
     this.announcedPrs.delete(id);
     this.hookSubagents.delete(id);
     this.discoveredIdentity.delete(id);
+    this.checkedWarningHomes.delete(id);
     this.clearSessionEffortTracking(id);
     this.permissionModeFreshnessGuards.delete(id);
     this.statusLineTimestamps.delete(id);
@@ -12830,6 +12865,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // record with nothing else on the card changing, and the reuse guard on Foreman's side
   // reads it from the snapshot.
   launchWorkUnitId: byValue,
+  missingEnvironment: byJson,
   sessionControlEnabled: byValue,
   sessionInspectionOnly: byValue,
   // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.

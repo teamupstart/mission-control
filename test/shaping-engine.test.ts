@@ -3,8 +3,7 @@
 // injected stand-ins, so nothing here starts a process or opens a socket.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
@@ -25,6 +24,7 @@ import { dryRunShaper, runScope, shapeTask, type ShapeTaskInput } from "../src/s
 import { scrubResolved } from "../src/server/shaping/references.ts";
 import type { RoutedSkillResolver } from "../src/server/shaping/skills.ts";
 import { SHAPING_TRANSPORT_CALLS, type ShapingTransportCalls, type TransportContext, type TransportReply } from "../src/server/shaping/transports/index.ts";
+import { tempDir } from "./temp-root.mjs";
 
 type Handler = (request: ShapingRequest, shaper: Shaper, ctx: TransportContext) => Promise<TransportReply> | TransportReply;
 
@@ -584,7 +584,7 @@ test("the built-in needs a worktree, and the remote shapers are reached through 
   const http = ShaperSchema.parse({ id: "http", label: "HTTP", stage: "select", transport: { type: "http", url: "http://example.test/shape" } });
   const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } });
   // A worktree path this test controls and never creates, so the host's filesystem cannot answer for it.
-  const base = mkdtempSync(join(tmpdir(), "mission-shaping-absent-"));
+  const base = tempDir("mission-shaping-absent-");
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const absent = input(1);
   absent.context.repositories = absent.context.repositories.map((repo) => ({ ...repo, path: join(base, "billing-api") }));

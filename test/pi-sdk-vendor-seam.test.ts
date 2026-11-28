@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The one file that touches the REAL `@earendil-works/pi-coding-agent`.
 //
@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 // cannot exist, which fails in the local catalog before any auth or network path is
 // reached.
 
-const home = mkdtempSync(join(tmpdir(), "pi-vendor-seam-"));
+const home = tempDir("pi-vendor-seam-");
 process.env.HARNESS_HOME = join(home, "state");
 const agentDir = join(home, "agent");
 process.env.PI_CODING_AGENT_DIR = agentDir;

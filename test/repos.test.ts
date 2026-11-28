@@ -1,7 +1,7 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { readFileSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
 import fsPromises from "node:fs/promises";
@@ -25,6 +25,7 @@ import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 import { DEFAULT_INDEXED_DIRECTORIES } from "../src/shared/repo-index.ts";
 import { openDb, setAppConfig } from "../src/server/db.ts";
 import { STATE_DIR } from "../src/server/config.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 const WORKSPACE_ENV_NAMES = [
   "MISSION_WORKSPACE_DIRS",
@@ -54,7 +55,7 @@ after(() => {
 
 /** Lay out a throwaway workspace tree and return its (realpath'd) root. */
 function makeWorkspace(build: (root: string) => void): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-repos-")));
+  const root = realpathSync(tempDir("mission-repos-"));
   build(root);
   return root;
 }
@@ -173,7 +174,7 @@ test("MISSION_WORKSPACE_DIRS wins over the configured list", async () => {
 });
 
 test("a set but empty MISSION_WORKSPACE_DIRS indexes nothing", async () => {
-  setRepoIndexConfig({ directories: [{ path: join(tmpdir(), "configured") }] });
+  setRepoIndexConfig({ directories: [{ path: join(testTempRoot(), "configured") }] });
   process.env.MISSION_WORKSPACE_DIRS = "";
   assert.deepEqual(workspaceRoots(), []);
   assert.deepEqual(await listRepos(), []);

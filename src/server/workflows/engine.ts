@@ -82,6 +82,7 @@ import {
 import { killLiveCheckGroups } from "./check-group.ts";
 import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
+import { hostSuspendMonitor, type HostSuspendClock, type HostSuspendMark } from "../host-suspend.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 /**
@@ -105,6 +106,18 @@ const PERSONA_TIMEOUT_MS = Number(envVar("WORKFLOW_PERSONA_TIMEOUT_MS") ?? 600_0
 const RETRY_BASE_MS = 1_000;
 const PROVIDER_RETRY_WINDOW_MS = 10 * 60_000;
 const PROVIDER_RETRY_DELAY_CAP_MS = 60_000;
+
+/**
+ * How long a Persona call that failed across a host suspension waits before it runs again.
+ *
+ * Such a call is retried without spending the operation's two-call budget, however many times
+ * it happens (issue #1734): the failure says the laptop went to sleep, not that the call or the
+ * model failed, and a Mac on battery can sleep through every call of a long night. No count
+ * bounds it, because a count would turn the next sleep into the same block. What bounds it is
+ * the evidence: every excused call needs a newly observed suspension, so the retries track
+ * real sleeps rather than spinning.
+ */
+const HOST_SUSPENDED_RETRY_DELAY_MS = 5_000;
 
 function providerRetryDelayMs(failures: number): number {
   return Math.min(PROVIDER_RETRY_DELAY_CAP_MS, 1_000 * 2 ** Math.min(failures - 1, 6));
@@ -148,6 +161,8 @@ export interface WorkflowEngineOptions {
   concurrency?: number;
   now?: () => number;
   retryBaseMs?: number;
+  /** Where the engine learns the host slept through a call. Defaults to this process's monitor. */
+  hostSuspend?: HostSuspendClock;
   runnerFor?: (id: LlmRunner["id"]) => LlmRunner;
   /**
    * How a Persona SNAPSHOT resolves to a provider and model, for tests that pin a runner.
@@ -476,6 +491,7 @@ export class WorkflowEngine {
   private readonly limit: ReviewScheduler;
   private readonly now: () => number;
   private readonly retryBaseMs: number;
+  private readonly hostSuspend: HostSuspendClock;
   private readonly runnerFor: (id: LlmRunner["id"]) => LlmRunner;
   private readonly resolveExecution: NonNullable<WorkflowEngineOptions["resolveExecution"]>;
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
@@ -517,6 +533,7 @@ export class WorkflowEngine {
       ?? createReviewScheduler(options.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
     this.now = options.now ?? Date.now;
     this.retryBaseMs = options.retryBaseMs ?? RETRY_BASE_MS;
+    this.hostSuspend = options.hostSuspend ?? hostSuspendMonitor();
     this.runnerFor = options.runnerFor ?? llmRunner;
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
@@ -1220,6 +1237,10 @@ export class WorkflowEngine {
       return;
     }
     const callIds = new Map<number, string>();
+    const callMarks = new Map<number, HostSuspendMark>();
+    // Set when the call that just failed overlapped a host suspension. Read once per
+    // execution, right after `runStructured` returns.
+    let hostSuspended = false;
     const observer: StructuredAttemptObserver = {
       start: (attempt, request) => {
         if (
@@ -1230,6 +1251,7 @@ export class WorkflowEngine {
         }
         const id = randomUUID();
         callIds.set(attempt, id);
+        callMarks.set(attempt, this.hostSuspend.mark());
         this.store.insertLlmCall({
           id,
           runId: run.id,
@@ -1253,11 +1275,20 @@ export class WorkflowEngine {
       finish: (attempt, callResult) => {
         const id = callIds.get(attempt);
         if (!id) return;
+        const mark = callMarks.get(attempt);
+        // A token limit is the provider's answer and stands whenever it arrives. Any other
+        // failure of a call the host slept through is evidence about the host.
+        hostSuspended = !!callResult.error
+          && callResult.providerFailure !== "token_exhausted"
+          && mark !== undefined
+          && this.hostSuspend.suspendedMsSince(mark) > 0;
         this.store.finishLlmCall(
           id,
           callResult.parsed ? "succeeded" : "failed",
           callResult.raw ? Buffer.byteLength(callResult.raw) : 0,
-          callResult.error
+          hostSuspended
+            ? "persona_host_suspended"
+            : callResult.error
             ? callResult.providerFailure === "retryable"
               ? "persona_provider_retryable"
               : callResult.providerFailure === "token_exhausted"
@@ -1336,6 +1367,10 @@ export class WorkflowEngine {
         this.handleInfrastructureFailure(claimed, run.id, result.reason, true);
         return;
       }
+      if (hostSuspended) {
+        failure = result.reason;
+        break;
+      }
       if (result.providerFailure) {
         failure = result.reason;
         providerFailure = result.providerFailure;
@@ -1344,11 +1379,15 @@ export class WorkflowEngine {
       failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
       if (result.cause === "cancelled") break;
     }
-    if (claimed.reviewInput && providerFailure !== "retryable") this.store.appendEvent(run.id, "persona_contract_outcome", {
+    if (claimed.reviewInput && !hostSuspended && providerFailure !== "retryable") this.store.appendEvent(run.id, "persona_contract_outcome", {
       attemptId: claimed.id, contractVersion: 1, outcome: verdict ? "accepted" : "exhausted",
       basis: violation, executions: this.store.personaOperationCalls(claimed.reviewInput.operationId),
     }, this.now(), `persona-contract-outcome:${claimed.id}`);
     if (!verdict) {
+      if (hostSuspended) {
+        this.scheduleHostSuspendedRetry(claimed, run.id, failure);
+        return;
+      }
       if (providerFailure === "retryable") {
         this.scheduleProviderRetry(claimed, run.id, failure);
         return;
@@ -1587,6 +1626,8 @@ export class WorkflowEngine {
     scheduledSlot: CheckSlot | undefined,
     signal: AbortSignal,
   ): Promise<void> {
+    // Taken before anything can fail, so a sleep anywhere in this attempt is seen.
+    const sleepMark = this.hostSuspend.mark();
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) {
       this.handleInfrastructureFailure(claimed, run.id, "This run's binding no longer exists");
@@ -1729,7 +1770,25 @@ export class WorkflowEngine {
     } catch (error) {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.
-      this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
+      const reason = error instanceof Error ? error.message : String(error);
+      if (this.hostSuspend.suspendedMsSince(sleepMark) > 0) {
+        this.scheduleHostSuspendedCheckRetry(claimed, run.id, reason);
+        return;
+      }
+      this.handleInfrastructureFailure(claimed, run.id, reason);
+      return;
+    }
+    // A check that could not finish because the host slept through it (its connection dropped,
+    // or a deadline passed while nothing ran) is evidence about the host, not the change.
+    if ((result.kind === "infrastructure" || result.kind === "retryable_connection")
+      && this.hostSuspend.suspendedMsSince(sleepMark) > 0) {
+      // A disconnected CodeRabbit review stays on the attempt, as in
+      // `handleCodeRabbitConnectionFailure`: it is what keeps the review incomplete across the
+      // retry, and what carries the vendor's own retry-after floor to it.
+      this.scheduleHostSuspendedCheckRetry(claimed, run.id, result.reason,
+        result.kind === "retryable_connection"
+          ? jsonValue({ review: result.review, artifacts: result.artifacts ?? [] })
+          : undefined);
       return;
     }
     if (result.kind === "retryable_connection") {
@@ -1932,6 +1991,118 @@ export class WorkflowEngine {
     this.wake();
   }
 
+  /**
+   * Retry a Persona call that failed while the host was suspended, without spending its
+   * budget. With frozen review input, the call is recorded as `persona_host_suspended`, which
+   * the operation's call budget does not count, and the same operation continues, so the budget
+   * it already spent and any correction it owes carry over. Without it, the budget is the
+   * node's infrastructure attempts, and the `host_suspended_attempt` excuse recorded here takes
+   * this attempt out of `infraAttemptsSpent`.
+   */
+  private scheduleHostSuspendedRetry(attempt: WorkflowNodeAttempt, runId: string, reason: string): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const error = `The host was asleep during this call, so it did not count against the retry budget: ${reason}`;
+    this.store.transact(() => {
+      this.store.finishAttempt(attempt.id, { state: "error", error }, this.now());
+      this.recordHostSuspendedAttempt(attempt, runId);
+    });
+    const retryAt = this.now() + HOST_SUSPENDED_RETRY_DELAY_MS;
+    this.store.insertAttempt({
+      id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+      attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+      checkEvidence: attempt.checkEvidence, reviewInput: attempt.reviewInput,
+      inputFingerprint: attempt.inputFingerprint, retryAt,
+      error: `Retry scheduled after the host slept: ${reason}`, now: this.now(),
+    });
+    this.store.appendEvent(runId, "persona_retry_scheduled", {
+      nodeId: attempt.nodeId, attempt: attempt.attempt + 1, retryAt,
+      hostSuspended: true, error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+    this.wake();
+  }
+
+  /**
+   * The infrastructure attempts a node has spent in this submission. Attempt numbers count
+   * every try, and a try the host slept through is not one the node spent (issue #1734). Both
+   * the limit and the backoff between retries read this, never the raw attempt number: after
+   * twenty excused sleeps, the next real failure is the node's first, and waits like one.
+   */
+  private infraAttemptsSpent(attempt: WorkflowNodeAttempt): number {
+    return attempt.attempt
+      - this.store.hostSuspendedAttempts(attempt.submissionId, attempt.nodeId);
+  }
+
+  /** Backoff before the next infrastructure retry, from the attempts actually spent. */
+  private infraRetryDelayMs(attempt: WorkflowNodeAttempt): number {
+    return this.retryBaseMs * 4 ** Math.max(0, this.infraAttemptsSpent(attempt) - 1);
+  }
+
+  /**
+   * Durably excuse `attempt`: the host slept through it, so it is not one of the node's
+   * infrastructure attempts. Recorded with the attempt's own failure, before anything can stop
+   * its retry from being queued, so a block that holds the retry back (an unresolved check
+   * lease) still finds the attempt excused when it resumes. Keyed by attempt, so it is
+   * recorded once however often it is asked.
+   */
+  private recordHostSuspendedAttempt(attempt: WorkflowNodeAttempt, runId: string): void {
+    this.store.appendEvent(runId, "host_suspended_attempt", {
+      nodeId: attempt.nodeId, submissionId: attempt.submissionId, attemptId: attempt.id,
+    }, this.now(), `host-suspended:${attempt.id}`);
+  }
+
+  /**
+   * Retry a check that could not finish because the host slept through it, without spending
+   * the node's infrastructure attempts. The excuse is recorded with the failure, before an
+   * unresolved lease can block the retry (`recordHostSuspendedAttempt`), and the lease still
+   * blocks first, as for any retry. The Command's run
+   * allowance needs nothing here: an errored attempt does not count against it, except a
+   * CodeRabbit run, whose vendor credit may really have been spent.
+   */
+  private scheduleHostSuspendedCheckRetry(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+    output?: WorkflowJson,
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    const error = `The host was asleep during this check, so it did not count against the retry budget: ${reason}`;
+    this.store.transact(() => {
+      this.store.finishAttempt(attempt.id, { state: "error", error, ...(output ? { output } : {}) }, this.now());
+      this.recordHostSuspendedAttempt(attempt, runId);
+    });
+    if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
+    const now = this.now();
+    const retryAt = now + HOST_SUSPENDED_RETRY_DELAY_MS;
+    this.store.transact(() => {
+      this.store.insertAttempt({
+        id: randomUUID(), submissionId: attempt.submissionId, nodeId: attempt.nodeId,
+        attempt: attempt.attempt + 1, state: "retry_wait", persona: attempt.persona,
+        checkEvidence: attempt.checkEvidence, reviewInput: attempt.reviewInput,
+        inputFingerprint: attempt.inputFingerprint, retryAt,
+        error: `Retry scheduled after the host slept: ${reason}`, now,
+      });
+      this.store.appendEvent(runId, "persona_retry_scheduled", {
+        nodeId: attempt.nodeId, submissionId: attempt.submissionId, attempt: attempt.attempt + 1,
+        retryAt, hostSuspended: true, error: reason,
+      }, now);
+    });
+    this.onRunChanged(runId);
+    this.wake();
+  }
+
   private handleInfrastructureFailure(
     attempt: WorkflowNodeAttempt,
     runId: string,
@@ -1955,8 +2126,8 @@ export class WorkflowEngine {
       output,
     }, this.now());
     if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
-    if (!exhausted && attempt.attempt < MAX_INFRA_ATTEMPTS) {
-      const retryAt = this.now() + this.retryBaseMs * 4 ** (attempt.attempt - 1);
+    if (!exhausted && this.infraAttemptsSpent(attempt) < MAX_INFRA_ATTEMPTS) {
+      const retryAt = this.now() + this.infraRetryDelayMs(attempt);
       this.store.insertAttempt({
         id: randomUUID(),
         submissionId: attempt.submissionId,
@@ -2009,14 +2180,14 @@ export class WorkflowEngine {
       this.onRunChanged(runId);
       return;
     }
-    if (attempt.attempt >= MAX_INFRA_ATTEMPTS) {
+    if (this.infraAttemptsSpent(attempt) >= MAX_INFRA_ATTEMPTS) {
       this.handleCheckActionRequired(attempt, runId,
         `${result.reason}. Automatic connection retry limit reached (${MAX_INFRA_ATTEMPTS} attempts). Review remains incomplete. Inspect retained output and retry after connectivity recovers. No additional credits were authorized.`, result);
       return;
     }
     const now = this.now();
     // Keep retries spread across workflows after a shared outage. A vendor wait is a floor.
-    const delay = 30_000 * 2 ** (attempt.attempt - 1);
+    const delay = 30_000 * 2 ** Math.max(0, this.infraAttemptsSpent(attempt) - 1);
     const retryAt = Math.max(now + delay, result.review.retryAt ?? 0) + Math.floor(Math.random() * delay / 2);
     this.store.finishAttempt(attempt.id, { state: "error", error: result.reason,
       output: jsonValue({ review: result.review, artifacts: result.artifacts ?? [] }) }, now);
@@ -2148,7 +2319,7 @@ export class WorkflowEngine {
     const failed = this.store.latestAttemptForNode(submission.id, gate.nodeId);
     if (!failed || failed.state !== "error") return;
     const now = this.now();
-    if (failed.attempt >= MAX_INFRA_ATTEMPTS) {
+    if (this.infraAttemptsSpent(failed) >= MAX_INFRA_ATTEMPTS) {
       // The cleanup cleared, but this node had already spent every infrastructure attempt.
       // Hand it to the phase that OWNS exhaustion rather than granting a fourth attempt here:
       // that phase is also the one an operator can retry by hand from the run header.
@@ -2165,7 +2336,7 @@ export class WorkflowEngine {
     if (!this.store.reviveFailedSubmission(submission.id, run.id, CHECK_CLEANUP_UNRESOLVED_PHASE, now)) {
       return;
     }
-    const retryAt = now + this.retryBaseMs * 4 ** (failed.attempt - 1);
+    const retryAt = now + this.infraRetryDelayMs(failed);
     this.store.insertAttempt({
       id: randomUUID(),
       submissionId: submission.id,
@@ -2257,7 +2428,7 @@ export class WorkflowEngine {
             this.blockProviderRetryExhausted(attempt, run.id, "Provider retry window ended during daemon restart");
             continue;
           }
-          if (attempt.reviewInput ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) < 2 : attempt.attempt < MAX_INFRA_ATTEMPTS) {
+          if (attempt.reviewInput ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) < 2 : this.infraAttemptsSpent(attempt) < MAX_INFRA_ATTEMPTS) {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: attempt.submissionId,
@@ -2294,7 +2465,7 @@ export class WorkflowEngine {
           if (code === "persona_provider_retryable" || code === "persona_token_exhausted") return false;
           return attempt.reviewInput
             ? this.store.personaOperationCorrectionCalls(attempt.reviewInput.operationId) >= 2
-            : attempt.attempt >= MAX_INFRA_ATTEMPTS;
+            : this.infraAttemptsSpent(attempt) >= MAX_INFRA_ATTEMPTS;
         });
         if (exhausted) {
           const error = exhausted.error ?? "Infrastructure failure exhausted its retry budget";

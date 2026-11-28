@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the eight review roles ship WITH the application, which is a promise about
 // two different things. First, that a build serves the exact Markdown it was made from - the
@@ -14,7 +14,7 @@ import type { ServerEvent } from "../src/shared/types.ts";
 // to have their names taken - while an operator who imported the same document before it
 // shipped keeps the copy and the name they already own.
 
-const home = mkdtempSync(join(tmpdir(), "mission-builtin-personas-"));
+const home = tempDir("mission-builtin-personas-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

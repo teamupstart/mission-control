@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { tempDir } from "../../test/temp-root.mjs";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -20,7 +21,7 @@ import { expect, test } from "../fixtures/test.ts";
 const MARKER = "mc-e2e-rev-parse-dies";
 const EVIDENCE = artifactsDir("dispatch-repo-root-unanswered");
 
-const binDir = mkdtempSync(join(tmpdir(), "mc-e2e-git-dies-"));
+const binDir = tempDir("mc-e2e-git-dies-");
 const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 const fakeGit = join(binDir, "git");
 writeFileSync(

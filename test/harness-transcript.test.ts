@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Session, TranscriptMessage } from "../src/shared/types.ts";
 // The browser-side fold, imported into a server-side test on purpose: the defect it pins lived
@@ -23,7 +22,7 @@ import { transcriptRows } from "../src/web/lib/tools.ts";
 // harness to answer at all, and that answering `null` produces the identical `{unavailable:
 // true}` / `{size: null}` the absent-file path has always produced.
 
-const home = mkdtempSync(join(tmpdir(), "harness-transcript-"));
+const home = tempDir("harness-transcript-");
 // Set before importing anything that resolves the state dir (routes.ts reaches the db).
 process.env.HARNESS_HOME = join(home, "state");
 // The codex spec walks this tree; point it somewhere hermetic before it is first read.
@@ -33,6 +32,7 @@ const { HARNESSES, harnessFor, sessionMessages } = await import("../src/server/h
 const { codexTranscript, joinCodexBatches, latestCodexNarration, parseCodexMessages } =
   await import("../src/server/harness/codex/transcript.ts");
 import type { RouteDeps } from "../src/server/routes.ts";
+import { tempDir } from "./temp-root.mjs";
 const { buildApp } = await import("../src/server/routes.ts");
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { GOAL_UNSUPPORTED } = await import("../src/shared/goal.ts");

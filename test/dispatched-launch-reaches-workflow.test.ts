@@ -4,11 +4,11 @@ import { execFileSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { BUG_FIX_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { appendFileSync, mkdtempSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Session, Task } from "../src/shared/types.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The whole reported failure, end to end, at the seams a person actually feels it:
 // a dispatched ship session is launched, the composed prompt comes back through
@@ -34,7 +34,7 @@ import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 // pre-fix path is reachable from HEAD by nulling that one column, and it is asserted
 // to fail at exactly the step the operator saw it fail at.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatched-launch-workflow-"));
+const home = tempDir("mission-dispatched-launch-workflow-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_GOAL_POLL_MS = "10";
 process.env.MISSION_GOAL_REFRESH_MS = "0";

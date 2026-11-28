@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { REPORT_GUIDANCE, REPORT_GUIDANCE_RULES } from "../src/shared/reports.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The MCP child reads the operator's report guidance once, as it starts, and puts it in
 // `post_report`'s description. The fixed half (progress goes to report_status, decisions are
@@ -16,7 +15,7 @@ import { REPORT_GUIDANCE, REPORT_GUIDANCE_RULES } from "../src/shared/reports.ts
 //
 // Drives the real MCP server over stdio against stub daemons.
 
-const home = mkdtempSync(join(tmpdir(), "post-report-guidance-mcp-"));
+const home = tempDir("post-report-guidance-mcp-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;

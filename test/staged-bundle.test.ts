@@ -6,17 +6,17 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   stagedBuildAcceptance,
   stagedBundleRevision,
   stagedRevisionProblem,
 } from "../src/shared/staged-bundle.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 test("a bundle's revision follows the directory, not its contents' names", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-staged-revision-"));
+  const root = tempDir("mission-staged-revision-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bundle = join(root, "Mission Control.app");
   mkdirSync(join(bundle, "Contents"), { recursive: true });

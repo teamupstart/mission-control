@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -20,6 +19,7 @@ import { VoiceUtteranceSchema, type VoiceUtterance } from "../src/shared/voice-r
 import { stateDir, tokenPath } from "../src/shared/harness-runtime.mjs";
 import { voiceTestModel } from "./helpers/voice-test-model.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 const run = promisify(execFile);
 test("the published sherpa addon transcribes a recording through the listener and daemon", async t => {
@@ -30,7 +30,7 @@ test("the published sherpa addon transcribes a recording through the listener an
     t.skip("Pinned recognizer model is absent from the offline unit-test cache");
     return;
   }
-  const cwd = await mkdtemp(join(tmpdir(), "voice-listener-checkout-"));
+  const cwd = await tempDirAsync("voice-listener-checkout-");
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await run(process.execPath, ["scripts/build-voice-sherpa.mjs", join(cwd, "dist")]);
   const manifests = join(cwd, "models.json");

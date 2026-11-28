@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PiSdk } from "../src/server/harness/pi/sdk-types.ts";
 import type { PiHostUI } from "../src/server/harness/pi/sdk-ui.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 // What is at stake: a browser suite that quietly starts spending money, or reading the
 // operator's real Pi configuration.
@@ -26,7 +26,7 @@ const FAKE_SDK = new URL("../e2e/fixtures/fake-pi-sdk.mjs", import.meta.url);
 const DAEMON_FIXTURE = new URL("../e2e/fixtures/daemon.ts", import.meta.url);
 
 test("unsupported diagnostics do not keep an ordinary fake turn streaming", async () => {
-  const home = mkdtempSync(join(tmpdir(), "pi-diagnostic-boundary-"));
+  const home = tempDir("pi-diagnostic-boundary-");
   try {
     writeFileSync(join(home, "models.json"), "[]");
     await withEnv({ MISSION_HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"),
@@ -61,7 +61,7 @@ test("unsupported diagnostics do not keep an ordinary fake turn streaming", asyn
 
 for (const blocked of ["select", "confirm", "input", "editor"] as const) {
   test(`the fake stops its scripted turn after abort during ${blocked}`, async () => {
-    const home = mkdtempSync(join(tmpdir(), "pi-abort-boundary-"));
+    const home = tempDir("pi-abort-boundary-");
     try {
       writeFileSync(join(home, "models.json"), "[]");
       await withEnv({ MISSION_HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"),
@@ -126,12 +126,12 @@ async function withEnv<T>(
 test("the fake refuses a Pi agent directory outside the daemon's disposable home", async () => {
   // The guard that stands between a browser spec and the operator's own `~/.pi` - which is
   // where their provider credentials and every real Pi transcript live.
-  const home = mkdtempSync(join(tmpdir(), "pi-boundary-"));
+  const home = tempDir("pi-boundary-");
   try {
     await withEnv(
       {
         MISSION_HOME: home,
-        PI_CODING_AGENT_DIR: join(tmpdir(), "somewhere-else", "agent"),
+        PI_CODING_AGENT_DIR: join(testTempRoot(), "somewhere-else", "agent"),
         MC_E2E_RECORD_DIR: join(home, "records"),
         MC_E2E_PI_SDK_MODELS: join(home, "models.json"),
       },
@@ -152,7 +152,7 @@ test("the fake refuses to run at all when the daemon did not isolate it", async 
   // nobody told it otherwise would be indistinguishable from a working one until the day it
   // mattered.
   for (const missing of ["PI_CODING_AGENT_DIR", "MISSION_HOME"]) {
-    const home = mkdtempSync(join(tmpdir(), "pi-boundary-"));
+    const home = tempDir("pi-boundary-");
     try {
       await withEnv(
         {
@@ -177,7 +177,7 @@ test("a loaded fake makes any network request throw rather than reach a provider
   // endpoint, and `fetch` is how anything in this process would reach one - so replacing it
   // turns "a browser spec must not spend money" from a property of the fixtures we wrote
   // into a property of the process they run in.
-  const home = mkdtempSync(join(tmpdir(), "pi-boundary-"));
+  const home = tempDir("pi-boundary-");
   try {
     await withEnv(
       {

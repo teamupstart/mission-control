@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability, piExtensionInstalled } from "../src/server/mission-tools.ts";
 import { piExtensionPath } from "../src/server/config.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("Pi's verified installed bridge and MCP-client harnesses expose distinct capabilities", async () => {
   assert.deepEqual(await missionToolsAvailability("pi", () => true), { available: true, reason: null });
@@ -16,7 +16,7 @@ test("Pi's verified installed bridge and MCP-client harnesses expose distinct ca
 });
 
 test("Pi availability degrades invalid and non-file paths to a clean refusal", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-availability-"));
+  const dir = tempDir("pi-availability-");
   const prior = { ...process.env };
   try {
     process.env.PI_EXTENSIONS_DIR = join(dir, "extensions");

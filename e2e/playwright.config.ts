@@ -1,5 +1,20 @@
 import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_SWEEP_MIN_AGE_MS, installTempRoot, pruneStaleFiles, ROOT_ENV, sweepTempRoots } from "../test/temp-root.mjs";
+
+// The runner evaluates this file first and its workers evaluate it again. Only the runner,
+// which has no inherited root, sweeps dead runs and makes this run's private temp root; the
+// workers, every browser they launch and every daemon a spec boots inherit `TMPDIR` pointing
+// inside it. The runner removes it on exit. See docs/test-temp-dirs.md.
+if (!process.env[ROOT_ENV]) {
+  sweepTempRoots({ minAgeMs: DEFAULT_SWEEP_MIN_AGE_MS });
+  installTempRoot({ kind: "playwright" });
+  // `npm run test:e2e` relocates Playwright's transform cache into this checkout so it no
+  // longer accumulates in the shared temp dir. Entries are recreated on demand, so a week
+  // without use is enough to drop one.
+  const cache = process.env.PWTEST_CACHE_DIR;
+  if (cache && cache.includes("node_modules/.cache/")) pruneStaleFiles(cache, { maxAgeMs: 7 * 24 * 60 * 60_000 });
+}
 
 /**
  * Browser-level end-to-end tests, run separately from `npm test`.

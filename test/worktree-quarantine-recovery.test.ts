@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { openDb } from "../src/server/db.ts";
@@ -21,6 +20,7 @@ import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse
 import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The field failure from 2026-11-12: under load the machine-wide process listing is killed
 // before it answers, so one occupancy read in a run of healthy ones comes back unknown. Each
@@ -407,7 +407,7 @@ test("acquire: a process that entered the reserved slot still quarantines it", a
 // ---- review round 1 ------------------------------------------------------------------------
 
 test("marker: a read that does not answer is told apart from an absent or malformed marker", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-marker-reading-")));
+  const root = realpathSync(tempDir("mission-marker-reading-"));
   try {
     assert.deepEqual(await observeWorktreePoolMarker(root), { kind: "absent" });
     await ensureWorktreePoolMarker(root, "pool-a");

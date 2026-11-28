@@ -1,11 +1,10 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision, ReviewItem, ReviewStatus, ServerEvent } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Filed plan decisions, Phase 2, at the daemon: `request_plan_decisions` with `revises`. Which
 // forms are valid targets (an open filed plan form of the same session, or one its own agent
@@ -16,7 +15,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // "Revising a filed plan"; docs/plans/filed-plan-decisions/phase-2-revised-forms.md is the route
 // the implementation took, for context.
 
-const home = mkdtempSync(join(tmpdir(), "mission-filed-plan-revision-"));
+const home = tempDir("mission-filed-plan-revision-");
 process.env.MISSION_HOME = home;
 
 const { openDb, insertReview, loadReview, reviewRevisedBy } = await import("../src/server/db.ts");

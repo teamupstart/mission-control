@@ -505,6 +505,23 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+interface AgentEnvironmentSettingsView {
+  names: string[];
+  revision: string;
+  variables: import("@shared/worktrees.ts").WorktreeClaimVariableView[];
+}
+export async function fetchAgentEnvironment(): Promise<AgentEnvironmentSettingsView | null> {
+  const path = "/api/agent-environment";
+  try {
+    const response = await actionFetch(path);
+    // The names changed while the shell probe was running. Read the committed revision
+    // once more, both for an initial load and for recovery from a superseded save.
+    if (response.status === 409) return fetchJson<AgentEnvironmentSettingsView>(path);
+    return response.ok ? await response.json() as AgentEnvironmentSettingsView : null;
+  } catch {
+    return null;
+  }
+}
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 type VoiceUiWriteResult = ActionResult & Partial<UiConfig["voice"]> & { voiceIndicatorVersion?: VoiceRevision };
 export interface VoiceDashboardSnapshot {
@@ -2557,6 +2574,8 @@ export const api = {
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
   /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
+  setAgentEnvironment: (names: string[], expectedRevision: string) =>
+    put<ActionResult & Partial<AgentEnvironmentSettingsView>>("/api/agent-environment", { names, expectedRevision }),
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---

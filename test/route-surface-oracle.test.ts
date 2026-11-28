@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The whole route surface, checked against a committed oracle.
@@ -32,12 +32,12 @@ import { fileURLToPath, URL } from "node:url";
  * HARNESS_HOME is set before importing anything that resolves it: `openDb` refuses the real
  * state dir under the test runner, and a hoisted import would defeat this preamble.
  */
-const home = mkdtempSync(join(tmpdir(), "mission-route-oracle-"));
+const home = tempDir("mission-route-oracle-");
 process.env.HARNESS_HOME = home;
 // Pin the one host reading the daemon takes from the environment. Without this the repo
 // index resolves `~/workspace` against the real home and reports the operator's checkouts,
 // which differ per machine and must not be recorded in a committed fixture.
-const repos = mkdtempSync(join(tmpdir(), "mission-route-oracle-repos-"));
+const repos = tempDir("mission-route-oracle-repos-");
 process.env.MISSION_WORKSPACE_DIRS = repos;
 // The same for Claude's user settings, which `GET /api/harnesses/advisor` reads: a path that
 // does not exist, so the fixture records "no advisor configured" on every machine.

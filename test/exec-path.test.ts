@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 
@@ -18,6 +16,7 @@ import {
   run,
 } from "../src/server/util/exec.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * A command name no machine can already have, which is what makes this test about the
@@ -39,7 +38,7 @@ import { withProcessEnv } from "./helpers/process-env.ts";
 const FIXTURE_BIN = "mission-test-agent";
 
 test("a bare binary installed on the login-shell PATH becomes visible without a daemon restart", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-login-path-"));
+  const root = tempDir("mission-login-path-");
   const stale = join(root, "stale-bin");
   const installed = join(root, "installed-bin");
   const shell = join(root, "login-shell");
@@ -98,7 +97,7 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
 });
 
 test("run uses the catalog child environment for terminal-specific scrubbing", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-run-drop-env-"));
+  const root = tempDir("mission-run-drop-env-");
   const cmux = join(root, "cmux");
   writeFileSync(
     cmux,
@@ -130,7 +129,7 @@ test("run uses the catalog child environment for terminal-specific scrubbing", a
 });
 
 test("run resolves and launches a bare command from the explicit child PATH", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-run-child-path-"));
+  const root = tempDir("mission-run-child-path-");
   const binDir = join(root, "bin");
   const node = join(binDir, "node");
   mkdirSync(binDir);
@@ -158,7 +157,7 @@ test("run resolves and launches a bare command from the explicit child PATH", as
 });
 
 test("relative command paths resolve absolutely and execute from the requested cwd", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-run-relative-path-"));
+  const root = tempDir("mission-run-relative-path-");
   const canonicalRoot = realpathSync(root);
   const binDir = join(canonicalRoot, "bin");
   const tool = join(binDir, "local-tool");

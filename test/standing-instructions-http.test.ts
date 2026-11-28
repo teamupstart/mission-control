@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 // The four standing-instruction routes.
 //
@@ -12,7 +12,7 @@ import { fileURLToPath, URL } from "node:url";
 // marker saying "nothing" is the reason somebody stops looking, so every path in and out is
 // canonicalized through `resolveRepoPath` and every refusal is loud.
 
-const home = mkdtempSync(join(tmpdir(), "mission-standing-http-"));
+const home = tempDir("mission-standing-http-");
 process.env.HARNESS_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");

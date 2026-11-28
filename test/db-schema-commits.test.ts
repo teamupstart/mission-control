@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // How many times creating a fresh schema commits, and so how many times it syncs the WAL.
 //
@@ -12,7 +12,7 @@ import { join } from "node:path";
 // commit per table and index, a synthetic run on ext4 took 1784 ms against 15 ms in one
 // transaction.
 
-const home = mkdtempSync(join(tmpdir(), "mission-schema-commits-"));
+const home = tempDir("mission-schema-commits-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { CURRENT_DATABASE_SCHEMA_VERSION, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");

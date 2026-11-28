@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -23,11 +22,12 @@ import {
   workflowRunIsOpen,
 } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a successful Persona End is not completion when the published
 // version owns an Inspector gate. Every conclusion must be about an adopted PR and a
 // fresh observation of the exact clean, committed head.
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-gate-"));
+const home = tempDir("mission-workflow-inspector-gate-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -448,7 +448,7 @@ for (const rootSource of ["binding", "empty-binding", "null-binding"] as const) 
   test(`an abbreviated captured commit recovers after restart and waits for clean publication: ${rootSource}`, async () => {
     const { execFileSync } = await import("node:child_process");
     const { resolveCapturedCommit } = await import("../src/server/workflows/commit-id.ts");
-    const repo = mkdtempSync(join(tmpdir(), "mission-inspector-head-"));
+    const repo = tempDir("mission-inspector-head-");
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
     git("init", "-q");
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "test commit");
@@ -4880,15 +4880,18 @@ for (const [name, second] of [
   });
 }
 
-test("a repository holding the merge grant keeps the GitHub review for a matching head", async (t) => {
+test("a repository holding the merge grant now takes the local path for a matching head", async (t) => {
   const seeded = await seedLocal();
   t.after(localTeardown(seeded));
+  // Shipping accepts a matching local review as merge provenance, so the merge grant no longer
+  // keeps the GitHub review: the gate and the worker take the same local path as anywhere else.
   setShippingConfig({ repoAllowlist: ["/repo"] });
+  assert.equal((await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }))?.treeOid,
+    REVIEWED_TREE, "the worker sees the match in a merge-grant repository");
   signal(seeded, seeded.head);
-  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
-    "a merge-grant repository skipped its GitHub review");
-  assert.equal(gateOf(seeded).localReview, undefined);
-  assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed",
+    "a merge-grant repository did not complete on the local review");
+  assert.equal(gateOf(seeded).localReview?.treeOid, REVIEWED_TREE);
 });
 
 test("the manager's one match answer is what the worker asks, before and after the gate completes", async (t) => {
@@ -5108,8 +5111,8 @@ test("a run repairing GitHub findings keeps the worker on the GitHub path even w
   t.after(localTeardown(seeded));
   const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
   assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the head matches the passed local review");
-  // The gate sent this run to repair published GitHub findings (for example while the repository
-  // held the merge grant, which was since removed). The head and its tree are unchanged.
+  // The gate sent this run to repair published GitHub findings (for example while Local review was
+  // off, and it has since been switched on). The head and its tree are unchanged.
   db.prepare(`UPDATE workflow_runs SET status = 'waiting_for_new_head', current_phase = 'inspector_findings' WHERE id = ?`)
     .run(seeded.ids.run);
   assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_new_head");
@@ -5169,6 +5172,45 @@ test("a newer owner that decides during the tree lookup takes the decision back 
   assert.equal(decideDuringLookup, null, "the decision did land during the lookup");
 });
 
+test("the matched run cancelled during the tree lookup vouches for nothing", async (t) => {
+  let duringLookup: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (duringLookup) { const apply = duringLookup; duringLookup = null; apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the run's pass matches");
+  // Cancelling keeps the completed attempts, so only the run's own status can say no.
+  duringLookup = () => {
+    db.prepare(`UPDATE workflow_runs SET status = 'cancelled', current_phase = 'cancelled' WHERE id = ?`).run(seeded.ids.run);
+  };
+  assert.equal(await ask(), null, "a run cancelled during the lookup no longer matches");
+  assert.equal(duringLookup, null, "the cancellation did land during the lookup");
+});
+
+test("a newer owner that appears during the tree lookup takes the decision from an older pass", async (t) => {
+  let duringLookup: (() => Promise<void>) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (duringLookup) { const apply = duringLookup; duringLookup = null; await apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status === "completed", "the first run did not complete locally");
+  const ask = () => seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" });
+  assert.equal((await ask())?.submissionId, seeded.ids.submission, "control: the only owner's pass matches");
+  // A newer run pins the same pull request while the older pass's tree is being resolved, and it
+  // has already been cancelled. It was never asked, so the older pass must not stand in for it.
+  duringLookup = async () => { await newerRunOnSamePullRequest(seeded, { stage: true, status: "cancelled" }); };
+  assert.equal(await ask(), null, "an owner that appeared during the lookup decides");
+  assert.equal(duringLookup, null, "the newer owner did appear during the lookup");
+});
+
 test("a pull request retargeted during the tree lookup is evaluated on its new base, not completed locally", async (t) => {
   let retargetOnce: (() => void) | null = null;
   const seeded = await seedLocal({
@@ -5189,35 +5231,45 @@ test("a pull request retargeted during the tree lookup is evaluated on its new b
   assert.equal(getInspectorPr(seeded.key)?.observedHeadSha ?? seeded.head, seeded.head, "the head itself never moved");
 });
 
-for (const change of ["merge grant given", "Local review switched off"] as const) {
-  test(`eligibility that changes during the tree lookup (${change}) keeps the GitHub review`, async (t) => {
-    let changeOnce: (() => void) | null = null;
-    const seeded = await seedLocal({
-      resolveCommitTree: async () => {
-        if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
-        return REVIEWED_TREE;
-      },
-    });
-    t.after(localTeardown(seeded));
-    const apply = () => change === "merge grant given"
-      ? setShippingConfig({ repoAllowlist: ["/repo"] })
-      : setInspectorConfig({ localReview: false });
-    // The shared answer: what the worker asks.
-    changeOnce = apply;
-    assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
-    assert.equal(changeOnce, null, "the change did land during the lookup");
-    // Restore, then the same race on the gate's path.
-    setShippingConfig({ repoAllowlist: [] });
-    setInspectorConfig({ localReview: true });
-    changeOnce = apply;
-    signal(seeded, seeded.head);
-    await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
-      "the gate did not wait for the GitHub review");
-    assert.equal(changeOnce, null);
-    assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
-    assert.equal(gateOf(seeded).localReview, undefined);
+test("eligibility that changes during the tree lookup (Local review switched off) keeps the GitHub review", async (t) => {
+  let changeOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
+      return REVIEWED_TREE;
+    },
   });
-}
+  t.after(localTeardown(seeded));
+  const apply = () => setInspectorConfig({ localReview: false });
+  // The shared answer: what the worker asks.
+  changeOnce = apply;
+  assert.equal(await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }), null);
+  assert.equal(changeOnce, null, "the change did land during the lookup");
+  // Restore, then the same race on the gate's path.
+  setInspectorConfig({ localReview: true });
+  changeOnce = apply;
+  signal(seeded, seeded.head);
+  await waitFor(() => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_review",
+    "the gate did not wait for the GitHub review");
+  assert.equal(changeOnce, null);
+  assert.notEqual(seeded.store.getRun(seeded.ids.run)?.status, "completed");
+  assert.equal(gateOf(seeded).localReview, undefined);
+});
+
+test("the merge grant given during the tree lookup no longer takes the match away", async (t) => {
+  let changeOnce: (() => void) | null = null;
+  const seeded = await seedLocal({
+    resolveCommitTree: async () => {
+      if (changeOnce) { const apply = changeOnce; changeOnce = null; apply(); }
+      return REVIEWED_TREE;
+    },
+  });
+  t.after(localTeardown(seeded));
+  changeOnce = () => setShippingConfig({ repoAllowlist: ["/repo"] });
+  assert.equal((await seeded.manager.localReviewMatch(seeded.key, { headSha: seeded.head, baseRefName: "main" }))?.treeOid,
+    REVIEWED_TREE);
+  assert.equal(changeOnce, null, "the grant did land during the lookup");
+});
 
 const { localReviewBaseBranch } = await import("../src/shared/workflow.ts");
 

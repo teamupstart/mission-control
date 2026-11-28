@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a finding recorded before posting was tracked must report only what its
 // row proves. A resolved finding that was posted must not read as never posted, and one
 // nothing proves either way must read as unknown rather than as a confident answer.
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-posted-"));
+const home = tempDir("mission-inspector-posted-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

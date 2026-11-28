@@ -1,8 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What the sweep deletes once the headless dir is encoded the way Claude encodes it.
 //
@@ -13,7 +13,7 @@ import { basename, join } from "node:path";
 // `HEADLESS_CWD` is `tmpdir()` at import and the projects root is `~/.claude/projects` at
 // import, so both are redirected here, before the modules load.
 
-const base = mkdtempSync(join(tmpdir(), "prune-encoding-"));
+const base = tempDir("prune-encoding-");
 const headlessCwd = join(base, "mc_tmp+x y");
 const home = join(base, "home");
 mkdirSync(headlessCwd, { recursive: true });

@@ -1,15 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // An operator's database from Phase 2 of residents - resident tables with a live, launched run,
 // and no session-control columns - gains the four grant columns nullable, and every run it
 // already held reads as never granted: nothing from before this phase is regranted by a restart.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-control-upgrade-"));
+const home = tempDir("mission-residents-control-upgrade-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

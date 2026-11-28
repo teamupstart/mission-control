@@ -24,7 +24,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](dispatch-and-backlog.md#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](workflows.md#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](workflows.md#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_WORKFLOW_PERSONA_TIMEOUT_MS` | `600000` | [Personas](workflows.md#workflows-and-personas): hard cap on one Persona call. Sized with the `MISSION_INSPECTOR_TIMEOUT_MS` of the time (600000, before reviews moved to `xhigh` effort) rather than with the 120s default below, because a Persona reads the same shape of evidence - a diff and a transcript window - and the cost of the budget being too small is paid three times: a timeout is an infrastructure failure, and the engine retries one twice more before failing the submission |
+| `MISSION_WORKFLOW_PERSONA_TIMEOUT_MS` | `600000` | [Personas](workflows.md#workflows-and-personas): hard cap on one Persona call. Sized with the `MISSION_INSPECTOR_TIMEOUT_MS` of the time (600000, before reviews moved to `xhigh` effort) rather than with the 120s default below, because a Persona reads the same shape of evidence - a diff and a transcript window - and the cost of the budget being too small is paid three times: a timeout is an infrastructure failure, and the engine retries one twice more before failing the submission. Counted in awake time: a host sleep does not spend it ([host sleep](workflows.md#automatic-recovery-before-review)) |
 | `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](ensembles.md#multi-agent-ensembles): the model behind every ensemble evaluation - the Best-of-N comparison, the Consensus divergence pass, and each Panel-vote judge's ballot. An explicit evaluator or judge model wins, then a judging Persona's model override; otherwise **Settings → Models → Ensemble evaluation**, then this variable, then the provider's cheap default |
 | `OPENAI_API_KEY` | unset | [Voice addressing](voice.md#faster-routing): with the `voice` preview on and **Decision model** on Automatic, this key alone switches OpenAI Decisions on for [ambiguous spoken requests](security.md#voice-routing). Read as spelled, not through the `MISSION_` prefixes. A key saved in **Settings → Voice** overrides it on that machine; **Off** there stops it |
 | `TYPESAFE_API_KEY` | unset | [Voice addressing](voice.md#faster-routing): the same for Jev. On Automatic, a saved key of either provider and `OPENAI_API_KEY` come first |
@@ -561,6 +561,32 @@ See [orphaned task checkouts](worktrees-and-checks.md#orphaned-task-checkouts).
 
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.
+
+## Agent environment
+
+Enable **Agent environment** in Settings > Feature flags. In Settings > Harnesses, find **Agent environment** below
+the per-harness model and effort controls. Enter a name and select **Add variable**. Each addition
+is saved immediately. Select **Delete** beside a name to remove it from future launches. For example, a repository can reference `MY_TOKEN` in a
+Claude MCP header or as a Codex `bearer_token_env_var`.
+
+Each managed launch or managed resume reads the listed names from the daemon, then probes the
+login shell for any empty or unset names. Changes to shell exports take effect on the next
+launch. Settings reports presence and source. A missing variable leaves the session running
+and appears in its details. A running terminal session keeps its launch warning across daemon
+restarts. The setting and its backups contain only names. `CODEX_HOME` is
+reserved because Mission Control selects the Codex profile for each session.
+
+If another Settings tab saves a different list first, the older tab reloads the saved names
+and shows a conflict message. You can then edit the current list.
+
+The preview adds selected variables to the usual launch environment. Terminal launches
+transfer them through a private one-use Unix socket. The pane must present the random ticket
+delivered with its launch command. An invalid ticket leaves the handoff available to the pane.
+The terminal backend and processes that can inspect its launch command are trusted. A pane has two minutes to collect its
+environment. If the handoff expires, the pane reports the failure and you can start a new
+launch. Resuming an unmanaged terminal conversation skips the lookup. Embedded Pi receives
+the variables in its shell tool environment. Residents continue to use profile secrets.
+Disabling the preview stops future lookups and retains the saved list.
 
 ## Voice listener backend
 

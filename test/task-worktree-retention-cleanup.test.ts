@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { Task } from "../src/shared/types.ts";
 import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
 import { mkTask as baseTask, mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-retention-cleanup-"));
+const home = tempDir("mission-retention-cleanup-");
 process.env.HARNESS_HOME = home;
 
 const {

@@ -4,7 +4,6 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -12,7 +11,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -28,9 +26,10 @@ import {
 } from "../src/server/database-backups/loop.ts";
 import { verifyDatabaseBackupForRestore } from "../src/server/database-backups/restore.ts";
 import { CURRENT_DATABASE_SCHEMA_VERSION } from "../src/server/db.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(prefix: string): string {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = tempDir(prefix);
   return root;
 }
 

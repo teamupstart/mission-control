@@ -617,7 +617,7 @@ function recordPrObservation(key: string, s: PrSnapshot, now: number, reopen = f
 
 /** What an on-demand read of one adopted pull request found. */
 export type InspectorReobservation =
-  | { ok: true; state: PrSnapshot["state"] }
+  | { ok: true; state: PrSnapshot["state"]; mergedCiWitness?: PrSnapshot["mergedCiWitness"] }
   | { ok: false; error: string };
 
 /**
@@ -646,7 +646,7 @@ export async function reobserveInspectorPr(
   recordPrObservation(prKey, snap.value, now, true);
   registry.refreshInspections();
   notifyInspection(registry, prKey, snap.value.headSha || null, snap.value.state, now);
-  return { ok: true, state: snap.value.state };
+  return { ok: true, state: snap.value.state, ...(snap.value.mergedCiWitness ? { mergedCiWitness: snap.value.mergedCiWitness } : {}) };
 }
 
 /** Run one PR through the whole cycle. Returns true when it did something. */
@@ -907,7 +907,8 @@ async function processPr(
   if (
     baseReview === "current" &&
     gated.reviewComplete !== false &&
-    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)
+    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate, localMatch,
+      () => localReview(pr.key, { headSha: s.headSha, baseRefName: s.baseRefName || null }))
   ) return true;
 
   if (localMatch) return recordLocalReview(pr, s, posture, now) || acted;
@@ -930,8 +931,8 @@ async function processPr(
     // ...and the same base name over a moved merge base is a different diff too.
     baseReview === "current" &&
     // A head recorded from a local match is not a GitHub review. A matched head returned above,
-    // so one that reaches here no longer matches - Local review switched off, the repository
-    // given the merge grant, a newer run without the stage - and is reviewed on GitHub in every
+    // so one that reaches here no longer matches - Local review switched off, a newer run
+    // without the stage, a newer run that did not pass - and is reviewed on GitHub in every
     // posture, Dry run included, rather than reused as if it had been reviewed.
     pr.localReviewHeadSha !== pr.headSha &&
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
@@ -1187,7 +1188,6 @@ async function reviewRound(
       pr.key,
       {
         headSha: s.headSha,
-        // A GitHub review replaces any local record of this head.
         localReviewHeadSha: null,
         reviewedBaseRef: s.baseRefName || null,
         reviewedBaseSha: s.baseSha || null,
@@ -1332,7 +1332,6 @@ async function reviewRound(
     pr.key,
     {
       headSha: s.headSha,
-      // A GitHub review replaces any local record of this head.
       localReviewHeadSha: null,
       // The base this diff was taken against. A later base change under the same head is
       // a different diff, so it is reviewed again rather than trusted (`reviewBaseChanged`).

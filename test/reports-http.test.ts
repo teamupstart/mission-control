@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ReportItem } from "../src/shared/reports.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
@@ -10,6 +9,7 @@ import type { QueueManager } from "../src/server/queue.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The report routes, as the MCP tool and the dashboard reach them.
 //
@@ -20,7 +20,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // but a person takes a report out of to read. A session's history is answered after the session
 // has gone, because the session is a report's permanent home.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reports-http-"));
+const home = tempDir("mission-reports-http-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

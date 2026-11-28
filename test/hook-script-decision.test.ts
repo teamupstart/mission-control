@@ -2,10 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The one place this bridge is allowed to write to an agent's stdout, exercised as the agent
@@ -23,7 +22,7 @@ import { fileURLToPath } from "node:url";
  * decision, and `test/hook-bridge-decision.test.ts` owns the transport's fail-open rules.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-hook-script-"));
+const home = tempDir("mission-hook-script-");
 const HOOK = fileURLToPath(new URL("../hooks/harness-hook.mjs", import.meta.url));
 
 /** Run the hook script against a daemon that answers `reply`, and report what it printed. */

@@ -1,14 +1,14 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "../src/server/util/exec.ts";
 import { worktreeReturnBlocker } from "../src/server/git/worktree-return-safety.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(t: TestContext) {
-  const root = mkdtempSync(join(tmpdir(), "mission-return-git-"));
+  const root = tempDir("mission-return-git-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, "repo");
   mkdirSync(path);

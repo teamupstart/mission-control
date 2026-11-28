@@ -143,7 +143,19 @@ export interface FakePullRequest {
    * failure. Omitted means that read finds no pull request, and the failure stands.
    */
   checkContexts?: unknown[];
+  checkRollupState?: "SUCCESS" | "PENDING" | "FAILURE";
   branchUpdate?: { mergeStateStatus: string; baseRefOid: string; isDraft?: boolean; reviewDecision?: string | null; refusal?: string };
+  /**
+   * What the Inspector's pull request read reports to Shipping's merge gate: the head commit's
+   * check rollup state (`SUCCESS`, `PENDING`, `FAILURE`) and GitHub's mergeability. Omitted means
+   * neither is reported, so no checks ran and mergeability is unknown, and nothing merges.
+   */
+  mergeGate?: { checks: string; mergeable?: string };
+  /**
+   * The repository's default branch as the Inspector's pull request read reports it. Defaults to
+   * `main`; a spec sets it to move the default branch along with a retargeted base.
+   */
+  defaultBranch?: string;
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
@@ -773,8 +785,14 @@ if (argv[0] === "--version") {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
     mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
-    repository: { defaultBranchRef: { name: "main" } },
+    repository: { defaultBranchRef: { name: pr.defaultBranch ?? "main" } },
+    ...(pr.checkRollupState ? { reviewDecision: null, commits: { nodes: [{ commit: {
+      oid: pr.headRefOid, statusCheckRollup: { state: pr.checkRollupState,
+        contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts } },
+    } }] } } : {}),
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
+    ...(pr.mergeGate ? { mergeable: pr.mergeGate.mergeable ?? "MERGEABLE", reviewDecision: null,
+      commits: { nodes: [{ commit: { statusCheckRollup: { state: pr.mergeGate.checks } } }] } } : {}),
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     comments: pr.issueComments ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
@@ -801,6 +819,30 @@ if (argv[0] === "--version") {
     commits: { nodes: [{ commit: { oid: pr.headRefOid,
       statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts ?? [] } } } }] },
   } : null } } }));
+} else if (argv[0] === "api" && argv[2] === "PUT" && (argv[3] || "").includes("/pulls/") && (argv[3] || "").endsWith("/merge")) {
+  // YOLO mode's merge: a compare-and-swap on the head it evaluated. GitHub refuses a stale head
+  // (409); otherwise the scripted pull request reads as merged from now on. The body is recorded
+  // beside the argv so a spec can read which head the daemon asked to land.
+  let input = "";
+  try { input = require("node:fs").readFileSync(0, "utf8"); } catch {}
+  if (dir) writeFileSync(join(dir, \`gh-merge-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv, input }, null, 2));
+  // Scoped to the endpoint's repository as well as its number: two repositories can both have a
+  // pull request with the same number, and only the addressed one may be read or merged.
+  const [, owner, repo, , number] = (argv[3] || "").split("/");
+  const path = process.env.MC_E2E_GH_PRS;
+  const addressed = (p) => p.url === "https://github.com/" + owner + "/" + repo + "/pull/" + number;
+  const pr = scriptedPrs().find(addressed);
+  let sha = null;
+  try { sha = JSON.parse(input).sha; } catch {}
+  if (!pr || pr.headRefOid !== sha || !path) {
+    process.stderr.write("HTTP 409: Head branch was modified (fake)\\n");
+    process.exitCode = 1;
+  } else {
+    const now = new Date().toISOString();
+    writeFileSync(path, JSON.stringify(scriptedPrs().map((p) => (addressed(p)
+      ? { ...p, state: "MERGED", mergedAt: now, mergeCommit: "f".repeat(40) } : p)), null, 2));
+    process.stdout.write(JSON.stringify({ merged: true, sha: "f".repeat(40) }) + "\\n");
+  }
 } else if (argv[0] === "api" && argv[2] === "PUT" && (argv[3] || "").endsWith("/update-branch")) {
   const number = argv[3].split("/").at(-2);
   const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === number);

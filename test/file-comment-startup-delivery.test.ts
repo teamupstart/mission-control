@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a comment left `queued` from before sending started delivery on its own
 // must be sent when the daemon starts - and only once the first COMPLETED discovery sweep has
@@ -11,7 +10,7 @@ import { join } from "node:path";
 // takes: a durable staged comment, a registry that hydrates it, the startup registration, and
 // the sweep that fires it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-file-comment-startup-delivery-"));
+const home = tempDir("mission-file-comment-startup-delivery-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

@@ -1,9 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-telemetry-"));
+import { tempDir } from "./temp-root.mjs";
+const home = tempDir("mission-workflow-telemetry-");
 process.env.MISSION_HOME = home;
 const { openDb, closeDb } = await import("../src/server/db.ts");
 const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");

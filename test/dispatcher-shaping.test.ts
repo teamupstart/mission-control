@@ -1,14 +1,14 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn as spawnChild, spawnSync, type ChildProcess } from "node:child_process";
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Task shaping at dispatch, end to end through the real `Dispatcher` on every harness and
 // runtime: where the section lands in turn one, that nothing changes with the flag off or no
@@ -20,7 +20,7 @@ import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.t
 // `standing-instructions-delivery.test.ts`. Provisioning, composition, budgeting and the
 // record are real, and the shapers in the budget cases are real `command` processes.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-shaping-"));
+const home = tempDir("mission-dispatch-shaping-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";

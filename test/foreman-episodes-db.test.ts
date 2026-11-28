@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the fleet-wide episode ledger is the only cross-session read of the
 // richest table in the app, and it arrives on databases that already have episodes in
@@ -27,7 +27,7 @@ import { join } from "node:path";
 // MISSION_HOME *is* the state dir, so the db lands at <home>/harness.db - the file db.ts
 // opens below. It must be set before anything that resolves it is imported, which is why
 // every server import in this file is dynamic.
-const home = mkdtempSync(join(tmpdir(), "mission-foreman-episodes-db-"));
+const home = tempDir("mission-foreman-episodes-db-");
 process.env.MISSION_HOME = home;
 
 /**

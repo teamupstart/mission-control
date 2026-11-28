@@ -1,8 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake at the route, as distinct from the ingest below it.
 //
@@ -14,7 +13,7 @@ import { join } from "node:path";
 // 204 here would silently double the export traffic from every Claude session on the
 // machine while looking, from the daemon's side, like everything was fine.
 
-const home = mkdtempSync(join(tmpdir(), "mission-otlp-route-"));
+const home = tempDir("mission-otlp-route-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

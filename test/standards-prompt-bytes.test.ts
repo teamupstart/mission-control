@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readStandards } from "../src/server/standards.ts";
 import { buildReviewPrompt } from "../src/server/inspector/prompt.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What a duplicated standards doc COSTS, measured in the bytes that actually reach the
 // API - not in whether `readStandards` returns the right array length, which the unit
@@ -37,7 +37,7 @@ const DOC_BYTES = 24 * 1024;
 const MARKER = "the one contract this repo asserts";
 
 function repoWithSymlinkedDoc(): { root: string; doc: string } {
-  const root = mkdtempSync(join(tmpdir(), "standards-bytes-"));
+  const root = tempDir("standards-bytes-");
   mkdirSync(join(root, "src"), { recursive: true });
   // A realistically sized doc: the duplicate is only interesting at this scale.
   const doc = `# ${MARKER}\n${"x".repeat(DOC_BYTES - MARKER.length - 3)}`;
@@ -100,7 +100,7 @@ test("two genuinely different root docs both still reach the prompt", () => {
   // resolved path (not on the text) is what keeps this true: a repo asserting two
   // contracts must not silently have one of them dropped from the reviewer's prompt,
   // and that failure looks exactly like a well-formed prompt.
-  const root = mkdtempSync(join(tmpdir(), "standards-bytes-"));
+  const root = tempDir("standards-bytes-");
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "AGENTS.md"), "# the agent contract");
   writeFileSync(join(root, "CLAUDE.md"), "# a genuinely separate contract");

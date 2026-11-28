@@ -1,14 +1,14 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect } from "../fixtures/test.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 // Exercise the actual Kill dialog, route, discovery and tmux target resolver. The only
 // agent is a harmless Node process. All tmux commands use this test's private socket.
 class TmuxFixture {
-  dir = mkdtempSync(join(tmpdir(), "mc-e2e-kill-"));
+  dir = tempDir("mc-e2e-kill-");
   socket = join(this.dir, "tmux.sock");
   name = `kill-${process.pid}-${Date.now()}`;
   constructor() {

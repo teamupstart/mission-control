@@ -1,9 +1,7 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScheduleDefinition } from "../src/shared/schedules.ts";
@@ -11,6 +9,7 @@ import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts"
 import type { Session } from "../src/shared/types.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { ActionResult } from "../src/server/actions.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: an hourly recurring mission that Foreman concludes, whose agent keeps
@@ -40,7 +39,7 @@ import type { ActionResult } from "../src/server/actions.ts";
  * checkout may hold work, and the session's fate never waits on the tree's.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-closure-"));
+const home = tempDir("mission-session-closure-");
 process.env.MISSION_HOME = home;
 
 const db = await import("../src/server/db.ts");

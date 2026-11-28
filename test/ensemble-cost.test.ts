@@ -1,13 +1,13 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   sumAgentCost,
   readArtifactAgentCost,
   aggregateEnsembleAgentCost,
 } from "../src/shared/ensemble.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: an ensemble spends real money across several agents, and the dashboard must
@@ -57,7 +57,7 @@ test("aggregateEnsembleAgentCost attributes per member and never double-counts a
 
 // ---- capture at the submission boundary ----
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-cost-"));
+const home = tempDir("mission-ensemble-cost-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

@@ -1,9 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the reasoning-effort picker on a card with no pane.
 //
@@ -18,7 +16,7 @@ import { meta, mkSession } from "./helpers/session-fixture.ts";
 // Point the same route at an embedded Codex session and it refuses "low" from "high" with a
 // sentence about atomic reachability that describes a walk nobody is doing.
 
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-effort-driver-"));
+process.env.MISSION_HOME = tempDir("mission-effort-driver-");
 
 const { driverEffortTargetResult, sessionEffortTargetResult } = await import(
   "../src/server/actions.ts"

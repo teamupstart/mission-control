@@ -4,13 +4,13 @@ ensureNativeStateLockAddon();
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-plan-routes-"));
+const home = tempDir("mission-plan-routes-");
 process.env.MISSION_HOME = join(home, "state");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");

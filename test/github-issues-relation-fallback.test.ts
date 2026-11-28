@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GithubIssuesConfigSchema, type SweepContext } from "../src/shared/task-source.ts";
 import { candidateFrom, githubIssues, refusedRelationFields } from "../src/server/task-sources/github-issues.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A gh released before `blockedBy` and `parent` existed refuses them as unknown JSON fields.
 // Before sources could relate, such a gh swept fine, so it must keep sweeping.
-const dir = mkdtempSync(join(tmpdir(), "mission-old-gh-"));
+const dir = tempDir("mission-old-gh-");
 const log = join(dir, "calls");
 writeFileSync(join(dir, "gh"), `#!/usr/bin/env node
 const fs = require("node:fs");

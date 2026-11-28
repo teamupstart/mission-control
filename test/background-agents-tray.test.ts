@@ -1,6 +1,5 @@
 import { test } from "node:test";
-import { appendFileSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -23,6 +22,7 @@ import { launchStep, pagingStalled, type LaunchHistory } from "../src/web/lib/la
 import { transcriptRows, turnForToolUse } from "../src/web/lib/tools.ts";
 import { resetHistories, seedTail } from "../src/web/lib/transcript-history.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 /**
  * Phase 2 of background sub-agent visibility: the conversation's Background agents tray and
@@ -249,7 +249,7 @@ const asyncLaunched = (toolUseId: string, agentId: string, structured = true) =>
 
 /** A transcript file holding these records, one per line, in a fresh temp dir. */
 function transcriptFile(records: unknown[]): string {
-  const dir = mkdtempSync(join(tmpdir(), "mission-launch-scan-"));
+  const dir = tempDir("mission-launch-scan-");
   const path = join(dir, "t.jsonl");
   writeFileSync(path, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
   return path;
@@ -274,7 +274,7 @@ test("an agent no call is recorded as launching is never given another, whatever
   const path = transcriptFile([agentCall("folded", "toolu_folded", "Sweep the ledger"), asyncLaunched("toolu_folded", "agent-folded")]);
   assert.equal(await claudeSubagentLaunch(path, "agent-running"), null);
   assert.equal(await claudeSubagentLaunch(path, ""), null);
-  assert.equal(await claudeSubagentLaunch(join(tmpdir(), "mission-no-such-transcript.jsonl"), "agent-running"), null);
+  assert.equal(await claudeSubagentLaunch(join(testTempRoot(), "mission-no-such-transcript.jsonl"), "agent-running"), null);
 });
 
 test("a result that only mentions an agent id, or answers another tool, is not read as a launch", async () => {

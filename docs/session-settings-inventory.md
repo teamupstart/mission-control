@@ -37,6 +37,7 @@ follow the dashboard's feature and build gates.
 | `setup-checks` | 3 | Status and actions | Setup gathers executable and integration readiness. Recheck, install, repair and onboarding change machine state on operator intent. |
 | `multiplexer-terminal` | 2 | Read/write | `terminals.multiplexerTerminal` per multiplexer that uses an external terminal app, with platform-specific choices |
 | `external-sessions` | 2 | Read/write | Terminals config `externalSessions` |
+| `agent-environment-names` | 3 | Protected | The operator selects which workstation variables future sessions receive. |
 | `auto-mode` | 3 | Protected | Harness config `autoModeOnDispatch` changes the default approval mode |
 | `harness-*` | 2 | Read/write | One per `AGENT_TYPES`. Harness config `defaultModel`, `defaultEffort`, `sessionRuntime`, `terminalBackend` per agent. Provider/model availability and setup link are read-only. |
 | `feature-flags-enable-all` | 3 | Protected | Feature flag master and clear-disabled-overrides intents can re-enable protected features |
@@ -60,7 +61,7 @@ follow the dashboard's feature and build gates.
 | `voice-separator` | 3 | Read/write | `voice.separatorWord` sets the standalone word that splits an Always-on capture into separate messages. |
 | `voice-cancel-window` | 3 | Read/write | `voice.cancelWindow.enabled` and `voice.cancelWindow.seconds` update delivery timing. |
 | `voice-when-unsure` | 3 | Read/write | `voice.whenUnsure` selects routing behavior when confidence is low. |
-| `voice-spoken-replies` | 3 | Read/write and actions | `voice.speech.voice` stores the choice. Sample playback and the model download are operator actions. |
+| `voice-spoken-replies` | 3 | Read/write and actions | `voice.speech.voice` stores the choice and `voice.speech.playback` turns spoken output on or off. Sample playback and the model download are operator actions. |
 | `voice-plan-forms` | 3 | Read/write | `voice.planFormsByVoice` controls form filling. Submission still requires a separate operator gesture. |
 | `grill-first-defaults` | 2 | Read/write | `skills.grillFirstKinds`, a versioned replacement of the task-kind list |
 | `worktree-policy` | 2 | Read/write | `worktrees.enabled`, `worktrees.taskRetentionDays` and `worktrees.maxSlots`. Existing repository records expose their enabled and slot-cap leaves under a stable hashed repository key. |

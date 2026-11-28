@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { computeSessionDiff } from "../src/server/diff.ts";
 import { parsePatch } from "../src/web/lib/diff.ts";
 import { resolveBinPath } from "../src/server/util/exec.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("untracked diff reads overlap within a bound, preserve order, and fail closed", async (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-diff-parallel-")));
+  const root = realpathSync(tempDir("mission-diff-parallel-"));
   const previous = process.env.MISSION_GIT_BIN;
   t.after(() => {
     if (previous === undefined) delete process.env.MISSION_GIT_BIN;

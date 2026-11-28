@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeTranscript } from "../src/server/harness/claude/transcript.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a reader that asks for "the session's turns" must get the opening ask
 // AND the recent context out of a file too big to parse, and must be told when the middle
@@ -15,7 +15,7 @@ import { claudeTranscript } from "../src/server/harness/claude/transcript.ts";
 // shape in `harness/claude/`, and this exercises the pair as assembled.
 const messages = claudeTranscript.messages!;
 
-const dir = mkdtempSync(join(tmpdir(), "mission-window-"));
+const dir = tempDir("mission-window-");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 /** One JSONL transcript record for a user/assistant text turn. */

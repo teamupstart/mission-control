@@ -2,24 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   chmodSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   ensureElectronRuntime,
   probeElectronRuntime,
 } from "../scripts/ensure-electron-runtime.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 const VERSION = "43.1.0-test";
 
 function fakeElectronPackage(): string {
-  const dir = mkdtempSync(join(tmpdir(), "mission-electron-preflight-"));
+  const dir = tempDir("mission-electron-preflight-");
   mkdirSync(join(dir, "dist"));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ version: VERSION }));
   writeFileSync(join(dir, "path.txt"), "fake-electron");
@@ -75,7 +74,7 @@ test("a runtime that exists but cannot load is reinstalled and probed again", ()
 
 test("an invalid override fails without deleting either runtime", () => {
   const dir = fakeElectronPackage();
-  const override = mkdtempSync(join(tmpdir(), "mission-electron-override-"));
+  const override = tempDir("mission-electron-override-");
   writeFileSync(join(override, "fake-electron"), "#!/usr/bin/env node\nprocess.exit(9);\n");
   chmodSync(join(override, "fake-electron"), 0o755);
   try {

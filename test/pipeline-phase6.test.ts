@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -45,6 +44,7 @@ import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { pipelineCredentialFromDescriptor } from "./helpers/pipeline-credential.ts";
+import { tempDir } from "./temp-root.mjs";
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
@@ -291,11 +291,14 @@ test("a pipeline task launches the provider in its repository without an agent b
       ],
       pipelineRun: link,
     }),
-    spawn: async (...args) => {
+    spawn: async (name, shortId, cwd, command, argv, stateHome, backend, extraEnv, fallback, named, _deps, ownsLaunch, beforeSubmit) => {
       assert.deepEqual(registry.getTask("pipeline-task")?.pipelineRun, link);
       assert.deepEqual(getDurableTask("pipeline-task")?.pipelineRun, link);
       assert.equal(registry.getTask("pipeline-task")?.homeName, null);
-      launches.push(args);
+      assert.deepEqual([stateHome, backend, extraEnv, fallback, named], Array(5).fill(undefined));
+      assert.equal(ownsLaunch?.(), true);
+      assert.equal(typeof beforeSubmit, "function");
+      launches.push([name, shortId, cwd, command, argv]);
       return { homeName: "Run conductor", homeBackend: "tmux", terminalResourceId: "multiplexer:tmux:captured-pipeline-home" };
     },
   });
@@ -318,6 +321,43 @@ test("a pipeline task launches the provider in its repository without an agent b
   assert.equal(task?.sessionId, null);
   assert.deepEqual(task?.pipelineRun, link);
 });
+
+for (const resource of ["multiplexer:tmux:original", null]) {
+  test(`superseded pipeline dispatch retires only its identified terminal (${resource ?? "unidentified"})`, async (t) => {
+    const id = "late-pipeline-" + (resource ? "identified" : "unidentified");
+    const repoRoot = "/repo/" + id;
+    const registry = new Registry();
+    registry.upsertTask(mkTask({ id, kind: "pipeline", repoRoot }));
+    let releaseOriginal!: () => void;
+    const pendingReply = new Promise<void>((resolve) => { releaseOriginal = resolve; });
+    let launches = 0;
+    const replacement = "multiplexer:tmux:replacement";
+    const retired: unknown[][] = [];
+    const dispatcher = new Dispatcher(registry, undefined, {
+      pipelineLaunch: async () => ({
+        ok: true, launchRuntime: "terminal", cwd: repoRoot, argv: ["/bin/conduct-ts", "engineer"],
+        pipelineRun: { provider: "ai-conductor", repoRoot, slug: id },
+      }),
+      spawn: async () => {
+        const original = ++launches === 1;
+        if (original) await pendingReply;
+        return { homeName: "same name", homeBackend: "tmux", terminalResourceId: original ? resource : replacement };
+      },
+      killHome: async (name, _deps, backend, resourceId) => {
+        retired.push([name, backend, resourceId]);
+        return { ok: true, asked: true };
+      },
+    });
+    const original = dispatcher.dispatch(id);
+    await t.waitFor(() => assert.equal(launches, 1));
+    await dispatcher.dispatch(id);
+    releaseOriginal();
+    await original;
+    assert.deepEqual(retired, resource ? [["same name", "tmux", resource]] : []);
+    assert.equal(registry.getTask(id)?.status, "running");
+    assert.equal(getDurableTask(id)?.terminalResourceId, replacement);
+  });
+}
 
 test("a Codex pipeline task refuses the Claude-only Terminal runtime before spawn", async () => {
   const registry = new Registry();
@@ -2230,7 +2270,7 @@ test("cancellation during SDK start stops the newly created Engineer host", asyn
 });
 
 test("an unreadable provider capability refuses before the terminal host starts", async (t) => {
-  const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-unreadable-"));
+  const repoRoot = tempDir("mission-pipeline-unreadable-");
   writeFileSync(join(repoRoot, ".worktrees"), "not a directory");
   t.after(() => {
     setPipelinesConfig({ enabled: false, repos: [] });
@@ -2274,7 +2314,7 @@ test("an unreadable provider capability refuses before the terminal host starts"
 });
 
 test("an authoring worktree cannot bypass the Engineer capability gate", async (t) => {
-  const repoRoot = mkdtempSync(join(tmpdir(), "mission-pipeline-collision-"));
+  const repoRoot = tempDir("mission-pipeline-collision-");
   const slug = "existing-provider-worktree";
   mkdirSync(join(repoRoot, ".worktrees", slug, ".pipeline"), { recursive: true });
   t.after(() => {

@@ -63,6 +63,8 @@ button.vc-roster:hover { border-color: var(--working); }
 html:has(.voice-standalone), body:has(.voice-standalone), #root:has(.voice-standalone) { background: transparent; }
 
 .vc-heard u { text-decoration: underline wavy var(--attention); text-underline-offset: 3px; color: var(--fg); }
+/* The words prefix recovery looked past: shown, so the operator sees why the card asks. */
+.vc-heard s { text-decoration-color: var(--muted); }
 .vc-mention { padding: 0 4px; border: 1px dashed var(--resident, var(--muted)); border-radius: 4px; background: transparent; color: var(--resident, var(--fg)); }
 .vc-held .vc-state { color: var(--paused); }
 .vc-not-running .vc-state { color: var(--exited); }

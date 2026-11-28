@@ -2,12 +2,12 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { REPORT_LIMITS, type ReportItem } from "../src/shared/reports.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `POST /api/reports/:id/publish`: Publish as scout.
 //
@@ -19,7 +19,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
 // static checker refuses is refused with its problems and archives nothing. Neither reading the
 // document nor publishing it clears the report from to read.
 
-const home = mkdtempSync(join(tmpdir(), "mission-reports-publish-"));
+const home = tempDir("mission-reports-publish-");
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
@@ -672,7 +672,7 @@ test("a link to a sibling named report.html is unlinked and listed as missing, n
 
 test("a same-directory link to a symlink that resolves outside the checkout is not stored, and is unlinked as missing", async () => {
   const { post, publish, manifest, archivedPage, root, checkout } = setup();
-  const outside = mkdtempSync(join(tmpdir(), "mission-report-outside-"));
+  const outside = tempDir("mission-report-outside-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   const SECRET = "outside-the-checkout-secret-bytes\n";
   writeFileSync(join(outside, "secret.csv"), SECRET);
@@ -918,7 +918,7 @@ test("a checkout root that cannot be resolved after the document is read refuses
 });
 
 test("a folder moved out of the checkout and replaced by a symlink before the open is never read, though the file's identity is unchanged", async () => {
-  const outside = mkdtempSync(join(tmpdir(), "mission-companion-moved-dir-"));
+  const outside = tempDir("mission-companion-moved-dir-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   let checkout = "";
   let moved = false;
@@ -1324,7 +1324,7 @@ test("one stored companion that cannot be opened answers 500, and is never unlin
 });
 
 test("a linked file or its folder swapped for a symlink after the containment check, before the open, is never read", async () => {
-  const outside = mkdtempSync(join(tmpdir(), "mission-companion-race-outside-"));
+  const outside = tempDir("mission-companion-race-outside-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   const SECRET = "companion-swapped-between-check-and-open-secret";
   writeFileSync(join(outside, "data.csv"), `${SECRET}\n`);
@@ -1374,7 +1374,7 @@ test("a linked file or its folder swapped for a symlink after the containment ch
 
 test("a stored companion replaced by a symlink to an outside file is never followed: unlinked as missing, its bytes absent", async () => {
   const { post, publish, manifest, archivedPage, root, checkout } = setup();
-  const outside = mkdtempSync(join(tmpdir(), "mission-stored-companion-outside-"));
+  const outside = tempDir("mission-stored-companion-outside-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   const SECRET = "stored-companion-swapped-for-a-symlink-secret";
   writeFileSync(join(outside, "secret.csv"), `${SECRET}\n`);
@@ -1409,7 +1409,7 @@ test("a stored companion replaced by a symlink to an outside file is never follo
 
 test("a companions store replaced by a symlink to an outside directory is never listed or read at publish", async () => {
   const { post, publish, manifest, archivedPage, root, checkout } = setup();
-  const outside = mkdtempSync(join(tmpdir(), "mission-companion-store-outside-"));
+  const outside = tempDir("mission-companion-store-outside-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   const SECRET = "companions-store-swapped-for-a-symlink-secret";
   writeFileSync(join(outside, "data.csv"), `${SECRET}\n`);
@@ -1433,7 +1433,7 @@ test("a companions store replaced by a symlink to an outside directory is never 
 
 test("a companions store swapped for a symlink to a large outside tree opens only the linked paths, and reads none of it", async () => {
   const { post, publish, manifest, checkout } = setup();
-  const outside = mkdtempSync(join(tmpdir(), "mission-companion-store-tree-"));
+  const outside = tempDir("mission-companion-store-tree-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   // A large tree with a file at the linked name: publishing must neither walk it nor read it.
   for (let d = 0; d < 40; d += 1) {
@@ -1489,7 +1489,7 @@ test("a store of 128 files in separate branches eight directories deep is read i
 
 test("a report directory replaced by a symlink to an outside directory never supplies companions at publish", async () => {
   const { post, publish, manifest, archivedPage, root, checkout } = setup();
-  const outside = mkdtempSync(join(tmpdir(), "mission-report-dir-outside-"));
+  const outside = tempDir("mission-report-dir-outside-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   const SECRET = "report-directory-swapped-for-a-symlink-secret";
   const html = "<html><body><a href=\"data.csv\">data</a></body></html>";
@@ -1518,7 +1518,7 @@ test("a report directory replaced by a symlink to an outside directory never sup
 
 test("a report directory swapped for a symlink between listing and reading is never read, even when the swap is undone after the open", async () => {
   const { post, checkout } = setup();
-  const outside = mkdtempSync(join(tmpdir(), "mission-report-dir-race-"));
+  const outside = tempDir("mission-report-dir-race-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   const SECRET = "report-directory-race-secret";
   writeFileSync(join(checkout, "data.csv"), "a,b\n");
@@ -1545,7 +1545,7 @@ test("a report directory swapped for a symlink between listing and reading is ne
 
 test("a stored directory swapped for a symlink between listing and reading is never read, even when the swap is undone after the open", async () => {
   const { post, checkout } = setup();
-  const outside = mkdtempSync(join(tmpdir(), "mission-companion-parent-outside-"));
+  const outside = tempDir("mission-companion-parent-outside-");
   after(() => rmSync(outside, { recursive: true, force: true }));
   const SECRET = "stored-parent-directory-swapped-secret";
   mkdirSync(join(outside, "data"), { recursive: true });

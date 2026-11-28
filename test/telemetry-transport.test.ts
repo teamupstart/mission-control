@@ -1,10 +1,10 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { MetricsBatchPayload } from "../src/server/telemetry/projection.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The transport half: what an endpoint may be, where a credential may travel, and every branch
 // of the delivery state machine.
@@ -13,7 +13,7 @@ import type { MetricsBatchPayload } from "../src/server/telemetry/projection.ts"
 // with an exact status, an exact `Retry-After`, or a redirect - and can INSPECT the headers it
 // was sent, which is the only way to prove a credential did not follow a redirect.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-transport-"));
+const home = tempDir("mission-telemetry-transport-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { closeDb, openDb } = await import("../src/server/db.ts");
@@ -980,8 +980,11 @@ test("shutdown tears an in-flight export down rather than only stopping waiting 
     .prepare(`SELECT state, attempts, updated_at FROM telemetry_delivery ORDER BY batch_id`)
     .all();
   assert.equal(aborted, true, "the request was cancelled by shutdown, not merely abandoned");
+  // Bounded by the request timeout, the regression this guards: a shutdown that waited on it
+  // takes at least that long. A bound near the shutdown budget itself measured CPU starvation
+  // instead, and failed a correct shutdown that took 4.4s on a loaded machine.
   assert.ok(
-    elapsed < TELEMETRY_SHUTDOWN_BUDGET_MS * 2,
+    elapsed < TELEMETRY_LIMITS.requestTimeoutMs - TELEMETRY_SHUTDOWN_BUDGET_MS,
     `exit took ${elapsed}ms, so it waited on the request timeout rather than its own budget`,
   );
 
@@ -1025,8 +1028,11 @@ test("shutdown can still cancel a cycle a caller supplied its own abort signal t
 
   assert.equal(caller.signal.aborted, false, "the caller never cancelled anything itself");
   assert.equal(aborted, true, "and shutdown still reached the in-flight request");
+  // Bounded by the request timeout, the regression this guards: a shutdown that waited on it
+  // takes at least that long. A bound near the shutdown budget itself measured CPU starvation
+  // instead, and failed a correct shutdown that took 4.4s on a loaded machine.
   assert.ok(
-    elapsed < TELEMETRY_SHUTDOWN_BUDGET_MS * 2,
+    elapsed < TELEMETRY_LIMITS.requestTimeoutMs - TELEMETRY_SHUTDOWN_BUDGET_MS,
     `exit took ${elapsed}ms, so it waited on the request timeout rather than its own budget`,
   );
   await cycling;

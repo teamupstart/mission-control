@@ -1,18 +1,17 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // An answer can be delivered to a runtime-transfer successor for a question its predecessor
 // asked. The dashboard draws that delivered turn's card from `?lineage=1`, which returns the
 // predecessors' conversation history and never the session's own.
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-lineage-route-"));
+const home = tempDir("mission-review-lineage-route-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

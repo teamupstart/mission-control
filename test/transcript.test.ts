@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseLines } from "../src/server/transcript.ts";
 import {
@@ -17,6 +16,7 @@ import {
   latestEffortLevel,
 } from "../src/server/harness/claude/meta.ts";
 import type { Session } from "@shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Records shaped like real Claude Code JSONL transcript lines.
 const asstText = JSON.stringify({
@@ -554,7 +554,7 @@ const session = (p: Partial<Session>): Session =>
   ({ agent: "claude", agentSessionId: UUID, cwd: "/Users/me/work/app", transcriptPath: null, ...p }) as Session;
 
 test("resolveTranscriptPath uses the hook-reported transcriptPath verbatim", () => {
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const root = tempDir("proj-");
   const dir = join(root, encode("/Users/me/.treehouse/x/4/app"));
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${UUID}.jsonl`);
@@ -566,7 +566,7 @@ test("resolveTranscriptPath uses the hook-reported transcriptPath verbatim", () 
 });
 
 test("resolveTranscriptPath falls back to the cwd-derived path when no hook path", () => {
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const root = tempDir("proj-");
   const cwd = "/Users/me/work/app";
   const dir = join(root, encode(cwd));
   mkdirSync(dir, { recursive: true });
@@ -578,7 +578,7 @@ test("resolveTranscriptPath falls back to the cwd-derived path when no hook path
 test("resolveTranscriptPath finds the transcript of a cwd with an underscore, a space and a plus", () => {
   // The directory name is the one Claude writes, as a literal: `encode` above would agree with
   // whatever rule the resolver used.
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const root = tempDir("proj-");
   const dir = join(root, "-Users-me-my-app-v2-x");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${UUID}.jsonl`);
@@ -587,7 +587,7 @@ test("resolveTranscriptPath finds the transcript of a cwd with an underscore, a 
 });
 
 test("resolveTranscriptPath returns null when neither locates a file", () => {
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const root = tempDir("proj-");
   // A stale hook path that no longer exists, and no cwd-derived file either.
   const s = session({ cwd: "/Users/me/work/app", transcriptPath: join(root, "gone.jsonl") });
   assert.equal(resolveTranscriptPath(s, root), null);
@@ -599,7 +599,7 @@ test("resolveTranscriptPath returns null when neither locates a file", () => {
 // place it would have gone quietly green - the probe session it used has no file under a
 // fresh root either way, so it would have passed with the agent check deleted.
 test("resolveTranscriptPath has nothing to derive from without an id or a cwd", () => {
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const root = tempDir("proj-");
   assert.equal(resolveTranscriptPath(session({ agentSessionId: null }), root), null);
   assert.equal(resolveTranscriptPath(session({ cwd: null }), root), null);
 });
@@ -750,7 +750,7 @@ test("computeSessionActivity's local_command marker disqualifies only the record
 
 
 test("Claude native transcript paths escape underscores and spaces, with legacy fallback", () => {
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const root = tempDir("proj-");
   const cwd = "/private/tmp/watch_team/my repo";
   for (const encoded of [cwd.replace(/[/.]/g, "-"), cwd.replace(/[^a-zA-Z0-9-]/g, "-")]) {
     const dir = join(root, encoded); mkdirSync(dir, { recursive: true });

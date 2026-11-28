@@ -1,8 +1,8 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: which process a dispatch actually spawns.
 //
@@ -17,7 +17,7 @@ import { join } from "node:path";
 //
 // Table-driven off the registry: a new harness inherits all of it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-harness-bin-"));
+const home = tempDir("mission-harness-bin-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

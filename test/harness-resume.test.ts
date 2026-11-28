@@ -1,8 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: "how is one of this harness's conversations reopened in a terminal" is
 // ONE FACT written in two files, and it spent its whole life in the wrong one.
@@ -19,7 +19,7 @@ import { join } from "node:path";
 // route always 409s, and a spec shipped under `resumes: false` is a command line nothing
 // can reach.
 
-const home = mkdtempSync(join(tmpdir(), "harness-resume-"));
+const home = tempDir("harness-resume-");
 // Set before importing anything that resolves the state dir: the harness registry reaches
 // specs that read config paths.
 process.env.HARNESS_HOME = join(home, "state");

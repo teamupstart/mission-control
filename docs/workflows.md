@@ -1754,6 +1754,24 @@ infrastructure retry starts a new bounded operation. Provider token or quota exh
 pauses immediately in `provider_token_exhausted` and shows the error to the operator. Local CLI
 timeouts, process failures, parse errors, and contract violations keep their existing bounded
 policy. Rejected responses remain inspectable on the attempt.
+
+A host that sleeps mid-call does not spend that budget. Model call timeouts count only time the
+host was awake, so a Mac that idle-sleeps on battery no longer times a call out on the next wake.
+A Persona call that fails anyway while the host slept through it, for example because its
+connection dropped, is recorded as `persona_host_suspended` and retried about five seconds later.
+When the attempt has frozen review input, the retry reuses that input and consumes no correction
+execution. An older attempt without frozen review input is retried the same way without spending
+one of the node's three infrastructure attempts. Every such call is excused, however many sleeps a
+night brings, because each one needs a newly observed sleep. A token limit still pauses the run at
+once. Checks get similar treatment. A check command's timeout counts only awake time. A check
+whose command could not finish while the host slept through it is retried about five seconds
+later without spending one of the node's three infrastructure attempts: an infrastructure failure
+such as a timeout, a dropped CodeRabbit connection, or an error from the check runner itself. A
+check whose command ran and reported a failure is a verdict, not an infrastructure failure, and is
+not retried. The daemon sees a sleep as a heartbeat arriving more than 30
+seconds late, so an event loop stalled that long counts as one. Session turns are run by the
+agent's own CLI, which Mission Control does not time out or retry.
+[Keep awake](sessions.md#keep-awake-prevent-idle-system-sleep) prevents the sleep altogether.
 Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
 
 The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the
@@ -2191,8 +2209,8 @@ of the route behind it. A parked run offers **Start repair round N**, naming the
 opens; a GitHub Inspector gate waiting on a pull request offers **Ask the session to open a
 PR**, or **Check again** when its immutable policy declines the handoff; a run blocked as
 **PR closed** offers **Check again**, which reads the pull request from GitHub again and lifts
-the block only if it is open; a run blocked on an exhausted provider call offers **Retry the
-failed call**.
+the block when it reopens. A merged duplicate can also qualify for the bounded recovery described below.
+A run blocked on an exhausted provider call offers **Retry the failed call**.
 
 The daemon reports allowed run recovery operations with every summary and run response. The
 header, GitHub Inspector controls, and Review drawer use that projection. Renaming a phase does
@@ -2653,6 +2671,16 @@ pre-write refusal can be retried explicitly; a lost or possibly-landed write bec
 mark it delivered or type the required confirmation to discard it and create a new repair
 round.
 
+A completed review can continue to own the author's CI turns on the primary checkout. When
+the confirmed Pull Request action includes CI follow-through, a pending check observation
+can extend its handoff by one consecutive generation. Each claim verifies the action's own
+prompt, the current intent, the adopted branch and exact reviewed head, and the accepted
+checkout content. From the first publication handoff onward, the daemon verifies the full
+commit ID before the checkout probe and again when it spends the handoff. A different
+commit starts a fresh review even if it has the same tree. Another pending observation
+can extend the handoff again. A passing observation spends the final handoff. An explicit
+**Run again** starts a separate review.
+
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
 SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
@@ -2984,7 +3012,7 @@ never as a closed one. A run already blocked as **PR closed** recovers when its 
 seen open again. While GitHub Inspector still polls the pull request, its next poll lifts the
 block. GitHub Inspector stops polling a pull request once it reads it closed, so **Check again**
 on the run page reads the pull request from GitHub itself: an open answer resumes polling and
-lifts the block, a closed or merged answer leaves it, and a failed read leaves it and is recorded
+lifts the block. A closed or merged answer ordinarily leaves it in place. A failed read is recorded
 on the run's timeline. If GitHub cannot be reached, a pull request whose last read was open
 still recovers. Recovery restores the wait the block interrupted, including the repair-push
 wait, without a full restart or another Persona round.
@@ -3002,6 +3030,17 @@ pass: the run is not completed, no review is waived, no finding is cleared, and 
 its session stay as they were. A retired record whose last read did not say the pull request
 finished, or one that is not the pull request the gate pinned, proves nothing, and the run
 keeps waiting until **Check again** reads GitHub.
+
+For a ship or bugfix task stranded by a duplicate automatic review, use **Check again** on the
+**PR closed** run. Recovery requires a fresh GitHub read of the merged head, a complete green
+page of check runs and a successful final check that was running at the preceding handoff
+and finished by the duplicate claim. The daemon compares the two consecutive Foreman claims,
+the delivered CI action and prompt receipts, pinned workflow, intent, completed first-round
+publications, accepted trees, clean live Inspector review and current checkout. At settlement
+it rereads human decisions, including transcript instructions received since the block. An ambiguous
+history, unresolved finding, operator hold or active session blocker keeps the run open.
+Recovery records both submission IDs and the CI interval in the duplicate's timeline. The
+ordinary task settlement rules then evaluate the merged episode.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
@@ -3220,7 +3259,10 @@ request is a check, not a review: it completes the run when the submission's Loc
 attempt **passed** (not skipped) and the open pull request's head has the Git tree that review
 read, on the base branch it compared against. The match is by tree and base, not by commit, so a
 re-created commit with the same tree still matches. No remote model call runs and nothing is
-posted, so the change reaches GitHub with one push and runs CI once. The Completion tab says
+posted, so no Inspector findings send the session back to push a repair. In the end-to-end spec
+`e2e/specs/local-review-gate.spec.ts`, run against a fake GitHub that starts one CI run per new
+pull request head, the reviewed change reached GitHub with one push and one CI run; a later push
+with different content started a second run and took the GitHub path. The Completion tab says
 **Reviewed locally** and lists the Local Inspector's findings, and the gate's
 `inspector_gate_clean` event records `path: "local"` (or `"github"` on the GitHub path).
 
@@ -3238,10 +3280,12 @@ Every other head keeps today's GitHub review, so no pull request silently loses 
   `head_mismatch` for a full workflow round as it always has;
 - a run whose Local Inspector stage skipped, failed or blocked, and any workflow version
   without the stage, including bindings pinned to version 22 or earlier;
-- a pull request opened outside a workflow;
-- every head in a repository holding the Shipping merge grant. Shipping does not yet accept a
-  local review as merge provenance and refuses the `local` posture, so those repositories keep
-  the GitHub review until it does.
+- a pull request opened outside a workflow.
+
+A repository holding the Shipping merge grant takes the local path like any other. Shipping
+accepts a head recorded `local` as merge provenance while the GitHub Inspector is Live, Local
+review is on, and the match still holds for that exact head. See
+[It needs the GitHub Inspector, fully on](inspector-and-shipping.md#it-needs-the-github-inspector-fully-on).
 
 A run whose repair budget ends while the Local Inspector still fails stops at `round_limit`
 before the Pull Request action, so the gate is never reached and no GitHub review starts for

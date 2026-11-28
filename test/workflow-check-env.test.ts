@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 
 import { credentialShapedName, scrubCheckEnv } from "../src/server/workflows/check-env.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
+import { testTempRoot } from "./temp-root.mjs";
 
 // What a check command is allowed to see.
 //
@@ -15,7 +16,7 @@ import { executableLocator } from "../src/server/executables/locator.ts";
 // whose name merely looks like one. Both directions are asserted, because a deny-list that is
 // too eager breaks a build with no legible reason and a deny-list that is too shy leaks.
 
-const goCache = join(tmpdir(), `mission-control-go-build-${userInfo().uid}`);
+const goCache = join(testTempRoot(), `mission-control-go-build-${userInfo().uid}`);
 /** A realistic minted token: 24 random bytes as hex, which is what `ensureToken` produces. */
 const TOKEN = "4f3c2b1a9e8d7c6b5a4938271605f4e3d2c1b0a998877665";
 

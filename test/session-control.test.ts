@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
@@ -10,8 +9,9 @@ import type { SessionQueue } from "../src/shared/types.ts";
 import type { SessionRequestAnswer } from "../src/server/harness/types.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-control-"));
+const home = tempDir("mission-session-control-");
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");

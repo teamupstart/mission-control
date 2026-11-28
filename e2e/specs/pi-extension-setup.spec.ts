@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, readlinkSync, chmodSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, expect } from "../fixtures/test.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { testTempRoot } from "../../test/temp-root.mjs";
 
 test.use({ viewport: { width: 1440, height: 1100 }, daemonEnv: { MISSION_POLL_MS: "300", MISSION_PI_EXTENSION: resolve("dist/pi-integration/extension.js") } });
 test.describe.configure({ timeout: 120_000 });
@@ -200,7 +200,7 @@ await import(${JSON.stringify(pathToFileURL(resolve("e2e/fixtures/fake-pi-plan.m
 
 
 test.describe("first-install preflight failure", () => {
-  const candidateDir = join(tmpdir(), `mission-pi-preflight-${process.pid}`);
+  const candidateDir = join(testTempRoot(), `mission-pi-preflight-${process.pid}`);
   const candidate = join(candidateDir, "extension.js");
   test.use({ daemonEnv: { MISSION_PI_EXTENSION: candidate } });
   test.beforeAll(() => {

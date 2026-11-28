@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { exchangePaths, publishSymlinkNoReplace, renameNoReplace, validateNativeSymlinkPublicationBinding } from "../src/server/symlink-publication.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
 test("native publication preserves the private symlink inode, including dangling targets", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-native-publication-"));
+  const root = tempDir("pi-native-publication-");
   try {
     for (const present of [true, false]) {
       const target = join(root, `target-${present}`);
@@ -30,7 +30,7 @@ test("native publication preserves the private symlink inode, including dangling
 });
 
 test("native publication refuses occupied files, directories and symlinks without touching them", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-native-refusal-"));
+  const root = tempDir("pi-native-refusal-");
   try {
     const staged = join(root, "staged"); symlinkSync(join(root, "absent"), staged);
     for (const kind of ["file", "directory", "symlink"]) {
@@ -58,7 +58,7 @@ test("an outdated native addon fails closed instead of falling back to unsafe pu
 });
 
 test("native exchange retains displaced files, nonempty directories and symlinks with their identities", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-native-exchange-"));
+  const root = tempDir("pi-native-exchange-");
   try {
     for (const kind of ["file", "directory", "symlink"]) {
       const staged = join(root, `staged-${kind}`); symlinkSync(join(root, "absent"), staged);
@@ -83,7 +83,7 @@ test("native exchange retains displaced files, nonempty directories and symlinks
 });
 
 test("native exclusive restoration refuses every occupied destination and preserves both entries", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-native-restore-"));
+  const root = tempDir("pi-native-restore-");
   try {
     const retained = join(root, "retained"); mkdirSync(retained); writeFileSync(join(retained, "keep"), "recovery bytes");
     const before = lstatSync(retained);

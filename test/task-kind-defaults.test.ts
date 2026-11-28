@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // An agent, model and effort per TASK KIND: a dispatched `plan` running somewhere other than
 // a `ship`, chosen once in Settings rather than overridden by hand on every dispatch.
@@ -24,7 +24,7 @@ import { join } from "node:path";
 //     `.default("claude")`, so an omitted agent has already become an explicit Claude by the
 //     time any code that knows the kind can see it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-kind-defaults-"));
+const home = tempDir("mission-kind-defaults-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

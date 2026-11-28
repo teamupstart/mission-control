@@ -2,16 +2,16 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
+import { managedResumeFixture, writeResumeProcessInventory } from "./helpers/managed-resume-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { meta, mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "managed-resume-"));
+const home = tempDir("managed-resume-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 process.env.MISSION_CODEX_BIN = process.execPath;
@@ -394,16 +394,7 @@ const t=setInterval(()=>{if(existsSync(${JSON.stringify(stop)}))clearInterval(t)
     // Parallel workers can start new orphans that correctly make real inventory ambiguous.
     // Isolate only this positive cleanup proof; crash and detached regressions use real ps.
     // Use shell builtins so cold Node startup cannot consume the guard's ps timeout.
-    const ps = join(home, "unambiguous-ps");
-    writeFileSync(ps, `#!/bin/sh
-date='Wed Sep 30 12:34:56 2026'
-if [ "$1" = '-p' ]; then
-  printf '%s\\n' "$date"
-else
-  printf '1 0 %s\\n%s 1 %s\\n' "$date" "$PPID" "$date"
-fi
-`, { mode: 0o755 });
-    env.MISSION_PS_BIN = ps;
+    env.MISSION_PS_BIN = writeResumeProcessInventory(home);
   }
   const child = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
@@ -466,16 +457,7 @@ renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});`);
   writeFileSync(configPath, JSON.stringify({ ...config, argv: [process.execPath, script] }));
   p.beginLaunch();
   // The same unambiguous inventory the real-wrapper cases use, so the guard's ps reads are quick.
-  const ps = join(home, "work-unit-ps");
-  writeFileSync(ps, `#!/bin/sh
-date='Wed Sep 30 12:34:56 2026'
-if [ "$1" = '-p' ]; then
-  printf '%s\\n' "$date"
-else
-  printf '1 0 %s\\n%s 1 %s\\n' "$date" "$PPID" "$date"
-fi
-`, { mode: 0o755 });
-  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_PS_BIN: ps, WORK_UNIT_ID: "wu_01JD00000000000000000000PN" };
+  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_PS_BIN: writeResumeProcessInventory(home), WORK_UNIT_ID: "wu_01JD00000000000000000000PN" };
   const child = spawn(p.wrappedArgv[0]!, p.wrappedArgv.slice(1), { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (data) => { stderr += data; });

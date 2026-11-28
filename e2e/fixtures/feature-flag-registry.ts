@@ -6,6 +6,7 @@ export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as 
 import type { FeatureFlagDefinition } from "../../src/shared/feature-flags.ts";
 
 // The shipped registry also exports these ids; the private builds that substitute it keep the export.
+export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
 export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
@@ -20,6 +21,7 @@ export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as const;
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
+export const INBOX_SPLIT_FLAG_ID = "inbox-split" as const;
 
 export const FEATURE_FLAGS = [
   { id: SESSION_SETTINGS_FLAG_ID, label: "Session settings through MCP", description: "Session settings route fixture", stage: "preview", keywords: [] },

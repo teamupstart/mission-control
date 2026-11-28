@@ -1,8 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: an agent that has been gagged and given nothing to say instead.
 //
@@ -18,7 +18,7 @@ import { join } from "node:path";
 // status quo), never to a partial one and never to a throw that takes an otherwise-fine
 // dispatch down with it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-ask-channel-"));
+const home = tempDir("mission-ask-channel-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

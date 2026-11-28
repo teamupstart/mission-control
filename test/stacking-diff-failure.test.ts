@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // A stacked child's review diff fails CLOSED when its working tree cannot be captured. Every
 // git process the daemon starts goes through a shim (the daemon's git override,
@@ -13,7 +13,7 @@ import { join } from "node:path";
 // The workflow capture that calls it turns an unsuccessful diff into "Could not capture
 // repository diff" (`readRepositoryWorkEvidence`), so nothing is reviewed.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-diff-failure-"));
+const home = tempDir("mission-stacking-diff-failure-");
 process.env.HARNESS_HOME = home;
 const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 const log = join(home, "git-calls.log");

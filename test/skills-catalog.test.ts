@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { frontmatterBlock, parseFrontmatter, parseSkill, readCatalog } from "../src/server/skills/catalog.ts";
 import { artifactKind, conversationArtifacts } from "../src/web/lib/conversationArtifacts.ts";
 import { listSessionFiles } from "../src/server/session-files.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const skillDescription = (id: string): string =>
   readCatalog().skills.find((skill) => skill.id === id)?.description ?? "";
@@ -376,7 +376,7 @@ test("the mockups skill's own setup command keeps mock-ups out of git and in the
   assert.match(text, /beside the plan's `plan\.md` in `docs\/plans\/<name>\/`/);
   assert.match(skillDescription("mockups"), /never committed unless a plan needs it/);
 
-  const dir = mkdtempSync(join(tmpdir(), "mission-mockups-skill-"));
+  const dir = tempDir("mission-mockups-skill-");
   try {
     execFileSync("git", ["-C", dir, "init", "-q"]);
     execFileSync("sh", ["-c", setup], { cwd: dir });
@@ -440,7 +440,7 @@ test("the mockups skill's fallback ignores a mock-up wherever git can, and says 
     }
   };
   const repository = (marker: string, trackPage: boolean): string => {
-    const dir = mkdtempSync(join(tmpdir(), "mission-mockups-fallback-"));
+    const dir = tempDir("mission-mockups-fallback-");
     git(dir, "init", "-q");
     git(dir, "config", "user.email", "t@test");
     git(dir, "config", "user.name", "t");

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-setup-install-route-"));
+const home = tempDir("mission-setup-install-route-");
 process.env.MISSION_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

@@ -6,7 +6,7 @@ import type { ServerEvent } from "@shared/types.ts";
 import { focusedDictationField, DictationEditor } from "./voice-dictation.ts";
 import { drawnVoiceCards, receiveInboxEvent } from "./voice-inbox.ts";
 import { fetchVoiceCardTime } from "./api.ts";
-import { VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
+import { refineVoiceCardClock, VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
 
 export const VoiceAnswersContext = createContext<{ planFormsByVoice?: boolean; answers: ReadonlyMap<string, DashboardVoiceAnswer>; windowId?: string } | null>(null);
 
@@ -36,15 +36,24 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
     let observed: { state: string; at: number; id: number } | undefined;
     const cardClock = new VoiceCardClock();
     let calibration: Promise<void> | undefined;
+    let refining: Promise<void> | undefined;
+    async function sampleOnce() {
+      const sent = performance.now();
+      const stamp = await fetchVoiceCardTime(AbortSignal.any([controller.signal, AbortSignal.timeout(500)]), VOICE_MONOTONIC_TIME_HEADER);
+      return stamp === null ? null : { sent, received: performance.now(), stamp };
+    }
     async function sampleClock() {
       // A slow outbound trip and a slow return trip have opposite clock errors.
       // Intersect an independent sample before relying on a wide interval.
       for (let i = 0; i < 2 && !controller.signal.aborted; i++) {
-        const sent = performance.now();
-        const stamp = await fetchVoiceCardTime(AbortSignal.any([controller.signal, AbortSignal.timeout(500)]), VOICE_MONOTONIC_TIME_HEADER);
-        if (stamp === null) continue;
-        if (!cardClock.observe(sent, performance.now(), stamp, stamp).uncertain) break;
+        const sample = await sampleOnce();
+        if (sample && !cardClock.observe(sample.sent, sample.received, sample.stamp, sample.stamp).uncertain) break;
       }
+      // A reply spoken soon after a focus change needs a narrower interval than this
+      // first calibration may give. Narrower bounds re-report the current observation,
+      // after any request in flight: its completion reports again from the refined clock.
+      refining ??= refineVoiceCardClock(cardClock, sampleOnce, () => { if (!pending) void report(); }, controller.signal)
+        .finally(() => { refining = undefined; });
     }
     const refreshField = () => {
       const nextField = focusedDictationField();
@@ -67,7 +76,11 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       if (state !== observed?.state) observed = state ? { state, at: performance.now(), id: ++clock.revision } : undefined;
       const body = JSON.stringify(payload);
       const requested = confirmation;
-      const key = clock.focusAtUs + ":" + requested + body;
+      const observation = observed;
+      // A refined clock narrows the same observation's bounds, which the daemon must hear.
+      const keyOf = () => clock.focusAtUs + ":" + requested + ":" +
+        (observation ? JSON.stringify(cardClock.serverTimeAt(observation.at)) : "") + body;
+      const key = keyOf();
       if (pending?.key === key || (!pending && last === key)) return;
       clearTimeout(retry);
       pending?.controller.abort();
@@ -76,7 +89,6 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       // The previous request may have been applied even if its acknowledgement stalled.
       last = "";
       try {
-        const observation = observed;
         const send = (bounds?: VoiceTimeBounds, calibrating = false) => fetch(dashboard || dictationTarget ? "/api/voice/open-cards" : "/api/voice/open-cards?withdraw=1", { method: "PUT",
           signal: AbortSignal.any([controller.signal, attempt.controller.signal, AbortSignal.timeout(1500)]),
           headers: { "content-type": "application/json", [VOICE_FOCUS_TIME_HEADER]: String(clock.focusAtUs),
@@ -93,14 +105,15 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
           calibration ??= sampleClock().finally(() => { calibration = undefined; });
           await calibration;
           bounds = cardClock.serverTimeAt(observation.at);
+          attempt.key = keyOf();
         }
         if (pending !== attempt || controller.signal.aborted) return;
         const response = await send(bounds);
-        if (pending === attempt && response.ok) last = key;
+        if (pending === attempt && response.ok) last = attempt.key;
       } catch { /* A timeout retries from the current DOM and document focus. */ }
       if (pending !== attempt || controller.signal.aborted) return;
       pending = undefined;
-      if (last === key) void report();
+      if (last === attempt.key) void report();
       else retry = setTimeout(report, 500);
     };
     void report();

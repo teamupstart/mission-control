@@ -1,10 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { OtlpMetrics } from "../src/shared/protocol.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the ledger is the only record of what the fleet spent, and every way
 // it can be wrong is silent.
@@ -16,7 +15,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // numbers, into a durable file in the user's home directory - so "we never read it" has to
 // be a property the tests hold, not a claim in a comment.
 
-const home = mkdtempSync(join(tmpdir(), "mission-otel-"));
+const home = tempDir("mission-otel-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

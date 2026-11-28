@@ -1,15 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // An MCP agent blocked on `request_input` holds `/mcp/reviews/:id/wait` open for up to the
 // long-poll timeout. When the daemon stops, that request is answered the way its timeout would
 // answer it, with the still-pending row, so the agent long-polls the next daemon rather than
 // holding the quit open or having its connection cut. See `src/server/http-shutdown.ts`.
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-wait-shutdown-"));
+const home = tempDir("mission-review-wait-shutdown-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));

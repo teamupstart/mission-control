@@ -12,6 +12,7 @@ import {
   type CheckGroupTeardownOptions,
 } from "./check-group.ts";
 import { processStartIdentity } from "./check-identity.ts";
+import { setAwakeTimeout } from "../host-suspend.ts";
 
 // Running branch-authored code: the streaming adapter, and the gate that makes its owner
 // durable before it is allowed to start.
@@ -383,8 +384,8 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
   const settle = (): void => {
     if (settled) return;
     settled = true;
-    clearTimeout(readyTimer);
-    clearTimeout(runTimer);
+    readyTimer.clear();
+    runTimer.clear();
     resolveSettled();
   };
 
@@ -420,14 +421,15 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     child.kill("SIGKILL");
   };
 
-  const readyTimer = setTimeout(() => {
+  // Both deadlines count awake time, not wall time: a host that idle-sleeps mid-check must not
+  // spend the check's whole budget while nothing ran (issue #1734, `host-suspend.ts`).
+  const readyTimer = setAwakeTimeout(() => {
     abortBeforeRelease(
       `the check supervisor did not start within ${request.readyMs ?? DEFAULT_READY_MS}ms`,
     );
   }, request.readyMs ?? DEFAULT_READY_MS);
-  readyTimer.unref?.();
 
-  const runTimer = setTimeout(() => {
+  const runTimer = setAwakeTimeout(() => {
     // A timeout is INFRASTRUCTURE, never a fail. The command never reported its own exit, so
     // this says nothing about the submission - the same conclusion `RunResult.outcomeUnknown`
     // draws for the buffered runner.
@@ -453,7 +455,6 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     // send. The same promise is awaited below, so the ladder runs once.
     void tearDown().then(settle, settle);
   }, request.timeoutMs);
-  runTimer.unref?.();
 
   child.on("error", (err) => {
     // A spawn failure of the RUNTIME or an unusable cwd - never the configured command, which
@@ -497,7 +498,7 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
    */
   function onReady(): void {
     if (aborted || supervisor || settled) return;
-    clearTimeout(readyTimer);
+    readyTimer.clear();
     const pid = child.pid;
     if (pid === undefined) {
       abortBeforeRelease("the check supervisor reported ready without a pid");

@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InspectorPr } from "../src/shared/types.ts";
@@ -9,12 +8,13 @@ import type { WorkflowContextSnapshot, WorkflowInspectorGateState } from "../src
 import { skillCommand } from "../src/shared/harness-capabilities.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the Inspector sweep stops reading a pull request the moment it reads it
 // closed or merged. A gate that opens after that - or loses the signal to a restart - waited for
 // a fresh observation nothing would ever supply. It must hold as the ordinary closed-PR block
 // instead, and a merge must never pass the gate, waive its review or complete the run.
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-retired-"));
+const home = tempDir("mission-workflow-inspector-retired-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

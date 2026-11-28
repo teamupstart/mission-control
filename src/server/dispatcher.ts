@@ -13,11 +13,18 @@ import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import {
   hasOpenLaunchFailure,
+  UNKNOWN_TERMINAL_GUIDANCE,
   launchWorkKey,
   newLaunchFailure,
+  type PendingTerminalLaunch,
   type TaskLaunchFailure,
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
+import type { NamedAgentEnvironment } from "./executables/named-variable.ts";
+import { terminalLaunchEnvironment } from "./agent-environment.ts";
+import { discardTerminalReceipt } from "./terminal/dispatch-observation.ts";
+import { RESUME_START_MS } from "./terminal/resume-lease.ts";
+import { terminalEnvironmentArgv } from "./terminal/environment-handoff.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
 import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -94,11 +101,16 @@ import { configuredTerminalDeps } from "./terminals-config.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
+  observeTerminalWrapperExit,
+  retainPendingTerminalHome,
+  withSubmittedTerminalHome,
   isolatedAgentArgv,
   isolatedAgentEnvironment,
 } from "./agent-subprocess-env.ts";
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
+import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
+import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
 import { stackPrInstruction } from "./stacking/lineage.ts";
 import { FULL_SHA } from "./workflows/commit-id.ts";
@@ -146,7 +158,10 @@ import {
   recordPipelineCommissionCancellationFailure,
 } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
-import { updatePipelineCommissionRecovery, getTask as getDurableTask, taskWorkEpisodeForTask, recordTaskRepoChanges } from "./db.ts";
+import {
+  getTask as getDurableTask, pendingTerminalSubmissions, recordTaskRepoChanges,
+  recordTerminalSubmission, taskWorkEpisodeForTask, updatePipelineCommissionRecovery,
+} from "./db.ts";
 import { taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import type {
   PipelineEngineerLifecycle,
@@ -434,6 +449,8 @@ export class Dispatcher {
        * launcher is used and nothing changes.
        */
       spawn?: typeof spawnUniquely;
+      /** Terminal backends for exercising the ordinary agent launcher with a fixture pane. */
+      homeDeps?: HomeDeps;
       /**
        * Closes a terminal home that a replaced dispatch attempt spawned. Injected by tests that
        * spawn through `spawn` above, whose homes no real backend could close. Unset, the real
@@ -458,8 +475,8 @@ export class Dispatcher {
       if (owner) registry.refreshTaskProvisioning(owner.taskId);
     });
     this.legacy = deps.legacy ?? new LegacyTreehouseService();
-    this.teardown = teardown ?? ((task, legacy, priority) =>
-      teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees));
+    this.teardown = teardown ?? ((task, legacy, priority, _manager, beforeReturn) =>
+      teardownWorktree(task, legacy ?? this.legacy, priority, this.worktrees, beforeReturn));
   }
 
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
@@ -503,6 +520,37 @@ export class Dispatcher {
     // task running on its agent - the only outcome that confirms it (see the `finally`).
     let expectedWorkUnit: TerminalLaunchWorkUnit | null = null;
     let launchSucceeded = false;
+    let uncertainTerminal: UnconfirmedDispatchError | undefined;
+    let awaitingLateExit = false;
+    let submitted: PendingTerminalLaunch | undefined;
+    const beforeSubmit = (record: PendingTerminalLaunch) => {
+      if (!currentAttempt()) throw new TerminalLaunchError("Terminal dispatch was superseded", false);
+      recordTerminalSubmission(taskId, record);
+      submitted = record;
+    };
+    const ownsLaunch = () => currentAttempt() && this.stillDispatching(taskId);
+    const spawnTerminal = (label: string, cwd: string, command: string, args: readonly string[], options?: {
+      stateHome: string; backend: string | null; extraEnv: Record<string, string>;
+      fallback: readonly string[] | null; named?: NamedAgentEnvironment;
+    }) => (this.deps.spawn ?? spawnUniquely)(
+      label, taskId.slice(0, 6), cwd, command, args,
+      options?.stateHome, options?.backend, options?.extraEnv, options?.fallback, options?.named,
+      this.deps.homeDeps, ownsLaunch, beforeSubmit,
+    );
+    const recordHome = (home: SpawnedHome) => {
+      this.patch(taskId, homeRecord(home));
+      if (submitted) discardTerminalReceipt(submitted.receipt);
+      submitted = undefined;
+    };
+    const closeObservation = () => {
+      uncertainTerminal?.exitRecord.close();
+      const receipt = submitted?.receipt ?? uncertainTerminal?.pendingTerminal.receipt;
+      if (!receipt) return;
+      const current = this.registry.getTask(taskId);
+      if (current?.launchFailure?.pendingTerminal?.receipt === receipt) return;
+      if (current?.status === "dispatching" && pendingTerminalSubmissions().get(taskId)?.receipt === receipt) return;
+      discardTerminalReceipt(receipt);
+    };
     noteDispatchStarted(taskId);
     // A task dispatched without a call sign takes one now, in the same write that claims it, so
     // nothing can launch between the choice and the row that holds it. Kept by every later
@@ -534,7 +582,14 @@ export class Dispatcher {
       // Resolve and reserve before provisioning or binding any publication workflow.
       reserveTaskPlans(task);
       if (task.kind === "pipeline") {
-        await this.dispatchPipeline(taskId, task, workUnitId);
+        await this.dispatchPipeline(taskId, task, workUnitId, async (label, cwd, command, args) => {
+          const home = await spawnTerminal(label, cwd, command, args);
+          if (!currentAttempt()) {
+            await this.retireSupersededHome(home);
+            throw new TerminalLaunchError("Terminal dispatch was superseded", true);
+          }
+          recordHome(home);
+        });
         // Symmetric with the failure arm below, which would otherwise be the ONLY pipeline
         // dispatch this facility ever recorded - and a launch-success rate computed from
         // failures alone is worse than no rate at all. Nothing is resolved on this path: the
@@ -1142,6 +1197,13 @@ export class Dispatcher {
       // `preparePiLaunch` has already minted the native conversation id, so this needs no
       // provisional key and no later move: it is written under the key the session will hold
       // once `bindLaunchedAgentSession` runs.
+      const named = await terminalLaunchEnvironment(stateHome, resident);
+      if (!ownsLaunch()) {
+        cleanupDisposableAgentStateHome(stateHome);
+        pendingAgentStateHome = null;
+        if (currentAttempt()) await this.abortIfSettled(taskId);
+        return;
+      }
       const piMarker = piLaunch.sessionId && piText !== null
         ? this.recordLaunchPresentationForKey(piLaunch.sessionId, piText, task.intent)
         : null;
@@ -1151,18 +1213,13 @@ export class Dispatcher {
         // the one its wrapper runs from. The agent is discovered, and announced, before this
         // function gets control back, and the registry installs the launch record when it
         // first sees the agent beneath THIS wrapper. Settled when the launch ends below.
-        expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId);
-        home = await (this.deps.spawn ?? spawnUniquely)(
-          label,
-          shortId,
-          wt.path,
-          agentBin,
-          agentArgs,
-          stateHome,
-          terminalBackend,
-          { ...advisorEnv, ...workUnitEnv(workUnitId) },
-          piFallbackArgs,
-        );
+        expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId, null, named?.missing);
+        // The real spawner owns cleanup even if the backend cannot confirm its outcome.
+        if (!this.deps.spawn) pendingAgentStateHome = null;
+        home = await spawnTerminal(label, wt.path, agentBin, agentArgs, {
+          stateHome, backend: terminalBackend, extraEnv: { ...advisorEnv, ...workUnitEnv(workUnitId) },
+          fallback: piFallbackArgs, named,
+        });
         // The terminal cleanup wrapper now owns this home until its agent command exits.
         // An injected spawn seam starts no wrapper, so its disposable fixture can go now -
         // unless it ran the real wrapper and says so, which then owns the home as it would.
@@ -1173,12 +1230,7 @@ export class Dispatcher {
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
-      // Closed only by the identity this spawn returned, never by its name: a name a cancel freed can
-      // already belong to the replacement. With no identity the terminal is left standing.
-      retireOwnHome = async () => {
-        if (!home.terminalResourceId) return;
-        await (this.deps.killHome ?? killHome)(home.homeName, undefined, home.homeBackend ?? null, home.terminalResourceId).catch(() => {});
-      };
+      retireOwnHome = () => this.retireSupersededHome(home);
       // From here every checkpoint also asks whether a cancel and a redispatch replaced this
       // attempt while it waited, and if so retires its worker before it can bind the task.
       const settled = async () => {
@@ -1192,7 +1244,7 @@ export class Dispatcher {
         await retireOwnHome();
         return;
       }
-      this.patch(taskId, homeRecord(home));
+      recordHome(home);
       if (await settled()) return;
 
       // Only the worker this spawn started: matched by the terminal resource or launch wrapper
@@ -1352,6 +1404,7 @@ export class Dispatcher {
         sessionId: deliverySession.id,
       });
     } catch (err) {
+      if (err instanceof UnconfirmedDispatchError) uncertainTerminal = err;
       cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
       pendingAgentStateHome = null;
       // A replaced attempt's failure is its own: the task row, its status and its resources
@@ -1434,15 +1487,20 @@ export class Dispatcher {
       // a `homeName`-less task would otherwise read as "no home was ever spawned" - true,
       // and the wrong reason - and reclaim a worktree an embedded agent is working in.
       const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
-      const alive = embedded ?? (
-        cur.homeName ? await homeAlive(cur.homeName, configuredTerminalDeps, cur.homeBackend ?? null, cur.terminalResourceId) : false
-      );
+      // A timeout before a backend returns its name gives us no identity to check. Its
+      // delayed pane still needs the checkout even though no home record was confirmed.
+      const unconfirmedSpawn = err instanceof TerminalLaunchError && err.outcomeUnknown;
+      const alive = embedded ?? (cur.homeName
+        ? await homeAlive(cur.homeName, configuredTerminalDeps, cur.homeBackend ?? null, cur.terminalResourceId)
+        : unconfirmedSpawn ? null : false);
       if (alive !== false) {
+        const pendingTerminal = alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError
+          ? err.pendingTerminal : undefined;
         this.patch(taskId, {
           status: "failed",
           // Its agent and worktree are kept, so this failure is answered by opening or
           // cancelling it - never by a retry that would reclaim them.
-          launchFailure: { ...launchFailure, sessionKept: true },
+          launchFailure: { ...launchFailure, sessionKept: true, pendingTerminal },
           error:
             alive === true
               ? embedded === true
@@ -1450,8 +1508,39 @@ export class Dispatcher {
                   ? `${message} - its managed session was kept; Focus or Cancel it`
                   : `${message} - its session and worktree were kept; open or Cancel it`
                 : `${message} - its terminal home and worktree were kept; Focus or Cancel it`
-              : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
+              : message + UNKNOWN_TERMINAL_GUIDANCE,
         });
+        if (alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError) {
+          const ownsFailure = () => {
+            const latest = this.registry.getTask(taskId);
+            return currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
+              && latest.worktreePath === cur.worktreePath && latest.launchFailure?.at === launchFailure.at
+              && (latest.launchFailure.sessionKept || latest.launchFailure.terminalInactive === true);
+          };
+          const reclaim = async () => {
+            if (!ownsFailure()) return;
+            const failure = this.registry.getTask(taskId)!.launchFailure!;
+            this.patch(taskId, { error: message, launchFailure: { ...failure, sessionKept: false, terminalInactive: true, pendingTerminal: undefined } });
+            const checkCheckout = (path: string) => inactiveTerminalCheckoutBlocker(path,
+              taskRepoRefs(cur).find((ref) => ref.worktreePath === path)?.provider);
+            await this.teardownTaskResources(taskId, cur, message, ownsFailure, checkCheckout);
+          };
+          if (err.exitRecord.confirmed()) {
+            await reclaim();
+          } else if (ownsFailure()) {
+            // Dispatch has already reported the backend timeout. Neither the launch deadline
+            // nor a surviving wrapper's eventual exit may hold the caller here.
+            awaitingLateExit = true;
+            void err.unstarted.then(async (unstarted) => {
+              if (ownsFailure() && (unstarted || await err.exitRecord.waitForExit(ownsFailure))) await reclaim();
+            }).catch((error) => {
+              console.warn(`[dispatch] could not reconcile late terminal exit for task ${taskId}:`, error);
+            }).finally(() => {
+              closeObservation();
+              if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+            });
+          }
+        }
       } else {
         this.patch(taskId, {
           status: "failed",
@@ -1468,8 +1557,10 @@ export class Dispatcher {
       // be running with the variable, and its record must outlive the failure for as long as
       // that agent does. A no-op for an embedded launch.
       settleTerminalLaunchWorkUnit(expectedWorkUnit, launchSucceeded ? "succeeded" : "failed");
-      // Settled: nothing of this attempt writes after here. A successor's entry is its own.
-      if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+      if (!awaitingLateExit) {
+        closeObservation();
+        if (currentAttempt()) this.dispatchAttempts.delete(taskId);
+      }
       // A Pi wrapper's answer outlives its state home on purpose; this attempt is done with it.
       // Best-effort: the worker is already launched, and restart recovery reclaims a leftover file.
       if (outcomeStateHome) {
@@ -1492,7 +1583,8 @@ export class Dispatcher {
    * the host would tag their MCP calls with a work unit their sessions never emit. It therefore
    * carries none (and inherits none: `agentSubprocessEnv` and the wrapper remove it).
    */
-  private async dispatchPipeline(taskId: string, task: Task, workUnitId: string | null): Promise<void> {
+  private async dispatchPipeline(taskId: string, task: Task, workUnitId: string | null,
+    launchTerminal: (label: string, cwd: string, command: string, args: readonly string[]) => Promise<void>): Promise<void> {
     if (task.extraRepos.length > 0) {
       throw new Error("a pipeline task owns one enabled conductor repository; detach the other repos");
     }
@@ -2006,20 +2098,12 @@ export class Dispatcher {
     }
 
     const label = sessionLabel(task.title);
-    const shortId = taskId.slice(0, 6);
     const problem = taskPlanInputProblem(task);
     if (problem) throw new Error(problem);
     const terminalLaunch = launch;
     const [command, ...args] = terminalLaunch.argv;
     if (!command) throw new Error("the pipeline provider returned no launch command");
-    const home = await (this.deps.spawn ?? spawnUniquely)(
-      label,
-      shortId,
-      terminalLaunch.cwd,
-      command,
-      args,
-    );
-    this.patch(taskId, homeRecord(home));
+    await launchTerminal(label, terminalLaunch.cwd, command, args);
     if (await this.abortIfSettled(taskId)) return;
 
     // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
@@ -2543,6 +2627,14 @@ export class Dispatcher {
     }
   }
 
+  /** A replacement can own the same display name. Only the returned resource identifies the old terminal. */
+  private async retireSupersededHome(home: SpawnedHome): Promise<void> {
+    if (!home.terminalResourceId) return;
+    await (this.deps.killHome ?? killHome)(
+      home.homeName, this.deps.homeDeps, home.homeBackend ?? null, home.terminalResourceId,
+    ).catch(() => {});
+  }
+
   /**
    * A dispatch stays `dispatching` until its own final transition; if the status
    * changed underneath it (a cancel or a mid-flight complete), that transition
@@ -2805,9 +2897,16 @@ export class Dispatcher {
     taskId: string,
     task: Task,
     baseError: string | null,
+    stillOwned?: () => boolean,
+    checkWorktree?: (path: string) => Promise<string | null>,
   ): Promise<boolean> {
     try {
-      await this.teardown(task);
+      await this.teardown(task, undefined, undefined, undefined,
+        stillOwned && (async (path) => {
+          const blocked = await checkWorktree?.(path);
+          return stillOwned() ? blocked ?? null : "task ownership changed before cleanup";
+        }));
+      if (stillOwned && !stillOwned()) return false;
       this.patch(taskId, {
         ...releasedTaskResources(task, null),
         homeName: null,
@@ -2816,6 +2915,7 @@ export class Dispatcher {
       });
       return true;
     } catch (error) {
+      if (stillOwned && !stillOwned()) return false;
       const detail = error instanceof Error ? error.message : String(error);
       // The trees that DID come back are released even though the teardown failed overall.
       // Anything still standing keeps its record, so it remains reclaimable; anything gone
@@ -3508,6 +3608,21 @@ export function releasedTaskResources(
   };
 }
 
+/** A timed-out terminal may leave a process in a fallback checkout after its wrapper exits. */
+export async function inactiveTerminalCheckoutBlocker(
+  path: string,
+  provider: WorktreeProvider | null | undefined,
+  inspectOccupancy = inspectWorktreeOccupancy,
+): Promise<string | null> {
+  const unsafe = await worktreeReturnBlocker(path, { fetch: true });
+  if (unsafe || provider === "mission") return unsafe; // Native leases verify occupancy before reset.
+  const occupancy = (await inspectOccupancy([path])).get(path);
+  if (occupancy?.status !== "known" || occupancy.occupants.length) return "checkout is occupied or occupancy is unknown";
+  // An editor may write or commit and exit before the scan observes it. Compare the
+  // checkout again against the just-refreshed refs before handing it back for removal.
+  return worktreeReturnBlocker(path);
+}
+
 /** One tree's return-or-remove, provider-aware. See `teardownWorktree` for the policy. */
 async function teardownOneWorktree(
   task: {
@@ -3722,15 +3837,65 @@ export async function spawnUniquely(
   extraEnv: Readonly<Record<string, string>> = {},
   /** The arguments to launch with instead if `agentArgs` would not fit at exec (a shaped Pi turn one). */
   fallbackAgentArgs: readonly string[] | null = null,
+  named?: NamedAgentEnvironment,
+  deps?: HomeDeps,
+  ownsLaunch?: () => boolean,
+  beforeSubmit?: (pending: PendingTerminalLaunch) => void,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
+  let pending: ReturnType<typeof retainPendingTerminalHome> | undefined;
+  let exitRecord: ReturnType<typeof observeTerminalWrapperExit> | undefined;
+  let receipt: string | undefined;
+  let submissionRecorded = false;
+  let handoff: Awaited<ReturnType<typeof terminalEnvironmentArgv>> | undefined;
   try {
-    const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
-    return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend);
+    exitRecord = observeTerminalWrapperExit(effectiveStateHome);
+    let argv: string[];
+    if (named) {
+      handoff = await terminalEnvironmentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome }, named, {
+        wrap: (reader) => isolatedAgentArgv(reader, { cwd, stateHome: effectiveStateHome, extraEnv }),
+        fallbackArgv: fallbackAgentArgs && [agentBin, ...fallbackAgentArgs],
+      });
+      argv = handoff.argv;
+      pending = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS, exitRecord.revokeUnstarted);
+    } else {
+      argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
+    }
+    // A pane can run its EXIT trap and remove the source before the backend replies.
+    receipt = exitRecord.pinReceipt();
+    const submit = () => spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps, ownsLaunch);
+    if (beforeSubmit) {
+      beforeSubmit({ receipt, deadline: pending?.deadline ?? Date.now() + RESUME_START_MS });
+      submissionRecorded = true;
+      return await withSubmittedTerminalHome(effectiveStateHome, submit);
+    }
+    return await submit();
   } catch (error) {
-    cleanupDisposableAgentStateHome(effectiveStateHome);
+    if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord && receipt) {
+      pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS, exitRecord.revokeUnstarted);
+      const record = exitRecord;
+      exitRecord = undefined; // The dispatcher takes ownership of both the descriptor and the pin.
+      throw new UnconfirmedDispatchError(error.message, { receipt, deadline: pending.deadline }, pending.unstarted, record);
+    }
+    await handoff?.dispose();
+    if (pending) pending.release();
+    else cleanupDisposableAgentStateHome(effectiveStateHome);
     throw error;
+  } finally {
+    if (exitRecord) {
+      exitRecord.close();
+      if (receipt && !submissionRecorded) discardTerminalReceipt(receipt);
+    }
   }
+}
+
+class UnconfirmedDispatchError extends TerminalLaunchError {
+  constructor(
+    message: string,
+    readonly pendingTerminal: PendingTerminalLaunch,
+    readonly unstarted: Promise<boolean>,
+    readonly exitRecord: ReturnType<typeof observeTerminalWrapperExit>,
+  ) { super(message, true); }
 }
 
 /** Managed counterpart: preparation is the sole command source and owns launch cleanup. */
@@ -3753,12 +3918,13 @@ export async function spawnWrappedUniquely(
   baseName: string, shortId: string, cwd: string, argv: string[], stateHome: string,
   terminalBackend: string | null,
   deps?: HomeDeps,
+  ownsLaunch?: () => boolean,
 ): Promise<SpawnedHome> {
   const held = await heldHomeNames(deps, terminalBackend);
   const unique = `${baseName}-${shortId}`;
   const name = held === null || held.has(baseName) ? unique : baseName;
 
-  const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend);
+  const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend, ownsLaunch);
   if (first.ok) {
     return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
       // On every axis: the wrapper always runs from this home, so a pane whose address the
@@ -3771,6 +3937,7 @@ export async function spawnWrappedUniquely(
     { name: unique, cwd, argv, sidePane: true },
     deps,
     terminalBackend,
+    ownsLaunch,
   );
   if (retry.ok) {
     return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,

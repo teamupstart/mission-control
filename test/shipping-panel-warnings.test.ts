@@ -31,7 +31,7 @@ const SHIPPING: ShippingState = {
   error: null,
 };
 
-type Posture = Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist">;
+type Posture = Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist"> & Partial<Pick<InspectorConfig, "localReview">>;
 
 function render(inspectorConfig: Posture | null, state: ShippingState = SHIPPING): string {
   return renderToStaticMarkup(
@@ -146,4 +146,29 @@ test("an unmet prerequisite still draws the card, with the fix beside it", () =>
   const html = render({ enabled: false, mode: "dry-run", repoAllowlist: [] });
   assert.match(html, /Prerequisites/);
   assert.match(html, /class="settings-link"[^>]*>Turn it on in GitHub Inspector/);
+});
+
+// ---- Shipping on a local review ----
+//
+// With Local review on, a locally reviewed head may merge, so the panel says so - and says, where
+// Dry run is the blocker, that those heads wait too. Local review reads as off while its preview
+// flag is off, so with it off none of this copy appears.
+
+test("with Local review on, the lede names the local review a merge may rest on", () => {
+  const on = render({ enabled: true, mode: "live", repoAllowlist: ["/repo"], localReview: true });
+  assert.match(on, /or a passed Local Inspector review matches its exact content and base/);
+  const off = render({ enabled: true, mode: "live", repoAllowlist: ["/repo"], localReview: false });
+  assert.doesNotMatch(off, /Local Inspector/);
+});
+
+test("with Local review on, the Dry run prerequisite says locally reviewed pull requests wait too", () => {
+  const on = render({ enabled: true, mode: "dry-run", repoAllowlist: ["/repo"], localReview: true });
+  assert.match(on, /Pull requests the Local Inspector reviewed wait too: Dry run stays dry for the merge\./);
+  assert.match(on, /will not merge/i);
+  const off = render({ enabled: true, mode: "dry-run", repoAllowlist: ["/repo"] });
+  assert.doesNotMatch(off, /Local Inspector reviewed/);
+});
+
+test("Local review alone never draws the Prerequisites card", () => {
+  assert.doesNotMatch(render({ enabled: true, mode: "live", repoAllowlist: ["/repo"], localReview: true }), /Prerequisites/);
 });

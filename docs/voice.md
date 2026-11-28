@@ -559,6 +559,41 @@ actually submitted to the operator queue follows the queue’s normal durable de
 After a restart, each spoken turn still queued behind a blocking question gets a held card
 with its own recall control when the daemon restores its session.
 
+### Prefix recovery (preview)
+
+A cough, a knock or a filler the recognizer writes before the call sign leaves “Um, Steve, check
+the build.” without an opening name, so the rule above drops it. The **Voice prefix recovery**
+preview flag (`voice-prefix-recovery`, in Settings > Feature flags, off by default) gives such an
+utterance one bounded second look. It follows the scout report *Recovering a voice address after a
+noise or filler prefix*.
+
+Recovery runs only after the opening-name rule has returned `no-name` or `near-miss`. Every other
+decision, including an exact or phonetic opening name, a spoken Cancel, a pick and `no-message`, is
+final, so with the flag on nothing that routes today routes differently. Recovery looks past the
+first word, then the first two, and never further. It routes the rest of the capture through the same
+matcher, without the open unsure cards, so a pick still needs the name on its own.
+
+| Decision | When | Examples |
+| --- | --- | --- |
+| Route | Every skipped word is a known filler (`um`, `uh`, `er`, `hmm`, `mm`, `mm-hmm`…) or opener (`okay`, `so`, `hey`, `hi`, `oh`, `yeah`, `right`, `well`, `and`, `alright`…), or `the`, `a`, `an`, `you` or `I` followed by its own punctuation. An exact roster name follows, the recognizer wrote a comma or a sentence or clause mark right after it, no second name is right behind it, and a message remains with no comma in it, other than one before a closing “please”, “thanks”, “thank you”, “okay”, “ok” or “now”, and no “and”, “or”, “nor” or “&”: one plain clause. The card is the ordinary one, with its cancel window. A later name still asks split or mention with the first target fixed. | “Um, Steve, check the build.” · “Okay so Will, grab the logs.” · “The. Steve, check the build.” |
+| Cancel | A bare Cancel after known fillers or openers is the Cancel control. | “Uh, cancel.” |
+| Ask | A roster name opens what is left, but recovery cannot vouch for it. That is the case for each of these: a word outside the filler and opener lists before the name (a relay word excepted, which leaves the utterance dropped); `the`, `a`, `an`, `you` or `I` before the name without punctuation of its own, which keeps it from routing but not from asking; a phonetic or one-letter near-miss name; or a second name right behind the first, joined by “and” or “or” or not. In each case the recognizer must have written punctuation right after the last name heard. An unsure card offers every name heard and holds the message after them. It sends nothing and asks no model. Saying the name or clicking a row sends it. | “Fish. Steve, check the build.” · “The Steve, check the build.” · “Uh, Steven, check the build.” · “Um, Steve and Luna, check the build.” · “Wait, Luna, stop.” |
+| Leave dropped | Everything else: no punctuation after the name, which reads the same as a mention (“Uh Steve broke it again.”, “Um, Steve and Luna said the build is fine.”), any comma in what follows the name or names, other than before a closing courtesy word (“please”, “thanks”, “thank you”, “okay”, “ok” or “now”), since the transcript cannot tell a phrase that describes the name from an aside in a command (“So, Steve, who is on call, said the build is fine.”, “Okay, Steve, our build lead, also approved it.”, “So, Steve, after checking the logs, said the build was fine.”, and so also “Um, Steve, check the build, and Luna, run the tests.”, which routes without the “Um”). a message with “and”, “or”, “nor” or “&” in it, which may continue a list the name began (“Okay, Steve, my brother and Bob approved it.”) and cannot be told from two joined commands (“Okay, Steve, check the build and run the tests.”, which routes without the “Okay”). “So, Steve, who is on call?”, “So, Steve, the build is red.” and “Um, Carol, deploy to staging, please.” still route; a filler or opener that only sounds like a name (“well” for Will), a possessive, a name after more than two skipped words, a name not on the roster that is not a phonetic or one-letter near miss of a roster name either (“Um, Noah, check the build.” with Nova on the roster; “Um, Caroline, run the tests.” is close enough to Carol to ask), a bare name, a relay word before the name or names (`tell`, `ask`, `said`, `told`, `thanks`…). | “So Steve said the build is fine.” · “Tell Steve, check the build.” · “Tell Steve and Luna, check the build.” · “Okay Steve's pull request is merged.” · “I think Steve broke the build.” |
+
+A roster name among the skipped words stops the look at two words, so a call sign that is itself
+a filler or opener (“Right”) still wins as the opening name. `the`, `a`, `an`, `you` and `I` ask
+rather than route because “The Atlas, our deploy box, is down.” is a grammatical sentence that no
+listener can tell from a cough heard as “The” without timing it does not have. No timing,
+recognizer confidence or model is used to choose a recipient: the spike measured FluidAudio's word
+gaps as no silence meter, the daemon does not receive per-word confidence, and the model step only
+ever answers split or mention for a target the speaker already fixed.
+
+Recently heard records the rule `recovered-prefix` (“name after a filler”) for a route, and the
+skipped words, and marks the name after them: “Steve, after “Um””. An ask records
+`suggested-prefix` (“possible name after another word”) with the names offered (“Asked: Steve or
+Luna”). Its unsure card strikes through the skipped words and says “Not sent: something came before
+the name.” A recovered Cancel keeps the rule `cancel`.
+
 ## The model step
 
 A sentence the names alone could not settle goes to one model step, with a five-second budget
@@ -800,7 +835,9 @@ and detector cache occupy about 480 MB. Unit shards use a complete existing cach
 skip recognition on a cold cache. To run the required check locally, set
 `MISSION_VOICE_RECOGNIZER_JOB=1` and run
 `node --test --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts`.
-`MISSION_VOICE_TEST_MODEL_DIR` overrides the temporary cache location.
+The cache lives in the machine temp dir, outside each worker's
+[temp root](test-temp-dirs.md), so runs share it. `MISSION_VOICE_TEST_MODEL_DIR` overrides
+that location.
 
 ### Download and verification
 
@@ -885,7 +922,7 @@ search result opens the tab that holds its control before highlighting it.
 | --- | --- |
 | **Listening** | **Microphone**: Listening mode, Input device, Mute hotkey (Push-to-talk hotkey in Push-to-talk), Auto-mute on calls. **Ending a message**: End-of-speech delay, Separator word, Cancel window |
 | **Names & routing** | **Who you can address**, the [roster](#who-can-be-addressed). **When a sentence is unclear**: When unsure (Ask or Show), then the [decision model](#faster-routing) and its keys |
-| **Spoken replies** | **Spoken replies**: the [voice picker](#mission-control-voices), Play sample and the voice download. **Answering by voice**: Plan forms by voice |
+| **Spoken replies** | **Spoken replies**: Speak replies aloud, the [voice picker](#mission-control-voices), Play sample and the voice download. **Answering by voice**: Plan forms by voice |
 | **On screen** | **Live transcript**, **Confirmation card**, **In the window** (the indicators) |
 | **Recently heard** | The utterances voice heard, how each was matched and what happened, and Clear |
 
@@ -915,6 +952,7 @@ the utterance and the word is ordinary speech.
 | Separator word | Listening | `separatorWord` | `bagel` |
 | Cancel window (duration or Off) | Listening | `cancelWindow { enabled, seconds }` | on, 4 seconds |
 | When unsure (Ask or Show) | Names & routing | `whenUnsure` | `show` |
+| Speak replies aloud | Spoken replies | `speech.playback` | on |
 | Plan forms by voice | Spoken replies | `planFormsByVoice` | on |
 
 ### Faster routing
@@ -969,7 +1007,7 @@ never wrote needs no migration.
 | `endOfSpeechMs` | `2000` | Silence before automatic submission, in milliseconds (500, 800, 1000, 1500, 2000, 3000 or 5000) |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
 | `whenUnsure` | `show` | `show` the candidates, or `ask` aloud |
-| `speech` | `{ voice: null }` | Automatic voice, or a saved engine and voice ID |
+| `speech` | `{ voice: null, playback: true }` | `voice` is Automatic (null) or a saved engine and voice ID. `playback` false keeps every sample and question silent |
 | `planFormsByVoice` | `true` | Whether speech may fill a plan-decision form |
 | `inputDevice` | `built-in` | `built-in`, `system-default`, or a device id from a listener |
 | `decisionProvider` | `null` | Null for automatic, or `off`, `openai`, `jev` |
@@ -1008,10 +1046,14 @@ In **Settings > Voice > Spoken replies**, Automatic uses F4 once downloaded on a
 listener that can play it. Until then it uses the best installed English voice
 the Mac listener offers, preferring Premium, then Enhanced, then standard.
 Without a playable voice, Mission Control shows the question on screen.
-The shipping Mac listener advertises no audio playback and no system voices.
-You can still save a voice choice or download the model while on Automatic.
-With this helper, questions appear on screen and both Play sample and Ask
-aloud stay disabled.
+The supervised Mac listener advertises audio playback and its installed English
+system voices.
+
+**Speak replies aloud** (`speech.playback`, on by default) is the operator's switch for
+all spoken output. Turn it off if the microphone picks up the spoken voice. While it
+is off the daemon reports `speech-output` unavailable with the `speech_playback_off`
+code, stops any sample or question already playing, and keeps questions on screen.
+The picker still lists voices, so you can choose one or download the model first.
 
 Choose any Mission Control voice to save the choice and start the shared
 download, or stay on Automatic and press **Download**. Cancel keeps your
@@ -1029,7 +1071,8 @@ the picker is waiting for the reply to its play request.
 checkout’s release helper (`dist/native/voice-listener`). It started each helper
 against a disposable loopback server and recorded its first hello.
 The recorded command `python3 /tmp/f35-voice-hello.py` exited 0 and printed
-this line for both helpers.
+this line for both helpers. That 2.3.0 helper predates playback shipping on; current
+helpers advertise `"audio": true` with their installed English voices.
 
 ```text
 Protocol 4.1 backend fluidaudio speech {"audio": false, "systemVoices": []}
@@ -1042,7 +1085,7 @@ Artifact IDs are specific to each snapshot. In round 8, segment 0, this transcri
 results, see the [November 25 quiet-room trial](#november-25-2026-quiet-room-trial).
 
 **Pending on hardware.** These picker checks require a signed listener that
-has passed the speaker and microphone check and advertises playback. On that
+advertises playback, with Speak replies aloud on. On that
 build, select Always-on and Ask aloud with two named agents. Run each check
 with downloaded F4 and an installed Apple voice.
 
@@ -1297,7 +1340,9 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
 absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
-Its `speech_playback_unsupported` code keeps questions on screen. The
+Its `speech_playback_off` code means Speak replies aloud is off and takes precedence
+over every listener reason except an unconfirmed stop. Its `speech_playback_unsupported`
+code means the listener cannot play audio. Both keep questions on screen. The
 `speech_voice_unavailable` code means the listener supports playback but voice
 selection found no match. The picker uses the choice and download state to
 offer the appropriate remedy.
@@ -1535,6 +1580,11 @@ What these runs did not establish:
 
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.
+- `test/voice-prefix-recovery.test.ts`: prefix recovery on the scout's 70 written cases and the
+  holdout's transcripts (no route that works today changes, no send nobody asked for), each route,
+  ask and abstain rule, Cancel after a filler, the flag off, the router's recovered card and unsure
+  card with its pick, and Recently heard's marking. The labeled corpora live in
+  `test/fixtures/voice-prefix-corpus.ts`; see [Prefix recovery measurements](#prefix-recovery-measurements).
 - `test/voice-routing.test.ts`: each routing rule, an exact first word with a later name asking
   split or mention with the target fixed, and where a split cuts the sentence.
 - `test/voice-decide.test.ts`, with both real provider adapters over a fake `fetch` answering in
@@ -1623,6 +1673,120 @@ What these runs did not establish:
   `startDecisionServer()` in `e2e/fixtures/voice.ts` answers both providers' endpoints, and the
   suite's daemon never inherits either variable, so no spec reaches a provider.
 
+### Prefix recovery measurements
+
+[`e2e/specs/voice-prefix-recovery.spec.ts`](../e2e/specs/voice-prefix-recovery.spec.ts) has two tests.
+The first drives the dashboard with posted transcripts: the flag starts off and leaves “Um, Steve,
+check the build.” unrouted, then, switched on in Settings > Feature flags, routes it as an ordinary
+card, opens an unsure card for “Fish. Steve, …” that sends only after a pick, offers both names for
+“Um, Steve and Luna, …”, cancels with “Uh, cancel.” and leaves a mention unrouted, and Recently heard
+explains each.
+
+The second plays recorded audio through the release Swift listener loop into an isolated daemon,
+in Always-on with a 2000 ms end-of-speech delay and a 12-second cancel window, with twelve
+call-signed sessions: the scout's ten names plus Carol and Max. Each playlist runs once with the flag
+off and once with it on. Each case is a window of the playlist, and the Recently heard entries whose
+speech onset falls in it are its outcome. The test requires that the flag adds no unsafe outcome and
+changes no route on a transcript recognized the same way in both runs. Each run writes its labels,
+recognized text and scores, never audio, to `e2e/.artifacts/voice-prefix-recovery/`. It needs
+`MISSION_LONG_VOICE_MODELS` and reads the operator's consented recording from
+`MISSION_PREFIX_RECOVERY_HUMAN_WAV` or `MISSION_PREVIEW_HOLD_HUMAN_WAV`; without it the cases that
+need that recording are skipped and listed.
+
+- **Development set:** the scout's 70 written cases, verbatim, spoken by the four macOS voices the
+  first-preview hold used. The rules were shaped on these cases.
+- **Holdout:** 66 cases written for this change after the rules were set, in
+  `test/fixtures/voice-prefix-corpus.ts`. No sentence repeats a scout case. Eight other macOS voices
+  speak 56 of them. The other ten use the operator's own recorded “Steve, check the build.”, “Carol,
+  run the tests.”, “Max, stop.”, quiet “Steve, stop.” and two spoken Cancels, some clips more than
+  once: three as clean call signs, three with noise before them and four in Cancel sequences. By
+  category, nine are clean call signs and ten place noise 80 to 200 ms before a clean call sign: a
+  knock, a double knock, a cough, a door thump, mouse clicks, a breath, and the operator's own typing
+  and desk tap. Sixteen are deliberate openers, sixteen ordinary mentions, and six have two
+  recipients or a name that is not quite on the roster. The last nine are Cancel sequences: five
+  spoken Cancels (two after a filler or opener, the first of them with nothing pending) and four
+  commands spoken just before a Cancel, to give it a card to withdraw.
+
+On November 27, 2026, on a Mac mini with the installed `parakeet-v2-ee09c569-ctc110m-accdafd8`
+models, the run gave the outcomes below. Four rules were tightened after an earlier run on the same
+audio, all toward leaving speech alone: a name with no punctuation after it no longer asks (it had
+asked whether “Uh can zoom.”, the recognizer's “Uh, cancel.”, was for Quinn), a filler or opener
+that only sounds like a name (“well” for Will) is never offered, two names are offered only with
+punctuation after the second and never after a relay word (“Tell Steve and Luna, …”), and a
+recovered message must be one plain clause: no comma, other than before a closing courtesy word (“please”, “thanks”, “thank you”, “okay”, “ok” or “now”), and no
+“and”, “or”, “nor” or “&”. The last rule closes every sentence where a phrase set off by commas describes
+the name (“So, Steve, who is on call, said …”, “Okay, Steve, our build lead, also approved it.”) or the
+name begins a list (“Okay, Steve, my brother and Bob approved it.”). Its price is that a recovered
+compound command, such as “Um, Steve, check the build, and Luna, run the tests.”, “Yeah, Rowan, go ahead
+and merge.” or “Uh, Steve or Luna, whoever is free, check the build.”, is dropped, never sent. Besides the relative checks, the test requires, for every flag-on run, zero
+wrong recipients, zero unintended sends or Cancels, no second action of any kind (route, ask, Cancel or other control) in a case's window, no action at
+all from a Recently heard entry outside every case's window (matched by entry ID, so the lead-in, the tail
+and the gaps are covered), and no silent guess in the holdout.
+
+The table is the last full run with the operator's recording, made before the fourth rule took its
+final form. Replaying every transcript from that run through the final rule changes three outcomes,
+which the table includes. Two are in the development set, from an ask to a drop: “Ah, Steve or Luna,
+whoever is free, check the build.” and “Bum, Steve, check the build, and Luna, run the tests.”. One is in
+the holdout, from a route to a drop: “Yeah, Rowan, go ahead and watch.” (the recognizer's “… and
+merge.”). Every other holdout outcome and every clip of the operator's voice is unchanged. The recording's temporary copy was
+then lost, so the final rule was also run live on the holdout without it: 56 cases, the ten that need the recording skipped,
+with the typing and desk tap synthesized. It passed with 0 wrong recipients, 0 unintended sends, no
+extra action and no silent guess. Of its 25 addressed cases other than clean call signs (openers,
+noise and the call signs before a Cancel) it routed 19, asked 2 and dropped 4. “A carol check the
+coverage report.” was dropped in the recorded run too, and “Yeah, Rowan, go ahead and merge.” is the
+compound command above. The other two are recognition differences in the changed background, not the rule:
+“Alright, Steve, ship it.” was heard without its comma, and “Atlas, roll back the deploy.” after a
+breath as “And was rolled back to the play.”.
+
+| Recognized speech | Dev off | Dev on | Holdout off | Holdout on |
+| --- | --- | --- | --- | --- |
+| Addresses after a spoken prefix routed to the right agent | 3 of 37 | 18 of 37 | 1 of 17 | 13 of 17 |
+| Asked, the right agent offered | 0 | 13 | 0 | 1 |
+| Asked, other names offered (nothing sent) | 0 | 0 | 1 | 1 |
+| Dropped | 34 | 6 | 15 | 2 |
+| Noise before a clean call sign routed | | | 10 of 10 | 10 of 10 |
+| Clean call signs routed as before | 5 of 5 | 5 of 5 | 9 of 9 | 9 of 9 |
+| Ordinary mentions left unrouted | 19 of 19 | 19 of 19 | 16 of 16 | 16 of 16 |
+| Two recipients or an off-roster name: asked, or dropped | 6 dropped | 3 asked, 3 dropped | 6 dropped | 5 asked, 1 dropped |
+| Cancel after a filler or opener acted | 0 of 1 | 1 of 1 | 0 of 2 | 1 of 2 |
+| Wrong recipients | 0 | 0 | 0 | 0 |
+| Unintended sends | 0 | 0 | 0 | 0 |
+| Silent guesses | 1 | 1 | 0 | 0 |
+
+The development set's silent guess is “Steve and Luna, check the build.”, with no prefix: the
+opening-name rule sends it to Steve with the flag off as well, and recovery leaves it alone. The
+holdout's opener that offered other names, with the flag off as well as on, is “Well, Luna, try the
+other branch.”: the opening-name rule hears “Well” as close to both Will and Willow and asks which.
+That is the existing rule, not recovery. With a decision key saved, the model step would choose
+between Will and Willow for it.
+
+What the recognizer wrote explains most of the rest. It usually put a comma after a spoken name,
+which is what the Route tier needs. It wrote fillers as other words: “Hmm” as “Palm”, “Huh” as “Ha”,
+“Um” as “Bum” or “Arm”, “Uh” as “Ah”, “Up” or “A”. A filler it rewrote as an unknown word asks
+instead of routing, which is most of the development set's asks; “Ah” is a known filler and routes.
+A prefix it wrote as a determiner or pronoun with no punctuation after it, such as “A carol check the
+coverage report”, is dropped. Every noise in the holdout, including the operator's desk tap and
+typing, decoded to nothing at all, so those call signs routed with the flag off too: the
+noise-written words in these sets are the development set's spoken ones (“Fish.”, “Bye”, “Two,”,
+“Cheers.”).
+
+The zero wrong-recipient and zero unintended-send bar holds on both sets. On that evidence the
+preview can be recommended for default enablement once the gaps below are accepted or closed. The
+most useful next measurement is a short recording of the operator saying openers and fillers
+before call signs, since the openers here are synthesized.
+
+What these runs did not establish:
+
+- The openers and fillers were spoken by macOS voices, which pause at every comma. Only the clean
+  call signs, the Cancels and the noise came from a person or a room.
+- No noise produced a word, so recovery after a real noise-written word was measured only on spoken
+  stand-ins. The audio was fed digitally, at one level, with no other voices in the room.
+- One recognizer and model revision, English only, Always-on only. Push-to-talk and the Linux
+  listener were not run.
+- The holdout is small: 66 cases, of which 17 are addresses after a spoken prefix.
+- The listener's roster correction still starts only at the first word, so a misheard name after a
+  prefix asks rather than routes; that adjacent change from the scout was not made.
+
 ### Ask aloud
 
 When routing is unsure, **Ask aloud** asks one question using the two or three
@@ -1633,9 +1797,12 @@ Capture waits for the player to confirm silence. Asking requires Always-on liste
 its saved value when unavailable and the usual on-screen choices still work.
 A sample requested through the audition route can play while muted.
 
-**Mac playback is currently unavailable.** The supervised FluidAudio helper sends
-`speech.audio: false` and an empty system voice list. Ask aloud falls back to the
-on-screen candidate rows. Answering by name remains available after capture resumes.
+**Mac playback is on by default.** The supervised FluidAudio helper sends
+`speech.audio: true` and its installed English system voices. The trials below never
+showed the spoken question itself being recognized after the capture pause, but stray
+words appeared after some playbacks and in silent controls alike. Turn off **Speak
+replies aloud** in Settings > Voice > Spoken replies if a room's speakers and microphone
+pick up the voice. Ask aloud then falls back to the on-screen candidate rows.
 
 The macOS playback implementation consumes neural WAV bytes in memory and speaks system
 voices live. Its voice catalog reads the installed English voices and their quality tiers,
@@ -1682,8 +1849,9 @@ At 500 ms, the remaining F4 open control recognized the second clause. The resum
 listener recognized neither clause in any paused trial. It returned “Yeah” after
 two of three Samantha playbacks and in all three matching silent controls. The
 word can occur with no playback. Its source in the original trials remains unknown,
-and the default setting missed too many controls to establish silence. Mac playback
-therefore remains unavailable.
+and the default setting missed too many controls to establish silence. Playback was
+held back after these trials. It now ships on, with Speak replies aloud as the operator's
+switch to turn it off.
 
 <a id="november-25-2026-quiet-room-trial"></a>
 
@@ -1919,12 +2087,18 @@ cards to `PUT /api/voice/open-cards`. A focus timestamp in the request header or
 across windows. The dashboard also reports when the question became eligible on the daemon's
 monotonic clock, so a delayed report can still accept speech captured while the card was visible.
 The dashboard reports focus immediately and refines a slow clock sample with a second round trip.
+A first sample taken while the daemon is busy can be usable but still wide. The dashboard keeps
+sampling in the background, with growing pauses, until the interval is within 10 milliseconds.
+Each narrower interval re-reports the current observation, so a reply spoken soon after a focus
+change is not refused for the startup round trip.
 Before starting the countdown, the daemon requests a fresh focus report for “reply” and for named
 answers that depend on an open card. If the transcript overtakes a focus update, the daemon
 checks the question that was drawn at capture against the newly confirmed report.
 The daemon asks each connected reporting window, so a dashboard can confirm a reply after gaining focus or while its first card report is still in transit.
 A confirmed foreground reply gives background windows 400 milliseconds to respond.
-A suspended window must report its current state again before it can take over.
+A suspended window must report its current state again before it can take over. Answering that
+request, or any later one, resumes it. An unnamed reply asks every live dashboard, including a
+suspended one, so a dashboard that missed one deadline can still receive the reply after it confirms.
 A reply waiting for calibration stays bound to the observed question and can be cancelled.
 Focusing a manual-only question prevents a reply from filling its neighbor. If speech falls within the
 remaining timing uncertainty, it asks the operator to repeat the reply. Without a clock sample,

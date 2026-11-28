@@ -1,7 +1,4 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import {
   ENSEMBLE_PLAN_VERSION,
@@ -26,6 +23,7 @@ import type {
   ArtifactCaptureInput,
 } from "../src/server/ensembles/artifacts/index.ts";
 import { ARTIFACT_ADAPTERS } from "../src/server/ensembles/artifacts/index.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The shared bench for Phase 4's engine, submission, recovery and artifact tests.
@@ -44,7 +42,7 @@ export function fakeSha(seed: string): string {
 
 /** A real, one-commit Git repository, for the tests that capture and diff for real. */
 export function gitRepo(): { path: string; baseSha: string } {
-  const path = mkdtempSync(join(tmpdir(), "mission-ensemble-repo-"));
+  const path = tempDir("mission-ensemble-repo-");
   const baseSha = seedGitRepo(path, { files: { "README.md": "base\n" }, email: "test@localhost", name: "Test" });
   return { path, baseSha };
 }

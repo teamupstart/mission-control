@@ -5,14 +5,12 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +37,7 @@ import {
   writeFakeConductor,
   type FakeConductor,
 } from "./conductor.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -277,7 +276,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   // resolved cwd for a session. The transcript path is derived from that cwd, so an
   // unresolved fixture path and the daemon's own view would disagree by a prefix and the
   // conversation would silently never be found.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "mc-e2e-")));
+  const home = realpathSync(tempDir("mc-e2e-"));
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);

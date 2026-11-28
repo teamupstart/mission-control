@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
 import { TASK_KINDS } from "../src/shared/types.ts";
 import { taskHasRepository, TASK_KIND_BEHAVIOR } from "../src/shared/task.ts";
 import { taskRepoRefs, taskRepoPrSummaries, taskHasWorktrees } from "../src/shared/task-repos.ts";
 import { mkTask, mkSession } from "./helpers/session-fixture.ts";
 import { orderSessions } from "../src/web/lib/fleet-order.ts";
 import { LaunchResidentSchema } from "../src/shared/residents.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "resident-owned-workspace-")));
+const home = realpathSync(tempDir("resident-owned-workspace-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 const { residentWorkspaceDir, createResidentWorkspace, removeResidentWorkspace } = await import("../src/server/residents/workspace.ts");

@@ -74,6 +74,29 @@ export const CLAUDE_DEFAULT_TIMEOUT_MS = Number(
  */
 export const HEADLESS_CWD = tmpdir();
 
+/**
+ * Claude Code's own switch for the connectors an operator added on claude.ai.
+ *
+ * Those connectors are not settings, so `--setting-sources` and `settingSources: []` leave
+ * them on, and `--tools ""` restricts only the built-in tools. Claude Code connects them in
+ * the background and adds their tools to the first request made after they finish. On a
+ * well-connected account that is hundreds of tool schemas: one Foreman triage run reached
+ * 451 tools (about 938 KB). Haiku cannot defer tool schemas, so the request overflowed its
+ * context and failed with `prompt_too_long`. That happened on the third turn, after a schema
+ * retry, and the first turn was only 24 KB.
+ *
+ * A headless run that asks for no connector tool gets connectors switched off. The one
+ * caller that names a connector tool on purpose (the Jira sweep's
+ * `mcp__claude_ai_Atlassian_Rovo__…`) keeps them.
+ */
+export const CLAUDE_AI_CONNECTORS_ENV = "ENABLE_CLAUDEAI_MCP_SERVERS";
+const CLAUDE_AI_CONNECTOR_TOOL_PREFIX = "mcp__claude_ai_";
+
+/** Whether a comma-separated `--tools` list names a claude.ai connector tool. */
+export function namesClaudeAiConnectorTool(tools: string | undefined): boolean {
+  return (tools ?? "").split(",").some((tool) => tool.trim().startsWith(CLAUDE_AI_CONNECTOR_TOOL_PREFIX));
+}
+
 /** Children we spawned, so a process exit doesn't leave them burning tokens. */
 const live = new Set<ReturnType<typeof spawn>>();
 
@@ -263,6 +286,7 @@ async function runClaudeRaw(
     if (opts.settings) args.push("--settings", opts.settings);
     if (opts.systemPrompt !== undefined) args.push("--system-prompt", opts.systemPrompt);
     const env = headlessEnv();
+    if (!namesClaudeAiConnectorTool(opts.tools)) env[CLAUDE_AI_CONNECTORS_ENV] = "false";
     // The CLI reads this before any settings layer, and zero turns extended thinking off.
     if (opts.thinking === "off") env.MAX_THINKING_TOKENS = "0";
     const child = (() => {

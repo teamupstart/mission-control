@@ -26,7 +26,7 @@ export interface PrefixPlaylist { wav: string; windows: PrefixWindow[]; skipped:
  * and where each phrase lies in it, measured from its energy. The cue sheet runs about 1.3 s ahead.
  */
 const HUMAN_SAMPLES = 1_438_327;
-const HUMAN_CLIPS: Record<NonNullable<PrefixAudioCase["human"]> | "tap" | "typing" | "room", [number, number]> = {
+const HUMAN_CLIPS: Record<NonNullable<PrefixAudioCase["human"]> | "tap" | "typing", [number, number]> = {
   "max-stop": [39.6, 40.9], "steve-build": [44.5, 46.0], "carol-tests": [50.4, 52.0], cancel: [56.3, 57.2],
   "tap-cancel": [62.3, 64.0], "steve-stop-quiet": [68.3, 69.7], tap: [62.3, 62.8], typing: [7.0, 9.6],
 };

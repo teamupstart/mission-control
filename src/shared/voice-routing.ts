@@ -600,8 +600,10 @@ function recoverPrefix(utterance: VoiceUtterance, roster: readonly SpokenName[])
     }
     // Checked after a second name: "and Luna, check the build." is the rest of an address, not an aside.
     if (describesName(message)) continue;
-    if (known && exact && delimited && (decision.kind === "addressed" || (decision.kind === "needs-model" && decision.reason === "second-name"))) {
-      return { ...decision, prefix };
+    if (known && exact && delimited && decision.kind === "addressed") return { ...decision, prefix };
+    if (known && exact && delimited && decision.kind === "needs-model" && decision.reason === "second-name") {
+      // Split offsets were measured in the text after the prefix; the model reads the whole capture.
+      return { ...decision, prefix, splits: decision.splits.map(split => ({ ...split, at: split.at + start.index })) };
     }
     // With no boundary after the name, "Uh Steve broke it again." reads exactly like "Uh Steve check the
     // build": ordinary speech that mentions an agent is left alone rather than asked about.

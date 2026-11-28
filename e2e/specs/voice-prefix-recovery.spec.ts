@@ -248,6 +248,11 @@ test("native Always-on audio through recognition and the router: prefix recovery
       // A second entry in a case's window may only be dropped speech: no second route, ask, Cancel or control.
       expect(on.filter(row => row.extra.length > 0).map(row => ({ id: row.id, extra: row.extra })),
         `${set}: extra actions with the flag on`).toEqual([]);
+      // A spoken Cancel the router recognized as a Cancel must withdraw the card before it. One the recognizer
+      // did not hear as a Cancel ("Uh, cancel." as "Uh can see what") is a recognition miss, the same with
+      // the flag off, and is checked by the flag-off comparison below.
+      expect(on.filter(row => row.gold === "cancel" && row.rules.some(rule => rule === "cancel" || rule === "nothing-pending") && row.score !== "control")
+        .map(row => ({ id: row.id, heard: row.heard, rules: row.rules })), `${set}: recognized Cancels that withdrew nothing`).toEqual([]);
       // Nothing outside the scored windows may act either: no route, ask, Cancel or other control.
       expect(unmatchedByRun[`${set}-on`]!.filter(entry => entry.outcome !== "drop"),
         `${set}: actions outside every case's window with the flag on`).toEqual([]);

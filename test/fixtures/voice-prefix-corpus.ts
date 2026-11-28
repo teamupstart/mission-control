@@ -224,7 +224,9 @@ export function scorePrefixOutcome(gold: PrefixGold, outcome: PrefixOutcome): Pr
     if (outcome === "drop") return "safe-drop";
     return outcome.startsWith("route:") ? "silent-guess" : "unintended-control";
   }
-  // A Cancel counts when it withdrew a card; a bare control Cancel with nothing pending counts as the control.
+  // A spoken Cancel after a command counts only when it withdrew that card: a Cancel with nothing left to
+  // withdraw, or none heard, missed it.
   if (gold === "cancel") return outcome === "cancelled" ? "control" : outcome.startsWith("route:") ? "unintended-send" : "control-missed";
+  // A bare control Cancel ("Okay, cancel." with nothing pending) counts as the control.
   return outcome === "control" || outcome === "cancelled" ? "control" : outcome.startsWith("route:") ? "unintended-send" : "control-missed";
 }

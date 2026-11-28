@@ -83,9 +83,12 @@ test("a known filler before a delimited exact name routes the rest and records w
   // An addressed Stop keeps its command.
   assert.deepEqual(route("Uh, Luna, stop."), { kind: "addressed", target: agent("Luna"), match: "exact", command: "stop", text: "stop.", pauseMs: null, prefix: "Uh, " });
   // A later name after a recovered address asks split or mention with the first target fixed, as it does without a prefix.
-  const split = route("Um, Steve, ask Luna about the build.");
+  const text = "Um, Steve, ask Luna about the build.";
+  const split = route(text);
   assert.equal(split.kind, "needs-model");
   assert.ok(split.kind === "needs-model" && split.reason === "second-name" && split.target.name === "Steve" && split.prefix === "Um, ");
+  // The split offset points into the whole capture, which is what the model step quotes.
+  assert.deepEqual(split.kind === "needs-model" && split.splits.map(s => s.at), [text.indexOf("Luna")]);
 });
 
 test("a question or message that opens with who, which or a determiner after a recovered name is still addressed to it", () => {

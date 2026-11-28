@@ -1024,9 +1024,11 @@ state folders are not automatically imported. Copy desired notes into the profil
 The [Claude memory reference](https://code.claude.com/docs/en/memory#storage-location) describes
 this setting. Codex receives the directory and instructions for explicit notes and ledgers.
 
-Open a saved profile in **Residents**, then **View state** to see its path and files, including
-text previews up to 256 KiB. **Refresh state** reloads the list. **Reset state** asks before
-permanently clearing the files, including auto-memory. Complete and close every run first;
+Open a saved profile in **Residents**, then **View state** to open the state viewer over the
+editor. It shows the directory path, lists the files, and previews one at a time, up to 256 KiB:
+`MEMORY.md` opens first when it exists, Markdown files are rendered, and any other file is shown
+verbatim. **Refresh** reloads the list and keeps the open file. Viewing never changes the files.
+**Reset state** asks before permanently clearing the files, including auto-memory. Complete and close every run first;
 pausing a loop leaves its session alive, so reset refuses it. Reset keeps profile settings and
 run history. Run completion, pauses, daemon restarts and profile archival retain the state.
 Profiles are archived rather than hard-deleted, so archival retains their state too.

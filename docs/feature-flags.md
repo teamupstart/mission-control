@@ -1,6 +1,7 @@
 # Feature flags
 
 The flag core stores one set of operator choices for this machine. The registry includes
+[Agent environment](configuration.md#agent-environment),
 [Bug Fix Inspector](residents.md#built-in-residents),
 [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),

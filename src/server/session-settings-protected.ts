@@ -10,6 +10,7 @@ export function operatorSetting(key: string, control: string, reason: string, la
 export const protectedSettings = [
   operatorSetting("featureFlags.enableAll", "feature-flags-enable-all", "The master switch can enable protected features."),
   operatorSetting("featureFlags.overrides", "feature-flags-enable-all", "Bulk reset can re-enable protected features.", "Reset feature flag overrides"),
+  operatorSetting("agentEnvironment", "agent-environment-names", "Selects which workstation variables future sessions receive."),
   operatorSetting("harnesses.autoModeOnDispatch", "auto-mode", "Changes the approval mode for future sessions."),
   operatorSetting("shaping.shapers", "task-shaping-shapers", "Configures executable shapers and credential references."),
   operatorSetting("shaping.overrides", "task-shaping-shapers", "Enables or disables executable shapers.", "Shaper enablement"),

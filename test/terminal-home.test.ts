@@ -112,6 +112,25 @@ test("an unknown home launch never falls through to another backend", async () =
   assert.equal(second, 0);
 });
 
+test("losing dispatch ownership during one backend's refusal prevents opening a fallback backend", async () => {
+  let ownsLaunch = true;
+  const attempts: string[] = [];
+  const machine = deps(
+    fakeMultiplexer({ sessions: sessions({ spawnDetached: async () => {
+      attempts.push("tmux");
+      ownsLaunch = false;
+      return FAIL("terminal declined the launch");
+    } }) }),
+    fakeEmulator(), () => true,
+    fakeMultiplexer({ id: "cmux", sessions: sessions({ spawnDetached: async () => {
+      attempts.push("cmux");
+      return OK;
+    } }) }),
+  );
+  await assert.rejects(launchHome(SPEC, machine, null, () => ownsLaunch), /no longer owns/);
+  assert.deepEqual(attempts, ["tmux"]);
+});
+
 test("an unsupported multiplexer is excluded before installation or home operations", () => {
   const herdr = fakeMultiplexer({
     id: "herdr",

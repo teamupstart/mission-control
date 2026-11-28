@@ -1,9 +1,11 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
@@ -26,8 +28,10 @@ const daemonPort = 17317;
 process.env.MISSION_PORT = String(daemonPort);
 
 const { shellCommand } = await import("../src/server/terminal/shell.ts");
+const { LAUNCH_PID_FILE, readTerminalWrapperProcess } = await import("../src/server/terminal/launch-process.ts");
 const {
   agentSubprocessEnv,
+  observeTerminalWrapperExit,
   cleanupAgentSubprocessEnv,
   dropPaneIdentityEnv,
   isolatedAgentArgv,
@@ -200,10 +204,31 @@ test("the launch wrapper carries the environment and the agent, so what a backen
   // `exec`ed: `exec` replaces the shell, so the EXIT trap below would never fire and the
   // disposable state home would never be released.
   assert.equal(script.includes("exec "), false);
-  assert.match(script, /^trap '\/bin\/rm -rf -- "\$MISSION_HOME"' EXIT$/m);
   assert.equal(script.trimEnd().split("\n").at(-1), `'/agents/claude' '--model' 'opus' 'don'"'"'t'`);
 
   rmSync(dirname(argv[1]!), { recursive: true, force: true });
+});
+
+test("a duplicate wrapper exiting before its PID claim preserves the live owner's home", async () => {
+  const [shell, wrapper] = isolatedAgentArgv(["/bin/sh", "-c", "echo ready; read -r line; exit 19"]);
+  const home = dirname(wrapper!);
+  const lines = readFileSync(wrapper!, "utf8").split("\n");
+  const trap = lines.findIndex((line) => line.startsWith("trap ") && line.endsWith(" EXIT"));
+  assert.ok(trap >= 0, "wrapper installs its cleanup trap");
+  const owner = spawn(shell!, [wrapper!]);
+  const exited = once(owner, "close");
+  try {
+    assert.equal(String((await once(owner.stdout, "data"))[0]).trim(), "ready");
+    // End a second shell immediately after it installs the real trap, before it can claim.
+    const duplicate = spawnSync(shell!, [], { input: lines.slice(0, trap + 1).join("\n") + "\nexit 27\n" });
+    assert.equal(duplicate.status, 27);
+    assert.ok(existsSync(home), "the interrupted duplicate must preserve the running owner's home");
+    assert.equal(readFileSync(join(home, LAUNCH_PID_FILE), "utf8").trim(), String(owner.pid));
+  } finally {
+    owner.stdin.end("done\n");
+    assert.deepEqual(await exited, [19, null]);
+  }
+  assert.equal(existsSync(home), false, "the owning wrapper cleans up on exit");
 });
 
 test("a workflow-style environment gets disposable state without daemon credentials", () => {
@@ -414,6 +439,90 @@ test("restart recovery removes a turn-one outcome whose launch is over, and keep
     rmSync(`${live}.turn-one`, { force: true });
     rmSync(live, { recursive: true, force: true });
   }
+});
+
+test("an incomplete PID claim retires its exit observer without confirming checkout cleanup", async (t) => {
+  const home = mkdtempSync(join(root, "incomplete-claim-"));
+  const observation = observeTerminalWrapperExit(home);
+  t.after(observation.close);
+  writeFileSync(join(home, LAUNCH_PID_FILE), "");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let result: boolean | undefined;
+  void observation.waitForExit(() => true).then((value) => { result = value; });
+  for (let tick = 0; tick < 3; tick++) {
+    t.mock.timers.tick(5_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(result, false);
+  assert.ok(existsSync(home));
+});
+
+test("a recycled wrapper PID stops observation without claiming an exit", async (t) => {
+  const home = mkdtempSync(join(root, "recycled-owner-"));
+  let startMs = 10;
+  const observation = observeTerminalWrapperExit(home, async () => ({ pid: 42, startMs }));
+  t.after(observation.close);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const exited = observation.waitForExit(() => true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  startMs++;
+  t.mock.timers.tick(5_000);
+  assert.equal(await exited, false);
+  assert.ok(existsSync(home));
+});
+
+test("an incomplete process scan keeps watching a known wrapper until its actual exit", async (t) => {
+  const home = mkdtempSync(join(root, "interrupted-scan-"));
+  const argv = isolatedAgentArgv(["/bin/sh", "-c", "echo ready; read -r input"], { stateHome: home });
+  let scans = 0;
+  const observation = observeTerminalWrapperExit(home, async (path, pid) => {
+    if (++scans === 1) return { pid: child.pid!, startMs: 10 };
+    return readTerminalWrapperProcess(path, pid, async () => ({ processes: [], unknownReason: "scan interrupted" }));
+  });
+  t.after(observation.close);
+  const child = spawn(argv[0]!, argv.slice(1));
+  const closed = once(child, "close");
+  t.after(() => child.stdin.end());
+  await once(child.stdout, "data");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const exited = observation.waitForExit(() => true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(5_000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(scans, 2);
+  assert.equal(await readTerminalWrapperProcess(home, child.pid, async () => ({ processes: [], unknownReason: null })), null);
+  child.stdin.end("done\n");
+  assert.deepEqual(await closed, [0, null]);
+  t.mock.timers.tick(5_000);
+  assert.equal(await exited, true);
+});
+
+test("persistent inventory loss retires the observer with an uncertain result and leaves its receipt for restart", async (t) => {
+  const { createDisposableAgentStateHome, cleanupDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
+  const { discardTerminalReceipt, restoredTerminalInactive, WRAPPER_EXIT_FILE } = await import("../src/server/terminal/dispatch-observation.ts");
+  const home = createDisposableAgentStateHome();
+  t.after(() => cleanupDisposableAgentStateHome(home));
+  const inventory = t.mock.fn(async () => "unknown" as const);
+  const observation = observeTerminalWrapperExit(home, inventory);
+  const pending = { receipt: observation.pinReceipt(), deadline: Date.now() };
+  t.after(() => discardTerminalReceipt(pending.receipt));
+  writeFileSync(join(home, LAUNCH_PID_FILE), "42\n");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let result: boolean | undefined;
+  void observation.waitForExit(() => true).then((exited) => { result = exited; }).finally(observation.close);
+  for (let i = 0; i < 15; i++) {
+    t.mock.timers.tick(5000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(result, false, "unavailable inventory never authorizes cleanup");
+  const reads = inventory.mock.callCount();
+  t.mock.timers.tick(120000);
+  assert.equal(inventory.mock.callCount(), reads);
+  assert.ok(existsSync(home));
+  // The owning wrapper completes after polling has stopped. Restart can use that positive evidence.
+  writeFileSync(join(home, WRAPPER_EXIT_FILE), "x");
+  cleanupDisposableAgentStateHome(home);
+  assert.equal(await restoredTerminalInactive(pending, () => true), true);
 });
 
 test("restart recovery logs an outcome it cannot remove in one line and goes on with the rest", async (t) => {

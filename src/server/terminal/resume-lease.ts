@@ -61,6 +61,15 @@ function record<T>(path: string): T | null {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
+/** Only the private socket pathname is persisted. The guard reads it after claiming the lease. */
+export function writeResumeEnvironmentSocket(lease: ResumeLease, path: string): void {
+  writeResumeRecord(join(lease.home, "environment-socket.json"), path);
+}
+
+export function readResumeEnvironmentSocket(lease: ResumeLease): string | null {
+  return record<string>(join(lease.home, "environment-socket.json"));
+}
+
 /** Whether a token can name a managed resume attempt. */
 export function isResumeLeaseId(id: string): boolean {
   return ID.test(id);

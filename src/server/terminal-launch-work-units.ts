@@ -51,6 +51,7 @@ export interface TerminalLaunchWorkUnit {
    * conversation, whose key nobody has yet.
    */
   readonly conversationKey: string | null;
+  readonly missingEnvironment?: string[];
   readonly expectedAt: number;
 }
 
@@ -96,9 +97,10 @@ export function expectTerminalLaunchWorkUnit(
   launchHome: string,
   workUnitId: string | null,
   conversationKey: string | null = null,
+  missingEnvironment?: string[],
 ): TerminalLaunchWorkUnit {
   sweep();
-  const decision: TerminalLaunchWorkUnit = { launchHome, workUnitId, conversationKey, expectedAt: Date.now() };
+  const decision: TerminalLaunchWorkUnit = { launchHome, workUnitId, conversationKey, missingEnvironment, expectedAt: Date.now() };
   pending.push(decision);
   noteSize();
   return decision;

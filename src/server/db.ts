@@ -179,7 +179,7 @@ import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import { isWorkUnitId } from "@shared/work-unit.ts";
-import { parseLaunchFailure } from "@shared/launch-failure.ts";
+import { parseLaunchFailure, PendingTerminalLaunchSchema, type PendingTerminalLaunch } from "@shared/launch-failure.ts";
 import { parseTaskHibernation } from "@shared/hibernation.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
@@ -342,7 +342,9 @@ let db: DatabaseSync | undefined;
 // 65: preserve resident reference-name provenance in reports and mutes.
 // 66: remember verified departure for task worktree retention.
 // 67: preserve additional SDK checkout grants across driver and daemon lifetimes.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 67;
+// 68: missing variable names for one terminal launch, bound to its discovered process.
+// 69: pin a terminal dispatch's recovery receipt on its task before backend submission.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 69;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -573,6 +575,13 @@ function createSchemaObjects(d: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, ts);
 
+    CREATE TABLE IF NOT EXISTS terminal_launch_warnings (
+      launch_home TEXT PRIMARY KEY,
+      directory_id TEXT NOT NULL,
+      session_id TEXT UNIQUE,
+      missing_names TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS session_agent_bindings (
       session_id       TEXT PRIMARY KEY,  -- the synthetic id (tty+pid+start)
       agent_session_id TEXT NOT NULL,     -- what the agent calls itself: the note/queue key
@@ -663,6 +672,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       home_backend  TEXT,               -- exact creator, NULL for automatic or legacy launches
       terminal_resource_id TEXT,
       terminal_launch TEXT,
+      pending_terminal_submission TEXT,
       session_id    TEXT,
       -- Which recurring mission filed this task, and for which instant. All three NULL
       -- on every task a human dispatched, an MCP call created, or a task source swept -
@@ -4510,6 +4520,7 @@ function migrate(d: DatabaseSync): void {
   repairBacklogRanks(d);
   addColumn(d, "tasks", "terminal_resource_id", "TEXT");
   addColumn(d, "tasks", "terminal_launch", "TEXT");
+  addColumn(d, "tasks", "pending_terminal_submission", "TEXT");
   // The exact backend an explicitly configured dispatch used. Nullable with no backfill:
   // every historical row used Automatic, and preserving that answer keeps its existing
   // multi-backend liveness and cleanup policy intact.
@@ -7972,6 +7983,9 @@ export function upsertTask(
          home_backend=excluded.home_backend,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          terminal_launch=excluded.terminal_launch,
+         pending_terminal_submission=CASE WHEN excluded.status='dispatching' AND excluded.home_name IS NULL
+           AND excluded.session_id IS NULL AND excluded.dispatched_at IS tasks.dispatched_at
+           THEN tasks.pending_terminal_submission END,
          schedule_id=excluded.schedule_id,
          schedule_occurrence_id=excluded.schedule_occurrence_id,
          scheduled_for=excluded.scheduled_for,
@@ -8094,6 +8108,24 @@ export function getTaskTitles(ids: readonly string[]): Map<string, string> {
     .prepare(`SELECT id, title FROM tasks WHERE id IN (${unique.map(() => "?").join(", ")})`)
     .all(...unique) as unknown as { id: string; title: string }[];
   return new Map(rows.map((row) => [row.id, row.title]));
+}
+
+/** This journal belongs to the attempt. The task write that records a home or failure clears it atomically. */
+export function recordTerminalSubmission(taskId: string, submission: PendingTerminalLaunch): void {
+  const result = openDb().prepare(`UPDATE tasks SET pending_terminal_submission = ?
+    WHERE id = ? AND status = 'dispatching' AND home_name IS NULL AND session_id IS NULL`)
+    .run(JSON.stringify(submission), taskId);
+  if (!result.changes) throw new Error("Terminal dispatch is no longer awaiting submission");
+}
+
+export function pendingTerminalSubmissions(): Map<string, PendingTerminalLaunch> {
+  const result = new Map<string, PendingTerminalLaunch>();
+  for (const row of openDb().prepare(`SELECT id, pending_terminal_submission FROM tasks
+    WHERE pending_terminal_submission IS NOT NULL AND status = 'dispatching' AND home_name IS NULL AND session_id IS NULL`).all()) {
+    try { result.set(String(row.id), PendingTerminalLaunchSchema.parse(JSON.parse(String(row.pending_terminal_submission)))); }
+    catch { /* An unreadable receipt cannot authorize recovery. */ }
+  }
+  return result;
 }
 
 export function getTask(id: string): Task | undefined {

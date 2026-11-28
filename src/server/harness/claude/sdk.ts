@@ -1622,7 +1622,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // value and is not a new decision.
         env: withWorkUnit(
           withAgentTraceContext(
-            withAdvisorEnv(withArtifactTool({ ...deps.env(opts.cwd, opts.stateHome), ...(opts.residentStateDir ? { RESIDENT_STATE_DIR: opts.residentStateDir } : {}) }), opts.advisorModel),
+            withAdvisorEnv(withArtifactTool({ ...deps.env(opts.cwd, opts.stateHome, opts.namedEnvironment), ...(opts.residentStateDir ? { RESIDENT_STATE_DIR: opts.residentStateDir } : {}) }), opts.advisorModel),
             opts.traceContext,
           ),
           opts.workUnitId,

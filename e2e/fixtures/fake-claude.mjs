@@ -487,6 +487,8 @@ if (recordDir) {
         disableAdvisorTool: process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL ?? null,
         // The work unit the launch carried, so a spec can prove it reached the agent - and
         // that nothing reached it from the daemon or the pane when the launch carried none.
+        listedEnvironmentMatches: process.env.E2E_LISTED_TOKEN === "synthetic-profile-credential",
+        unlistedEnvironmentAbsent: process.env.E2E_UNLISTED_TOKEN === undefined,
         workUnitId: process.env.WORK_UNIT_ID ?? null,
       },
       null,

@@ -6,6 +6,7 @@ import "./migrate-state.ts";
 // Second, for the same reason: it adds the system certificate store to the default TLS roots
 // before any later import can open a connection. See system-trust-startup.ts.
 import "./system-trust-startup.ts";
+import { reconcileTerminalEnvironmentHandoffs, stopTerminalEnvironmentHandoffs } from "./terminal/environment-handoff.ts";
 import { unseenReportsNote } from "@shared/reports.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import { BUG_FIX_INSPECTOR_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
@@ -222,6 +223,7 @@ warnIfSessionAttributionDisabled();
 if (getCostConfig().enabled) void refreshManagedMetricsPolicy();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
+reconcileTerminalEnvironmentHandoffs(STATE_DIR);
 const reconcileManagedResumeResources = () => {
   try { recheckManagedResumes(); } catch (error) {
     console.error("[managed-resume] resource journal requires inspection:", error instanceof Error ? error.message : "unreadable journal");
@@ -1168,6 +1170,7 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  const stoppingHandoffs = stopTerminalEnvironmentHandoffs();
   stopFeatureFlags();
   stopAwaitingFlag();
   stopAutomatedDeliveries();
@@ -1265,6 +1268,7 @@ async function shutdown(): Promise<void> {
   // remote flush gets only what is left of it, so an offline exit never waits for a server.
   if (telemetry) await telemetry.stop();
   await stopModelCatalogs;
+  await stoppingHandoffs;
   // Ends the open-ended requests (event and transcript streams, review long-polls), then bounds
   // the rest. An unbounded close held every desktop quit until the shell gave up on this process.
   // See `http-shutdown.ts`.

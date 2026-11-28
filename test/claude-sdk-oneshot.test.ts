@@ -141,6 +141,9 @@ test("one fresh query has tools off, deterministic settings, and no context opti
   assert.equal(captured.options.cwd, realpathSync(HEADLESS_CWD));
   assert.equal(captured.options.pathToClaudeCodeExecutable, "/fake/bin/claude");
   assert.equal(captured.options.env.MISSION_HEADLESS, "1");
+  // claude.ai connectors are not settings, so `settingSources: []` leaves them on. One
+  // triage run collected 451 connector tool schemas and overflowed Haiku's context.
+  assert.equal(captured.options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
   assert.ok(captured.options.abortController instanceof AbortController);
   for (const absent of ["resume", "sessionId", "forkSession", "continue", "persistSession"]) {
     assert.equal(
@@ -371,6 +374,7 @@ test("a validated grant reaches the SDK with the Inspector's exact tools, cwd, a
   assert.equal(options.settings, DENY_SETTINGS);
   assert.deepEqual(options.settingSources, []);
   assert.deepEqual(options.outputFormat, { type: "json_schema", schema: SCHEMA });
+  assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false", "a grant holds built-in tools only");
   assert.equal(
     Object.hasOwn(options, "maxTurns"),
     false,

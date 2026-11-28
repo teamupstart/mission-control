@@ -985,7 +985,7 @@ test("with voice on, a Stuck row drawn by the inbox is headed by the title with 
   });
   const result = foldAttention({
     sessions: [session], reviews: [], ensembles: [],
-    stalls: [stall("s-granite", { kind: "silent-working", reason: "No output for a while.", facts: { kind: "silent-working" }, fingerprint: "g" })],
+    stalls: [stall("s-granite", { kind: "silent-working", reason: "No output for a while.", facts: { kind: "silent-working", activity: null, quietSince: 1 }, fingerprint: "g" })],
   });
   assert.deepEqual(result.items.map((item) => item.kind), ["session_stuck"]);
   const draw = (voice: boolean) => renderToStaticMarkup(

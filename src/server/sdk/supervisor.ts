@@ -213,9 +213,19 @@ class SessionFrozenError extends Error {}
 /** The refusal an automated turn meets on a paused session, held or frozen. */
 const SESSION_HELD = "this session is paused - its automated turns wait until it resumes";
 
+// `ps lstart` has whole-second resolution, and Linux derives it from boot time plus elapsed
+// ticks, so a driver's own start can read up to a second after the moment it was observed.
+const PROCESS_START_SLACK_MS = 2_000;
+
 export class SdkSupervisor {
   /** Live handles by session id. The only reference to a running driver. */
   private handles = new Map<string, SdkSessionHandle>();
+  /**
+   * The handle last adopted for each session id, kept past teardown while its process scans
+   * finish. A scan may record a lifetime only for its own handle, so a later adoption under
+   * the same id never inherits a predecessor's absence proof.
+   */
+  private lifetimeOwners = new Map<string, SdkSessionHandle>();
   /**
    * The tail of each session's delivery chain.
    *
@@ -796,6 +806,7 @@ export class SdkSupervisor {
       agentSessionId: durable.agentSessionId ?? null,
     });
     this.handles.set(registration.id, handle);
+    this.lifetimeOwners.set(registration.id, handle);
     if (input.stateHome) this.stateHomes.set(registration.id, input.stateHome);
     this.unfinishedTurns.set(
       registration.id,
@@ -2031,30 +2042,44 @@ export class SdkSupervisor {
     // stream ending must not leave a row claiming the session is still resumable.
     let outcome: SdkSessionStatus = "exited";
     let observedPid: number | null = null;
-    const captureProcess = async (pid: number | null) => {
+    // The scans behind the recorded lifetime, in the order they were asked for. Never awaited
+    // ahead of an event: a fleet scan takes seconds on a loaded machine, and holding `bound`
+    // behind one left the registry without the agent's identity while that agent was already
+    // calling Mission Control - a scout's report was then attributed to no work episode, and
+    // its completion refused it as never submitted. Unknown is already the safe answer here.
+    let lifetime = Promise.resolve();
+    const captureProcess = (pid: number | null): void => {
       // A replacement must never inherit its predecessor's absence proof. Null is unknown.
+      // Synchronous, so it still lands before the event that revealed the new pid.
       if (pid !== observedPid) recordSdkSessionProcess(id, null);
       observedPid = pid;
       if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
-      try {
-        const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
-        const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
-        if (!snapshot.unknownReason && child && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
-          // Capture while this driver is owned. Fingerprinting a later lookup would
-          // bless a replacement PID; retaining raw argv could disclose credentials.
-          const darwinIdentity = process.platform === 'darwin'
-            ? darwinCheckIdentity(`${child.startRaw} ${child.command}`) : null;
-          recordSdkSessionProcess(id, { pid, startMs: child.startMs, ...(darwinIdentity ? {darwinIdentity} : {}) });
-        }
-      } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
+      // The driver held this pid when the scan was asked for, so its process started by then.
+      // A scan that answers after the driver exited can find the pid reused by a process that
+      // started later, and that one must never become this session's lifetime.
+      const requestedAt = Date.now();
+      lifetime = lifetime.then(async () => {
+        try {
+          const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
+          const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0
+            && p.startMs <= requestedAt + PROCESS_START_SLACK_MS);
+          if (!snapshot.unknownReason && child && this.lifetimeOwners.get(id) === handle && handle.recoveryProcessId === pid) {
+            // Capture while this driver is owned. Fingerprinting a later lookup would
+            // bless a replacement PID; retaining raw argv could disclose credentials.
+            const darwinIdentity = process.platform === 'darwin'
+              ? darwinCheckIdentity(`${child.startRaw} ${child.command}`) : null;
+            recordSdkSessionProcess(id, { pid, startMs: child.startMs, ...(darwinIdentity ? {darwinIdentity} : {}) });
+          }
+        } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
+      });
     };
     try {
-      if (handle.recoveryProcessId) await captureProcess(handle.recoveryProcessId);
+      if (handle.recoveryProcessId) captureProcess(handle.recoveryProcessId);
       for await (const evt of handle.events) {
         const pid = handle.recoveryProcessId ?? null;
         // No process scan per token. Binding retries a startup observation, and a changed
         // driver PID invalidates the saved lifetime before that driver's event is published.
-        if (pid !== observedPid || (evt.kind === "bound" && pid)) await captureProcess(pid);
+        if (pid !== observedPid || (evt.kind === "bound" && pid)) captureProcess(pid);
         let deferIdle = false;
         if (evt.kind === "bound") {
           recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
@@ -2125,7 +2150,7 @@ export class SdkSupervisor {
       console.error(`[sdk] event stream for ${id} failed:`, err);
       outcome = "failed";
     } finally {
-      if ((handle.recoveryProcessId ?? null) !== observedPid) await captureProcess(handle.recoveryProcessId ?? null);
+      if ((handle.recoveryProcessId ?? null) !== observedPid) captureProcess(handle.recoveryProcessId ?? null);
       this.handles.delete(id);
       // A driver that ended never reports, so nobody waits on it past this point.
       this.noteReportedConversation(id, null);
@@ -2159,6 +2184,12 @@ export class SdkSupervisor {
           console.error(`[sdk] final eviction for ${id} failed:`, err);
         }
       }
+      // Detached, so neither teardown nor a `stop()` awaiting this pump waits on a fleet scan.
+      // A stream that ends right after binding still records its lifetime once the scan
+      // answers, because ownership is released only after the last scan has.
+      void lifetime.then(() => {
+        if (this.lifetimeOwners.get(id) === handle) this.lifetimeOwners.delete(id);
+      });
     }
   }
 

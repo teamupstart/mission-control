@@ -7,11 +7,12 @@ import {
   AGENT_NAME_FALLBACK,
   agentDisplayName,
   agentNameColor,
+  agentNamePair,
   sessionDisplayNameInput,
   withCurrentReferenceNames,
   type ResidentNameSource,
 } from "../src/shared/display-name.ts";
-import { agentNameView } from "../src/web/lib/agent-names.ts";
+import { agentNamePairView, agentNameView } from "../src/web/lib/agent-names.ts";
 import { detectAlerts, stuckAlert } from "../src/shared/alerts.ts";
 import type { Stall } from "../src/shared/stall.ts";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
@@ -162,4 +163,39 @@ test("the naming rule reads a running resident's reference name from its profile
   assert.equal(nameOf("t-c"), "Kept", "a run whose profile is not listed keeps its pinned reference name");
   assert.equal(current[1]!.settings.identity.name, "Linter watcher", "the profile name stays pinned");
   assert.equal(withCurrentReferenceNames(pinned, []).length, 3);
+});
+
+test("a name pair keeps the title and carries the call sign or reference name beside it", () => {
+  const full = { callSign: "Granite", resident: null, taskTitle: "Split the header", sessionName: "split-header" };
+  assert.deepEqual(agentNamePair(full), {
+    display: { name: "Split the header", source: "task-title", spoken: false },
+    spoken: "Granite",
+  });
+  assert.deepEqual(agentNamePair({ resident, taskTitle: "Watch lint", sessionName: "w" }), {
+    display: { name: "Linter watcher", source: "resident", spoken: true },
+    spoken: "Steve",
+  });
+  assert.equal(agentNamePair({ ...full, callSign: "  " }).spoken, null, "a blank call sign is no call sign");
+  assert.equal(agentNamePair({ callSign: "Echo", resident, sessionName: "w" }).spoken, "Echo", "a call sign outranks a reference name");
+  assert.equal(agentNamePair({ callSign: " split  THE header ", taskTitle: "Split the header" }).spoken, null,
+    "a call sign that repeats the title is not printed twice");
+  assert.deepEqual(agentNamePair({ sessionName: "bare" }), {
+    display: { name: "bare", source: "session-name", spoken: false },
+    spoken: null,
+  });
+});
+
+test("a pair view prints the title with the call sign beside it only while voice is on", () => {
+  const session = { name: "s-9", task: { id: "t-plain", title: "Fix the parser", kind: "ship" as const, callSign: "Alice" } };
+  assert.deepEqual(agentNamePairView(session, "s-9", true, runs, true), { name: "Fix the parser", colorId: null, callSign: "Alice" });
+  assert.deepEqual(agentNamePairView(session, "s-9", true, runs, false), { name: "Fix the parser", colorId: null });
+  assert.deepEqual(agentNamePairView(session, "s-9", false, runs, true), { name: "s-9", colorId: null },
+    "the inbox flag off still prints what it printed before");
+  const named: ResidentNameSource[] = [
+    { taskId: "t-resident", settings: { identity: { name: "Release Captain", referenceName: "Sage" }, board: { colorId: "teal" } } },
+  ];
+  const residentSession = { name: "w", task: { id: "t-resident", title: "Cut releases", kind: "resident" as const } };
+  assert.deepEqual(agentNamePairView(residentSession, "w", true, named, true),
+    { name: "Release Captain", colorId: "teal", callSign: "Sage" });
+  assert.deepEqual(agentNamePairView(residentSession, "w", true, named, false), { name: "Release Captain", colorId: "teal" });
 });

@@ -154,6 +154,7 @@ export function ReviewCard({
   onMovedToChat,
   checkoutPaths = null,
   onOpenPath,
+  namesAsker = true,
 }: {
   review: ReviewItem;
   /** The inbox uses this to land the keyboard at a particular question. */
@@ -174,6 +175,12 @@ export function ReviewCard({
    * operator goes next.
    */
   onMovedToChat?: (sessionId: string) => void;
+  /**
+   * Whether the head names who asked. The inbox passes false: its row header above the card
+   * already names the agent, with its call sign, and a second, narrower copy here only got cut
+   * short.
+   */
+  namesAsker?: boolean;
 }): React.JSX.Element {
   // Everything typed or picked lives in the review-draft map, not in this mount, so closing
   // the modal, folding the inbox or reloading the page brings it back on the next open.
@@ -337,7 +344,7 @@ export function ReviewCard({
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
         </span>
         {review.snooze?.remindedAt != null && <span className="kind-tag kind-reminder">reminder</span>}
-        {namesOn && session && <AgentName view={asker} className="review-agent" />}
+        {namesOn && namesAsker && session && <AgentName view={asker} className="review-agent" />}
         <h3 ref={titleRef} tabIndex={titleRef ? -1 : undefined}>{review.title}</h3>
         <RevisionTag review={review} />
         {foremanAvailable && (

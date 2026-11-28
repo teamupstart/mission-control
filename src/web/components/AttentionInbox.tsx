@@ -2,8 +2,8 @@ import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, ty
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
-import { ResidentNamesContext, agentNameView, type AgentNameView } from "../lib/agent-names.ts";
-import { AgentName, InboxActionButton } from "./AgentName.tsx";
+import { ResidentNamesContext, agentNamePairView, agentNameView, type AgentNameView } from "../lib/agent-names.ts";
+import { AgentNameWithCallSign, InboxActionButton } from "./AgentName.tsx";
 import { ensembleStageWord } from "@shared/ensemble.ts";
 import {
   PIPELINE_HALT_ACTIONS,
@@ -512,7 +512,7 @@ function SplitSubject({ entry }: { entry: InboxSplitEntry }): React.JSX.Element 
 }
 
 function ItemSubject({ item }: { item: AttentionItem }): React.JSX.Element {
-  return <AgentName view={useInboxSubject(item)} />;
+  return <AgentNameWithCallSign view={useInboxSubject(item)} compact />;
 }
 
 /**
@@ -549,6 +549,7 @@ function InboxReviewCards({
         <ReviewCard
           key={review.id}
           review={review}
+          namesAsker={false}
           titleRef={review.id === initialQuestionId ? questionTitleRef : undefined}
           session={session}
           note={session.note}
@@ -586,14 +587,18 @@ function saysNothingNew(item: AttentionItem, said: ReadonlySet<string> | undefin
  * One function for both, so the button's accessible name always matches the row it sits in.
  *
  * A row about a session names its agent by the one naming rule while the `inbox` flag is on,
- * in a resident's board colour; off, it prints the session name exactly as before.
+ * in a resident's board colour; off, it prints the session name exactly as before. With `voice`
+ * on, the name stays the title and the call sign rides beside it (`agentNamePairView`), so a row
+ * reads as what the agent is working on as well as what to say to it. `spoken` is the single name
+ * the row's spoken hints address, where a call sign does stand in for the title.
  */
-function useInboxSubject(item: AttentionItem): AgentNameView {
+function useInboxSubject(item: AttentionItem, form: "pair" | "spoken" = "pair"): AgentNameView {
   const enabled = useFeatureFlag(INBOX_FLAG);
   const spokenNames = useFeatureFlag(VOICE_FLAG);
   const runs = useContext(ResidentNamesContext);
   const legacy = inboxSubject(item);
-  return "session" in item ? agentNameView(item.session, legacy, enabled, runs, spokenNames) : { name: legacy, colorId: null };
+  if (!("session" in item)) return { name: legacy, colorId: null };
+  return (form === "pair" ? agentNamePairView : agentNameView)(item.session, legacy, enabled, runs, spokenNames);
 }
 
 function inboxSubject(item: AttentionItem): string {
@@ -697,7 +702,8 @@ function InboxItem({
   split?: boolean;
 }): React.JSX.Element {
   const subjectView = useInboxSubject(item);
-  const subject = <AgentName view={subjectView} />;
+  const spokenView = useInboxSubject(item, "spoken");
+  const subject = <AgentNameWithCallSign view={subjectView} />;
   switch (item.kind) {
     case "session_control_request":
       return <SessionControlRequestCard sessionId={item.session.id} subject={subject} request={item.request} />;
@@ -708,7 +714,8 @@ function InboxItem({
           session={item.session}
           stall={item.stall}
           context={item.context}
-          subject={subjectView}
+          subject={spokenView}
+          title={subjectView}
           onOpenSession={onOpenSession}
           onOpenRun={onOpenRun}
           onComplete={onComplete}

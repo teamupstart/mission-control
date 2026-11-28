@@ -1,9 +1,11 @@
 import { useContext } from "react";
 import { inboxAction, spokenHintExample, spokenHintText, type HintName, type InboxActionId } from "@shared/inbox.ts";
 import { voiceButtonActions } from "../lib/voice-inbox.ts";
+import { quotedReferenceName } from "@shared/voice-names.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { VoiceHintsContext, type AgentNameView } from "../lib/agent-names.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { CallSignMark } from "./layouts/CallSignMark.tsx";
 
 /** Keep the command's quotation marks around the phrase only when its name is ordinary. */
 export function hintExample(name: HintName, template: string) {
@@ -27,6 +29,26 @@ export function AgentName({
     >
       {view.name}
     </strong>
+  );
+}
+
+/**
+ * `AgentName`, then the call sign the view carries (`agentNamePairView`) in quotes, drawn by the
+ * board card's own `CallSignMark`: its Trailing badge, or the Console rail's compact pill where a
+ * row has no room for the badge. Without a call sign it is `AgentName` alone.
+ */
+export function AgentNameWithCallSign({
+  view,
+  compact = false,
+}: {
+  view: AgentNameView;
+  compact?: boolean;
+}): React.JSX.Element {
+  return (
+    <>
+      <AgentName view={view} />
+      {view.callSign && <CallSignMark name={quotedReferenceName(view.callSign)} style={compact ? "rail" : "badge"} />}
+    </>
   );
 }
 

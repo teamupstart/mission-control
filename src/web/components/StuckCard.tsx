@@ -10,7 +10,7 @@ import { api } from "../lib/api.ts";
 import { parkedMissingStep, parkedStep, STUCK_RULE_LABELS, useStallActions } from "../lib/stall-actions.ts";
 import { interruptReport, type InterruptOutcome } from "../lib/interrupting.ts";
 import type { AgentNameView } from "../lib/agent-names.ts";
-import { AgentName, InboxActionButton } from "./AgentName.tsx";
+import { AgentNameWithCallSign, InboxActionButton } from "./AgentName.tsx";
 import { AgentDot } from "./session-bits.tsx";
 
 /**
@@ -43,6 +43,7 @@ export function StuckCard({
   stall,
   context,
   subject,
+  title = subject,
   onOpenSession,
   onOpenRun,
   onComplete,
@@ -52,8 +53,13 @@ export function StuckCard({
   session: Session;
   stall: Stall;
   context: string | null;
-  /** The agent's display name, as the row's header and hints print it. */
+  /** The agent's name as its spoken hints and accessible names say it. */
   subject: AgentNameView;
+  /**
+   * The name the row's header prints, when it differs from `subject`: the title with the call
+   * sign beside it (`agentNamePairView`). Defaults to `subject`.
+   */
+  title?: AgentNameView;
   onOpenSession: (sessionId: string) => void;
   onOpenRun: (runId: string) => void;
   /** Absent where nothing can host the Complete dialog, and Mark done is not drawn. */
@@ -102,7 +108,7 @@ export function StuckCard({
     <section data-voice-kind={voice ? "stuck" : undefined} data-voice-id={session.id} data-voice-session={session.id} data-voice-key={speaker?.key} className="inbox-item inbox-stuck" aria-label={`${name} is stuck`}>
       <div className="inbox-head">
         <AgentDot agent={session.agent} />
-        <AgentName view={subject} />
+        <AgentNameWithCallSign view={title} />
         <span className="inbox-meta">{STUCK_RULE_LABELS[stall.kind]}</span>
         {context && <span className="inbox-context">{context}</span>}
         <span className="inbox-spacer" />

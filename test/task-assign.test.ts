@@ -2,16 +2,16 @@ import { test, after } from "node:test";
 import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import type { ResetResult, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { muxHandle } from "../src/shared/pane.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
-const home = mkdtempSync(join(tmpdir(), "mission-assign-"));
+const home = tempDir("mission-assign-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -2305,7 +2305,7 @@ test("the branch probe tells a detached checkout from one it could not read", as
   assert.equal(await headBranch(clone), "feature/probe");
   gitIn(clone, "checkout", "--detach");
   assert.equal(await headBranch(clone), null, "detached HEAD has no branch");
-  const notARepo = mkdtempSync(join(tmpdir(), "mission-not-a-repo-"));
+  const notARepo = tempDir("mission-not-a-repo-");
   try {
     assert.equal(await headBranch(notARepo), undefined, "an unreadable checkout is unknown, not detached");
   } finally {

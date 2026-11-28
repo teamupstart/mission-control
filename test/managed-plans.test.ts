@@ -3,8 +3,7 @@ ensureNativeStateLockAddon();
 // These boundaries span Git eligibility, the retained filesystem and the daemon ledger.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync, statSync, renameSync, readdirSync, cpSync, constants, openSync, closeSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync, statSync, renameSync, readdirSync, cpSync, constants, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -14,8 +13,9 @@ import type { PlanAuthority } from "../src/server/plans/store.ts";
 import { SavePlanInputSchema, type SavePlanInput } from "../src/shared/managed-plans.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-managed-plans-")));
+const home = realpathSync(tempDir("mission-managed-plans-"));
 process.env.MISSION_HOME = join(home, "state");
 const { savePlan, readPlanRevision, readPlanFile, planContext, pendingPlanWriteWarnings, listPlans, authorizePlan, managedPlanCaptureScopes } = await import("../src/server/plans/store.ts");
 const { openDb, closeDb, upgradeDatabaseToCurrentSchema, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");

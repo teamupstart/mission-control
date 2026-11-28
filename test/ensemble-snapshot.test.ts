@@ -2,8 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   captureWorktreeSnapshot,
@@ -18,6 +17,7 @@ import {
 } from "../src/server/git/ensemble-snapshot.ts";
 import { run, stubRun } from "../src/server/util/exec.ts";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: taking a picture of an agent's work without touching the work.
 //
@@ -33,7 +33,7 @@ import { seedGitRepo } from "./helpers/git-fixture.ts";
 // Plus the two things the artifact exists for: it outlives the worktree, and it restores
 // exactly.
 
-const tmp = mkdtempSync(join(tmpdir(), "mission-ensemble-snapshot-"));
+const tmp = tempDir("mission-ensemble-snapshot-");
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
 function git(dir: string, ...args: string[]): string {

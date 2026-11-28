@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
 // A fresh state dir above the imports: this file WRITES the terminals config through the
 // route and then has the daemon read it back, so it needs a database of its own.
-const home = mkdtempSync(join(tmpdir(), "mission-focus-route-"));
+const home = tempDir("mission-focus-route-");
 process.env.MISSION_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");
@@ -20,6 +18,7 @@ import { OK, fakeEmulator, fakeMultiplexer } from "./helpers/terminal-fakes.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { TabSpec } from "../src/server/terminal/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

@@ -4,19 +4,18 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { spawnCheckProcess } from "../src/server/workflows/check-spawn.ts";
 import { checkGroupAnswers } from "../src/server/workflows/check-group.ts";
 import { onPath } from "../src/server/util/exec.ts";
 import { configureHostSuspendClock } from "../src/server/host-suspend.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 // The streaming adapter, against REAL short-lived processes and no mocks.
 //
@@ -26,7 +25,7 @@ import { configureHostSuspendClock } from "../src/server/host-suspend.ts";
 
 const dirs: string[] = [];
 function workspace(): string {
-  const dir = mkdtempSync(join(tmpdir(), "mission-check-spawn-"));
+  const dir = tempDir("mission-check-spawn-");
   dirs.push(dir);
   return dir;
 }
@@ -370,7 +369,7 @@ function processesCarrying(attemptId: string): string[] {
 }
 
 test("a timeout before the supervisor is ready leaves no held shim behind", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-check-spawn-"));
+  const dir = tempDir("mission-check-spawn-");
   dirs.push(dir);
   const marker = join(dir, "branch-ran");
   const attemptId = `attempt-early-timeout-${process.pid}`;
@@ -403,7 +402,7 @@ test("an unusable working directory is infrastructure, not a missing executable"
   // command fails the shim's. Spawned directly, both arrive as ENOENT and a missing directory
   // would be reported to the operator as a command they never mistyped.
   const { result, supervisor } = await run(["sh", "-c", "echo hi"], {
-    cwd: join(tmpdir(), "mission-check-spawn-does-not-exist"),
+    cwd: join(testTempRoot(), "mission-check-spawn-does-not-exist"),
   });
   assert.equal(result.kind, "infrastructure");
   assert.equal(supervisor, null, "nothing ran, so there is no owner to record");
@@ -411,10 +410,9 @@ test("an unusable working directory is infrastructure, not a missing executable"
 
 test('a killed owner cannot orphan the shim or its running command', async (t) => {
   const {spawn} = await import('node:child_process');
-  const {mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync} = await import('node:fs');
-  const {tmpdir} = await import('node:os');
+  const {writeFileSync, existsSync, readFileSync, rmSync} = await import('node:fs');
   const {join} = await import('node:path');
-  const dir = mkdtempSync(join(tmpdir(), 'check-owner-loss-'));
+  const dir = tempDir('check-owner-loss-');
   const pidPath = join(dir, 'shim.pid');
   const childPath = join(dir, 'command.pid');
   const module = new URL('../src/server/workflows/check-spawn.ts', import.meta.url).href;

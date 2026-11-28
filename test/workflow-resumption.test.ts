@@ -19,9 +19,8 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InspectorComment, InspectorPr, Session } from "../src/shared/types.ts";
@@ -39,10 +38,11 @@ import {
 } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // MISSION_HOME *is* the state dir. Set before anything that resolves it is imported, which is
 // why every server import below is dynamic - a static import would be hoisted above this line.
-const home = mkdtempSync(join(tmpdir(), "workflow-resumption-"));
+const home = tempDir("workflow-resumption-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -1147,7 +1147,7 @@ test("a transcript that grew but no work that changed does not spend a round", a
 });
 
 test("new staged text evidence re-arms an auto repair without a commit", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "workflow-evidence-resumption-")));
+  const repo = realpathSync(tempDir("workflow-evidence-resumption-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");

@@ -2,13 +2,13 @@
 // /dispatch route calls, the launcher decision and the dispatch-intent detector.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 // Above the imports: `openDb` refuses a state dir this file did not name.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-home-dispatch-sessions-")));
+const home = realpathSync(tempDir("mission-home-dispatch-sessions-"));
 process.env.MISSION_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");

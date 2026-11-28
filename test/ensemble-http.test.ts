@@ -2,9 +2,9 @@ import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: the public backend API is the surface the dashboard drives, and it must expose
@@ -14,7 +14,7 @@ import { join } from "node:path";
  * `buildApp` and assert the status codes and body-parsing contracts that the UI (Phase 7) relies on.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-http-"));
+const home = tempDir("mission-ensemble-http-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

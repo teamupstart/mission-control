@@ -835,7 +835,9 @@ and detector cache occupy about 480 MB. Unit shards use a complete existing cach
 skip recognition on a cold cache. To run the required check locally, set
 `MISSION_VOICE_RECOGNIZER_JOB=1` and run
 `node --test --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts`.
-`MISSION_VOICE_TEST_MODEL_DIR` overrides the temporary cache location.
+The cache lives in the machine temp dir, outside each worker's
+[temp root](test-temp-dirs.md), so runs share it. `MISSION_VOICE_TEST_MODEL_DIR` overrides
+that location.
 
 ### Download and verification
 

@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
@@ -14,6 +13,7 @@ import {
 import { expect, test } from "../fixtures/test.ts";
 
 import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
 
@@ -39,7 +39,7 @@ function shellWord(value: string): string {
 
 /** Start a provider-owned worker in the run worktree, exactly where discovery joins it. */
 function startProviderWorker(cwd: string): ProviderWorker {
-  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-pipeline-worker-"));
+  const dir = tempDir("mc-e2e-pipeline-worker-");
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   symlinkSync(execPath, join(bin, "claude"));

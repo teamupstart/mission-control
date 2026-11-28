@@ -1,16 +1,15 @@
 // The agent-facing half of the rule: `request_input` refuses an ask its dashboard card could
 // not carry, says why in the tool result, and never creates the review a human could not answer.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-request-input-"));
+const home = tempDir("mission-request-input-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 test("request_input refuses an unanswerable card without asking the daemon, and still asks a valid one", async (t) => {

@@ -1,8 +1,7 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // Repository standing instructions, phase 1: the store, the matching rule, and the block
 // that gets composed out of them.
@@ -14,7 +13,7 @@ import { join } from "node:path";
 // can lie: reporting that nothing applies when a block will in fact be sent, and dropping
 // the machine-wide default when a repository also has instructions.
 
-const home = mkdtempSync(join(tmpdir(), "mission-standing-instructions-"));
+const home = tempDir("mission-standing-instructions-");
 process.env.HARNESS_HOME = home;
 
 const {

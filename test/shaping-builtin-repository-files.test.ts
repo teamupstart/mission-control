@@ -5,9 +5,18 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import {
-  appendFileSync, chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync,
+  appendFileSync,
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
@@ -23,8 +32,9 @@ import {
 import { shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
 import { callBuiltin } from "../src/server/shaping/transports/builtin.ts";
 import { SHAPING_TRANSPORT_CALLS, type TransportContext } from "../src/server/shaping/transports/index.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const base = realpathSync(mkdtempSync(join(tmpdir(), "mission-shaping-files-")));
+const base = realpathSync(tempDir("mission-shaping-files-"));
 after(() => rmSync(base, { recursive: true, force: true }));
 let counter = 0;
 /** A fresh worktree and a sibling directory outside it, each holding the files named. */

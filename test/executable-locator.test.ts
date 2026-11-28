@@ -4,12 +4,10 @@ import {
   chmodSync,
   constants,
   mkdirSync,
-  mkdtempSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 
@@ -20,6 +18,7 @@ import {
   probeLoginShellPath,
   type LoginShellResult,
 } from "../src/server/executables/locator.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function executable(path: string): string {
   mkdirSync(dirname(path), { recursive: true });
@@ -66,7 +65,7 @@ interface Fixture {
  * an executable file` proving that a lookup selects a FILE rather than merely a name.
  */
 function fixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), "mission-executable-locator-"));
+  const root = tempDir("mission-executable-locator-");
   return {
     root,
     env: { HOME: root, PATH: "", SHELL: join(root, "shell") },

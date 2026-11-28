@@ -1,13 +1,12 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `source_parent` is display data read in `rowToTask`: a bad blob must read as no parent
 // (or a parent with no url) and never take out `getTask` / `listTasks`.
-const home = mkdtempSync(join(tmpdir(), "mission-source-parent-db-"));
+const home = tempDir("mission-source-parent-db-");
 process.env.HARNESS_HOME = home;
 const { openDb, upsertTask, getTask, listTasks } = await import("../src/server/db.ts");
 

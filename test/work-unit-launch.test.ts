@@ -9,14 +9,14 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ClaudeSdkDeps, ClaudeSdkQuery, ClaudeSdkQueryOptions } from "../src/server/harness/claude/sdk-types.ts";
 import type { SdkLaunchOptions, SdkSessionHandle } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-work-unit-launch-"));
+const home = tempDir("mission-work-unit-launch-");
 process.env.HARNESS_HOME = home;
 
 const { upsertTask, loadLaunchWorkUnits } = await import("../src/server/db.ts");

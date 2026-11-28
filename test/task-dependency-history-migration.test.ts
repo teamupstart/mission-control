@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { rmSync, existsSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-dependency-history-migration-"));
+const home = tempDir("mission-dependency-history-migration-");
 process.env.MISSION_HOME = home;
 const { openDb, closeDb, historicalTaskWorkEpisodeBindingsForTask } = await import("../src/server/db.ts");
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });

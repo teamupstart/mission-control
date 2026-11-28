@@ -5,14 +5,12 @@ import {
   truncateSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import {
@@ -26,6 +24,7 @@ import {
   scoutReportSlug,
 } from "../src/shared/scouts.ts";
 import { validReportHtml } from "./helpers/archive-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The capture mechanism: what reaches a bundle, what is refused by name, and what a
@@ -37,7 +36,7 @@ import { validReportHtml } from "./helpers/archive-fixture.ts";
  * the disk.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-capture-"));
+const home = tempDir("mission-scout-capture-");
 process.env.MISSION_HOME = home;
 
 const { captureArchive } = await import("../src/server/archives/capture.ts");

@@ -1,11 +1,11 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
 import type { InspectorComment } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Findings drafted in dry run, after the operator switches the GitHub Inspector to live.
 //
@@ -14,7 +14,7 @@ import type { InspectorComment } from "../src/shared/types.ts";
 // a comment it cannot anchor, or a whole-review refusal such as a rate limit. Environment
 // overrides are installed before the worker is imported, because its runner and poll
 // interval are resolved at module load.
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-drafts-live-"));
+const temp = tempDir("mission-inspector-drafts-live-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const reviewCountPath = join(temp, "review-count.txt");

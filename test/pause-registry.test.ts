@@ -1,16 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { StoredPauseState } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the pause has to be visible to every automated writer the instant the
 // operator asks for it - on the REAL registry, through the shared delivery gate the outbox,
 // workflow packets and Foreman's writes all ask - not only once the process table has been read.
 // And what a restart restores must reach a session that registers after it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pause-registry-"));
+const home = tempDir("mission-pause-registry-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { PauseManager } = await import("../src/server/pause/manager.ts");

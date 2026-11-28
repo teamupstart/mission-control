@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -23,11 +22,12 @@ import {
   workflowRunIsOpen,
 } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a successful Persona End is not completion when the published
 // version owns an Inspector gate. Every conclusion must be about an adopted PR and a
 // fresh observation of the exact clean, committed head.
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-gate-"));
+const home = tempDir("mission-workflow-inspector-gate-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -448,7 +448,7 @@ for (const rootSource of ["binding", "empty-binding", "null-binding"] as const) 
   test(`an abbreviated captured commit recovers after restart and waits for clean publication: ${rootSource}`, async () => {
     const { execFileSync } = await import("node:child_process");
     const { resolveCapturedCommit } = await import("../src/server/workflows/commit-id.ts");
-    const repo = mkdtempSync(join(tmpdir(), "mission-inspector-head-"));
+    const repo = tempDir("mission-inspector-head-");
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
     git("init", "-q");
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "test commit");

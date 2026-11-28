@@ -1,12 +1,12 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TaskSourceInstanceSchema, GithubIssuesConfigSchema, JiraConfigSchema, sameSourceRef } from "../src/shared/task-source.ts";
 import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/shared/task-source.ts";
 import { sourceContent } from "../src/shared/task-source-sync.ts";
 import { dependencyInputOf } from "../src/shared/task-dependency.ts";
+import { tempDir } from "./temp-root.mjs";
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, TaskDependencyError } = await import("../src/server/tasks.ts");
 const { getTask, listTasks, deleteTask, openDb, countTaskSourceSeen, inTransaction } = await import("../src/server/db.ts");
@@ -149,7 +149,7 @@ test("a per-item linked-read error preserves that task while valid siblings upda
 });
 test("GitHub linked failures never persist command output or parser details in reviews or the API", async (t) => {
   const { src, registry, tasks, task } = await setup();
-  const dir = mkdtempSync(join(tmpdir(), "mission-linked-gh-"));
+  const dir = tempDir("mission-linked-gh-");
   const bin = join(dir, "gh");
   const before = process.env.MISSION_GH_BIN;
   const secret = "fake-token-should-not-be-persisted /private/operator/path account@example.test";

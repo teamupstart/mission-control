@@ -1,15 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { InspectionUpdated, InspectorPr } from "../src/shared/types.ts";
 import type { WorkflowInspectorGateState } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: workflows must wake from Inspector's existing expensive poll cycle.
 // A second timer would race the durable ledger and double GitHub/reviewer traffic.
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-update-"));
+const home = tempDir("mission-workflow-inspector-update-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

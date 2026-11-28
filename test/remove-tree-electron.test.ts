@@ -8,13 +8,14 @@
 // that ships in this checkout's `node_modules/electron`.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
+import { tempDir } from "./temp-root.mjs";
+import { acquireElectronStartupSlot, releaseAfterStartup } from "./helpers/electron-startup-slot.mjs";
 
 const require = createRequire(import.meta.url);
 const checkout = fileURLToPath(new URL("../", import.meta.url));
@@ -60,7 +61,7 @@ interface WorkerResult {
 test("under Electron's Node the shared tree removal deletes Electron's asar, and Destroy and orphan reclaim both use it", {
   skip: process.platform !== "darwin", timeout: 120_000,
 }, async (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-remove-tree-electron-")));
+  const root = realpathSync(tempDir("mission-remove-tree-electron-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const resultPath = join(root, "result.json");
   const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
@@ -100,7 +101,7 @@ test("under Electron's Node the shared tree removal deletes Electron's asar, and
 test("in Electron's utility process, where the daemon runs, removeTree deletes the asar tree fs.rm cannot", {
   skip: process.platform !== "darwin", timeout: 60_000,
 }, async (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-remove-tree-utility-")));
+  const root = realpathSync(tempDir("mission-remove-tree-utility-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const asar = shippedAsar();
   const control = join(root, "control");
@@ -144,7 +145,9 @@ test("in Electron's utility process, where the daemon runs, removeTree deletes t
   writeFileSync(join(root, "package.json"), JSON.stringify({ main: "main.mjs", type: "module" }));
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
+  const releaseStartup = await acquireElectronStartupSlot();
   const app = spawn(require("electron") as unknown as string, [root], { env, stdio: ["ignore", "ignore", "pipe"] });
+  releaseAfterStartup(app, releaseStartup);
   t.after(() => app.kill("SIGKILL"));
   const { code, stderr } = await exited(app);
   assert.equal(code, 0, stderr);

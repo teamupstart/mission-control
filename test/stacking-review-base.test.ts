@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
 import type { StackGitHub } from "../src/server/stacking/github.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The real Inspector loop, through fake `gh` and Claude binaries, on a pull request whose base
 // is another pull request's branch. The review it reuses is tied to the base COMMIT: the
@@ -14,7 +14,7 @@ import type { StackGitHub } from "../src/server/stacking/github.ts";
 // rather than trusting the old verdict. Overrides go in before the worker is imported: its
 // runner and poll interval are read at module load.
 
-const temp = mkdtempSync(join(tmpdir(), "mission-stacking-review-base-"));
+const temp = tempDir("mission-stacking-review-base-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const reviewsPath = join(temp, "claude-reviews.log");

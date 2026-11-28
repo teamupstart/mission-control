@@ -1,15 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 
 // Isolate the state dir before uploads.ts reads config for UPLOADS_DIR.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-uploads-"));
+process.env.MISSION_HOME = tempDir("mission-uploads-");
 const { UPLOADS_DIR, detectImageExt, saveImageUpload, sweepUploads, uploadFileName } = await import(
   "../src/server/uploads.ts"
 );
 import { formatAttachmentPath, withAttachments } from "../src/shared/attachments.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A dropped image becomes a PATH in a prompt - that's the whole mechanism, because
 // the last hop to an agent is keystrokes into a pty and bytes can't make that trip.

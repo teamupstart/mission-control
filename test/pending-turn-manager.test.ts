@@ -1,8 +1,7 @@
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InjectResult } from "../src/server/actions.ts";
@@ -11,8 +10,9 @@ import type { TranscriptMessages } from "../src/server/harness/types.ts";
 import type { SessionMessages } from "../src/server/harness/index.ts";
 import { activePaneDialog } from "../src/shared/session.ts";
 import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pending-turn-manager-"));
+const home = tempDir("mission-pending-turn-manager-");
 process.env.MISSION_HOME = home;
 
 const {
@@ -2074,7 +2074,7 @@ test("a Claude steer leaves when Claude records it as a queued command, mid-turn
   // The real transcript reader over a real file, because the bug lived in the parse: Claude
   // Code usually records a mid-turn message only as a `queued_command` attachment, so a
   // steer it had read stayed pinned under the log until the turn ended.
-  const dir = mkdtempSync(join(tmpdir(), "mission-claude-steer-"));
+  const dir = tempDir("mission-claude-steer-");
   const path = join(dir, "transcript.jsonl");
   const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
   writeFileSync(path, line({
@@ -2106,7 +2106,7 @@ test("a Claude steer recorded both as a queued command and as a user record is r
   // The attachment and a `user` record with the same words, nothing from the agent between
   // them: one message recorded twice. The attachment is the receipt, the user record must
   // never answer the steer a second time, and the conversation shows the message once.
-  const dir = mkdtempSync(join(tmpdir(), "mission-claude-steer-both-"));
+  const dir = tempDir("mission-claude-steer-both-");
   const path = join(dir, "transcript.jsonl");
   const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
   writeFileSync(path, line({

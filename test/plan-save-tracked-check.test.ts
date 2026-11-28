@@ -2,13 +2,13 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 ensureNativeStateLockAddon();
 import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { PlanAuthority } from "../src/server/plans/store.ts";
 import type { SavePlanInput } from "../src/shared/managed-plans.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * A new-plan save asks `git ls-files` whether the plan's directory is already tracked, and
@@ -23,7 +23,7 @@ import type { SavePlanInput } from "../src/shared/managed-plans.ts";
  * or, under a second marker, exits 128 the way a held index lock makes it, or, under a third,
  * answers only after the 4 s that used to be its whole budget.
  */
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-plan-tracked-check-")));
+const home = realpathSync(tempDir("mission-plan-tracked-check-"));
 const bin = join(home, "bin");
 const killMarker = join(home, "kill-ls-files");
 const failMarker = join(home, "fail-ls-files");

@@ -5,11 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, symlinkSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
 import { claudeHooks } from "../src/server/harness/claude/hooks.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
 const { transientCheckoutRoot } = await import("../hooks/install-checks.mjs");
@@ -59,7 +59,7 @@ function runInstallerHome(settingsPath: string, homeDir: string, args: string[] 
 
 /** A settings file + an isolated state dir, both torn down afterwards. */
 function withTempSettingsHome(initial: string, fn: (settingsPath: string, homeDir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "harness-sl-"));
+  const dir = tempDir("harness-sl-");
   const settingsPath = join(dir, "settings.json");
   const homeDir = join(dir, "home");
   mkdirSync(homeDir, { recursive: true });
@@ -94,7 +94,7 @@ function runInstaller(settingsPath: string, args: string[] = []): void {
 }
 
 function withTempSettings(initial: string, fn: (path: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "harness-hooks-"));
+  const dir = tempDir("harness-hooks-");
   const path = join(dir, "settings.json");
   writeFileSync(path, initial);
   try {
@@ -468,7 +468,7 @@ function runFromFakePool(settingsPath: string, installer: string, args: string[]
 }
 
 test("transient checkout detection recognizes native, legacy, nested, and durable roots", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-transient-checkout-"));
+  const dir = tempDir("mission-transient-checkout-");
   try {
     const native = join(dir, "native");
     const legacy = join(dir, "legacy");

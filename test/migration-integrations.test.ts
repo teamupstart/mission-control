@@ -3,17 +3,17 @@
 import { randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'jsonc-parser';
 import { inspectMigrationIntegrations, repairMigrationIntegrations, type MigrationIntegrationPorts } from '../src/main/migration-integrations.ts';
 import { createMigrationConfigPort } from '../src/main/migration-integration-config.ts';
 import { createRotatingUpdateLogger } from '../src/main/update-log.ts';
 import type { MigrationPlan, MigrationJournal } from '../scripts/install-migration.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(t: test.TestContext) {
-  const home = mkdtempSync(join(tmpdir(), 'mission-integrations-'));
+  const home = tempDir('mission-integrations-');
   t.after(() => rmSync(home, {recursive: true, force: true}));
   const plan = {nonce: randomBytes(32).toString('hex'), source: '/Applications/Mission Control.app', target: join(home, 'Applications/Mission Control.app')} as MigrationPlan;
   const oldHook = `${plan.source}/Contents/Resources/app/dist/satellites/hook.mjs`;

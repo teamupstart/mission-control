@@ -1,8 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { homedir, hostname, tmpdir } from "node:os";
+import { rmSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The durable core: capture, the crash boundaries, cumulative state across restarts, consent
 // fencing, series ceilings and retention.
@@ -11,7 +12,7 @@ import { join } from "node:path";
 // does, through the same migration path. Nothing here is mocked, because every property being
 // asserted is a property of what SQLite actually committed.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-durable-"));
+const home = tempDir("mission-telemetry-durable-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

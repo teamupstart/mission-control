@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { SessionIntentGuard } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const PROMPTED_INTENT: SessionIntentGuard = {
   objective: "Finish the prompted workflow",
@@ -14,7 +13,7 @@ const PROMPTED_INTENT: SessionIntentGuard = {
   episodeKey: "intent:1:1",
 };
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-completion-http-"));
+const home = tempDir("mission-workflow-completion-http-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

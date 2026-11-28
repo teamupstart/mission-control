@@ -1,12 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { WorkflowManager } from "../src/server/workflows/manager.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * `POST /api/tasks/bulk-update` and `POST /api/tasks/bulk-delete` - the board's bulk edit.
@@ -19,7 +18,7 @@ import type { Task } from "../src/shared/types.ts";
  * real state dir under the test runner, and a hoisted import would defeat this preamble.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-backlog-bulk-"));
+const home = tempDir("mission-backlog-bulk-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");

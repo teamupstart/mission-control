@@ -1,11 +1,11 @@
 // A root YAML runs CodeRabbit unless auto_review.enabled is boolean false. Strings, tags, aliases and ambiguous YAML never enable it.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync, symlinkSync, rmSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, symlinkSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { captureCodeRabbitConfig, parseCodeRabbitConfig } from "../src/server/workflows/coderabbit-config.ts";
 import { CodeRabbitConfigSnapshotSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 const parse=(source:string)=>parseCodeRabbitConfig(Buffer.from(source));
 test("explicit boolean true with schema comment and inheritance enables locally",()=>{
  assert.equal(parse('# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json\ninheritance: true\nreviews:\n  auto_review:\n    enabled: true\n').enabled,true);
@@ -17,7 +17,7 @@ for(const [name,source] of Object.entries({false:'reviews: {auto_review: {enable
  test(`${name} cannot enable CodeRabbit`,()=>assert.equal(parse(source).enabled,false));
 }
 test("capture refuses symlinks/nonfiles and preserves sanitized digest without source secrets",()=>{
- const root=mkdtempSync(join(tmpdir(),"mc-cr-yaml-"));const path=join(root,'.coderabbit.yaml');
+ const root=tempDir("mc-cr-yaml-");const path=join(root,'.coderabbit.yaml');
  try {
   assert.equal(captureCodeRabbitConfig(root).state,"missing");
   writeFileSync(join(root,"secret"),"sensitive: sentinel\nreviews: {auto_review: {enabled: true}}");symlinkSync(join(root,"secret"),path);
@@ -30,7 +30,7 @@ test("capture refuses symlinks/nonfiles and preserves sanitized digest without s
 
 // Gating matrix (jh-cpr): which repo files decide whether the CodeRabbit stage runs.
 function withRepo(files: Record<string, string>, run: (root: string) => void) {
-  const root = mkdtempSync(join(tmpdir(), "mc-cr-gate-"));
+  const root = tempDir("mc-cr-gate-");
   try {
     for (const [name, body] of Object.entries(files)) writeFileSync(join(root, name), body);
     run(root);

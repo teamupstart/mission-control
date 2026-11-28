@@ -2,15 +2,14 @@ import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   chmodSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // One diff subprocess per tick, and zero on the steady-state tick.
 //
@@ -27,7 +26,7 @@ import type { Registry } from "../src/server/registry.ts";
 //
 // Environment overrides must be installed before importing the worker: its runner and
 // poll interval are resolved at module load.
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-diff-once-"));
+const temp = tempDir("mission-inspector-diff-once-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const claudePath = join(binDir, "claude");

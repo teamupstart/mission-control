@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { InspectorVerdictSchema, type LocalInspectorFinding } from "../src/shared/inspector-review.ts";
 import { emptyWorkflowCommandView, type WorkflowCommandArtifactDescriptor } from "../src/shared/workflow.ts";
 import { planLocalReview } from "../src/server/inspector/verdict.ts";
 import { runCheck, type RunCheckInput } from "../src/server/workflows/checks.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const major = { path: "./app.ts", line: 42, severity: "major", title: "Handle the empty result", body: "The next call receives undefined." } as const;
 const minor = { ...major, severity: "minor", title: "Report the fallback" } as const;
@@ -101,7 +101,7 @@ test("Local Inspector handles Block and Skip for exhaustion and returns a missin
 });
 
 test("Local Inspector uses the pinned diff and carries findings, while an oversized patch or provider error blocks", async t => {
-  const root = mkdtempSync(join(tmpdir(), "mission-local-inspector-"));
+  const root = tempDir("mission-local-inspector-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q");

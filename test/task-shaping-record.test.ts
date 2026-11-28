@@ -1,16 +1,16 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The task shaping record's persistence: the column and table arrive on an upgraded database,
 // the one commit function settles the summary and the text together in each of the four
 // combinations, and the record follows its session when the conversation resumes under a new
 // session id - and only then.
 
-const home = mkdtempSync(join(tmpdir(), "mission-shaping-record-"));
+const home = tempDir("mission-shaping-record-");
 const dbPath = join(home, "harness.db");
 process.env.MISSION_HOME = home;
 

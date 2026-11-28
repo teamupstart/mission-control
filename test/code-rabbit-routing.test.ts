@@ -1,8 +1,7 @@
 // Advisory worker decisions cannot bypass daemon ownership or the runtime write lock.
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { SessionGoal } from "../src/shared/types.ts";
@@ -17,6 +16,7 @@ import { setShippingConfig } from "../src/server/shipping/config.ts";
 import { setForemanConfig } from "../src/server/foreman/config.ts";
 import { decideReviewFollowup, followupPrs } from "../src/server/foreman/review-followup.ts";
 import type { CodeRabbitRecord } from "../src/server/inspector/code-rabbit-state.ts";
+import { tempDir } from "./temp-root.mjs";
 
 let number = 50;
 function fixture() {
@@ -83,7 +83,7 @@ function terminalFixture(t: TestContext) {
   const f = fixture();
   f.session.runtime = "terminal";
   f.session.terminals = [mkMuxHandle({ session: "coderabbit", paneId: "%91" })];
-  const dir = mkdtempSync(join(tmpdir(), "mission-coderabbit-terminal-"));
+  const dir = tempDir("mission-coderabbit-terminal-");
   const bin = join(dir, "tmux.cjs");
   const previous = process.env.MISSION_TMUX_BIN;
   t.after(() => {

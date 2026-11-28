@@ -1,12 +1,12 @@
 // The existing poll owner must observe CodeRabbit without paying for an Inspector review.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import type { Registry } from "../src/server/registry.ts";
 import { preMergeComment } from "./helpers/code-rabbit-pre-merge.ts";
-const dir = mkdtempSync(join(tmpdir(), "mission-coderabbit-worker-"));
+import { tempDir } from "./temp-root.mjs";
+const dir = tempDir("mission-coderabbit-worker-");
 const gh = join(dir, "gh"), calls = join(dir, "calls"), snapshot = join(dir, "snapshot.json");
 const model = join(dir, "model"), modelCalls = join(dir, "model-calls");
 writeFileSync(modelCalls, "");

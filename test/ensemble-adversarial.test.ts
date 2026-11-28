@@ -1,10 +1,10 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { CompiledEnsemblePlan } from "../src/shared/ensemble.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: creating an ensemble is authority to launch local agents and, eventually, to
@@ -17,7 +17,7 @@ import type { CompiledEnsemblePlan } from "../src/shared/ensemble.ts";
  * ensemble-store.test.ts; this suite is the caps-and-authority half.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-adv-"));
+const home = tempDir("mission-ensemble-adv-");
 process.env.HARNESS_HOME = join(home, "state");
 
 // Every server-touching module is imported AFTER HARNESS_HOME is set, because db.ts resolves the

@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
 import type {
   MissionSchedule,
@@ -11,6 +9,7 @@ import type {
   SchedulePreviewResult,
 } from "../src/shared/schedules.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: these routes are the ONLY door an operator has onto a subsystem that
 // spends money, and a route that maps an outcome to the wrong status - a not-a-repo saved as
@@ -27,7 +26,7 @@ import type { ServerEvent } from "../src/shared/types.ts";
 // clock makes cursor assertions deterministic, and a resolver a test controls is how a
 // non-repo is refused without touching the disk.
 
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-http-"));
+const home = tempDir("mission-schedule-http-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

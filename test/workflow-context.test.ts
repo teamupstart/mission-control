@@ -2,17 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
 import { gitIn, seedGitRepo } from "./helpers/git-fixture.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-context-"));
+const home = tempDir("mission-workflow-context-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

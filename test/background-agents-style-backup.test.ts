@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Settings > Display > Board card > Background sub-agents survives a settings backup and
@@ -12,7 +12,7 @@ import { join } from "node:path";
  * Its own state home, set above the imports as the suite requires, because a restore writes
  * `app_config`.
  */
-const root = mkdtempSync(join(tmpdir(), "background-agents-style-backup-"));
+const root = tempDir("background-agents-style-backup-");
 process.env.MISSION_HOME = join(root, "state");
 after(() => rmSync(root, { recursive: true, force: true }));
 

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, renameSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -13,9 +12,10 @@ import {
   openUtilityLog,
   utilityProcessStdio,
 } from "../src/main/utility-log.ts";
+import { tempDir } from "./temp-root.mjs";
 
 test("utility logs and their directory are private", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const logPath = join(root, "state", "foreman.log");
   const log = openPrivateUtilityLog(logPath);
   log.end("[mission-control] mission-control-foreman stopped\n");
@@ -26,7 +26,7 @@ test("utility logs and their directory are private", async () => {
 });
 
 test("disabled child output cannot reach the lifecycle log", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const logPath = join(root, "foreman.log");
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -45,7 +45,7 @@ test("disabled child output cannot reach the lifecycle log", async () => {
 });
 
 test("output that drains after exit lands ahead of the stop marker instead of crashing main", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const logPath = join(root, "daemon.log");
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -73,7 +73,7 @@ test("output that drains after exit lands ahead of the stop marker instead of cr
 });
 
 test("a pipe that never finishes cannot hold the log open, and later output is dropped", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const logPath = join(root, "daemon.log");
   const stdout = new PassThrough();
   const log = openPrivateUtilityLog(logPath);
@@ -87,7 +87,7 @@ test("a pipe that never finishes cannot hold the log open, and later output is d
 });
 
 test("pipes that already finished before exit close the log without waiting out the drain bound", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const logPath = join(root, "daemon.log");
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -106,7 +106,7 @@ test("pipes that already finished before exit close the log without waiting out 
 });
 
 test("a log stream failure is reported without its path instead of becoming an uncaught exception", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const log = openPrivateUtilityLog(join(root, "daemon.log"));
   const reported = t.mock.method(console, "error", () => {});
   let uncaught: unknown = null;
@@ -130,7 +130,7 @@ test("a log stream failure is reported without its path instead of becoming an u
 test("a log without captured output holds no handle, so a rotated file never takes its next line", () => {
   // Foreman's worker rotates foreman.log by rename. The supervisor's lifecycle log for it must
   // follow the PATH, not a handle opened at spawn, or its stop line lands in the renamed file.
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const logPath = join(root, "state", "foreman.log");
   const log = openUtilityLog(logPath, false);
   assert.equal(statSync(join(root, "state")).mode & 0o777, 0o700);
@@ -149,7 +149,7 @@ test("a log without captured output holds no handle, so a rotated file never tak
 });
 
 test("a path-only log reports a failed append by code and never throws", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const logPath = join(root, "state", "foreman.log");
   const log = openPathUtilityLog(logPath);
   const reported = t.mock.method(console, "error", () => {});
@@ -159,7 +159,7 @@ test("a path-only log reports a failed append by code and never throws", (t) => 
 });
 
 test("captured output keeps the streaming log", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
+  const root = tempDir("mission-utility-log-");
   const log = openUtilityLog(join(root, "daemon.log"), undefined);
   assert.equal(typeof (log as { on?: unknown }).on, "function", "the daemon still writes through a stream");
   log.end("[mission-control] mission-control-daemon stopped\n");

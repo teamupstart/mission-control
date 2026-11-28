@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
 // Renaming a state dir from an older name (~/.fleet-control, ~/.ai-harness) onto
 // ~/.mission-control.
@@ -20,7 +20,7 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** A HOME containing the given state dirs, each holding a marker file. */
 function mkHome(dirs: Record<string, string>): string {
-  const home = mkdtempSync(join(tmpdir(), "mission-statedir-"));
+  const home = tempDir("mission-statedir-");
   for (const [name, marker] of Object.entries(dirs)) {
     mkdirSync(join(home, name), { recursive: true });
     writeFileSync(join(home, name, "marker"), marker);

@@ -1,11 +1,11 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-provider-config-"));
+const home = tempDir("mission-provider-config-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb, setAppConfig } = await import("../src/server/db.ts");

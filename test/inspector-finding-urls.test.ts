@@ -3,17 +3,16 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
 import type { InspectorComment } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Where each finding lives on GitHub, captured from the pull request snapshot the tick
 // already reads.
@@ -26,7 +25,7 @@ import type { InspectorComment } from "../src/shared/types.ts";
 //
 // Environment overrides must be installed before importing the worker: its runner and poll
 // interval are resolved at module load.
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-urls-"));
+const temp = tempDir("mission-inspector-urls-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const callsPath = join(temp, "gh-calls.log");

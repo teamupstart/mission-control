@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 function lint(source: string, extension = "ts") {
-  const root = mkdtempSync(join(tmpdir(), "mission-lint-policy-"));
+  const root = tempDir("mission-lint-policy-");
   try {
     const file = join(root, `fixture.${extension}`);
     writeFileSync(file, source);

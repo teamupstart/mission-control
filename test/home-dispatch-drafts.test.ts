@@ -3,12 +3,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, mock, test } from "node:test";
 
 // Above the imports: `openDb` refuses a state dir this file did not name.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-home-dispatch-drafts-")));
+const home = realpathSync(tempDir("mission-home-dispatch-drafts-"));
 process.env.MISSION_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");
@@ -29,6 +28,7 @@ const { configuredTerminalDeps } = await import("../src/server/terminals-config.
 const { OK, fakeEmulator, fakeMultiplexer } = await import("./helpers/terminal-fakes.ts");
 const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 

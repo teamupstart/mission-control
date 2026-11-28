@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Its own state home, set above the imports as the suite requires, because the writes reach
 // `app_config`.
-const root = mkdtempSync(join(tmpdir(), "resident-card-name-settings-"));
+const root = tempDir("resident-card-name-settings-");
 process.env.MISSION_HOME = join(root, "state");
 after(() => rmSync(root, { recursive: true, force: true }));
 

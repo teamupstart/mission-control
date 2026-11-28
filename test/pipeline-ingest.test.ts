@@ -24,20 +24,19 @@ import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { PipelinesView } from "../src/shared/pipeline.ts";
 import type { ConductorIngestOutcome } from "../src/shared/protocol.ts";
 import { createMissionControlVisualizer } from "../integrations/ai-conductor/mission-control/index.mjs";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-ingest-"));
+const home = tempDir("mission-pipeline-ingest-");
 process.env.HARNESS_HOME = join(home, "state");
 // Nothing on PATH, so no test here waits on a probe that would answer the same way anyway.
 process.env.MISSION_CONDUCTOR_BIN = join(home, "no-such-conductor");

@@ -1,15 +1,15 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: Phase 1 is the only migration boundary for the complete workflow family.
 // A missing table or nullable conflict key would not fail until a later phase tried to recover a
 // real run, when adding the constraint safely would already require migrating user history.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-db-"));
+const home = tempDir("mission-workflow-db-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

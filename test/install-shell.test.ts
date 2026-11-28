@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
 import { DMG_ROOT_EXTRAS } from '../src/shared/binary-distribution.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 const root = process.cwd();
 const shell = renderInstallBootstrap();
@@ -19,7 +19,7 @@ const pendingHead = 'c'.repeat(40);
 const version = '1.10.0';
 type Listed = {tag_name: string; draft: boolean; prerelease: boolean; assets: {id: number; name: string; size: number; state: string}[]};
 function fixture(t: test.TestContext, failure = '', appName = 'Agent Mission Control.app', inventory?: Listed[]) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'binary-bootstrap-')));
+  const dir = realpathSync(tempDir('binary-bootstrap-'));
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   const bin = join(dir, 'bin'); mkdirSync(bin);
   const candidate = join(dir, 'candidate.app');

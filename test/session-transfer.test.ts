@@ -2,14 +2,14 @@ import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-runtime-transfer-"));
+const home = tempDir("mission-runtime-transfer-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 await (await import("./helpers/managed-resume-fixture.ts")).managedResumeFixture(home);

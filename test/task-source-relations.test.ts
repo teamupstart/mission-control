@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type {
   LinkedReadResult,
   SweepContext,
@@ -13,6 +11,7 @@ import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO, TASK_SOURCE_KINDS } fr
 import { BulkUpdateTasksSchema } from "../src/shared/protocol.ts";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The `canRelate` seam: a sweep candidate's blocking links become dependency edges on the
 // task it files, and the sweep re-reads the external items `source` edges wait on.
@@ -21,7 +20,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // edge resolution are the daemon's own), with the GitHub half fed faked `gh` JSON in the
 // shape gh 2.101 prints for `--json blockedBy,parent,state,stateReason`.
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-relations-"));
+const home = tempDir("mission-task-relations-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");

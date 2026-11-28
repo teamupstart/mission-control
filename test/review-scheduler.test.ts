@@ -1,12 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
 import type { PersonaExecutionView, WorkflowBinding } from "../src/shared/workflow.ts";
 import type { WorkflowRawCaptureRead } from "../src/server/workflows/context.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the daemon promises ONE ceiling on tool-less review work, and it used to
 // be half a promise. `WorkflowEngine` gated Persona attempts at three while context
@@ -18,7 +17,7 @@ import type { WorkflowRawCaptureRead } from "../src/server/workflows/context.ts"
 // Workflow review work spend it. They deliberately drive the manager end to end rather than
 // asserting the wiring, because the defect being prevented is a call site that skips it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-scheduler-"));
+const home = tempDir("mission-review-scheduler-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

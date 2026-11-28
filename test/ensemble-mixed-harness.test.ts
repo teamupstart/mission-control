@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: one ensemble wave can mix Claude and Codex members, and each must launch with
@@ -17,7 +17,7 @@ import { join } from "node:path";
  * the submit tool harness-neutrally.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-mixed-"));
+const home = tempDir("mission-ensemble-mixed-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

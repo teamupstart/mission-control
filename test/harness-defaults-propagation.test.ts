@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Whether a change to the per-harness dispatch defaults actually takes effect - the two
@@ -25,7 +25,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
  * nothing in the UI had asked for. It is now passed per-launch instead.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-harness-propagation-"));
+const home = tempDir("mission-harness-propagation-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

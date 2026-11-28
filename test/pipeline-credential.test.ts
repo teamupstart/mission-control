@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { readPipelineCallerCredential } from "../src/mcp/pipeline-credential.ts";
@@ -8,8 +7,9 @@ import {
   PIPELINE_CALLER_CREDENTIAL_ENV,
   PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
 } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-pipeline-credential-"));
+const root = tempDir("mission-pipeline-credential-");
 const legacy = "legacy-pipeline-credential-that-is-long-enough";
 const current = "current-pipeline-credential-that-is-long-enough";
 

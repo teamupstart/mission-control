@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, rmSync, mkdirSync, renameSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 ensureNativeStateLockAddon();
-const home = mkdtempSync(join(tmpdir(), "resident-state-"));
+const home = tempDir("resident-state-");
 process.env.MISSION_HOME = home;
 const { residentStateDir, ensureResidentState, removeResidentState, readResidentStateFile } = await import("../src/server/residents/state.ts");
 

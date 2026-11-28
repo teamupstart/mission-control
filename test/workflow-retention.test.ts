@@ -1,13 +1,12 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { DEFAULT_WORKFLOW_CONFIG } from "../src/shared/workflow.ts";
 import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-retention-"));
+const home = tempDir("mission-workflow-retention-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

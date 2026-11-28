@@ -3,11 +3,10 @@
 // only while it names the task's current session.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-shaping-http-"));
+const home = tempDir("mission-task-shaping-http-");
 process.env.MISSION_HOME = home;
 const { closeDb } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");

@@ -1,15 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // A dispatch Persona over a database written before tasks could name one. `tasks.persona_id`
 // arrives through `addColumn`, an older row reads as a task with no Persona - which is exactly
 // how it launched - and the upgraded row takes a Persona and keeps it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-persona-migration-"));
+const home = tempDir("mission-dispatch-persona-migration-");
 process.env.MISSION_HOME = home;
 
 function seedPreFeatureDb(): void {

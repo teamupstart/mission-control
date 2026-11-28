@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -24,6 +23,7 @@ import type { SetupDeps } from "../src/server/setup/types.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 import { ACLI_TIMEOUT_MS } from "../src/server/task-sources/jira-acli.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /** What `acli jira auth status` prints when signed in, with the account address it carries. */
 const ACLI_SIGNED_IN = "✓ Authenticated\n  Site: example.atlassian.net\n  Email: operator@example.invalid\n  Authentication Type: oauth\n";
@@ -401,7 +401,7 @@ test("an outdated GitHub CLI reports needs-setup, and a current one stays satisf
 });
 
 test("a schema-invalid Claude plugin record is unknown rather than missing", async () => {
-  const pluginsDir = mkdtempSync(join(tmpdir(), "mission-setup-plugins-"));
+  const pluginsDir = tempDir("mission-setup-plugins-");
   try {
     writeFileSync(
       join(pluginsDir, "installed_plugins.json"),

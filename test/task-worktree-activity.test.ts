@@ -5,19 +5,18 @@ import { syncBuiltinESMExports } from "node:module";
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   rmSync,
   statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-activity-home-"));
+const home = tempDir("mission-activity-home-");
 process.env.HARNESS_HOME = home;
 const {
   worktreeActivityFingerprint,
@@ -104,7 +103,7 @@ async function assertMoves(dir: string, what: string, mutate: () => void): Promi
 }
 
 before(() => {
-  root = mkdtempSync(join(tmpdir(), "mission-activity-"));
+  root = tempDir("mission-activity-");
 });
 after(() => {
   rmSync(root, { recursive: true, force: true });

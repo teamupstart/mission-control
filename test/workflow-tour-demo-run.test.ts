@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The fabricated demonstration run the Follow the review tour seeds on an empty machine.
@@ -15,7 +15,7 @@ import { join } from "node:path";
  * store's own `WorkflowRowError` makes explicit.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-tour-demo-"));
+const home = tempDir("mission-workflow-tour-demo-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");

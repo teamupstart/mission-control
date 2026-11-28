@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import childProcess, { type ExecFileException, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { checkUpdateRuntime, inspectUpdateRuntime, updateNodeProblem } from "../src/main/update-runtime.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 // Canned probe replies need no Node startup. Under suite contention that startup
 // can exhaust the real five-second probe deadline before the fixture prints JSON.
@@ -62,7 +62,7 @@ test("Node runtime policy shares the installer's minimum and gives actionable co
 });
 
 test("runtime probes reject old, missing and malformed Node before npm runs, then recover", async (t) => {
-  const cwd = await mkdtemp(join(tmpdir(), "mission-node-preflight-"));
+  const cwd = await tempDirAsync("mission-node-preflight-");
   try {
     const selected = join(cwd, "selected-node");
     const npm = join(cwd, "npm");
@@ -113,7 +113,7 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
 
 test("an npm failure or mismatched child Node refuses preparation", async (t) => {
   realProbesWithRelaxedDeadline(t);
-  const cwd = await mkdtemp(join(tmpdir(), "mission-node-mismatch-"));
+  const cwd = await tempDirAsync("mission-node-mismatch-");
   try {
     const npm = join(cwd, "npm");
     await writeFile(npm, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
@@ -141,7 +141,7 @@ test("an npm failure or mismatched child Node refuses preparation", async (t) =>
 });
 
 test("checking again forces discovery refresh and uses its replacement runtime", async (t) => {
-  const cwd = await mkdtemp(join(tmpdir(), "mission-node-refresh-"));
+  const cwd = await tempDirAsync("mission-node-refresh-");
   const node = join(cwd, "selected-node");
   const npm = join(cwd, "selected-npm");
   const calls: string[] = [];

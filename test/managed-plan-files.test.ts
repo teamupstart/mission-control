@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { constants, openSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants, openSync, closeSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { nativePlanFiles } from "../src/server/plans/native.ts";
 import { digest, readSafe, replaceSafe } from "../src/server/plans/files.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
 test("a parent swapped immediately before rename cannot redirect publication or cleanup", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "managed-plan-parent-race-")));
+  const root = realpathSync(tempDir("managed-plan-parent-race-"));
   try {
     const checkout = join(root, "checkout"), outside = join(root, "outside");
     const original = join(checkout, "docs/plans/topic");
@@ -35,7 +35,7 @@ test("a parent swapped immediately before rename cannot redirect publication or 
 });
 
 for (const existed of [false, true]) test(`replacement preserves an edit made at publication time (existing output ${existed})`, () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "managed-plan-edit-race-")));
+  const root = realpathSync(tempDir("managed-plan-edit-race-"));
   try {
     if (existed) writeFileSync(join(root, "plan.md"), "baseline");
     assert.throws(() => replaceSafe(root, "plan.md", Buffer.from("saved"), existed ? digest("baseline") : null, () => {
@@ -46,7 +46,7 @@ for (const existed of [false, true]) test(`replacement preserves an edit made at
 });
 
 for (const edited of [false, true]) test(`an interrupted exchange verifies retained displaced bytes on retry (edited ${edited})`, () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "managed-plan-exchange-retry-")));
+  const root = realpathSync(tempDir("managed-plan-exchange-retry-"));
   try {
     writeFileSync(join(root, "plan.md"), "baseline");
     assert.throws(() => replaceSafe(root, "plan.md", Buffer.from("saved"), digest("baseline"), () => {

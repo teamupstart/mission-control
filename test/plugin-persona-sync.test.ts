@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this sync runs unattended on every boot and WRITES to the Persona catalog.
@@ -20,7 +20,7 @@ import { join } from "node:path";
  * without needing a real installed plugin.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-plugin-personas-"));
+const home = tempDir("mission-plugin-personas-");
 process.env.HARNESS_HOME = join(home, "state");
 for (const prefix of ["MISSION_", "FLEET_", "HARNESS_"]) {
   delete process.env[`${prefix}WORKFLOW_PERSONA_MODEL`];

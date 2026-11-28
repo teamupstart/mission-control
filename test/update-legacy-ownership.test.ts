@@ -2,9 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -13,11 +12,12 @@ import { spawnBundledUpdateHelper } from '../scripts/update-helper-runtime.mjs';
 import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
 import { darwinCheckIdentity } from '../scripts/darwin-process-identity.mjs';
 import type { UpdateProcessOwner } from '../scripts/update-process-owners.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 test('legacy snapshot handoff captures and cleans up an orphaned SDK driver and native utility before continuing', {
   skip: process.platform !== 'darwin', timeout: 180_000,
 }, async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mc-legacy-ownership-')));
+  const root = realpathSync(tempDir('mc-legacy-ownership-'));
   const bundle = join(root, 'Fixture.app');
   const userDataDirectory = join(root, 'profile');
   const electron = createRequire(import.meta.url)('electron') as string;

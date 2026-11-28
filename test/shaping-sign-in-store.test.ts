@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -22,6 +21,7 @@ import {
   type SignInStore,
   type StoredSignIn,
 } from "../src/server/shaping/sign-in/store.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 // The record's shape as `phased-plan.md` states the cross-phase contract. `StoredSignIn` is
 // inferred from the store's schema; this fails typecheck if a schema edit changes the contract.
@@ -103,7 +103,7 @@ class FakeKeychain implements NativeKeychainBinding {
 }
 
 function home(): string {
-  return mkdtempSync(join(tmpdir(), "mission-sign-in-home-"));
+  return tempDir("mission-sign-in-home-");
 }
 
 function tagOf(path: string): string {
@@ -485,7 +485,7 @@ test("a failing Keychain never falls back to memory in the middle of a call", as
 // --- The loader -----------------------------------------------------------------------------
 
 test("the addon path is dist/native/keychain.node from source and from the server bundle", () => {
-  const root = join(tmpdir(), "mission-root");
+  const root = join(testTempRoot(), "mission-root");
   assert.equal(
     nativeKeychainAddonPath(pathToFileURL(join(root, "src/server/shaping/sign-in/keychain-native.ts")).href),
     join(root, "dist/native/keychain.node"),

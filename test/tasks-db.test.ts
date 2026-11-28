@@ -1,18 +1,17 @@
 import { test, after } from "node:test";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { taskHasWorktrees } from "../src/shared/task-repos.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Point the daemon's state dir at a throwaway home BEFORE anything reads config,
 // so this test never touches the real ~/.mission-control db. config.ts resolves the
 // state dir at module load, so db/registry must be imported dynamically after.
 // (Setting the legacy HARNESS_HOME also exercises the backward-compat env path.)
-const home = mkdtempSync(join(tmpdir(), "mission-db-"));
+const home = tempDir("mission-db-");
 process.env.HARNESS_HOME = home;
 const {
   openDb,

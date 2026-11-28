@@ -4,15 +4,15 @@
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { serve } from "@hono/node-server";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-shaping-http-"));
+const home = tempDir("mission-shaping-http-");
 process.env.MISSION_HOME = home;
 // The sign-in service keeps its records in memory: no Keychain item is read or written.
 process.env.MISSION_SHAPER_SIGN_IN_STORE = "memory";

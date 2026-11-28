@@ -1,7 +1,6 @@
 import { after, beforeEach, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Persona } from "../src/shared/workflow.ts";
@@ -10,6 +9,7 @@ import type { ResidentProfile } from "../src/shared/residents.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
@@ -17,7 +17,7 @@ ensureNativeStateLockAddon();
 // archive, the HTTP routes and their SSE frames, and the refusal of `resident` on every task
 // creation path except the resident launch.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-profiles-"));
+const home = tempDir("mission-residents-profiles-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

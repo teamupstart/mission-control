@@ -1,11 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { expect, test as base } from "../fixtures/test.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { tempDirAsync } from "../../test/temp-root.mjs";
 
 /**
  * Setup's GitHub authentication row when the token lives only in the login shell.
@@ -17,7 +17,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
  */
 const test = base.extend<{ loginShell: string }>({
   loginShell: async ({ playwright: _playwright }, use) => {
-    const dir = await mkdtemp(join(tmpdir(), "mission-setup-gh-auth-"));
+    const dir = await tempDirAsync("mission-setup-gh-auth-");
     const shell = join(dir, "login-shell");
     await writeFile(shell, '#!/bin/sh\nGITHUB_TOKEN=fixture-shell-token\nexport GITHUB_TOKEN\nexec /bin/sh -c "$2"\n', { mode: 0o755 });
     try { await use(shell); }

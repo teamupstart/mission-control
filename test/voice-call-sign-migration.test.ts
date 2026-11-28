@@ -1,18 +1,18 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A version-50 database, written before call signs: the real schema, made in a child process by
 // this build, then wound back to what a version-50 daemon left on disk - the tasks table without
 // `call_sign`, holding one backlog task and one running task. The upgrade adds the nullable column,
 // every existing task reads as having no call sign, and a call sign written after survives a
 // reopen, which is what a daemon restart does.
-const home = mkdtempSync(join(tmpdir(), "mission-voice-call-sign-migration-"));
+const home = tempDir("mission-voice-call-sign-migration-");
 process.env.MISSION_HOME = home;
 execFileSync(process.execPath, ["--import", "tsx", "-e", "await import(process.env.DB_MODULE).then(m => m.openDb())"], {
   env: { ...process.env, DB_MODULE: new URL("../src/server/db.ts", import.meta.url).href }, stdio: "pipe",

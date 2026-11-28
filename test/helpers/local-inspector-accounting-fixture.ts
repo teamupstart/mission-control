@@ -5,12 +5,12 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./workflow-run-intent.ts";
+import { tempDir } from "../temp-root.mjs";
 
 const { openDb } = await import("../../src/server/db.ts");
 const { WorkflowStore, workflowJson } = await import("../../src/server/workflows/store.ts");
@@ -86,7 +86,7 @@ export function seed(id: string, repo: string): Store {
 
 /** A Git repository with a submitted commit over origin/main. The caller removes `repo`. */
 export function repository() {
-  const repo = mkdtempSync(join(tmpdir(), "mission-local-inspector-accounting-repo-"));
+  const repo = tempDir("mission-local-inspector-accounting-repo-");
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
   const commit = (name: string) => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
     "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", name);

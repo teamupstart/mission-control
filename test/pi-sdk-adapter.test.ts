@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a managed Pi session that looks dispatched and is running something
 // else - a different model, a different conversation, or nothing at all.
@@ -14,7 +14,7 @@ import { join } from "node:path";
 // no session file is opened, and no token is spent - and the fake has no path to any of
 // those, which is what makes that a property rather than a promise.
 
-const home = mkdtempSync(join(tmpdir(), "pi-sdk-adapter-"));
+const home = tempDir("pi-sdk-adapter-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { piSdkSpec, splitPiModelId, usageFrom, toolActivity } = await import(

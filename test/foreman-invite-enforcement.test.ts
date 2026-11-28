@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { Session } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The DAEMON's half of the Foreman invite rule
 // (docs/plans/foreman-invite/phase-2-foreman-enforcement.md, contract C6).
@@ -24,7 +23,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // asserted beside every refusal rather than in a test of its own, so a regression that
 // widens the gate cannot pass by being read as a narrower one.
 
-const home = mkdtempSync(join(tmpdir(), "mission-foreman-enforce-"));
+const home = tempDir("mission-foreman-enforce-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

@@ -1,20 +1,18 @@
 import { claudeTui } from "../src/server/harness/claude/tui.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "@shared/protocol.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { MODEL_PICKER_XHIGH } from "./fixtures/claude-panes.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /** The mode-line spec the registry holds, so the parser is pinned to the shipped wording. */
 const CLAUDE_MODE_LINE = claudeTui.modeLine!;
 
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
-process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-mode-"));
+process.env.HARNESS_HOME = tempDir("harness-mode-");
 const { Registry, normalizePermissionMode } = await import("../src/server/registry.ts");
 const { parsePaneModeLine } = await import("../src/server/discovery/pane-mode.ts");
 

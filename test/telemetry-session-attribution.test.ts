@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DataPointType } from "@opentelemetry/sdk-metrics";
 
@@ -16,7 +15,7 @@ import { DataPointType } from "@opentelemetry/sdk-metrics";
 // A real database, real capture and the real projection engine - no fixture substituted for
 // the pipeline, because every claim here is a claim about what actually got committed.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-session-"));
+const home = tempDir("mission-telemetry-session-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 
@@ -46,6 +45,7 @@ const { TELEMETRY_EVENTS } = await import("../src/shared/telemetry-catalog.ts");
 const { MODEL_CATALOG } = await import("../src/shared/model.ts");
 import type { MetricsBatchPayload, TracesBatchPayload } from "../src/server/telemetry/projection.ts";
 import type { TelemetryActor } from "../src/shared/telemetry.ts";
+import { tempDir } from "./temp-root.mjs";
 
 registerBuiltinTelemetry();
 

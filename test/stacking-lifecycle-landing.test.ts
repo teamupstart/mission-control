@@ -1,13 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import type { PrRefs, PrSnapshot } from "../src/server/inspector/github.ts";
 import type { StackGitHub } from "../src/server/stacking/github.ts";
 import type { MergeInput } from "../src/shared/shipping.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A two-pull-request stack landing bottom-up under YOLO mode, through the real lifecycle
 // observation, prompt candidate, release check and merge gate: the parent merges, the child
@@ -16,7 +15,7 @@ import type { MergeInput } from "../src/shared/shipping.ts";
 // pull request. Every GitHub call is recorded, so the daemon's only write - a base edit - is
 // asserted, and the lifecycle modules are checked to spawn nothing (no git in any worktree).
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-landing-"));
+const home = tempDir("mission-stacking-landing-");
 process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
 const { observeStackLifecycle } = await import("../src/server/stacking/state.ts");

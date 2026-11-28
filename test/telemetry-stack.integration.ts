@@ -1,8 +1,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The compatibility gate: Mission Control's durable path against the REAL local stack.
 //
@@ -30,7 +30,7 @@ import { join } from "node:path";
 //     Mission Control restart and is delivered as both a metric and a trace once the backend
 //     comes back, still carrying the time it originally happened.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-stack-"));
+const home = tempDir("mission-telemetry-stack-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { closeDb, openDb } = await import("../src/server/db.ts");

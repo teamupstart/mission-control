@@ -1,16 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { ReviewItem } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The asynchronous input inbox, Phase 3, at the daemon: the two daemon rules the dashboard
 // surfaces depend on. Remind me later on a message-mode question in its default mode sends the
 // agent nothing, and the conversation's history route keeps every filed question, and every
 // question a merge closed, across a reload.
 
-const home = mkdtempSync(join(tmpdir(), "mission-async-input-dashboard-"));
+const home = tempDir("mission-async-input-dashboard-");
 process.env.MISSION_HOME = home;
 
 const {

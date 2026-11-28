@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   TaskSourceInstance,
@@ -16,6 +15,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // HARNESS_HOME preamble below the way a value import would.
 import type { WritebackDeps } from "../src/server/task-sources/writeback.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the direction where a mistake is published onto an item other
 // people are watching, automatically and with nobody clicking anything. Five claims carry
@@ -39,7 +39,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // anything that resolves it is imported (`openDb` refuses the operator's real dir under the
 // test runner, so getting this wrong fails loudly instead of writing to live state).
 
-const home = mkdtempSync(join(tmpdir(), "mission-writeback-"));
+const home = tempDir("mission-writeback-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const {

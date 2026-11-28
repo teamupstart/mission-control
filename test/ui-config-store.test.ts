@@ -1,9 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the dashboard's preferences have to be durable, and the dashboard has
 // to be able to tell "never configured" from "configured to the defaults".
@@ -15,7 +15,7 @@ import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 // cannot carry the difference - `configured` does. Real db, so the round-trip through
 // zod's defaults is exercised rather than mocked. Mirrors harnesses-config.test.ts.
 
-const home = mkdtempSync(join(tmpdir(), "mission-ui-cfg-"));
+const home = tempDir("mission-ui-cfg-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

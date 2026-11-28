@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, existsSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, existsSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicMigrationJson } from '../scripts/install-migration.mjs';
 import { cleanupHelperSnapshots } from '../scripts/update-helper-runtime.mjs';
 import { resolveOwnedRuntime } from '../src/shared/owned-runtime.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 test('snapshot cleanup requires exact dead ownership and a durable completed outcome', (t) => {
-  const state = realpathSync(mkdtempSync(join(tmpdir(), 'helper-cleanup-')));
+  const state = realpathSync(tempDir('helper-cleanup-'));
   t.after(() => rmSync(state, {recursive: true, force: true}));
   const store = join(state, 'update-runtimes'); mkdirSync(store);
   const make = (n: string, finished = true) => {

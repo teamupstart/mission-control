@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { tempDir } from "./temp-root.mjs";
 
 // The MCP child's half of `clear_awaiting`: a reply that is not JSON (an empty body, a proxy's
 // HTML error page) still reached Mission Control, so the agent is told the status it got, never
@@ -14,7 +13,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 //
 // Drives the real MCP server over stdio against a stub daemon.
 
-const home = mkdtempSync(join(tmpdir(), "awaiting-mcp-"));
+const home = tempDir("awaiting-mcp-");
 let reply: { status: number; type: string; body: string } = { status: 200, type: "application/json", body: "{}" };
 const daemon = createServer((req: IncomingMessage, res) => {
   req.resume();

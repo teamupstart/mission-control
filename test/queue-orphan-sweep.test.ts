@@ -1,10 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What the worker's orphan sweep is allowed to escalate.
 //
@@ -26,7 +25,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // hook-instrumented session's queue is. Keying on the synthetic id is the ONE case
 // where neither bug can show, which is exactly why they survived their first tests.
 
-const home = mkdtempSync(join(tmpdir(), "mission-orphan-sweep-"));
+const home = tempDir("mission-orphan-sweep-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

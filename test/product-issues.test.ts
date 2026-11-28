@@ -6,7 +6,6 @@ import {
 } from "node:test";
 import {
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   statSync,
@@ -14,12 +13,11 @@ import {
   truncateSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Product reports can publish publicly, so this file exercises the service through injected
 // subprocesses and an isolated upload root. No test may inherit the operator's state or gh.
-const home = mkdtempSync(join(tmpdir(), "mission-product-issues-"));
+const home = tempDir("mission-product-issues-");
 process.env.MISSION_HOME = home;
 
 const {
@@ -60,6 +58,7 @@ import type { SavedUpload } from "../src/server/uploads.ts";
 import type { ProductIssueRunner } from "../src/server/product-issues.ts";
 import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
 import type { ProductIssueRequest } from "../src/shared/product-issues.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

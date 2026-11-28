@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { KeepAwakeStatus, ServerEvent } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the Registry is the ONE convergence path for keep-awake state - the
 // snapshot answers a fresh or reconnecting dashboard, `keep_awake_status` answers the
@@ -21,7 +21,7 @@ import type { KeepAwakeStatus, ServerEvent } from "../src/shared/types.ts";
 // the seeded off. The operator's saved choice lives in the manager's store
 // (`keep-awake-preference.test.ts`); the Registry never carries it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-keep-awake-sse-"));
+const home = tempDir("mission-keep-awake-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { Registry } = await import("../src/server/registry.ts");

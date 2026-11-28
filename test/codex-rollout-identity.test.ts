@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { selectRolloutIdentity } from "../src/server/discovery/codex-rollouts.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const dir = mkdtempSync(join(tmpdir(), "mission-rollout-identity-"));
+const dir = tempDir("mission-rollout-identity-");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const CWD = "/repo/pooled-slot-11";

@@ -3,9 +3,9 @@ import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, renameSync, rmSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { renameSync, rmSync, mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Hibernating a task (issue #1547): what is at stake is the operator's work. A hibernated task
 // must keep its conversation, worktree, blocker and workflow binding through its agent leaving,
@@ -14,7 +14,7 @@ import { basename, join } from "node:path";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "mission-hibernation-"));
+const home = tempDir("mission-hibernation-");
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
 process.env.HARNESS_HOME = join(home, "state");
 

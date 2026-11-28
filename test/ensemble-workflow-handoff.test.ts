@@ -1,7 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -14,7 +13,7 @@ import { join } from "node:path";
  * WorkflowManager, and asserts the exactly-once, exact-clean, block-visibly contract.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-handoff-"));
+const home = tempDir("mission-ensemble-handoff-");
 process.env.HARNESS_HOME = join(home, "state");
 
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -26,6 +25,7 @@ const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { FakeGateway, FakeFinalize, FakeWorkflow, stubAdapters, decidePlan, runInsert } = await import("./ensemble-fixture.ts");
 import type { EnsembleWorkflowHandoff } from "../src/shared/ensemble.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -10,9 +9,10 @@ import {
   REPO_TASK_SKILL_MAX_BODY_BYTES,
 } from "../src/server/instructions/repo-task-skill.ts";
 import { TASK_KINDS } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function repo(name: string, skill?: string | null, kind = "ship"): { repoRoot: string; worktreePath: string; dir: string } {
-  const dir = mkdtempSync(join(tmpdir(), "rts-"));
+  const dir = tempDir("rts-");
   const wt = join(dir, name);
   mkdirSync(join(wt, ".claude", "skills", kind), { recursive: true });
   if (skill != null) writeFileSync(join(wt, ".claude", "skills", kind, "SKILL.md"), skill);

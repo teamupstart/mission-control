@@ -2,12 +2,10 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdirSync,
-  mkdtempSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   base64EncodedBytes,
@@ -24,8 +22,9 @@ import {
   STATIC_GIF_IMAGE,
   writeImageDescriptor,
 } from "./helpers/llm-image-fixtures.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "llm-image-input-"));
+const root = tempDir("llm-image-input-");
 after(() => rmSync(root, { recursive: true, force: true }));
 
 function fixtureDir(name: string): string {

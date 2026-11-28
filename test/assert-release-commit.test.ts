@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -9,6 +8,7 @@ import {
   firstParentSubjects,
   releaseCommitProblem,
 } from "../scripts/assert-release-commit.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 const repo = join(import.meta.dirname, "..");
 
@@ -62,7 +62,7 @@ test("the subjects omitted by the broken release run are rejected", () => {
 });
 
 test("first-parent validation checks merge subjects without inspecting private branch commits", () => {
-  const repoRoot = mkdtempSync(join(tmpdir(), "mission-release-subjects-"));
+  const repoRoot = tempDir("mission-release-subjects-");
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
 

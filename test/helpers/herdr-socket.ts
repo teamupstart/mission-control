@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tempDir } from "../temp-root.mjs";
 
 export interface HerdrRequest {
   id: string;
@@ -19,7 +19,7 @@ export interface FakeHerdrSocket {
 export async function fakeHerdrSocket(
   handle: (request: HerdrRequest, socket: Socket) => void,
 ): Promise<FakeHerdrSocket> {
-  const dir = mkdtempSync(join(tmpdir(), "mission-herdr-socket-"));
+  const dir = tempDir("mission-herdr-socket-");
   const path = join(dir, "herdr.sock");
   const requests: HerdrRequest[] = [];
   const sockets = new Set<Socket>();

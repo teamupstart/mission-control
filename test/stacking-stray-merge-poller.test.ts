@@ -1,13 +1,12 @@
 import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrRefs } from "../src/server/inspector/github.ts";
 import type { StackGitHub } from "../src/server/stacking/github.ts";
 import type { TaskDependency } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The PR poller's half of the #1416 / #1417 gap, against a real Registry, TaskManager and
 // SQLite, with GitHub scripted behind the stacking seam:
@@ -20,7 +19,7 @@ import type { TaskDependency } from "../src/shared/types.ts";
 //  - the session that starts the recovery on a new branch keeps its task, and the recovery
 //    pull request's merge into the default branch is what completes it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-stray-poller-"));
+const home = tempDir("mission-stacking-stray-poller-");
 process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

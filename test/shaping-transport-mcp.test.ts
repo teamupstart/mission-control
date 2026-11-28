@@ -4,15 +4,14 @@
 // the trace context and work unit id every call carries. No real service, no credential.
 import assert from "node:assert/strict";
 import { after, before, test, type TestContext } from "node:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
-const home = mkdtempSync(join(tmpdir(), "mission-shaping-mcp-"));
+const home = tempDir("mission-shaping-mcp-");
 process.env.MISSION_HOME = home;
 // The sign-in service keeps its records in memory: no Keychain item is read or written.
 process.env.MISSION_SHAPER_SIGN_IN_STORE = "memory";
@@ -27,6 +26,7 @@ const { beginSignIn, signIn, signInFixture } = await import("./helpers/shaper-si
 import type { FakeOAuthServer } from "./fixtures/fake-oauth-server.mjs";
 import type { Shaper, ShapingContext, ShapingRequest } from "../src/shared/shaping.ts";
 import type { ShaperOf, TransportContext, TransportReply } from "../src/server/shaping/transports/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-guidance-mcp.mjs", import.meta.url));
 const RAW_STDIO = fileURLToPath(new URL("./fixtures/raw-stdio-mcp.mjs", import.meta.url));

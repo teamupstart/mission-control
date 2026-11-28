@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test, { after, beforeEach } from "node:test";
 import { ARCHIVE_SEARCH_LIMITS, decodeArchiveCursor, archiveKey } from "../src/shared/archives.ts";
 import { writeScoutBundle } from "./helpers/archive-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The disposable index: its schema, its upgrade path, and its bounded queries.
@@ -15,7 +15,7 @@ import { writeScoutBundle } from "./helpers/archive-fixture.ts";
  * the pre-existing task row proves the new tables cost an operator nothing.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-store-"));
+const home = tempDir("mission-scout-store-");
 process.env.MISSION_HOME = home;
 
 function seedPreFeatureDb(): void {

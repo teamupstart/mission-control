@@ -1,9 +1,8 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
@@ -16,7 +15,8 @@ import type { BacklogPlan, Task } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What an open drawer does to the fleet's height.
@@ -267,8 +267,8 @@ before(() => {
   const electron = require("electron") as string;
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const dir = mkdtempSync(join(tmpdir(), "mission-line-drawer-"));
-  const userData = mkdtempSync(join(tmpdir(), "mission-line-drawer-profile-"));
+  const dir = tempDir("mission-line-drawer-");
+  const userData = tempDir("mission-line-drawer-profile-");
   try {
     const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
     const paths = CASES.map(([name, body]) => {
@@ -276,7 +276,7 @@ before(() => {
       writeFileSync(path, page(styles, body));
       return path;
     });
-    const output = execFileSync(electron, [
+    const output = execFileSync(...electronGuiCommand(electron, [
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/line-drawer-browser.cjs", import.meta.url)),
@@ -287,7 +287,7 @@ before(() => {
       // Last, because it takes the rest of the line.
       "--pages",
       ...paths,
-    ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+    ]), { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
     measured = JSON.parse(output.trim()) as Record<string, Measured>;
   } finally {
     rmSync(dir, { force: true, recursive: true });

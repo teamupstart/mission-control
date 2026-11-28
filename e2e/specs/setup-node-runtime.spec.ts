@@ -1,15 +1,15 @@
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test as base } from "../fixtures/test.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
+import { tempDirAsync } from "../../test/temp-root.mjs";
 
 const test = base.extend<{ selectedNode: { path: string; version(value: string): Promise<void> } }>({
   selectedNode: async ({ playwright: _playwright }, use) => {
-    const dir = await mkdtemp(join(tmpdir(), "mission-setup-node-"));
+    const dir = await tempDirAsync("mission-setup-node-");
     const path = join(dir, "node");
     const version = async (value: string) => {
       await writeFile(path, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(value)});\n`, { mode: 0o755 });

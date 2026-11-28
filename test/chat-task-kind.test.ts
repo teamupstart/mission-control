@@ -1,16 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
 import { plannableBacklog, readyBacklog } from "../src/shared/backlog.ts";
 import { DispatchSchema, CreateScheduleSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
 import { CHAT_DEPENDENCY_REFUSAL, CHAT_WORKFLOW_REFUSAL, TASK_KIND_BACKLOG_REFUSAL, taskAllowsBacklogAutopilot } from "../src/shared/task.ts";
 import { TaskSourceDefaultsSchema } from "../src/shared/task-source.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-chat-kind-"));
+const home = tempDir("mission-chat-kind-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

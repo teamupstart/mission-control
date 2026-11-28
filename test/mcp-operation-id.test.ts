@@ -6,12 +6,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { createServer, type IncomingHttpHeaders } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { tempDir } from "./temp-root.mjs";
 
 /** Loaded after tsx, before the server: the server then starts on a runtime with no `crypto` global. */
 const WITHOUT_CRYPTO_GLOBAL = "data:text/javascript,delete globalThis.crypto";
@@ -25,7 +24,7 @@ test("tool requests carry a generated operation id on a runtime with no crypto g
     "undefined",
   );
 
-  const home = mkdtempSync(join(tmpdir(), "mission-mcp-operation-id-"));
+  const home = tempDir("mission-mcp-operation-id-");
   const requests: Array<{ path: string; headers: IncomingHttpHeaders }> = [];
   const daemon = createServer((req, res) => {
     req.resume();

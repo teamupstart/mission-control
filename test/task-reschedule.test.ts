@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: a prerequisite that was cancelled or failed while the work it stood
@@ -21,7 +21,7 @@ import type { TaskArchiveGate } from "../src/server/tasks.ts";
  * state dir under the test runner), the ui-config-store preamble.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-reschedule-"));
+const home = tempDir("mission-task-reschedule-");
 process.env.HARNESS_HOME = home;
 // These tests exercise reschedule ordering, not an operator's installed terminal backends.
 process.env.HERDR_BIN = join(home, "missing-herdr");

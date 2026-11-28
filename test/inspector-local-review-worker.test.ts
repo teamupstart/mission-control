@@ -1,11 +1,11 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
 import type { WorkflowLocalReviewMatch } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A head the Local Inspector already passed gets no GitHub review, no reply and no post, and
 // the worker keeps observing its pull request.
@@ -13,7 +13,7 @@ import type { WorkflowLocalReviewMatch } from "../src/shared/workflow.ts";
 // Drives the real Inspector loop through a fake `gh` and a fake model runner, so it spends no
 // model tokens. The workflow manager's match answer is injected through the same start option
 // the daemon wires, so the worker is exercised exactly as it is called in production.
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-local-review-"));
+const temp = tempDir("mission-inspector-local-review-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const modelCallsPath = join(temp, "model-calls.txt");

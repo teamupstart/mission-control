@@ -2,10 +2,9 @@ import type { BinaryInstallReceipt } from "../src/shared/install-receipt-schema.
 import type { BinaryIdentity } from "../src/shared/binary-distribution.mjs";
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import fs, { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync, readdirSync, chmodSync, cpSync, renameSync, symlinkSync, type PathLike } from 'node:fs';
+import fs, { mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync, readdirSync, chmodSync, cpSync, renameSync, symlinkSync, type PathLike } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { execFileSync, spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { stagingPaths } from '../scripts/app-bundle-swap.mjs';
 import { prepareStagedInstall, prepareSourceUpdate, installStagedApp, inspectBundle, requireInstallSpace } from '../scripts/install-staged-app.mjs';
@@ -14,11 +13,12 @@ import { cleanupHelperSnapshots } from '../scripts/update-helper-runtime.mjs';
 import { realApplyOperations, runApplyUpdate } from '../scripts/apply-update.mjs';
 import { processIdentity } from '../scripts/update-lock.mjs';
 import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
 function fixture(t: test.TestContext, rename = false, scope?: "user" | "system" | "custom") {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'staged-install-')));
+  const root = realpathSync(tempDir('staged-install-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const stateDirectory = join(root, 'state'); mkdirSync(stateDirectory);
   const apps = join(root, scope ?? 'apps'); mkdirSync(apps);

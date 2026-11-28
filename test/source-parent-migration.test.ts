@@ -1,15 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // A swept item's parent over a database written before tasks could record one.
 // `tasks.source_parent` arrives through `addColumn`, an older row reads as having no parent,
 // and the upgraded row takes a parent and keeps it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-source-parent-migration-"));
+const home = tempDir("mission-source-parent-migration-");
 process.env.MISSION_HOME = home;
 
 function seedPreFeatureDb(): void {

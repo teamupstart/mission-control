@@ -1,18 +1,18 @@
 import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
 import { isHandoffReleaseOnlyGoal, resolvedSessionIntent } from "../src/shared/goal.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Drives the REAL refiner loop against a fake `claude` binary: a real spawn, a real envelope,
 // the real parse ladder, the real registry write. Everything is pinned before importing the
 // modules that read it at load time.
-const home = mkdtempSync(join(tmpdir(), "mission-refiner-"));
+const home = tempDir("mission-refiner-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 
@@ -21,7 +21,7 @@ process.env.MISSION_HOME = home;
 // afterwards; reassigning the env mid-test silently keeps using the first one, which is
 // exactly how an earlier draft of this file "passed" its failure cases against the GOOD bin.
 // Switching a file the script reads sidesteps that entirely.
-const bin = mkdtempSync(join(tmpdir(), "fake-claude-"));
+const bin = tempDir("fake-claude-");
 const modeFile = join(bin, "mode");
 /**
  * Every prompt the fake has been handed, one run per `RUN_DELIM`-terminated record.

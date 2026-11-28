@@ -110,7 +110,8 @@ Local fixture verification includes:
 node --import ./test/setup-state.mjs --import tsx test/helpers/distribution-failure-runs.ts
 ```
 
-This executes the actual `npm run package:distribution` entry point in disposable fixtures,
+This executes the actual `npm run package:distribution` entry point in disposable fixtures
+inside a [test temp root](test-temp-dirs.md) that is removed when it exits,
 forces every stage to fail, and checks exit 1 plus the redacted stage/status record. It
 does not access real credentials, Apple services or the operator's keychain, and it is
 not evidence of real signed qualification.

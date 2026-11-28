@@ -1,8 +1,7 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 // W3C trace context from Mission Control into the agents its SDK runtime launches.
@@ -14,7 +13,7 @@ import { join } from "node:path";
 // management owns where the agents' telemetry goes, the launch carries nothing else - no
 // `OTEL_*` exporter variable and no `-c otel.*` override.
 
-const home = mkdtempSync(join(tmpdir(), "mission-agent-trace-"));
+const home = tempDir("mission-agent-trace-");
 process.env.HARNESS_HOME = join(home, "state");
 mkdirSync(join(home, "agent-state"), { recursive: true });
 
@@ -41,6 +40,7 @@ const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 import type { TracesBatchPayload } from "../src/server/telemetry/projection.ts";
 import type { ClaudeSdkDeps, ClaudeSdkQuery, ClaudeSdkQueryOptions } from "../src/server/harness/claude/sdk-types.ts";
 import type { SdkLaunchOptions, SdkSessionHandle } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 type DetectionDeps = import("../src/server/environment/organization.ts").OrganizationDetectionDeps;
 

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -12,9 +11,10 @@ import {
   E2E_MAX_WORKERS,
   type E2eHostLease,
 } from "../e2e/host-lease.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 async function fixture(): Promise<{ root: string; metadataPath: string }> {
-  const root = await mkdtemp(join(tmpdir(), "mission-e2e-lease-test-"));
+  const root = await tempDirAsync("mission-e2e-lease-test-");
   return { root, metadataPath: join(root, "owner.json") };
 }
 

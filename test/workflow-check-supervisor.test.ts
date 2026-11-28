@@ -4,13 +4,11 @@ import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -29,6 +27,7 @@ import {
   resetCheckRuntimeSupportCache,
 } from "../src/server/workflows/check-identity.ts";
 import type { CheckProcessRegistry } from "../src/server/workflows/check-lease.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The gate, and the rules that decide whether a signal may be sent.
 //
@@ -46,7 +45,7 @@ const dirs: string[] = [];
 const raw: number[] = [];
 
 function workspace(): string {
-  const dir = mkdtempSync(join(tmpdir(), "mission-check-sup-"));
+  const dir = tempDir("mission-check-sup-");
   dirs.push(dir);
   return dir;
 }

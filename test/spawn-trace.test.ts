@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
 /** Run `source` under the tracer in a fresh node, return its records and the report's JSON. */
 function traced(source: string) {
-  const dir = mkdtempSync(join(tmpdir(), "mission-spawn-trace-"));
+  const dir = tempDir("mission-spawn-trace-");
   const script = join(dir, "probe.mjs");
   writeFileSync(script, source);
   const trace = join(dir, "trace");
@@ -94,7 +94,7 @@ test("a shell line that execs git is git's one process, not a shell beside it", 
 });
 
 test("the report labels a shell git started by its git command, never by the child's text", () => {
-  const trace = mkdtempSync(join(tmpdir(), "mission-spawn-report-"));
+  const trace = tempDir("mission-spawn-report-");
   try {
     mkdirSync(join(trace, "trace2"));
     writeFileSync(join(trace, "1.jsonl"), `${JSON.stringify({ event: "start", role: "worker", file: "t", pid: 1, ppid: 0 })}\n`);
@@ -116,7 +116,7 @@ test("the report labels a shell git started by its git command, never by the chi
 
 test("a relative trace directory reaches a descendant started in another directory", () => {
   // The worker resolves it once; a node child running elsewhere still writes beside the worker.
-  const dir = mkdtempSync(join(tmpdir(), "mission-spawn-trace-relative-"));
+  const dir = tempDir("mission-spawn-trace-relative-");
   try {
     const elsewhere = join(dir, "elsewhere");
     mkdirSync(elsewhere);

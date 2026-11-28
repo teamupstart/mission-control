@@ -215,7 +215,8 @@ consume the real Phase 4 fake-agent repair fixture and Phase 3 retained PR obser
 ownership invalidation, including restart and a merge after the outcome horizon. Neither
 late facts nor replay change operational task status or restore ownership.
 
-Run the focused tests with the root `AGENTS.md` test-runner contract:
+Run the focused tests with the root `AGENTS.md` test-runner contract. Their fixtures live in
+each worker's [test temp root](test-temp-dirs.md):
 
 ```sh
 node --test --test-concurrency=4 --import ./test/setup-state.mjs --import tsx test/telemetry-*.test.ts

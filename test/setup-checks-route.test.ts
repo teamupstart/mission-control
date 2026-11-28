@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { availableSetupDependencyIds } from "../src/shared/conductor-integration.ts";
 import { SETUP_DEPENDENCY_INFO, setupFamilyFlagOn } from "../src/shared/setup-catalog.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Setup reports every dependency the build offers; ai-conductor is withheld while its
 // integration is hidden (`shared/conductor-integration.ts`), and a family behind a preview flag
@@ -12,7 +11,7 @@ import { SETUP_DEPENDENCY_INFO, setupFamilyFlagOn } from "../src/shared/setup-ca
 const SETUP_DEPENDENCY_IDS = availableSetupDependencyIds()
   .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, () => false));
 
-const home = mkdtempSync(join(tmpdir(), "mission-setup-route-"));
+const home = tempDir("mission-setup-route-");
 process.env.MISSION_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { resetPreview, resetToOrigin } from "../src/server/actions.ts";
 import { stubRun } from "../src/server/util/exec.ts";
@@ -10,6 +9,7 @@ import type { PaneHandles } from "../src/shared/pane.ts";
 import { gitIn, mkCloneOnBranch, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("harness-reset-");
 
@@ -234,7 +234,7 @@ test("a pane we cannot read reports cleared:false rather than assuming the best"
 });
 
 test("reset degrades gracefully outside a repo and with no working dir", async () => {
-  const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-reset-nogit-")));
+  const notRepo = realpathSync(tempDir("harness-reset-nogit-"));
   const p = await resetPreview(sess(notRepo));
   assert.equal(p.ok, false);
   assert.equal(p.error, "not a git repository");

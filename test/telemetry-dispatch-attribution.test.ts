@@ -1,13 +1,13 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The dispatcher's OWN telemetry branches, driven through `Dispatcher.dispatch` rather than by
 // calling the observation helper.
@@ -26,7 +26,7 @@ import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 // so each branch is reached the way a dispatch reaches it; only the spawn, the pane and the
 // provider launch are faked.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-dispatch-"));
+const home = tempDir("mission-telemetry-dispatch-");
 // Set before importing anything that resolves the state dir.
 process.env.MISSION_HOME = home;
 // Binaries that exist, so bin resolution is never what fails a launch here.

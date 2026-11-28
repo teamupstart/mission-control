@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ServerEvent, Session, WorkItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Whether a stranded queue ever REACHES a card. The hint is computed correctly by
 // `orphanedQueueFor` - the failures here are all about emission: a queue orphans
@@ -13,7 +12,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // typically hasn't changed in any way of its own, and every "did anything change?"
 // check in the path is happy to say no.
 
-const home = mkdtempSync(join(tmpdir(), "mission-orphan-"));
+const home = tempDir("mission-orphan-");
 process.env.MISSION_HOME = home;
 
 const { openDb, upsertQueue, upsertQueueItem } = await import("../src/server/db.ts");

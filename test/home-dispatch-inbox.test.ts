@@ -1,14 +1,14 @@
 // Headless mode phase 4: the read-only inbox, the config view and the pure rules behind them.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Above the imports: `openDb` refuses a state dir this file did not name.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-home-dispatch-inbox-")));
+const home = realpathSync(tempDir("mission-home-dispatch-inbox-"));
 process.env.MISSION_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");

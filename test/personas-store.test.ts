@@ -1,15 +1,15 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: Persona guidance becomes immutable history inside published workflow
 // versions. The mutable catalog must therefore preserve accepted Markdown exactly, reserve names
 // across archive, and make two editors conflict instead of letting the last save erase the first.
 
-const home = mkdtempSync(join(tmpdir(), "mission-personas-store-"));
+const home = tempDir("mission-personas-store-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { DB_PATH } = await import("../src/server/config.ts");

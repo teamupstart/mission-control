@@ -14,14 +14,14 @@ import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Session, Task } from "../src/shared/types.ts";
 import type { SdkSessionHandle } from "../src/server/harness/types.ts";
 import type { TracesBatchPayload } from "../src/server/telemetry/projection.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-work-unit-"));
+const home = tempDir("mission-telemetry-work-unit-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 

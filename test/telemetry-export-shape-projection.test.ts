@@ -1,13 +1,13 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { MetricPointDto, MetricsBatchPayload } from "../src/server/telemetry/projection.ts";
 import type { TelemetryProjection } from "../src/server/telemetry/registration.ts";
 import type { TelemetryConfigPatch } from "../src/shared/telemetry.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-shapes-"));
+const home = tempDir("mission-telemetry-shapes-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { closeDb, openDb } = await import("../src/server/db.ts");

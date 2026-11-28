@@ -113,6 +113,9 @@ page to receive an index whose JavaScript disappeared before it loaded, surfacin
 Dispatch button. The snapshot protects in-flight tests from later builds and is removed at
 teardown. This is build isolation, not a retry or a longer readiness timeout.
 
+Where a run's temp files and transform cache live, and how specs create fixture directories,
+is in [Test temp directories](../docs/test-temp-dirs.md).
+
 Useful flags:
 
 ```sh

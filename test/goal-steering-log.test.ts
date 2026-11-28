@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { chmodSync, existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { IntentRelationship } from "../src/shared/types.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-steering-"));
+const home = tempDir("mission-steering-");
 process.env.MISSION_HOME = home;
 process.env.MISSION_GOAL_POLL_MS = "10";
 process.env.MISSION_GOAL_REFRESH_MS = "10";

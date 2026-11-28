@@ -1,13 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Where an attention-inbox dismissal is kept, and how every dashboard hears of it.
 //
@@ -25,7 +25,7 @@ import type { TaskManager } from "../src/server/tasks.ts";
 // newest revision of its row the window had seen; a window whose dismissal was delayed past
 // another window's newer one is refused, so the newer one stands for everybody.
 
-const home = mkdtempSync(join(tmpdir(), "mission-attention-dismissals-"));
+const home = tempDir("mission-attention-dismissals-");
 process.env.HARNESS_HOME = home;
 
 // A database the previous release wrote: schema 22, no `attention_dismissals` table.

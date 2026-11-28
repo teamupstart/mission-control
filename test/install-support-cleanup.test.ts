@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { markRetainedInstaller, removeSupersededInstaller } from "../scripts/install-app.mjs";
 import { writeReceipt } from "../src/shared/install-receipt.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(t: test.TestContext) {
-  const directory = mkdtempSync(join(tmpdir(), "mission-installer-cleanup-"));
+  const directory = tempDir("mission-installer-cleanup-");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const stateDirectory = join(directory, "state");
   const installers = join(stateDirectory, "installers");

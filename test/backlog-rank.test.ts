@@ -2,9 +2,9 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * The backlog's one order: `tasks.backlog_rank`, written by the operator and by nothing
@@ -31,7 +31,7 @@ import { join } from "node:path";
 
 // Set before the imports below resolve, so `openDb` opens THIS database - see AGENTS.md on
 // `--import ./test/setup-state.mjs` and why a hoisted import defeats this preamble.
-const home = mkdtempSync(join(tmpdir(), "mission-rank-"));
+const home = tempDir("mission-rank-");
 process.env.MISSION_HOME = home;
 const DB_FILE = join(home, "harness.db");
 

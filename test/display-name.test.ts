@@ -177,8 +177,10 @@ test("a name pair keeps the title and carries the call sign or reference name be
   });
   assert.equal(agentNamePair({ ...full, callSign: "  " }).spoken, null, "a blank call sign is no call sign");
   assert.equal(agentNamePair({ callSign: "Echo", resident, sessionName: "w" }).spoken, "Echo", "a call sign outranks a reference name");
-  assert.equal(agentNamePair({ callSign: " split  THE header ", taskTitle: "Split the header" }).spoken, null,
-    "a call sign that repeats the title is not printed twice");
+  assert.deepEqual(agentNamePair({ callSign: "Granite", taskTitle: "granite" }), {
+    display: { name: "granite", source: "task-title", spoken: false },
+    spoken: "Granite",
+  }, "a call sign that reads the same as the title is still carried, so its pill still shows");
   assert.deepEqual(agentNamePair({ sessionName: "bare" }), {
     display: { name: "bare", source: "session-name", spoken: false },
     spoken: null,

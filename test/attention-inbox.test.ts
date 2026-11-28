@@ -1021,3 +1021,36 @@ test("with voice on, a Stuck row drawn by the inbox is headed by the title with 
   assert.doesNotMatch(off, /cs-mark/);
   assert.match(off, /aria-label="Fix the parser is stuck"/);
 });
+
+test("with voice on, an inbox row whose call sign reads the same as its title still draws the quoted call sign", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const session = mkSession({
+    id: "s-same", name: "granite-session", state: "idle",
+    task: mkTaskSummary({ id: "t-same", title: "Granite", callSign: "Granite" }),
+  });
+  const result = foldAttention({ sessions: [session], reviews: [review({ id: "q-same", sessionId: "s-same" })], ensembles: [] });
+  const draw = (overrides: Record<string, boolean>) => renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true, ...overrides } } },
+      withOverlayHost(createElement(AttentionInbox, {
+        fold: result,
+        onClose: () => {},
+        onDismiss: async () => null,
+        onOpenEnsemble: () => {},
+        onOpenSession: () => {},
+        reports: mkReportControls(null).controls,
+      }))),
+  );
+  const badge = /<strong>Granite<\/strong><span class="cs-mark cs-badge">[\s\S]*?<span class="sr-only">Call sign <\/span>&quot;Granite&quot;<\/span>/;
+  // The stacked row header.
+  assert.match(draw({ voice: true }), badge);
+  // The split list row and its pane header.
+  const split = draw({ voice: true, "inbox-split": true });
+  assert.match(split, /<span class="inbox-split-row-meta"><strong>Granite<\/strong><span class="cs-mark cs-rail">[\s\S]*?&quot;Granite&quot;<\/span>/);
+  assert.match(split, badge);
+  // Voice off: the title alone.
+  assert.doesNotMatch(draw({ voice: false }), /cs-mark/);
+});

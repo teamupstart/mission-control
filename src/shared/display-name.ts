@@ -6,7 +6,7 @@
 
 import { residentMarkerColor, type ResidentMarkerColorId, type ResidentRunSummary } from "./residents.ts";
 import type { Session } from "./types.ts";
-import { normalizeSpokenName, quotedReferenceName, taskKindTakesCallSign } from "./voice-names.ts";
+import { quotedReferenceName, taskKindTakesCallSign } from "./voice-names.ts";
 
 /**
  * What an agent might be called, highest rank first:
@@ -80,8 +80,8 @@ export function agentDisplayName(input: AgentDisplayNameInput): AgentDisplayName
  * the operator says to address it (a call sign, else a resident's reference name), or null.
  *
  * `agentDisplayName` lets a spoken name stand in for the title, which leaves a surface showing
- * only "Granite"; this keeps the title and carries the spoken name beside it. A spoken name that
- * merely repeats the title is dropped, so nothing is printed twice.
+ * only "Granite"; this keeps the title and carries the spoken name beside it. A spoken name is kept
+ * even when it reads the same as the title: the quoted pill is what says the agent answers to it.
  */
 export interface AgentNamePair {
   display: AgentDisplayName;
@@ -98,10 +98,7 @@ export function agentNamePair(input: AgentDisplayNameInput): AgentNamePair {
     callSign: null,
     resident: input.resident ? { ...input.resident, referenceName: null } : null,
   });
-  return {
-    display,
-    spoken: spoken && normalizeSpokenName(spoken) !== normalizeSpokenName(display.name) ? spoken : null,
-  };
+  return { display, spoken };
 }
 
 /**

@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { grantRefusal, type LlmRunOptions } from "@shared/llm.ts";
+import { grantRefusal, type LlmRunOptions, type LlmToolGrant } from "@shared/llm.ts";
 import { defaultClaudeSdkOneShotDeps } from "../harness/claude/sdk-deps.ts";
 import type {
   ClaudeSdkMessage,
@@ -7,7 +7,7 @@ import type {
   ClaudeSdkUserMessage,
 } from "../harness/claude/sdk-types.ts";
 import { CLAUDE_AI_CONNECTORS_ENV, CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
-import { CLAUDE_SANDBOX, claudeGrantSettings } from "./claude-grant.ts";
+import { CLAUDE_SANDBOX, claudeGrantDenyRules } from "./claude-grant.ts";
 import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
 import { claudeProviderFailure, ProviderFailure } from "./provider-failure.ts";
@@ -98,6 +98,35 @@ function resultText(frame: ClaudeSdkMessage, structured: boolean): string {
   return frame.result;
 }
 
+/**
+ * The inline flag settings EVERY one-shot carries, with or without a grant.
+ *
+ * `tools: []` governs built-in tools only. MCP tools arrive by a separate road, and one of
+ * them ignores both `settingSources: []` and a missing `mcpServers`: the operator's claude.ai
+ * account connectors (Gmail, Google Drive, Google Calendar, Claude Docs...), which the CLI
+ * fetches from the logged-in account rather than from any settings file. Before this, the
+ * model reading an untrusted diff or transcript was offered `mcp__claude_ai_Gmail__send_message`,
+ * `Google_Drive__share_file` and `Google_Calendar__delete_event`, held back only by the
+ * CLI's default permission denial. They also broke runs outright: the Claude Docs
+ * connector's injected instructions make the model call `guide`, the call is denied, and
+ * answering the denial needs a second turn that `maxTurns: 1` does not have.
+ *
+ * Three independent layers here close it, beside `CLAUDE_AI_CONNECTORS_ENV` in the
+ * options' `env`. `disableClaudeAiConnectors` stops the fetch;
+ * `strictMcpConfig` (in the options, with no `mcpServers`) admits no other MCP config
+ * either; and the `mcp__*` deny rule removes any MCP tool that a future CLI routes around
+ * the first two. A grant's path denials merge into the same payload, because the SDK takes
+ * exactly one `settings` value.
+ */
+export function claudeOneShotSettings(grant: LlmToolGrant | null): string {
+  return JSON.stringify({
+    disableClaudeAiConnectors: true,
+    permissions: {
+      deny: [...(grant ? claudeGrantDenyRules(grant) : []), "mcp__*"],
+    },
+  });
+}
+
 async function* oneUserMessage(
   message: ClaudeSdkUserMessage,
 ): AsyncGenerator<ClaudeSdkUserMessage> {
@@ -170,18 +199,20 @@ export async function runClaudeSdkOneShot(
       throw cancelError ?? new Error("Claude Agent SDK run aborted");
     }
 
-    // `tools: []` disables every built-in tool. That is the DEFAULT here and the reason
-    // this module is safe to hand untrusted text: the prompt embeds child-session
-    // transcripts and repo content from a diff, the model only ever needs to emit JSON,
-    // and a crafted transcript must not be able to steer it into invoking tools.
+    // `tools: []` disables every BUILT-IN tool, and nothing more. The prompt embeds
+    // child-session transcripts and repo content from a diff, the model only ever needs to
+    // emit JSON, and a crafted transcript must not be able to steer it into invoking tools.
+    // `tools: []` alone does not deliver that: MCP tools, the operator's claude.ai account
+    // connectors among them, are not in that list and survived it. What keeps them out is
+    // `claudeOneShotSettings`, `strictMcpConfig` and the `CLAUDE_AI_CONNECTORS_ENV` switch
+    // below; read `claudeOneShotSettings`'s comment before touching any of them.
     //
     // ONE tool survives that filter, and only when `outputFormat` is set below: the CLI
     // appends `StructuredOutput` AFTER applying the tool list, so "every tool disabled" is
     // not literally true on the schema path. The safety claim above still holds, because of
     // what that one tool is - read-only, not open-world, permission-free, and it does
     // nothing but hand back the model's own answer. There is no capability there for a
-    // crafted transcript to steer into. Read the sentence as "nothing that can ACT", not
-    // "nothing that can be called".
+    // crafted transcript to steer into.
     //
     // A validated grant widens that for a caller that has argued for it. Today only the
     // Inspector does. Its deny rules travel as inline flag settings, which the SDK defines
@@ -220,8 +251,10 @@ export async function runClaudeSdkOneShot(
         : oneUserMessage(claudeImageUserMessage(prompt, images)),
       options: {
         tools: grant ? [...grant.tools] : [],
-        ...(grant ? { settings: claudeGrantSettings(grant) } : {}),
+        settings: claudeOneShotSettings(grant),
         settingSources: [],
+        // No `mcpServers`, on purpose: strict mode with none admits no MCP server at all.
+        strictMcpConfig: true,
         // What each of the three shapes of run here costs in turns. The claim that used to
         // stand here - that a tool-less one-shot "can and should finish in one turn" - was
         // true only of the third, and applying it to the second shipped a P0: 4 of 6 small

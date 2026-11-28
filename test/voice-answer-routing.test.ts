@@ -658,6 +658,60 @@ test("a confirmed foreground reply fences a suspended background window before t
   assert.equal(answers()[0]?.footerWindowId, windowId);
 });
 
+test("an unnamed reply asks the sole live dashboard after a missed confirmation suspended it", async t => {
+  mockCaptureClock(t);
+  const router = registry.voiceRouter!;
+  const q = question();
+  const windowId = "suspended-under-load";
+  t.after(router.openCards.connect(windowId, true));
+  const observed = String(Math.floor(performance.now()));
+  assert.equal((await put("/api/voice/open-cards", { windowId, focused: true, cards: [{ kind: "question", id: q.id, focused: true }] },
+    { "x-voice-focus-at-us": "100", "x-voice-report-revision": "1", "x-voice-observation-id": "1",
+      "x-voice-cards-observed-at-ms": observed, "x-voice-cards-earliest-at-ms": observed })).status, 200);
+  t.mock.timers.tick(50);
+  // A companion check for another card outlasts its deadline on a loaded host. Neither it
+  // nor the resume request it sends is answered before the operator speaks.
+  const missed: number[] = [];
+  assert.equal(await router.openCards.confirmCompanion("another-card", (_, sequence) => missed.push(sequence), new AbortController().signal), true);
+  assert.equal(missed.length, 2);
+  assert.deepEqual(router.openCards.reportingWindows(), []);
+  assert.deepEqual(router.openCards.replyWindows(), [windowId]);
+  // The live dashboard answers the reply's newer request, not the resume request it missed.
+  await say("reply, option B", "after-suspension");
+  assert.deepEqual(answers().map(a => [a.id, a.reviewId, a.footerWindowId]), [["after-suspension", q.id, windowId]]);
+  assert.deepEqual(router.openCards.reportingWindows(), [windowId]);
+});
+
+test("an unnamed reply asks a suspended focused dashboard while another window still reports", async t => {
+  mockCaptureClock(t);
+  const router = registry.voiceRouter!;
+  const q = question();
+  const focused = "suspended-focused";
+  const other = "still-reporting";
+  t.after(router.openCards.connect(focused, true));
+  t.after(router.openCards.connect(other, true));
+  const observed = String(Math.floor(performance.now()));
+  assert.equal((await put("/api/voice/open-cards", { windowId: focused, focused: true, cards: [{ kind: "question", id: q.id, focused: true }] },
+    { "x-voice-focus-at-us": "100", "x-voice-report-revision": "1", "x-voice-observation-id": "1",
+      "x-voice-cards-observed-at-ms": observed, "x-voice-cards-earliest-at-ms": observed })).status, 200);
+  const background = (sequence?: number) => put("/api/voice/open-cards", { windowId: other, focused: false, cards: [] },
+    sequence ? { "x-voice-confirm-focus": String(sequence) } : {});
+  assert.equal((await background()).status, 200);
+  t.mock.timers.tick(50);
+  // The background window answers a companion check; the focused dashboard misses it under load.
+  const missed: number[] = [];
+  await router.openCards.confirmCompanion("another-card", (windowId, sequence) => {
+    if (windowId === other) void background(sequence);
+    else missed.push(sequence);
+  }, new AbortController().signal);
+  assert.equal(missed.length, 2);
+  assert.deepEqual(router.openCards.reportingWindows(), [other]);
+  assert.deepEqual(router.openCards.replyWindows().sort(), [other, focused].sort());
+  await say("reply, option B", "focused-while-suspended");
+  assert.deepEqual(answers().map(a => [a.id, a.reviewId, a.footerWindowId]), [["focused-while-suspended", q.id, focused]]);
+  assert.deepEqual(router.openCards.reportingWindows().sort(), [other, focused].sort());
+});
+
 test("spoken option numbers select their position or give a notice without sending a message", async () => {
   const question = "How many?";
   const q = reviews.create("sdk:Steve", "input", question, question, [{ id: "q", question, allowOther: true,
@@ -1090,6 +1144,54 @@ test("a cached background dashboard that already gained focus can confirm the sp
       await say("cancel");
     } else assert.deepEqual(answers(), []);
     assert.equal(registry.getReview(first.id)?.status, "pending");
+  }
+});
+
+test("a confirmation that narrows a held focus observation accepts the reply its first wide bounds left uncertain", async t => {
+  mockCaptureClock(t);
+  const router = registry.voiceRouter!;
+  const first = question();
+  const second = question("Which cache?");
+  const requests: number[] = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") requests.push(event.sequence);
+    else publish(event);
+  });
+  const at = () => Math.floor(performance.now());
+  for (const narrowed of [false, true]) {
+    const windowId = "refined-clock-" + narrowed;
+    const disconnect = router.openCards.connect(windowId, true);
+    let revision = 0;
+    const report = (focus: string, observationId: number, [earliest, latest]: number[], confirm?: number) => put("/api/voice/open-cards", {
+      windowId, focused: true, cards: [first, second].map(q => ({ kind: "question", id: q.id, focused: q.id === focus })),
+    }, { "x-voice-focus-at-us": "100", "x-voice-report-revision": String(++revision), "x-voice-observation-id": String(observationId),
+      "x-voice-cards-earliest-at-ms": String(earliest), "x-voice-cards-observed-at-ms": String(latest),
+      ...(confirm !== undefined && { "x-voice-confirm-focus": String(confirm) }) });
+    assert.equal((await report(first.id, 1, [at(), at()])).status, 200);
+    t.mock.timers.tick(100);
+    const focusedAt = at();
+    // One 90 ms round trip during the dashboard's startup burst calibrated this clock.
+    const wide = [focusedAt - 2, focusedAt + 88];
+    t.mock.timers.tick(40);
+    requests.length = 0;
+    const reply = router.accept({ id: "refined-" + narrowed, text: "reply, tomorrow", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+    t.mock.timers.tick(20);
+    // The new focus report reaches the daemon only after the reply.
+    assert.equal((await report(second.id, 2, wide)).status, 200);
+    assert.equal(requests.length, 1);
+    // A refined clock re-reports the same observation with narrower bounds.
+    assert.equal((await report(second.id, 2, narrowed ? [focusedAt - 1, focusedAt + 2] : wide, requests[0])).status, 200);
+    await reply;
+    if (narrowed) {
+      assert.deepEqual(answers().map(a => a.reviewId), [second.id]);
+      await say("cancel");
+    } else {
+      assert.deepEqual(answers(), []);
+      assert.equal(cards.at(-1)?.reason, "question-notice");
+    }
+    assert.equal(registry.getReview(first.id)?.status, "pending");
+    disconnect();
   }
 });
 

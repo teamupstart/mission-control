@@ -384,8 +384,12 @@ export function InspectorSettingsPanel({
                 review gets no GitHub review and no comments, and its workflow completes. Any other
                 head - a later push that changes the content, a workflow version without the stage,
                 a pull request opened outside a workflow - is reviewed on GitHub as before: posted
-                in Live, recorded only in Dry run. Repositories holding the merge grant keep the
-                GitHub review for every head.
+                in Live, recorded only in Dry run.
+              </p>
+              <p className="settings-hint">
+                In Live, YOLO mode may merge a head whose content matches a passed local review, as
+                it merges one GitHub Inspector reviewed. In Dry run nothing merges, a locally
+                reviewed head included.
               </p>
             </ConsoleCard>
           )}

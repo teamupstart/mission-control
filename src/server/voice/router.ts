@@ -1111,7 +1111,7 @@ export class VoiceRouter {
     const answer = explicitAnswerText(body);
     const choiceCommand = requestedChoice(body) !== undefined;
     const explicit = !reply && (answer !== undefined || choiceCommand);
-    if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
+    if (!explicit && !(reply && this.openCards.replyWindows().length)) return false;
     const monotonicMs = this.questionTime(time);
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit ? answer ?? body : body;
@@ -1200,7 +1200,8 @@ export class VoiceRouter {
   private async routeAnswerContent(item: OpenCard, candidates: ReviewItem[], words: string, choiceCommand: boolean,
     target: SpokenName | null, picked?: ReviewItem): Promise<void> {
     const fixed = picked ?? (target && candidates.length === 1 ? candidates[0] : undefined);
-    const windows = this.openCards.reportingWindows();
+    // An unnamed reply exists only for a live dashboard, which may be suspended under load.
+    const windows = target ? this.openCards.reportingWindows() : this.openCards.replyWindows();
     // A single named or picked question has a destination even with every dashboard
     // closed. Its Other field still needs a confirmed open card to accept dictation.
     if (fixed && (!windows.length || choiceCommand || !fixed.decisions?.[0]?.allowOther)) {

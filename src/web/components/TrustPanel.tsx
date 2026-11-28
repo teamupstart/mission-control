@@ -13,6 +13,7 @@ import {
   grantFailureMessage,
   grantPatch,
   mergeBlindSpots,
+  mergeGrantTitle,
   planBatchAdd,
   trustRows,
   type ChecksArmedReading,
@@ -101,7 +102,6 @@ const COLUMNS = [
     key: "merge",
     label: "YOLO merges",
     short: "YOLO merges",
-    title: "Clean, soaked PRs in this repo merge themselves to the base branch.",
   },
 ] as const;
 
@@ -230,6 +230,9 @@ export function TrustPanel({
     staged,
   });
   const blindSpots = mergeBlindSpots(rows, yolo);
+  const localReview = inspector.config?.localReview === true;
+  const columnTitle = (col: (typeof COLUMNS)[number]): string =>
+    col.key === "merge" ? mergeGrantTitle(localReview) : col.title;
   const blindRepos = blindSpots.map((r) => r.repo);
   const checkGrants = checkExecutionGrants(rows, checksArmed);
   const checkRepos = checkGrants.map((r) => r.repo);
@@ -424,7 +427,7 @@ export function TrustPanel({
     const marker = trappedPill ? " †" : arms ? " ‡" : "";
     return (
       <div key={col.key} className={`trust-c${trapCell || arms ? " is-trap" : ""}`}>
-        <Tooltip label={col.title}>
+        <Tooltip label={columnTitle(col)}>
           <button
             type="button"
             className={`settings-grant ${on ? "is-on" : "is-off"}${
@@ -646,7 +649,7 @@ export function TrustPanel({
           <div className="trust-grid" role="table" aria-label="Repository trust grants">
             <div className="trust-h trust-h-repo">Repository</div>
             {COLUMNS.map((c) => (
-              <Tooltip key={c.key} label={`${c.label}: ${c.title}`}>
+              <Tooltip key={c.key} label={`${c.label}: ${columnTitle(c)}`}>
                 <div className="trust-h">{c.short}</div>
               </Tooltip>
             ))}

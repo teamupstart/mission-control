@@ -89,7 +89,8 @@ function verdict(over: { headSha: string; base: string; lineage: boolean; releas
     pr: { state: "OPEN", isDraft: false, headSha: over.headSha, createdAt: 0, mergeable: "MERGEABLE", reviewDecision: null,
       checks: "passing", unresolvedThreads: 0, baseRefName: over.base, defaultBranch: "main" },
     stack: { lineage: over.lineage, releasedForHead: over.released },
-    reviewedBase: over.base, inspector: "live", reviewedSha: over.headSha, reviewPosture: "live", rounds: 1,
+    reviewedBase: over.base, inspector: "live", reviewedSha: over.headSha, reviewPosture: "live",
+    localReview: { enabled: false, matchedHeadSha: null }, rounds: 1,
     openFindings: 0, workflowGate: "none", now: 1_000_000,
   };
   return mergeVerdict(input);

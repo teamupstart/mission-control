@@ -31,6 +31,7 @@ function speechStatus(voice: VoiceState | null, choice: VoiceSpeechVoice | null)
     }
     return `${reason} Choose an available voice or connect a listener that can play audio.`;
   }
+  if (output?.code === "speech_playback_off") return `${reason} Questions appear on screen. Turn on Speak replies aloud to hear them.`;
   if (output?.code === "speech_playback_unsupported") return `${reason} Questions appear on screen. Connect a listener that supports playback to hear them.`;
   return `${reason.replace(/[.]$/u, "")}. Open Voice Setup and check the listener.`;
 }
@@ -63,7 +64,8 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
   const output = voice?.capabilities["speech-output"];
   const canPlay = output?.available === true;
   const sampleReason = pendingVoice || !canPlay ? status : speech?.job?.purpose === "ask" ? "Wait for the spoken question to finish." : undefined;
-  const automatic = speech && (canPlay || output?.code === "speech_voice_unavailable")
+  const playback = config?.speech.playback ?? true;
+  const automatic = speech && (canPlay || output?.code === "speech_voice_unavailable" || output?.code === "speech_playback_off")
     ? resolveSpeechVoice(VOICE_CONFIG_DEFAULTS, speech.catalog).voice : null;
   const downloadSize = model?.totalBytes ? `${Number((model.totalBytes / 1_000_000).toFixed(1))} MB` : "";
   const last = speech?.lastAudition;
@@ -104,6 +106,23 @@ export function SpokenReplies({ state, voice }: { state: Pick<VoiceConfigState, 
   return (
     <section className="settings-group voice-spoken-replies" aria-labelledby="spoken-replies-title" data-anchor="voice/spoken-replies">
       <h3 className="settings-group-label" id="spoken-replies-title">Spoken replies</h3>
+      <div className="kb-row">
+        <div className="kb-row-text">
+          <span className="kb-row-label">Speak replies aloud</span>
+          <span className="kb-row-desc">
+            Play voice samples and spoken questions aloud. Turn this off if the microphone picks up
+            the spoken voice. Questions still appear on screen.
+          </span>
+        </div>
+        <div className="kb-row-controls">
+          <Tooltip label={playback ? "Stop speaking samples and questions aloud" : "Speak samples and questions aloud"}>
+            <label className="skill-switch">
+              <input type="checkbox" checked={playback} disabled={!config}
+                onChange={e => void update({ speech: { playback: e.target.checked } })} aria-label="Speak replies aloud" />
+            </label>
+          </Tooltip>
+        </div>
+      </div>
       <div className="kb-row voice-picker-row">
         <label className="kb-row-label" htmlFor="spoken-voice">Voice</label>
         <div className="kb-row-controls">

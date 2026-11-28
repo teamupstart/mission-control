@@ -53,14 +53,12 @@ import XCTest
         let quality: AVSpeechSynthesisVoiceQuality
     }
 
-    func testUnqualifiedOutputAdvertisesNeitherAudioNorSystemVoices() {
-        let hello = SpeechHello()
-        XCTAssertFalse(hello.audio)
-        XCTAssertTrue(hello.systemVoices.isEmpty)
+    func testSupervisedHelloAdvertisesAudioPlayback() {
+        XCTAssertTrue(SpeechHello().audio)
     }
 
-    func testQualifiedHelloListsEnglishVoicesWithDefaultEnhancedAndPremiumQuality() throws {
-        let hello = SpeechHello(passedSpeakerCheck: true) {
+    func testHelloListsEnglishVoicesWithDefaultEnhancedAndPremiumQuality() throws {
+        let hello = SpeechHello {
             [Voice(identifier: "basic", name: "Alex", language: "en", quality: .default),
              Voice(identifier: "french", name: "Thomas", language: "fr-CA", quality: .premium),
              Voice(identifier: "enhanced", name: "Ava", language: "EN-US", quality: .enhanced),
@@ -75,24 +73,24 @@ import XCTest
         ])
     }
 
-    func testQualifiedHelloPreservesEnglishVoiceOrderAt256And257Voices() {
+    func testHelloPreservesEnglishVoiceOrderAt256And257Voices() {
         let english = (1...257).map { index in
             Voice(identifier: "voice-\(index)", name: "Voice \(index)", language: "en-US", quality: .default)
         }
         let french = Voice(identifier: "french", name: "Thomas", language: "fr-CA", quality: .premium)
         let expectedIDs = (1...256).map { "voice-\($0)" }
         for count in [256, 257] {
-            let hello = SpeechHello(passedSpeakerCheck: true) { [french] + english.prefix(count) }
+            let hello = SpeechHello { [french] + english.prefix(count) }
             XCTAssertEqual(hello.systemVoices.map(\.id), expectedIDs, "\(count) installed English voices")
         }
     }
 
-    func testQualifiedHelloEnumeratesTheMacsInstalledEnglishVoices() {
+    func testHelloEnumeratesTheMacsInstalledEnglishVoices() {
         let installed = AVSpeechSynthesisVoice.speechVoices().filter {
             let language = $0.language.lowercased()
             return language == "en" || language.hasPrefix("en-")
         }.prefix(256)
-        let advertised = SpeechHello(passedSpeakerCheck: true).systemVoices
+        let advertised = SpeechHello().systemVoices
         XCTAssertEqual(advertised.map(\.id).sorted(), installed.map(\.identifier).sorted())
     }
 

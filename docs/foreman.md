@@ -577,12 +577,10 @@ dependencies.
 Claude uses one fresh Agent SDK query by default; [`MISSION_CLAUDE_TRANSPORT=print`](configuration.md)
 keeps the one-shot `claude -p` path available as an operator-pinned escape hatch.
 
-Tool-less also means connector-less. A headless Claude call runs with
-`ENABLE_CLAUDEAI_MCP_SERVERS=false`, so connectors you added on claude.ai (Gmail, Slack, Vercel and
-so on) never load into it. Claude Code would otherwise add every connector tool schema to the request
-once the connectors finished connecting. On a well-connected account that is hundreds of tools, and
-because Haiku cannot defer tool schemas, the Tier 1 router failed with `prompt_too_long`. The one
-headless caller that asks for a claude.ai connector tool by name, the Jira sweep, keeps them.
+Tool-less also means connector-less: headless Claude calls never load the connectors you added on
+claude.ai (Gmail, Slack, Vercel and so on), apart from a run that asks for a connector tool by name.
+Why, and which caller is the exception, is recorded once, on `CLAUDE_AI_CONNECTORS_ENV` in
+[`src/server/claude-cli.ts`](../src/server/claude-cli.ts).
 
 | Call | Default | Config key | What it does |
 |---|---|---|---|

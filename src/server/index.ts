@@ -436,20 +436,20 @@ const checkScheduler = createCheckScheduler();
 // still writing in it, and only the second authorizes provider release. That seam is injected
 // here with a refusing default, so missing recovery keeps the resource instead of guessing.
 //
-// Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
-// daemon that refused to start over one unreconcilable lease would be worse than one
-// running without it.
+// Not awaited. A recovered row keeps its tree while the pass runs - a native slot stays leased
+// to it until its return, and a Git fallback tree's path names its own attempt - and
+// `reconcileOnStartup` pins every live tree before its first await. Resolving a row runs Git
+// returns and can remove a whole checkout, which would hold the listener back. Best-effort,
+// because one unreconcilable lease must not stop the daemon.
 const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
 });
 const commandArtifacts = new WorkflowCommandArtifactService();
 const checkRuntime = new CheckRuntime(checkLeases, { artifacts: commandArtifacts });
-try {
-  await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
-} catch (err) {
+checkLeases.reconcileOnStartup(checkRuntime.groupRecovery).catch((err) => {
   console.error("[mission-control] could not reconcile check leases:", err);
-}
+});
 // Assigned once Settings > Storage's measurer exists, below: a cleanup that removed slots
 // lowers its totals at once instead of at the next measurement.
 let onWorktreesChanged = () => {};

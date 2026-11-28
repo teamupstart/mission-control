@@ -980,6 +980,13 @@ conditionally returns the exact native lease. A missing, stale, occupied, or unc
 kept for startup or maintenance reconciliation rather than guessed away. Native check leak
 reclamation runs on the native maintenance cadence after slot startup reconciliation.
 
+Check lease startup reconciliation does not hold the daemon back from listening. It pins every
+live lease's tree synchronously, and a durable row keeps its tree while the pass runs: a native
+slot stays leased to it until its return, and a Git fallback tree's path names its own attempt.
+It then resolves each row in the background. Each release runs Git against the tree, and returning a
+Git fallback tree removes the whole checkout, which takes a while for a large repository; a
+failure is logged and retried by the next maintenance pass.
+
 #### The dependency claim in a check lease
 
 A check lease runs the pool's [dependency claim](#dependency-claims) under the same rules as a

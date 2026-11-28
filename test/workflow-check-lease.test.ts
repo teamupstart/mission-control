@@ -671,6 +671,150 @@ test("reconciliation restores pins before it resolves anything", async () => {
   await fresh.releaseForAttempt("att-restore");
 });
 
+test("startup reconciliation pins every live tree before the first await while a slow step runs", async () => {
+  const m = mkManager();
+  const path = await acquire(m, "att-slow-startup");
+
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
+  fresh.processes.record("att-slow-startup", 2468, "ticks-2468");
+  // The daemon does not await this pass, so whatever resolving a row takes - here the group
+  // question, in production also the tree's return - runs while new checks can already start.
+  let answer!: (outcome: "empty") => void;
+  const answered = new Promise<"empty">((resolve) => (answer = resolve));
+  let asked!: () => void;
+  const askedOnce = new Promise<void>((resolve) => (asked = resolve));
+  const startup = fresh.reconcileOnStartup(() => {
+    asked();
+    return answered;
+  });
+
+  assert.deepEqual(fresh.pinnedPaths(), [path], "pinned synchronously, before anything is awaited");
+  await askedOnce;
+  assert.equal(store.get("att-slow-startup")?.cleanupState, "held", "the slow step is still running");
+  assert.deepEqual(fresh.pinnedPaths(), [path]);
+
+  answer("empty");
+  await startup;
+
+  assert.equal(store.get("att-slow-startup")?.cleanupState, "returned");
+  assert.deepEqual(fresh.pinnedPaths(), []);
+});
+
+test("a maintenance pass that overlaps startup reconciliation never resolves the same row twice", async () => {
+  const m = mkManager();
+  const path = await acquire(m, "att-overlap");
+
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
+  fresh.processes.record("att-overlap", 1357, "ticks-1357");
+  let answerStartup!: (outcome: "empty") => void;
+  const startupAnswered = new Promise<"empty">((resolve) => (answerStartup = resolve));
+  let asked!: () => void;
+  const startupAsked = new Promise<void>((resolve) => (asked = resolve));
+  const startup = fresh.reconcileOnStartup(() => {
+    asked();
+    return startupAnswered;
+  });
+  await startupAsked;
+
+  let maintenanceAsked = 0;
+  const maintenance = fresh.reclaimLeaked(async () => {
+    maintenanceAsked++;
+    return "empty";
+  });
+  answerStartup("empty");
+  await Promise.all([startup, maintenance]);
+
+  assert.equal(maintenanceAsked, 0, "the row startup is resolving is not the maintenance pass's to ask about");
+  assert.equal(m.calls.filter((c) => c.cmd === "return" && c.path === path).length, 1);
+  assert.equal(store.get("att-overlap")?.cleanupState, "returned");
+  assert.deepEqual(fresh.pinnedPaths(), []);
+});
+
+test("a release of a row startup reconciliation is resolving neither returns it nor drops startup's claim", async () => {
+  const m = mkManager();
+  const path = await acquire(m, "att-release-during-startup");
+
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
+  fresh.processes.record("att-release-during-startup", 4321, "ticks-4321");
+  let answer!: (outcome: "empty") => void;
+  const answered = new Promise<"empty">((resolve) => (answer = resolve));
+  let asked!: () => void;
+  const askedOnce = new Promise<void>((resolve) => (asked = resolve));
+  const startup = fresh.reconcileOnStartup(() => {
+    asked();
+    return answered;
+  });
+  await askedOnce;
+
+  const released = await fresh.releaseForAttempt("att-release-during-startup");
+  assert.equal(released.outcome, "retry");
+  assert.equal(m.calls.filter((c) => c.cmd === "return").length, 0);
+  let maintenanceAsked = 0;
+  await fresh.reclaimLeaked(async () => {
+    maintenanceAsked++;
+    return "empty";
+  });
+  assert.equal(maintenanceAsked, 0, "startup still holds the row after the refused release");
+
+  answer("empty");
+  await startup;
+  assert.equal(m.calls.filter((c) => c.cmd === "return" && c.path === path).length, 1);
+  assert.equal(store.get("att-release-during-startup")?.cleanupState, "returned");
+  assert.deepEqual(fresh.pinnedPaths(), []);
+});
+
+test("startup reconciliation skips a saved row that a maintenance pass is already resolving", async () => {
+  const m = mkManager();
+  const first = await acquire(m, "att-startup-first");
+  const second = await acquire(m, "att-maintenance-second");
+
+  const fresh = new CheckLeaseManager(db, {
+    verifyBase: async (_r, s) => s,
+    acquisitionProvider: modeledProvider(m.cli, async () => {}),
+  });
+  fresh.processes.record("att-startup-first", 1111, "ticks-1111");
+  fresh.processes.record("att-maintenance-second", 2222, "ticks-2222");
+  const gate = () => {
+    let open!: (outcome: "empty") => void;
+    let asked!: () => void;
+    const answered = new Promise<"empty">((resolve) => (open = resolve));
+    const askedOnce = new Promise<void>((resolve) => (asked = resolve));
+    return { open, askedOnce, ask: () => (asked(), answered) };
+  };
+  const startupGate = gate();
+  const maintenanceGate = gate();
+  const startupAskedAbout: string[] = [];
+  const startup = fresh.reconcileOnStartup((attemptId) => {
+    startupAskedAbout.push(attemptId);
+    return attemptId === "att-startup-first" ? startupGate.ask() : Promise.resolve("empty");
+  });
+  await startupGate.askedOnce;
+  const maintenance = fresh.reclaimLeaked(() => maintenanceGate.ask());
+  await maintenanceGate.askedOnce;
+
+  startupGate.open("empty");
+  await startup;
+  maintenanceGate.open("empty");
+  await maintenance;
+
+  assert.deepEqual(startupAskedAbout, ["att-startup-first"]);
+  for (const path of [first, second]) {
+    assert.equal(m.calls.filter((c) => c.cmd === "return" && c.path === path).length, 1, path);
+  }
+  assert.equal(store.get("att-startup-first")?.cleanupState, "returned");
+  assert.equal(store.get("att-maintenance-second")?.cleanupState, "returned");
+  assert.deepEqual(fresh.pinnedPaths(), []);
+});
+
 test("reconciliation returns a sentinel-pid row on identity alone", async () => {
   const m = mkManager();
   const path = await acquire(m, "att-sentinel");

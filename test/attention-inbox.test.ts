@@ -971,3 +971,53 @@ test("a listed report offers Mute; a muted author's report opened from its notif
   // Still unread, so Mark read is still there.
   assert.match(band, /data-inbox-action="mark-read"/);
 });
+
+test("with voice on, a Stuck row drawn by the inbox is headed by the title with the quoted call sign, named by the title, and hinted by the call sign", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AttentionInbox } = await import("../src/web/components/AttentionInbox.tsx");
+  const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
+  const { VoiceHintsContext } = await import("../src/web/lib/agent-names.ts");
+  const { withOverlayHost } = await import("./helpers/overlay-host.ts");
+  const session = mkSession({
+    id: "s-granite", name: "fix-parser", state: "working",
+    task: mkTaskSummary({ id: "t-granite", title: "Fix the parser", callSign: "Granite" }),
+  });
+  const result = foldAttention({
+    sessions: [session], reviews: [], ensembles: [],
+    stalls: [stall("s-granite", { kind: "silent-working", reason: "No output for a while.", facts: { kind: "silent-working" }, fingerprint: "g" })],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["session_stuck"]);
+  const draw = (voice: boolean) => renderToStaticMarkup(
+    createElement(FeatureFlagsContext.Provider, { value: { enableAll: false, overrides: { inbox: true, voice } } },
+      createElement(VoiceHintsContext.Provider, { value: true },
+        withOverlayHost(createElement(AttentionInbox, {
+          fold: result,
+          onClose: () => {},
+          onDismiss: async () => null,
+          onOpenEnsemble: () => {},
+          onOpenSession: () => {},
+          reports: mkReportControls(null).controls,
+        })))),
+  );
+  const html = draw(true);
+  const stuck = html.match(/<section[^>]*class="inbox-item inbox-stuck"[\s\S]*?<\/section>/)![0];
+  const head = stuck.match(/<div class="inbox-head">([\s\S]*?)<span class="inbox-meta">/)![1]!;
+  // The header: the title, then the call sign in quotes in the board's badge, never the call sign alone.
+  assert.match(head, /<strong>Fix the parser<\/strong><span class="cs-mark cs-badge">/);
+  assert.match(head, /<span class="sr-only">Call sign <\/span>&quot;Granite&quot;<\/span>$/);
+  assert.doesNotMatch(head, /<strong>Granite<\/strong>/);
+  // Accessible names follow the visible title.
+  assert.match(stuck, /aria-label="Fix the parser is stuck"/);
+  assert.match(stuck, /aria-label="Dismiss Fix the parser from the inbox"/);
+  assert.match(stuck, /<textarea[^>]*aria-label="Message Fix the parser"/);
+  // Spoken hints address the call sign, which is what the operator says.
+  assert.match(stuck, /Granite, nudge/i);
+  assert.doesNotMatch(stuck, /Fix the parser, nudge/i);
+
+  // Voice off: the title alone, with no pill.
+  const off = draw(false).match(/<section[^>]*class="inbox-item inbox-stuck"[\s\S]*?<\/section>/)![0];
+  assert.match(off, /<div class="inbox-head">[\s\S]*?<strong>Fix the parser<\/strong><span class="inbox-meta">/);
+  assert.doesNotMatch(off, /cs-mark/);
+  assert.match(off, /aria-label="Fix the parser is stuck"/);
+});

@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -20,6 +19,7 @@ import type {
   WorkflowCommandView,
   WorkflowPolicy,
 } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a Command's run budget is the difference between a workflow that spends
 // twenty minutes running the same test suite in every repair round and one that gates on it
@@ -33,7 +33,7 @@ import type {
 // rather than attempts, and a value this build cannot read degrades toward RUNNING the
 // command rather than toward skipping it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-command-run-budget-"));
+const home = tempDir("mission-command-run-budget-");
 const state = join(home, "state");
 
 /**
@@ -447,9 +447,8 @@ test("the epoch is what a grant moves, and it releases the whole slot", () => {
 });
 
 test("an upgrading catalog gains the column, keeps its commands, and adopts the default", () => {
-  // The migration an operator actually experiences. `addColumn` appends `max_runs` to a table
-  // that already holds their configuration, so the column arrives LAST here rather than where
-  // `CREATE TABLE` would put it - and the rows themselves must be untouched.
+  // The upgrade appends each new column after the stored configuration. Existing rows and
+  // the order of columns added by earlier releases both survive.
   const columns = (db.prepare(`PRAGMA table_info(workflow_commands)`)
     .all() as unknown as Array<{ name: string }>).map((column) => column.name);
   assert.deepEqual(
@@ -464,6 +463,7 @@ test("an upgrading catalog gains the column, keeps its commands, and adopts the 
       "timeout_ms",
       "on_unavailable",
       "on_budget_exhausted",
+      "inspector_severity",
     ],
   );
 
@@ -473,6 +473,7 @@ test("an upgrading catalog gains the column, keeps its commands, and adopts the 
   assert.deepEqual(view.overrides, [{ repoRoot: "/repo", command: ["npm", "run", "test:ci"] }]);
   assert.equal(view.revision, 4, "a migration is not an edit two windows should see");
   assert.equal(view.maxRuns, WORKFLOW_COMMAND_DEFAULT_MAX_RUNS);
+  assert.equal(store.getWorkflowCommand("inspector")?.inspectorSeverity, "major");
 
   // Every slot the catalog projects carries a budget, including the ones nobody has written.
   for (const slot of WORKFLOW_CHECK_SLOTS) {

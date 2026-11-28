@@ -100,6 +100,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.deepEqual(
     APP_CONFIG_ENTRY_LIST.map((entry) => entry.key).sort(),
     [
+      "agentEnvironment",
       "away",
       "backlog.plan",
       "backups",
@@ -119,17 +120,26 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "harnesses",
       "inspector",
       "instructions.standing",
+      // Whether this Mac should be kept awake. `operational` with NO backup domain: a snapshot
+      // restored from another installation must not hold a laptop awake.
+      "keepAwake",
       "llm",
       // Paused sessions by pid, Pause all and the priority session. `operational`, never
       // restored: it names this machine's live processes.
       "pause.state",
       "pipelines",
       "repoIndex",
+      // Settings > Reports' guidance for when an agent posts a report (`inbox` flag).
+      "reports",
       "residents.mcpServers",
       "residents.skillSources",
+      "sessionSettings.access",
       "setup.banner",
       // Task shaping's registered shapers and settings, edited in Settings > Task shaping.
       "shaping",
+      // Shaper sign-in's client registrations. `operational` with NO backup domain: they name
+      // this daemon's loopback redirect URI, and they hold no token.
+      "shaping.signIn",
       "shipping",
       "skills",
       // When each storage warning's occurrence began. `operational`, never restored: it dates
@@ -149,6 +159,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "telemetry.runtime",
       "terminals",
       "ui",
+      // Voice settings, edited in Settings > Voice. `muted` is operational and never restored.
+      "voice",
       "workflows",
       "worktrees",
     ],
@@ -172,6 +184,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     APP_CONFIG_ENTRIES.terminals,
     APP_CONFIG_ENTRIES.backups,
     APP_CONFIG_ENTRIES.storageLimits,
+    APP_CONFIG_ENTRIES.reports,
     APP_CONFIG_ENTRIES.ui,
   ]) {
     assert.equal(entry.classification.kind, "fields");
@@ -202,11 +215,46 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.foremanLease.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.sessionSettingsAccess.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.sessionSettingsAccess.backupDomain, null);
   assert.equal(APP_CONFIG_ENTRIES.backlogPlan.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costTelemetryEnabledAt.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.setupBanner.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.keepAwake.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.keepAwake.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.shapingSignIn.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.shapingSignIn.backupDomain, null);
+  assert.equal(
+    SETTINGS_CONFIG_BACKUP_ENTRIES.some((entry) => entry.key === "shaping.signIn"),
+    false,
+    "a settings backup must never capture or restore shaper sign-in's client registrations",
+  );
+  assert.equal(
+    SETTINGS_CONFIG_BACKUP_ENTRIES.some((entry) => entry.key === "keepAwake"),
+    false,
+    "a settings backup must never capture or restore the Keep awake choice",
+  );
+  assert.deepEqual(APP_CONFIG_ENTRIES.voice.classification.fields, {
+    muted: "operational",
+    listeningMode: "setting",
+    hotkey: "setting",
+    autoMuteDuringCalls: "setting",
+    endOfSpeechMs: "setting",
+    separatorWord: "setting",
+    showTranscript: "setting",
+    transcriptStyle: "setting",
+    transcriptCorner: "setting",
+    transcriptWords: "setting",
+    cancelWindow: "setting",
+    whenUnsure: "setting",
+    speech: "setting",
+    planFormsByVoice: "setting",
+    inputDevice: "setting",
+    decisionProvider: "setting",
+    backend: "setting",
+  });
 });
 
 test("mixed config snapshots include settings and exclude derived or operational state", () => {

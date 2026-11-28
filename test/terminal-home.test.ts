@@ -1,3 +1,4 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -90,6 +91,16 @@ test("a multiplexer wins the axis, and the emulator is not consulted at all", as
   assert.equal(tabs, 0);
 });
 
+test("terminal home launch refuses a checkout reserved by cleanup before spawning", async () => {
+  const machine = deps(fakeMultiplexer({
+    sessions: sessions({ spawnDetached: async () => assert.fail("cleanup must prevent a spawn") }),
+  }), fakeEmulator());
+  using cleanup = reserveWorktreeCleanup([SPEC.cwd]);
+  assert.ok(cleanup);
+  assert.deepEqual(await launchHome(SPEC, machine),
+    { ok: false, error: "automatic cleanup currently owns this checkout" });
+});
+
 test("an unknown home launch never falls through to another backend", async () => {
   let second = 0;
   const result = await launchHome(SPEC, deps(
@@ -99,6 +110,25 @@ test("an unknown home launch never falls through to another backend", async () =
   ));
   assert.deepEqual(result, { ok: false, outcomeUnknown: true, error: "timeout" });
   assert.equal(second, 0);
+});
+
+test("losing dispatch ownership during one backend's refusal prevents opening a fallback backend", async () => {
+  let ownsLaunch = true;
+  const attempts: string[] = [];
+  const machine = deps(
+    fakeMultiplexer({ sessions: sessions({ spawnDetached: async () => {
+      attempts.push("tmux");
+      ownsLaunch = false;
+      return FAIL("terminal declined the launch");
+    } }) }),
+    fakeEmulator(), () => true,
+    fakeMultiplexer({ id: "cmux", sessions: sessions({ spawnDetached: async () => {
+      attempts.push("cmux");
+      return OK;
+    } }) }),
+  );
+  await assert.rejects(launchHome(SPEC, machine, null, () => ownsLaunch), /no longer owns/);
+  assert.deepEqual(attempts, ["tmux"]);
 });
 
 test("an unsupported multiplexer is excluded before installation or home operations", () => {

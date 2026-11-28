@@ -4,6 +4,9 @@ import type { PipelineProbe } from "@shared/pipeline.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type { SetupBannerDismissal, SetupRemedy, SetupStatus, SetupRuntimeView } from "@shared/setup-catalog.ts";
 import type { ExecutableId } from "@shared/executables.ts";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import type { VoiceModelState } from "@shared/voice.ts";
+import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
 
 import type { EnvironmentDeps } from "../environment/types.ts";
 import type { CmuxControl } from "../terminal/cmux.ts";
@@ -56,6 +59,13 @@ export interface SetupDeps {
   /** Whether the cmux app is open AND admitting the daemon, neither of which installation answers. */
   cmuxControl(): Promise<CmuxControl>;
   ghBin(): string;
+  /** The daemon's own environment. Absent reads as empty. */
+  processEnv?(): NodeJS.ProcessEnv;
+  /**
+   * Which of these variables the operator's login shell sets, never their values. Absent
+   * means the login shell is not consulted.
+   */
+  loginShellVariableNames?(names: readonly string[]): Promise<string[]>;
   /** Jira sites the configured acli task sources read, as bare hosts. */
   acliSourceSites?(): string[];
   resolveBinPath(bin: string): Promise<string | null>;
@@ -69,6 +79,19 @@ export interface SetupDeps {
    * (`server/pipelines/availability.ts`); a test may answer for itself.
    */
   conductorIntegration?(): boolean;
+  /**
+   * Whether a preview flag resolves on. Defaults to the daemon's flag store; a test may answer
+   * for itself. A family that follows a flag (Voice) is probed and listed only while it is on,
+   * and the `voice-previews` probe reads the flags voice depends on through it.
+   */
+  flagEnabled?(id: FeatureFlagId): boolean;
+  /** The speech model's state, for the `voice-model` row. Defaults to the daemon's manager. */
+  voiceModel?(): VoiceModelState;
+  /**
+   * The microphone permission the latest listener hello or shell report gave, for the
+   * `voice-microphone` row, or null when neither has reported. Defaults to the voice state store.
+   */
+  voiceMicrophone?(): VoiceMicrophoneReading | null;
   terminalTargets(): TerminalTargetView[];
   /** The repository index this daemon walks: how many checkouts it found, and where it looked. */
   repositoryIndex(): Promise<SetupRepositoryIndexRead>;

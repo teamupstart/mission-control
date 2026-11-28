@@ -263,6 +263,8 @@ test("one request resolves to one opening, and the tour's claim is on the fresh 
   const idle = { editTask: null, tourDemo: null };
   const touring = { editTask: null, tourDemo: demo };
 
+  const followUp = { kind: "new", followUp: { id: "opening-1", repoRoot: "/workspace/build" } } as const;
+  assert.deepEqual(resolveDispatchOpening(followUp, touring), { opening: followUp, problem: null });
   assert.deepEqual(resolveDispatchOpening(null, idle), { opening: null, problem: null });
   assert.deepEqual(resolveDispatchOpening({ kind: "new" }, idle), { opening: { kind: "new" }, problem: null });
   assert.deepEqual(

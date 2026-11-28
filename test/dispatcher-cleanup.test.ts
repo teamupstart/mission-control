@@ -2,13 +2,14 @@ import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { seedGitRepo } from "./helpers/git-fixture.ts";
+import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { gitIn, originAndCloneAt, seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-cleanup-"));
+const home = tempDir("mission-dispatch-cleanup-");
 process.env.HARNESS_HOME = home;
 // A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
 // Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`
@@ -20,7 +21,7 @@ writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 // test never reaches a spawn.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 const { Registry } = await import("../src/server/registry.ts");
-const { Dispatcher, teardownWorktree } = await import("../src/server/dispatcher.ts");
+const { Dispatcher, inactiveTerminalCheckoutBlocker, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { MULTIPLEXERS } = await import("../src/server/terminal/registry.ts");
 const { fakeMultiplexer, muxPane, FAIL, OK } = await import("./helpers/terminal-fakes.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
@@ -227,3 +228,60 @@ test("a renamed legacy cmux home keeps its worktree when cleanup has no captured
     MULTIPLEXERS.cmux = original;
   }
 });
+
+for (const afterFetch of ["occupied", "unknown", "empty"] as const) {
+  test(`fallback removal after an inactive terminal observes ${afterFetch} occupancy after the fetch`, async () => {
+    const { clone } = originAndCloneAt(join(home, `fallback-${afterFetch}`));
+    const tree = join(home, `checkout-${afterFetch}`);
+    const branch = `harness/cleanup-${afterFetch}`;
+    gitIn(clone, "worktree", "add", "-qb", branch, tree);
+    const fetched = gitIn(tree, "rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD");
+    rmSync(fetched, { force: true });
+    const remove = teardownWorktree({ repoRoot: clone, worktreePath: tree, branch, provider: "git", homeName: null },
+      undefined, "foreground", undefined, (path) => inactiveTerminalCheckoutBlocker(path, "git", async () => {
+        // The first occupancy snapshot would be empty. Model a process entering the
+        // checkout (or an unreadable scan) while the real fetch is in progress.
+        let occupancy: WorktreeOccupancy = { status: "known", occupants: [] };
+        if (existsSync(fetched)) {
+          if (afterFetch === "unknown") occupancy = { status: "unknown", reason: "fixture process scan unavailable" };
+          else if (afterFetch === "occupied") occupancy.occupants.push({
+            pid: 123, ppid: 1, startMs: 1, startRaw: "fixture", command: "editor", cwd: path, knownOwner: null,
+          });
+        }
+        return new Map([[path, occupancy]]);
+      }));
+    if (afterFetch === "empty") {
+      await remove;
+      assert.equal(existsSync(tree), false);
+    } else {
+      await assert.rejects(remove, /occupied or occupancy is unknown/);
+      assert.ok(existsSync(fetched), "the remote was refreshed");
+      assert.ok(existsSync(tree), "the checkout remains available to its occupant");
+    }
+  });
+}
+
+for (const change of ["edit", "commit"] as const) {
+  test(`late terminal cleanup retains a checkout after an editor leaves a new ${change} during the occupancy scan`, async () => {
+    const { clone } = originAndCloneAt(join(home, `late-${change}`));
+    const tree = join(home, `edited-${change}`);
+    const branch = `harness/late-${change}`;
+    gitIn(clone, "worktree", "add", "-qb", branch, tree);
+    const file = join(tree, "unfinished.txt");
+    const fetched = gitIn(tree, "rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD");
+    rmSync(fetched, { force: true });
+    const remove = teardownWorktree({ repoRoot: clone, worktreePath: tree, branch, provider: "git", homeName: null },
+      undefined, "foreground", undefined, (path) => inactiveTerminalCheckoutBlocker(path, "git", async () => {
+        assert.ok(existsSync(fetched), "origin was refreshed before checking occupants");
+        writeFileSync(file, "keep this work");
+        if (change === "commit") {
+          gitIn(tree, "add", "unfinished.txt");
+          gitIn(tree, "commit", "-qm", "local work");
+        }
+        return new Map([[path, { status: "known", occupants: [] }]]);
+      }));
+    await assert.rejects(remove, change === "commit" ? /unpublished commits/ : /uncommitted, untracked or ignored work/);
+    assert.equal(readFileSync(file, "utf8"), "keep this work");
+    assert.equal(gitIn(tree, "branch", "--show-current"), branch);
+  });
+}

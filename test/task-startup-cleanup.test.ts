@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-startup-cleanup-"));
+const home = tempDir("mission-startup-cleanup-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");
@@ -317,4 +316,42 @@ test("live or unknown ownership is left completely alone", async () => {
   assert.equal(tornDown, 0);
   assert.equal(task.status, "running");
   assert.equal(task.sessionId, "proc:alive", "a live session's binding is never cleared");
+});
+
+test("an annotation edit that lands while startup tears down a dead home is not written back over", async () => {
+  // The settle writes are built from the copy read before the archive and teardown awaits. A
+  // call sign or priority the operator changes meanwhile is annotation, editable in any status,
+  // so the settle carries the task's annotation as it reads at the write, not the stale copy's.
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: "startup-annotation",
+    repoRoot: "/repo/startup-annotation",
+    status: "done",
+    homeName: "annotation-home",
+    terminalResourceId: "annotation-res",
+    priority: "low",
+    labels: ["old"],
+    callSign: "Alice",
+    dispatchedAt: 900,
+  }));
+  let release!: () => void;
+  const mayFinish = new Promise<void>((resolve) => { release = resolve; });
+  let started = false;
+  const teardown: NonNullable<ConstructorParameters<typeof TaskManager>[5]>["teardown"] = async () => {
+    started = true;
+    await mayFinish;
+  };
+  const tasks = new TaskManager(registry, undefined, { taskLiveness: () => false } as never, undefined, undefined, { teardown });
+  await eventually(() => started, "startup cleanup did not begin");
+
+  const edited = await tasks.update("startup-annotation", { callSign: "Atlas", priority: "high", labels: ["new"] });
+  assert.equal(edited.ok, true, edited.error);
+  release();
+  await eventually(() => registry.getTask("startup-annotation")?.homeName === null, "startup cleanup did not settle");
+
+  const settled = registry.getTask("startup-annotation")!;
+  assert.equal(settled.callSign, "Atlas");
+  assert.equal(settled.priority, "high");
+  assert.deepEqual(settled.labels, ["new"]);
+  assert.equal(settled.terminalResourceId, null, "the settle itself still happened");
 });

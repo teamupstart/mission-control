@@ -1,18 +1,17 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { InspectorPr, Task } from "../src/shared/types.ts";
 import type { PrRefs, PrSnapshot } from "../src/server/inspector/github.ts";
 import type { StackGitHub } from "../src/server/stacking/github.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A stacked pull request's lineage on its Inspector row, the base correction that uses it,
 // the release check that frees it, and the PR-opening instruction that names the same base.
 // Real SQLite in a temp home; GitHub is a scripted seam.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-lineage-"));
+const home = tempDir("mission-stacking-lineage-");
 process.env.HARNESS_HOME = home;
 const { openDb, adoptInspectorPr, getInspectorPr, loadInspectorInspections, recordInspectorPrLineage, updateInspectorPr } = await import("../src/server/db.ts");
 const { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase, stackPrInstruction } = await import(

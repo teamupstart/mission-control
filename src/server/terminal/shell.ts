@@ -56,3 +56,59 @@ export function shellWords(command: string): string[] {
   }
   return words;
 }
+
+/**
+ * A script this codebase wrote, split into its statements: at each newline outside a quoted
+ * word, with surrounding whitespace trimmed and blank lines dropped. A quoted word may span
+ * lines - a launch prompt usually does - so splitting the text on `\n` would cut a word in half.
+ * Understands the quoting `shellCommand` writes (single-quoted words, and the `'"'"'` it
+ * renders an apostrophe as).
+ */
+export function shellStatements(script: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  for (const char of script) {
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === "\n") {
+      if (current.trim()) statements.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) statements.push(current.trim());
+  return statements;
+}
+
+/**
+ * The agent command a launch wrapper runs (see `launchAndCleanupScript`): its last statement, or,
+ * for a launch with a fallback (`fittingLaunch`), the primary launch under the probe's `then` -
+ * the statement after the one that records the outcome.
+ */
+export function wrapperAgentCommand(script: string): string {
+  const statements = shellStatements(script);
+  const probe = statements.findIndex((statement) => statement.startsWith("if ") && statement.includes("mission-turn-one-probe"));
+  if (probe < 0) return statements.at(-1) ?? "";
+  const branch = statements.slice(probe + 1);
+  return branch.find((statement) => !statement.startsWith("printf ")) ?? "";
+}
+
+/**
+ * Bytes a probe adds beyond the argv it carries, so it costs at least what the real exec does:
+ * the kernel's copy of the program's pathname and, for a `#!` entry point such as Pi's CLI, the
+ * interpreter, its argument and the script path it re-inserts, each bounded by the 256-byte
+ * `#!` line. Counted with each string's terminator and pointer, as `execve` counts them. Plus one
+ * `PATH_MAX`: an interpreter that execs another - `#!/usr/bin/env node` - hands the kernel the
+ * resolved interpreter's own path, which a version manager can make long.
+ */
+export function probePadding(program: string): string {
+  const pathname = Buffer.byteLength(program, "utf8") + 1 + 8;
+  return "p".repeat(2 * pathname + 2 * (256 + 1 + 8) + PATH_MAX_BYTES);
+}
+
+/** The longest pathname `execve` accepts on Linux (`PATH_MAX`); macOS allows 1024. */
+const PATH_MAX_BYTES = 4096;

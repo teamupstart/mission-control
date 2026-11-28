@@ -1,11 +1,11 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readCodexUsage } from "../src/server/harness/codex/usage.ts";
 import { estimateStandardApiUsage } from "../src/server/harness/codex/pricing.ts";
 import type { UsageCursor } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function file(contents: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "codex-usage-"));
+  const dir = tempDir("codex-usage-");
   dirs.push(dir);
   const path = join(dir, "rollout.jsonl");
   writeFileSync(path, contents);

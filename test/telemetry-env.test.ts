@@ -1,9 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this writes into `~/.claude/settings.json`, which is the user's file
 // and not ours.
@@ -14,7 +14,7 @@ import { parse } from "jsonc-parser";
 // way out remove exactly what it added and nothing else. The failure mode of getting it
 // wrong is not a broken feature, it is someone's Claude Code configuration.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-env-"));
+const home = tempDir("mission-telemetry-env-");
 const settingsPath = join(home, "settings.json");
 process.env.CLAUDE_SETTINGS_PATH = settingsPath;
 

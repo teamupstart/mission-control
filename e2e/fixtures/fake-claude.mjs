@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+if (process.cwd().endsWith("/provider") && process.cwd().includes("/mission-repository-workload-")) {
+  const { runFakeRepositoryReview } = await import("./fake-repository-review.mjs");
+  await runFakeRepositoryReview("claude", process.argv.slice(2));
+  await new Promise(resolve => process.stdout.write("", resolve));
+  process.exit(0);
+}
+
 import { tmpdir } from "node:os";
 /**
  * A stand-in for the `claude` binary, speaking enough of Claude Code's control protocol
@@ -478,6 +485,11 @@ if (recordDir) {
         // The advisor's Off switch, so a spec can prove a pin reached the environment and an
         // Inherit launch left it alone.
         disableAdvisorTool: process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL ?? null,
+        // The work unit the launch carried, so a spec can prove it reached the agent - and
+        // that nothing reached it from the daemon or the pane when the launch carried none.
+        listedEnvironmentMatches: process.env.E2E_LISTED_TOKEN === "synthetic-profile-credential",
+        unlistedEnvironmentAbsent: process.env.E2E_UNLISTED_TOKEN === undefined,
+        workUnitId: process.env.WORK_UNIT_ID ?? null,
       },
       null,
       2,
@@ -1014,10 +1026,10 @@ function appendTurn(role, content, record = {}) {
         model: turnModel,
         // Fable's fixture deliberately mirrors the screenshot regression: 184k tokens is
         // 92% only under the incorrect 200k fallback, and 18% under its real 1M window.
-        ...(turnModel === "claude-fable-5"
+        ...(turnModel === "claude-fable-5" || appendedSystemPrompt.includes("Fixture scheduled finding:")
           ? {
               usage: {
-                input_tokens: 184_000,
+                input_tokens: turnModel === "claude-fable-5" ? 184_000 : 1_000,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
                 output_tokens: 100,
@@ -1258,6 +1270,7 @@ function scoutCredential() {
   const identity = locator ? `session:${locator}` : `pid:${process.pid}`;
   const key = createHash("sha256").update(identity).digest("hex");
   try {
+    // oxlint-disable-next-line repository/test-temp-dirs -- This fake agent reads the capability dir the daemon wrote, which follows the inherited TMPDIR exactly as production does.
     return readFileSync(join(tmpdir(), "mission-control-agent-capabilities",
       `scouts-${process.env.MISSION_PORT ?? "7317"}`, key), "utf8").trim();
   } catch { /* Legacy scout fixtures retain their original credential path below. */ }
@@ -1447,6 +1460,9 @@ names.forEach((name, index) => {
 function presentMockupsThenAsk() {
   const pages = MOCKUP_PAGES.map((name) => `${MOCKUP_DIR}/${name}.html`);
   // Outside the checkout, like a session scratchpad, so the script itself is never listed.
+  // This fake runs as a copied binary, so it cannot import test/temp-root.mjs. It inherits the
+  // run's TMPDIR, which already points inside the run's temp root.
+  // oxlint-disable-next-line repository/test-temp-dirs -- A copied fake binary has no path to the helper; its TMPDIR is the run's root.
   const script = join(mkdtempSync(join(tmpdir(), "e2e-mockup-generator-")), "generate-mockups.mjs");
   writeFileSync(script, mockupGeneratorSource());
   const command = `node ${JSON.stringify(script)}`;
@@ -1962,18 +1978,18 @@ async function runReportBug(prompt) {
   const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
   const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
   const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
+  return reportFixtureBug(`A ${kind} dispatch did not start`, [
+    `A ${kind} dispatch failed in its \`${phase}\` phase, before its session started.`,
+    `${attempts} attempt(s) failed the same way.`,
+    "The base branch could not be fetched from <repository>'s origin.",
+  ].join("\n\n"));
+}
+
+function reportFixtureBug(title, details, expectedTarget) {
   return withMissionMcp(async (request) => {
     const called = await request("tools/call", {
       name: "report_product_issue",
-      arguments: {
-        type: "bug",
-        title: `A ${kind} dispatch did not start`,
-        details: [
-          `A ${kind} dispatch failed in its \`${phase}\` phase, before its session started.`,
-          `${attempts} attempt(s) failed the same way.`,
-          "The base branch could not be fetched from <repository>'s origin.",
-        ].join("\n\n"),
-      },
+      arguments: { type: "bug", title, details, expectedTarget },
     });
     const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
     return `report_product_issue answered: ${text}`;
@@ -2251,7 +2267,7 @@ rl.on("line", (line) => {
       waiting.unref();
       return;
     }
-    appendTurn("user", prompt);
+    appendTurn("user", prompt, frame.uuid ? { uuid: frame.uuid } : {});
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 
     if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;
@@ -2322,6 +2338,17 @@ rl.on("line", (line) => {
     if (prompt.includes(RESIDENT_RETRO_MARKER)) {
       beginHeldTurn(runResidentRetro(prompt));
       return;
+    }
+
+    if (appendedSystemPrompt.includes("# Bug Fix Inspector") && appendedSystemPrompt.includes("report_product_issue")) {
+      const finding = prompt.startsWith("[mission-resident:")
+        ? /^Fixture scheduled finding: (.+)$/m.exec(appendedSystemPrompt)
+        : prompt.includes("Begin your standing task.") && /^Fixture finding: (.+)$/m.exec(appendedSystemPrompt);
+      if (finding) {
+        const searchedRepo = /^Fixture searched repository: (.+)$/m.exec(appendedSystemPrompt);
+        beginHeldTurn(reportFixtureBug(finding[1], "Foreman recorded completion twice, but neither attempt submitted the bound workflow.", searchedRepo?.[1]));
+        return;
+      }
     }
 
     if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {

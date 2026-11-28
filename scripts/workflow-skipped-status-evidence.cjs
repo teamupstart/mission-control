@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 // Captures the two skipped-stage treatments with their production tooltip open.
 //
 //   npx electron scripts/workflow-skipped-status-evidence.cjs

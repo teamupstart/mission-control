@@ -1,13 +1,13 @@
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerEvent, Session, TranscriptMessage } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, openedResource } from "./helpers/session-fixture.ts";
 import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Hiding launch instructions from conversations
 // (docs/plans/hidden-launch-instructions/phase-1-durable-launch-presentation.md): a fresh
@@ -22,7 +22,7 @@ import { mkOriginAndClone, seedGitRepo } from "./helpers/git-fixture.ts";
 // into a live session, a `/clear`, and every historical transcript written before the
 // marker table existed all keep their first user turn exactly as they have it today.
 
-const home = mkdtempSync(join(tmpdir(), "mission-launch-presentation-"));
+const home = tempDir("mission-launch-presentation-");
 process.env.MISSION_HOME = home;
 // A stand-in bundle: the terminal ask channel only checks that the path EXISTS, and every
 // Claude launch now requires `request_input`, so with no bundle at all (CI runs `npm test`
@@ -738,7 +738,7 @@ async function terminalDispatch(options: {
         transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
     },
     inject: async (_session, text) => {
       delivered = text;
@@ -941,7 +941,7 @@ test("a repeated launch prompt renders as the real message it is", () => {
   const out = attributeTranscript("s1", [launch, repeat], mkMarker("s1"), (id) => bound.push(id));
 
   assert.deepEqual(bound, ["launch-turn"], "the first match is claimed, once");
-  assert.equal(out[0]?.presentation?.displayText, HUMAN, "the launch turn projects");
+  assert.deepEqual(out[0]?.presentation, { kind: "launch", displayText: HUMAN }, "the launch turn projects");
   assert.equal(out[1]?.presentation, undefined, "the repeat is left alone");
   assert.deepEqual(out[1], repeat, "byte-for-byte the turn the transcript recorded");
 
@@ -955,7 +955,7 @@ test("an anchored marker projects only its own turn, whatever the text says", ()
   // under a different id is a different turn, and this is what says so.
   const marker = mkMarker("s1", { messageId: "the-launch" });
   const [same] = attributeTranscript("s1", [mkMessage({ id: "the-launch" })], marker);
-  assert.equal(same?.presentation?.displayText, HUMAN);
+  assert.deepEqual(same?.presentation, { kind: "launch", displayText: HUMAN });
 
   const [other] = attributeTranscript("s1", [mkMessage({ id: "some-other-turn" })], marker);
   assert.equal(other?.presentation, undefined);

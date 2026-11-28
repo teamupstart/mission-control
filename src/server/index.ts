@@ -3,15 +3,28 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+// Second, for the same reason: it adds the system certificate store to the default TLS roots
+// before any later import can open a connection. See system-trust-startup.ts.
+import "./system-trust-startup.ts";
+import { reconcileTerminalEnvironmentHandoffs, stopTerminalEnvironmentHandoffs } from "./terminal/environment-handoff.ts";
+import { unseenReportsNote } from "@shared/reports.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
+import { BUG_FIX_INSPECTOR_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
+import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
-import { storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { startShaperSignIns } from "./shaping/sign-in/index.ts";
+import { wireShapingSignInEvents } from "./shaping/sign-in/events.ts";
+import { wireVoiceStateEvents } from "./voice/state.ts";
+import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
+import { allocateCallSign } from "./voice/call-sign-allocation.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { onUiSkinChanged, onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
-import { serve } from "@hono/node-server";
+import { getRequestListener, serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { Server } from "node:http";
 import { closeHttpServer, HTTP_CLOSE_GRACE_MS } from "./http-shutdown.ts";
@@ -20,7 +33,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
-import { closeDb, databaseMigratedOnOpen, getAppConfig, openDb, setAppConfig } from "./db.ts";
+import { closeDb, databaseMigratedOnOpen, getAppConfig, getTask as getDurableTask, loadFinishedTasksWithCallSign, taskNameRetirement, openDb, setAppConfig } from "./db.ts";
 import { PauseManager } from "./pause/manager.ts";
 import { processFreezer } from "./pause/freezer.ts";
 import { StoredPauseStateSchema } from "@shared/protocol.ts";
@@ -28,21 +41,24 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { observeInjections } from "./injections.ts";
+import { observeInjections, onAutomatedDelivery, onPersonDelivery } from "./injections.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
 import { retainedTurnOperation } from "./telemetry/experience.ts";
 import {
+  backgroundReasoningEffortEnabled,
   claudeTransportChoice,
   codexTransportChoice,
   getLlmConfig,
+  llmJobModel,
+  llmJobRunner,
   llmRunnerChoice,
 } from "./llm/config.ts";
 import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
-import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
-import { envVar } from "@shared/harness-runtime.mjs";
+import { desktopVoiceEndpointPath, envVar } from "@shared/harness-runtime.mjs";
+import { DESKTOP_VOICE_DAEMON_STOPPING, removeDesktopVoiceEndpoint, serveDesktopVoice } from "./voice/desktop-endpoint.ts";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
@@ -51,14 +67,11 @@ import { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
-import {
-  defaultRetentionCleanupDeps,
-  defaultRetentionObserverDeps,
-  TaskWorktreeRetentionObserver,
-} from "./task-worktree-retention.ts";
+import { createDaemonRetentionObserver } from "./task-worktree-retention.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
+import { AfterWorkSkills, wireAfterWorkSkills } from "./shaping/after-work.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
@@ -80,6 +93,7 @@ import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
+import { keepAwakePreferenceStore } from "./keep-awake-preference.ts";
 import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
 import { refreshManagedMetricsPolicy } from "./environment/claude-managed.ts";
 import { reconcilePiExtension } from "./extensions/config.ts";
@@ -96,7 +110,7 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { ResidentManager } from "./residents/manager.ts";
 import { BUILTIN_RESIDENTS } from "./residents/builtin-residents.ts";
-import { reconcileBuiltinResidentProfiles } from "./residents/store.ts";
+import { listLiveResidentProfiles, reconcileBuiltinResidentProfiles } from "./residents/store.ts";
 import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
@@ -117,6 +131,7 @@ import {
 import { WorktreeOperationsService } from "./worktrees/operations.ts";
 import { nativeWorktreeOwnerReferenced } from "./worktrees/owners.ts";
 import { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
+import { ReportManager } from "./reports.ts";
 import { FileCommentManager } from "./file-comments.ts";
 import { adoptQueuedOnFirstSweep, createFileCommentWalkthrough } from "./file-comment-walkthrough-port.ts";
 import {
@@ -140,7 +155,7 @@ import {
   observeSessionOperation,
   recheckOrganization,
   registerBuiltinTelemetry,
-  retainPrObservation,
+  attachPrObservationTelemetry,
   startTelemetry,
   type TelemetryService,
 } from "./telemetry/index.ts";
@@ -208,6 +223,7 @@ warnIfSessionAttributionDisabled();
 if (getCostConfig().enabled) void refreshManagedMetricsPolicy();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
+reconcileTerminalEnvironmentHandoffs(STATE_DIR);
 const reconcileManagedResumeResources = () => {
   try { recheckManagedResumes(); } catch (error) {
     console.error("[managed-resume] resource journal requires inspection:", error instanceof Error ? error.message : "unreadable journal");
@@ -225,9 +241,49 @@ try {
 }
 const registry = new Registry();
 // One bridge for every writer, including settings restore and daemon listeners.
-const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+let inspectorAvailable = featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+const stopFeatureFlags = onFeatureFlagsChanged((config) => {
+  registry.emitFeatureFlags(config);
+  const available = featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+  if (available !== inspectorAvailable) {
+    inspectorAvailable = available;
+    registry.replaceResidentProfiles(listLiveResidentProfiles());
+  }
+});
+// A declared wait holds idle automation, so it must not outlive the preview that draws it on the
+// card: switching the preview off ends every wait, and a daemon starting with it off keeps none.
+const endAwaitingsWhenOff = (): void => {
+  if (!featureEnabled(SESSION_AWAITING_FLAG_ID)) registry.clearAllAwaitings("flag");
+};
+endAwaitingsWhenOff();
+const stopAwaitingFlag = onFeatureFlagsChanged(endAwaitingsWhenOff);
+// Mission Control's own deliveries, stored on a waiting session's wait as they are claimed, so
+// the turn one starts is never taken for the session's wake, even across a restart.
+const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
+  registry.noteAutomatedDelivery(delivery.sessionId, delivery.at, delivery.key, delivery.released));
+// And a person's own words, so an automated delivery of the same words cannot pass off the
+// person's turn as Mission Control's nudge.
+const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// And shaper sign-in's list, behind both its flags. It never carries a token or a link.
+const stopShapingSignIns = wireShapingSignInEvents((signIns) => registry.emitShapingSignIns(signIns));
+// Who can be addressed by voice, read from the Registry's own catalogs and frames. Wired before
+// the voice state, which reads its roster from it on its first publish.
+const voiceNames = new VoiceNameRegistry(registry, {
+  now: () => Date.now(),
+  enabled: () => featureEnabled(VOICE_FLAG),
+  taskStored: (id) => getDurableTask(id) !== undefined,
+  retirement: taskNameRetirement,
+  finishedNamedTasks: (since) => loadFinishedTasksWithCallSign(since),
+});
+const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));
+// The voice state reaches open windows and the shell the same way, behind its flag.
+const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+const stopUiSkin = onUiSkinChanged(() => registry.emitUiSkinChanged());
+const stopVoiceIndicators = onVoiceIndicatorsChanged((indicators) => registry.emitVoiceIndicators(indicators));
+// The shapers folder is read at start, and again at every shaping run: never watched.
+if (featureEnabled("task-shaping")) void announceShaperFolder();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
 const worktrees = new WorktreeManager(undefined, {
@@ -274,7 +330,9 @@ const pauses: PauseManager = new PauseManager({
 });
 pauses.start();
 const sdkSessions: SdkSupervisor = new SdkSupervisor(registry, { pause: pauses });
-const pendingTurns = new PendingTurnManager(registry, sdkSessions);
+const pendingTurns = new PendingTurnManager(registry, sdkSessions, {
+  unseenReports: session => unseenReportsNote(reports.openReportsBy(reports.authorFor(session).key)),
+});
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
 // and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
 // reconciliation reclaims the worktree of every task whose agent did not survive the restart,
@@ -291,8 +349,12 @@ const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 // The watcher is a latency hint; the recurring scan is the authority. Both live inside the
 // manager, and the Registry is how a finished batch reaches open dashboards - one invalidation
 // per batch, no history in the snapshot, no browser polling.
+// Bound once the report manager exists below: a pass that prunes vanished bundles hands their
+// keys over, so only reports published under exactly those archives are re-checked.
+let onArchivesPruned: (keys: readonly string[]) => void = () => undefined;
 const archives = new ArchiveManager({
   onChanged: () => registry.emitArchiveChanged(),
+  onPruned: (keys) => onArchivesPruned(keys),
   watch: true,
   tasks: new RegistryArchiveTaskGateway(registry),
 });
@@ -323,7 +385,23 @@ tasks.useMergeQuestions({
   },
   blockedInCall: (sessionId) => reviews.blockedInRequestInputCall(sessionId, featureEnabled(ASYNC_INPUT_FLAG)),
 });
+// A task dispatched without a call sign takes a distinctive one as it launches, whatever the
+// `voice` flag says, so the name is already stable when voice is turned on: chosen against the
+// roster (computed with the flag off too) and every unfinished task's name, inside the claim.
+tasks.useCallSignAllocation((task) => allocateCallSign(task, voiceNames.roster(), registry.listTasks()));
 const queues = new QueueManager(registry);
+// Task shaping's after-work prompt. Told by the workflow manager when the after-work step starts
+// or a completion claim finds no binding, and by the queue when Foreman's wrap-up is answered,
+// which is what releases a prompt held behind it. Delivered through the one outbox.
+const afterWorkSkills: AfterWorkSkills = new AfterWorkSkills({
+  registry,
+  outbox: pendingTurns,
+  // `workflows` is constructed below; this is read only when a prompt is written, long after.
+  workflowSkills: (sessionId): ReadonlySet<string> => workflows.sessionActionSkills(sessionId),
+  // Read at start and when task shaping is turned on again, after `workflows` exists.
+  owedSessions: () => workflows.afterWorkOwedSessions(),
+});
+wireAfterWorkSkills(afterWorkSkills, queues, (key) => registry.sessionForNoteKey(key)?.id ?? null);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
 // read through one connection and one transaction boundary.
@@ -425,6 +503,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   trackCiFailures: () => getForemanConfig().trackCiFailures,
+  afterWorkSkills,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
@@ -463,6 +542,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+tasks.registerWorkflowNames((workflowId) => workflows.workflowName(workflowId));
 // A task's dispatch Persona: creation, editing and launch all read the Library through this.
 tasks.registerPersonaLookup((id) => personas.store.getPersona(id));
 // Resident profiles and the one resident launch path. It creates its tasks through
@@ -494,6 +574,9 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// Shaper sign-in: held tokens and their background refresh. It starts once this process wins
+// the port, because a refresh spends a single-use refresh token.
+let stopShaperSignIns = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
 // and the backup loop's startup prune seeds it.
 // The state directory's measured size and its volume's free space. `storageHealth` is assigned
@@ -554,6 +637,7 @@ ensembles = new EnsembleManager(registry, undefined, {
           guidanceMarkdown: persona.guidanceMarkdown,
           runner: persona.runner,
           model: persona.model,
+          ...(persona.effort && { effort: persona.effort }),
           archived: persona.archivedAt !== null,
         }
       : null;
@@ -566,18 +650,16 @@ ensembles = new EnsembleManager(registry, undefined, {
       return resolveEvaluatorExecution(guidance, pins, {
         appRunner: llmRunnerChoice(cfg),
         personaEnvModel: envVar(WORKFLOW_PERSONA_MODEL_ENV) ?? null,
-        jobModel: (runnerId) =>
-          resolveLlmJobModel(
-            "ensemble-comparison",
-            cfg.models,
-            envVar(LLM_JOB_SPECS["ensemble-comparison"].envKey),
-            runnerId,
-          ).id,
+        jobRunner: llmJobRunner("ensemble-comparison", cfg),
+        jobModel: (runnerId) => llmJobModel("ensemble-comparison", cfg, runnerId).id,
+        effortEnabled: backgroundReasoningEffortEnabled(),
+        jobEffort: cfg.efforts?.["ensemble-comparison"],
       });
     },
     runModel: (runnerId, prompt, opts) =>
       llmRunner(runnerId).run(prompt, {
         model: opts.modelId,
+        effort: opts.effort,
         timeoutMs: opts.timeoutMs,
         schema: opts.schema,
       }),
@@ -633,33 +715,16 @@ setLlmSpendSink((report) => {
   if (recordSpendReport(report).kind === "recorded") registry.applyAutomationUsage();
 });
 let stopPoller = () => {};
-// The durable worktree activity clock. Non-destructive by construction: it records when each
-// terminal task's checkouts last changed in a way Git can see, and the 30-day deadline that
-// implies, and it reclaims nothing - see `task-worktree-retention.ts`.
-//
-// Started behind the discovery gate rather than here-and-now, and the ordering is the contract:
-// `onSessionsObserved` is the first COMPLETED sweep, which is when session/task reconciliation
-// has settled who owns which worktree. A pass before it would seed windows against ownership
-// that is still being rebuilt. Registered AFTER the TaskManager and workflow twins above so
-// their reconstruction runs first, exactly as ensemble recovery does.
-const retentionObserver = new TaskWorktreeRetentionObserver({
-  listTasks: () => registry.listTasks(),
-  ...defaultRetentionObserverDeps,
-  cleanup: {
-    ...defaultRetentionCleanupDeps,
-    // The single destructive capability, and it is `TaskManager`'s own guarded, queued entry
-    // rather than a provider or the allocator. Everything the sweep can delete, it deletes by
-    // asking the class that owns the task lifecycle to run its existing reclaim core.
-    reclaim: (request) => tasks.enqueueRetentionCleanup(request),
-    refreshSummary: (taskId) => registry.refreshTaskAutomaticCleanup(taskId),
-  },
-});
+// First completed discovery establishes session ownership. TaskManager, workflow and
+// ensemble recovery register before retention, so their reconciliation starts first.
+const retentionObserver = createDaemonRetentionObserver(registry, tasks);
 registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopInspector = startInspector(registry, {
   workflowGate: (prKey) => workflows.mergeGate(prKey),
+  localReview: (prKey, head) => workflows.localReviewMatch(prKey, head),
 });
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 // Whether each live session has been corrected by its human, which is half of whether the
@@ -679,6 +744,10 @@ const away = startAwayWatcher(registry, undefined, {
   unpushedObserver: createUnpushedObserver({
     checkoutFor: (run) => workflows.bindingCheckout(run.bindingId),
   }),
+  // Reports a return digest counted before they were announced stay quiet when they are.
+  // `reports` is constructed further down; this runs only when an away window closes.
+  reportsCountedInDigest: (ids) => reports.countedInDigest(ids),
+  reportsDigestClaimed: () => reports.digestClaimed(),
 });
 const stopHeadlessPruner = startHeadlessPruner();
 // Check-domain crash recovery rides the native manager's cadence. It still runs when no
@@ -732,22 +801,7 @@ registry.onTurnDelivered((e) => {
 // is what makes this a VERIFIED association rather than an agent's claim - and it is the last
 // moment at which the task's repository and kind can still be read, because
 // `invalidateTaskOwnershipInTransaction` may delete the binding at any point after it.
-registry.onTaskPrLinked((e) => {
-  const task = registry.getTask(e.taskId);
-  if (!task) return;
-  retainPrObservation({
-    taskId: e.taskId,
-    taskKind: task.kind,
-    repoRoot: e.repoRoot,
-    primaryRepoRoot: task.repoRoot,
-    prUrl: e.prUrl,
-    sessionId: task.sessionId,
-    // The hook proved an agent ran `gh pr create` only on the `pr_opened` channel, which
-    // carries no task. Here the honest claim is the weaker one.
-    creationVerified: false,
-    now: e.observedAt,
-  });
-});
+attachPrObservationTelemetry(registry);
 tasks.registerWritebackEnqueuer(writebackEnqueuer);
 const stopWriteback = startWritebackWorker(registry);
 // Observes an external SDLC engine's own state files for the repositories an operator has
@@ -779,12 +833,14 @@ const schedules = new ScheduleManager({
 let stopSchedules = () => {};
 let stopSnoozeClock = () => {};
 
-// The transient Keep Awake owner. Constructed before the app so the routes never see a
-// daemon without it, and SEEDED into the registry before the server accepts traffic so
-// the very first snapshot already carries a truthful status - which, on every boot, is
-// `off`: the mode is deliberately never persisted or reacquired across restarts.
+// The Keep Awake owner. Constructed before the app so the routes never see a daemon without
+// it, and SEEDED into the registry before the server accepts traffic so the very first
+// snapshot already carries a truthful status - which is `off` until the operator's saved
+// choice has been applied. That happens in the listening callback below, once this process
+// has won the port: a daemon that lost it must not take a power assertion.
 const keepAwake = new KeepAwakeManager({
   onStatus: (status) => registry.setKeepAwakeStatus(status),
+  preference: keepAwakePreferenceStore(),
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
@@ -811,6 +867,15 @@ fileComments.start();
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 // Sending a comment is the request to deliver it: there is no separate Start step.
 fileComments.onQueued((sessionId) => fileCommentWalkthrough.onQueued(sessionId));
+// Agent reports. The one owner of the `reports` table; it hands every report still waiting to be
+// read to the registry now, so the first snapshot after a restart carries them. It reads session
+// events only to stamp how a new report is announced; a session leaving never clears a report.
+const reports = new ReportManager(registry);
+onArchivesPruned = (keys) => {
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key), keys).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile reports for pruned archives:", error);
+  });
+};
 
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
@@ -846,6 +911,7 @@ const app = buildApp({
   productIssues,
   fileComments,
   fileCommentWalkthrough,
+  reports,
   settingsBackups,
   databaseBackups,
   storageHealth,
@@ -877,9 +943,37 @@ if (hasDist) {
   app.get("*", dashboardDocument);
 }
 
+let stopDesktopVoice = () => {};
+function watchDesktopVoice() {
+  const endpointFile = desktopVoiceEndpointPath();
+  let active: AbortController | undefined;
+  let retry: NodeJS.Timeout | undefined;
+  function reconcile() {
+    clearTimeout(retry);
+    if (featureEnabled(VOICE_FLAG)) {
+      if (active) return;
+      const controller = active = new AbortController();
+      void serveDesktopVoice(getRequestListener(app.fetch, { overrideGlobalObjects: false }), endpointFile, controller.signal).catch(error => {
+        if (controller.signal.aborted) return;
+        console.error("[voice] Could not start private desktop endpoint:", error);
+        active = undefined;
+        retry = setTimeout(reconcile, 5000);
+      });
+    } else {
+      active?.abort();
+      active = undefined;
+      removeDesktopVoiceEndpoint(endpointFile);
+    }
+  }
+  const unsubscribe = onFeatureFlagsChanged(reconcile);
+  reconcile();
+  return () => { unsubscribe(); clearTimeout(retry); active?.abort(DESKTOP_VOICE_DAEMON_STOPPING); };
+}
+
 let shutdownStarted = false;
 let telemetry: TelemetryService | null = null;
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  if (process.platform === "darwin") stopDesktopVoice = watchDesktopVoice();
   // Restoration remains serial, but is no longer on the listener's critical path. Terminal
   // discovery and every first-observation reconciliation still wait for every prepared SDK
   // row to adopt or follow register-and-evict. A failed port bind never reaches this callback,
@@ -899,6 +993,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery changes durable rows, so it starts only after this process wins the
   // loopback port and is therefore the daemon's sole SQLite writer.
   pendingTurns.start();
+  // After the outbox: a delivery it confirms settles the prompt row it was queued as.
+  afterWorkSkills.start();
   stopSettingsBackups = startSettingsBackupLoop(settingsBackups);
   // Before the first capture, no capture of this daemon is in flight, so an interrupted one's
   // temporary files can be removed safely.
@@ -909,6 +1005,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
   }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
+  // After the shaping events are wired at module load. With either flag off it reads nothing.
+  stopShaperSignIns = startShaperSignIns();
   // The first walk waits out startup's own disk work; then one every six hours, and the free
   // space every minute, which is cheap and is what a low-space warning needs to be timely.
   stopStorageUsage = storageUsage.start({
@@ -939,12 +1037,26 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Settle resident runs a previous process left pending, from session-start evidence, then
   // follow run ends. After the port for the reason the schedules above are: it writes rows.
   residents.start();
+  // Put the Mac back in the state the operator chose before this daemon (or the one an
+  // upgrade replaced) went away. The assertion died with that process; the choice did not.
+  // After the port, like every other writer, because it takes a process-owned OS assertion.
+  if (!shutdownStarted) {
+    void keepAwake.restore().catch((error: unknown) => {
+      console.warn("[mission-control] could not restore the Keep awake choice:", error);
+    });
+  }
   // Discovery starts HERE, after the callback that means "we are serving", for the reason
   // the manager's construction documents: the first pass over a restored library can be
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
   // design - a library that could not be walked is a background failure to log, never a
   // reason a daemon does not start.
   archives.start();
+  // Every published report's archive, checked once at startup: a report whose bundle is gone (a
+  // delete interrupted between removing the bundle and clearing the key) goes back to
+  // unpublished. Later removals reach a report only through `onArchivesPruned`, above.
+  void reports.reconcilePublishedArchives((key) => archives.archivePresent(key)).catch((error: unknown) => {
+    console.warn("[mission-control] could not reconcile published reports:", error);
+  });
   // And the captures this daemon already owed when it stopped. Separate from discovery
   // because they are different jobs: discovery indexes bundles that exist, this one finishes
   // writing bundles that do not yet. It runs after the port for the same reason, and it skips
@@ -1058,11 +1170,23 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  const stoppingHandoffs = stopTerminalEnvironmentHandoffs();
   stopFeatureFlags();
+  stopAwaitingFlag();
+  stopAutomatedDeliveries();
+  stopPersonDeliveries();
   stopShapingConfig();
+  stopShapingSignIns();
+  registry.voiceRouter?.reset();
+  stopDesktopVoice();
+  stopVoiceState();
+  stopUiSkin();
+  stopVoiceIndicators();
+  stopVoiceNames();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();
+  await stopShaperSignIns();
   stopStorageUsage();
   stopSettingsBackups();
   stopPoller();
@@ -1098,8 +1222,10 @@ async function shutdown(): Promise<void> {
   // between a harness closing its session file cleanly and it being killed mid-turn.
   const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
+  afterWorkSkills.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
+  reports.stop();
   // Before the drivers drain: a stopped SDK child cannot answer the interrupt its driver's
   // stop opens with. Pane agents stay frozen - they outlive us, and quitting is not resuming.
   await pauses.stop();
@@ -1132,15 +1258,17 @@ async function shutdown(): Promise<void> {
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
   archives.stop();
-  // Release the idle-sleep assertion while we can still do it gracefully. `caffeinate`'s
-  // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
-  // orderly half of a two-part cleanup, not the only one.
+  // Release the idle-sleep assertion while we can still do it gracefully. This releases the
+  // assertion only: the operator's saved choice stays, so the next daemon puts it back.
+  // `caffeinate`'s own `-w <daemon PID>` covers every exit that never reaches this line, so
+  // this is the orderly half of a two-part cleanup, not the only one.
   await keepAwake.stop();
   // Stop taking new export work, commit whatever is captured but unprojected, and release this
   // process's leases. Time-bounded by construction: the local commit gets a budget and the
   // remote flush gets only what is left of it, so an offline exit never waits for a server.
   if (telemetry) await telemetry.stop();
   await stopModelCatalogs;
+  await stoppingHandoffs;
   // Ends the open-ended requests (event and transcript streams, review long-polls), then bounds
   // the rest. An unbounded close held every desktop quit until the shell gave up on this process.
   // See `http-shutdown.ts`.

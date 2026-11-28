@@ -1,3 +1,4 @@
+import { useWorkflowCommandSlots } from "./useWorkflowCommandSlots.ts";
 import { useMemo, useRef, useState } from "react";
 import {
   addableSessionActions,
@@ -465,6 +466,7 @@ export function PipelineEditor({
   onAnnounce: (message: string) => void;
 }): React.JSX.Element | null {
   const pipeline = useMemo(() => projectStages(graph), [graph]);
+  const visibleCommandSlots = useWorkflowCommandSlots();
   const activePersonas = useMemo(
     () => personasForDisplay(personas).filter((persona) => persona.archivedAt === null),
     [personas],
@@ -776,7 +778,7 @@ export function PipelineEditor({
         </optgroup>
       )}
       <optgroup label="Commands">
-        {WORKFLOW_CHECK_SLOTS.map((slot) => (
+        {visibleCommandSlots.map((slot) => (
           <option key={slot} value={memberOptionValue({ kind: "check", slot })}>
             {checkLabel(slot)}
           </option>

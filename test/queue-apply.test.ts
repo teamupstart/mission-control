@@ -35,6 +35,7 @@ const CFG: QueueConfig = {
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -218,8 +219,9 @@ function mkFake(
     },
     markSent: async () => void fake.sentMarks++,
     recoverItem: async () => void fake.recovered++,
-    markWrapupAsked: async () => {
-      fake.order.push("mark");
+    markWrapupAsked: async (_id, retire) => {
+      if (retire) fake.wrapupAnswers.push("foreman:automatic-wrapup-skipped");
+      fake.order.push(retire ? "retire" : "mark");
       fake.wrapups++;
     },
     setWrapupAnswer: async (_s, answer) => {
@@ -823,7 +825,7 @@ test("ask-wrapup stamps the ask and types nothing", async () => {
   assert.deepEqual(fake.injected, [], "the ask hands the decision to the human - it never types");
 });
 
-test("skip-wrapup answers before retiring and never exposes or types a shipping action", async () => {
+test("skip-wrapup records the answer with retirement and never exposes or types a shipping action", async () => {
   const session = mkSession();
   const fake = mkFake({ session });
   const queue = await fake.queue("s1");
@@ -836,7 +838,7 @@ test("skip-wrapup answers before retiring and never exposes or types a shipping 
   );
 
   assert.equal(out.kind, "done");
-  assert.deepEqual(fake.order, ["answer", "mark"]);
+  assert.deepEqual(fake.order, ["retire"]);
   assert.deepEqual(fake.wrapupAnswers, ["foreman:automatic-wrapup-skipped"]);
   assert.equal(fake.wrapups, 1);
   assert.deepEqual(fake.injected, []);

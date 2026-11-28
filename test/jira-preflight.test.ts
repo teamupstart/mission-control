@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JiraConfigSchema, type SweepContext } from "../src/shared/task-source.ts";
 import { jira } from "../src/server/task-sources/jira.ts";
 import { TASK_SOURCES } from "../src/server/task-sources/index.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the promise the whole kind is built on - a missing or misconfigured Jira
 // credential surfaces as a PREFLIGHT SENTENCE NAMING THE FIX, never a silent empty sweep.
@@ -25,7 +25,7 @@ import { TASK_SOURCES } from "../src/server/task-sources/index.ts";
 // is a real code path here rather than a mocked one. Nothing in this file spends a token,
 // touches the database, or files a task - a sweep RETURNS candidates and only ingest writes.
 
-const home = mkdtempSync(join(tmpdir(), "mission-jira-preflight-"));
+const home = tempDir("mission-jira-preflight-");
 const withJira = join(home, "with-jira");
 const noJira = join(home, "no-jira");
 mkdirSync(withJira);
@@ -69,14 +69,14 @@ case "$FAKE_JIRA_MODE" in
   pages)
     total=\${FAKE_JIRA_TOTAL:-7}
     out=""
-    i=\$start
-    end=\$((start + limit))
-    while [ \$i -lt \$end ] && [ \$i -lt \$total ]; do
-      if [ -n "\$out" ]; then out="\$out,"; fi
-      out="\$out{\\"key\\":\\"MC-\$i\\",\\"fields\\":{\\"summary\\":\\"Issue \$i\\"}}"
-      i=\$((i + 1))
+    i=$start
+    end=$((start + limit))
+    while [ $i -lt $end ] && [ $i -lt $total ]; do
+      if [ -n "$out" ]; then out="$out,"; fi
+      out="$out{\\"key\\":\\"MC-$i\\",\\"fields\\":{\\"summary\\":\\"Issue $i\\"}}"
+      i=$((i + 1))
     done
-    printf '{"issues":[%s]}' "\$out" ;;
+    printf '{"issues":[%s]}' "$out" ;;
   *)
     printf '{"issues":[{"key":"MC-1","self":"https://acme.atlassian.net/rest/api/3/issue/1","fields":{"summary":"Fix the thing","description":"Do it.","priority":{"name":"Highest"}}}]}' ;;
 esac

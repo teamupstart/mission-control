@@ -184,7 +184,9 @@ Once any task-owned pull request appears, the shepherd stops and the existing Gi
 findings and CI follow-through path owns later idle periods. It never adds a second PR poller.
 
 The **Keep pre-PR ship tasks moving** setting governs both immediate held-gap delivery and the
-quiet-window shepherd. The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
+quiet-window shepherd. It covers `ship`, `bugfix` and `document` tasks, and a repository plan
+whose **Foreman Complete** workflow is started only by Foreman's claim. That plan receives held
+gaps only; see [Foreman](foreman.md). The daemon stores their one current recovery attempt beside the prompted decision. Its identity is task,
 logical key, intent episode, reason, and attempt budget. The current work-cycle generation remains
 in each delivery marker, so the worker must claim that exact per-delivery identity through the
 daemon before injection. A positive non-delivery releases only that identity;
@@ -223,6 +225,29 @@ Straight to PR can ultimately *push*, so it only fires in **live** mode on an
 the selected radio quietly do nothing. Workflow completion claiming is durable and
 idempotent, so retries converge on one submission and one run instead of launching the
 review twice.
+
+After a Workflow completes its Pull Request action and reaches End, the author's final
+publication, CI, or evidence turn can settle idle again. For each repository, Foreman claims
+that generation against the completed run when its reviewed checkout and human instruction
+revisions still match. The publication must have the tree accepted by the prior review.
+Foreman checks the checkout revision again inside the transaction that claims all repositories
+for the turn. An edit since the evidence probe, or an unavailable revision, starts fresh review. If another
+run supersedes a probed publication, the generation stays available and every repository keeps
+its prior state. The completed run keeps its evidence. This handoff can be claimed once, for
+the generation current at completion or its immediate successor. Later independent cycles,
+changed work, and new instructions can
+start a fresh review, and the operator can choose **Run again** on the same work.
+
+A run can also reach End through Inspector-only repair rounds under a published Inspector-only
+findings policy, after GitHub Inspector reviews the final pushed head clean. Those rounds capture
+no snapshot of their own, so the same handoff instead needs durable proof of the accepted repair:
+the run completed through the clean Inspector gate with no outstanding finding, and every
+submission after the reviewed publication is an Inspector-only round for its own head that
+replaced the previous one. The checkout must then be exactly that clean-reviewed commit, with
+nothing to publish beyond its tree apart from the reviewed publication's retained local
+artifacts at their recorded bytes. If any part of that proof is missing or contradicts the run,
+Foreman starts an ordinary review. Runs that already started a fresh review keep it. Nothing
+cancels or rewrites them.
 
 The manual **Run No-Mistakes Review** button on the **Ship it?** card follows the same
 workflow path. It reuses the active built-in binding when one exists, creates a manual

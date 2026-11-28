@@ -1,15 +1,15 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The generation watermark and the apply transaction. Real db, real filesystem: the
 // invariant under test ("the generation moves only when the DISK moves") spans both,
 // so mocking either would test the mock.
 
-const home = mkdtempSync(join(tmpdir(), "mission-skills-cfg-"));
+const home = tempDir("mission-skills-cfg-");
 const claudeSkills = join(home, "claude-skills");
 // Every harness that declares a skills directory gets reconciled, so every one of them
 // has to be pinned somewhere disposable. Left unset, Codex's would resolve under the

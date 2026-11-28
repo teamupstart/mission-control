@@ -1,3 +1,5 @@
+import { AgentEnvironmentSettings } from "./AgentEnvironmentSettings.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { useEffect, useState } from "react";
 import {
   AGENT_TYPES,
@@ -396,6 +398,7 @@ function HarnessCard({
   const resolved = runtime === null ? null : resolveSessionRuntime(agent, runtime);
   const resolvedTerminal = resolveTerminalBackend(terminalBackend);
   const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
+  // oxlint-disable-next-line repository/agent-comparison -- The panel reports readiness for the Pi SDK installation.
   const piSdkBlocked = agent === "pi" && !piSdkReady;
   const hasAdvisor = capabilitiesFor(agent).advisor !== null;
   const runtimeNote =
@@ -612,6 +615,7 @@ export function HarnessesPanel({
   // default) and disables until the first read lands, so a toggle can't race the fetch.
   const autoMode = config?.autoModeOnDispatch ?? true;
   const advisorEnvironments = useAdvisorEnvironments();
+  const environmentOn = useFeatureFlag("agent-environment");
 
   return (
     <section className="settings-section">
@@ -701,6 +705,7 @@ export function HarnessesPanel({
         changing the default. The advisor is not a per-task choice: a dispatched session
         gets the one set here for the model it launches on.
       </p>
+      {environmentOn && <AgentEnvironmentSettings />}
     </section>
   );
 }

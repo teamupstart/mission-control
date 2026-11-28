@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
 import type {
@@ -9,8 +8,9 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkOneShotQueryOptions,
 } from "../src/server/harness/claude/sdk-types.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "foreman-codex-runner-"));
+const home = tempDir("foreman-codex-runner-");
 const argvPath = join(home, "argv");
 const schemaPath = join(home, "schema.json");
 const replyPath = join(home, "reply.json");
@@ -79,13 +79,14 @@ test("Foreman structured review actually routes through Codex with the selected 
     transcript: [],
     truncated: false,
     instructions: "",
-  }, "gpt-5.6-terra", "codex");
+  }, "gpt-5.6-terra", "codex", "low");
 
   assert.equal(result.kind, "verdict");
   const argv = readFileSync(argvPath, "utf8").split("\n");
   assert.ok(argv.includes("exec"));
   assert.ok(argv.includes("gpt-5.6-terra"));
   assert.ok(argv.includes("features.shell_tool=false"));
+  assert.ok(argv.includes("model_reasoning_effort=low"));
 });
 
 // `reviewSession` above sends NO schema, which is why it kept working while the schema-backed
@@ -136,6 +137,7 @@ test("Foreman queue verification hands Codex a strict schema and still reads a s
   assert.equal(result.kind === "verdict" ? result.verdict.confidence : null, 0.5);
 
   const argv = readFileSync(argvPath, "utf8").split("\n");
+  assert.ok(argv.every((arg) => !arg.startsWith("model_reasoning_effort=")));
   assert.ok(argv.includes("--output-schema"), "the verifier must send its schema at all");
   const sent: unknown = JSON.parse(readFileSync(schemaPath, "utf8"));
   assertStrictJsonSchema(sent, "QUEUE_VERDICT_JSON_SCHEMA as handed to codex exec");

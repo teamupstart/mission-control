@@ -10,7 +10,7 @@ import {
   type RepoIndexConfigPatch,
   type RepoIndexView,
 } from "@shared/repo-index.ts";
-import { setAppConfig } from "./db.ts";
+import { appConfigRevision, setAppConfig } from "./db.ts";
 import {
   RepoIndexConfigError,
   canonicalize,
@@ -142,6 +142,7 @@ async function directoryView(
 /** Effective roots and their filesystem readings for the Settings panel. */
 export async function repoIndexView(): Promise<RepoIndexView> {
   const config = getRepoIndexConfig();
+  const revision = appConfigRevision(CONFIG_ENTRY);
   const override = repositoryIndexEnvironmentOverride();
   const effectivePaths = override ? environmentDirectories() : config.directories.map((row) => row.path);
   // Fresh: this view is read right after a config write or Rescan now, and must show it.
@@ -166,6 +167,7 @@ export async function repoIndexView(): Promise<RepoIndexView> {
   const saved = new Set(config.directories.map((row) => canonicalize(row.path)));
 
   return {
+    revision,
     directories,
     managedBy: override ? "environment" : "config",
     environmentVariable: override?.variable ?? null,

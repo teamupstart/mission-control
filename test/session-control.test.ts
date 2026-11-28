@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { SessionControlActionSchema, type SessionControlAction } from "../src/shared/protocol.ts";
+import { CONVERSATION_TEXT_MAX_LENGTH, SessionControlActionSchema, type SessionControlAction } from "../src/shared/protocol.ts";
 import type { SessionQueue } from "../src/shared/types.ts";
 import type { SessionRequestAnswer } from "../src/server/harness/types.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-control-"));
+const home = tempDir("mission-session-control-");
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -66,7 +66,11 @@ const cleanups: Array<() => void> = [];
 after(() => { for (const cleanup of cleanups) cleanup(); rmSync(home, { recursive: true, force: true }); });
 let serial = 0;
 
-function fixture(authorizeOverride?: import("../src/server/session-control-authorization.ts").AuthorizeSessionControl, idleSettleMs = 60_000) {
+function fixture(
+  authorizeOverride?: import("../src/server/session-control-authorization.ts").AuthorizeSessionControl,
+  idleSettleMs = 60_000,
+  tasks = {} as import("../src/server/tasks.ts").TaskManager,
+) {
   const registry = new Registry();
   cleanups.push(maintainScoutSessionCredentials(registry));
   const make = () => registry.registerSdkSession({ id: `sdk:control-${++serial}`, name: `Session ${serial}`, agent: "claude", cwd: home, agentSessionId: `native-${serial}` });
@@ -80,6 +84,10 @@ function fixture(authorizeOverride?: import("../src/server/session-control-autho
   const models: Array<{ id: string; model: string }> = [];
   const efforts: Array<{ id: string; effort: string }> = [];
   const answers: Array<{ id: string; requestId: string; answer: SessionRequestAnswer }> = [];
+  const stops: string[] = [];
+  /** Completions and stops in the order they happened, for ordering assertions across both. */
+  const events: string[] = [];
+  let stopAccepted = true;
   const sdk = {
     ...unexpectedActiveSdkDelivery,
     send: async (id: string, input: { text: string }, guard?: () => string | null) => {
@@ -88,6 +96,7 @@ function fixture(authorizeOverride?: import("../src/server/session-control-autho
     },
     sendWhenIdle: async () => "started" as const,
     interrupt: async (id: string) => { interrupts.push(id); return "interrupted"; },
+    requestStop: (id: string) => { stops.push(id); events.push(`stop:${id}`); return stopAccepted; },
     setPermissionMode: async (_id: string, mode: string) => { modes.push(mode); },
     setModel: async (id: string, model: string) => { models.push({ id, model }); },
     setEffort: async (id: string, effort: string) => { efforts.push({ id, effort }); },
@@ -106,7 +115,7 @@ function fixture(authorizeOverride?: import("../src/server/session-control-autho
     const click = clicks.get(input.requestId); clicks.delete(input.requestId);
     return click?.sessionId === input.sessionId && click?.enabled === input.enabled;
   });
-  const app = buildApp({ registry, reviews, queues, tasks: {} as import("../src/server/tasks.ts").TaskManager, sdkSessions: sdk, pendingTurns: pending, authorizeSessionControl });
+  const app = buildApp({ registry, reviews, queues, tasks, sdkSessions: sdk, pendingTurns: pending, authorizeSessionControl });
   const headers = { host: "localhost", "content-type": "application/json" };
   const agentHeaders = { ...headers, "x-harness-token": ensureToken(), "x-mission-scout-credential": credential };
   const request = (path: string, body: unknown, auth: Record<string, string> = agentHeaders, method = "POST") => app.request(path, { method, headers: auth, body: JSON.stringify(body) });
@@ -115,8 +124,21 @@ function fixture(authorizeOverride?: import("../src/server/session-control-autho
     return request(`/api/sessions/${caller.id}/session-control`, { enabled, requestId }, headers, "PUT");
   };
   const act = (command: SessionControlAction, sessionId = target.id) => request("/mcp/session-control/act", { sessionId, command });
-  return { registry, caller, target, other, credential, messages, interrupts, modes, models, efforts, answers, sdk, reviews, pending, request, grant, act, headers, agentHeaders, clicks };
+  const refuseStops = () => { stopAccepted = false; };
+  return { registry, caller, target, other, credential, messages, interrupts, modes, models, efforts, answers, stops, events, refuseStops, sdk, reviews, pending, request, grant, act, headers, agentHeaders, clicks };
 }
+
+test("read-only grant permits session inspection but refuses mutations and can be revoked", async () => {
+  const f = fixture();
+  f.registry.setSessionControlEnabled(f.caller.id, true, "read");
+  assert.equal((await f.request("/mcp/session-control/read", { sessionId: f.target.id })).status, 200);
+  assert.equal((await f.act({ action: "message", text: "must not send" })).status, 403);
+  assert.deepEqual(f.messages, []);
+  await f.grant(false);
+  const denied = await f.request("/mcp/session-control/read", {});
+  assert.equal(denied.status, 403);
+  assert.match((await denied.json()).error, /grant read-only access/);
+});
 
 test("a headerless local caller cannot enable its own session-control grant", async () => {
   const f = fixture();
@@ -502,6 +524,49 @@ test("optional transcript reads return the target's opening turns and bounded re
   assert.deepEqual(transcript.messages.map((m: { text: string }) => m.text), expected.map(textFor));
   assert.equal(transcript.truncated, true);
   assert.equal(transcript.headCount, 12);
+});
+
+test("read-only history pages recover turns displaced during an outage and identify unavailable session listings and ended sessions", async () => {
+  const f = fixture();
+  f.registry.setSessionControlEnabled(f.caller.id, true, "read");
+  const t = realTranscript(f);
+  const text = "x".repeat(1024);
+  for (let i = 0; i < 1200; i++) t.append(`outage-${i}`, text, 1000 * (i + 1));
+  const read = (args: object) => f.request("/mcp/session-control/read", args);
+  const list = await (await read({ history: "latest" })).json();
+  assert.equal(list.history.reason, "historical_session_list_unavailable");
+  assert.ok(list.sessions.some((session: { id: string }) => session.id === f.target.id));
+
+  const ids: string[] = [];
+  let history: unknown = "latest";
+  let pages = 0;
+  do {
+    const response = await read({ sessionId: f.target.id, history });
+    assert.equal(response.status, 200);
+    const page = (await response.json()).history;
+    assert.equal(page.status, "page");
+    assert.ok(page.messages.length <= 20);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) < 26 * 1024);
+    ids.unshift(...page.messages.map((m: { id: string }) => m.id));
+    history = page.next;
+    pages++;
+    assert.ok(pages <= 1200, "every page advances");
+  } while (history !== null);
+  assert.ok(pages >= 60);
+  assert.deepEqual(ids, Array.from({ length: 1200 }, (_, i) => `outage-${i}`));
+
+  t.append("oversized", "x".repeat(65_536), 1_300_000);
+  const current = await (await read({ sessionId: f.target.id, history: "latest" })).json();
+  assert.equal(current.history.messages[0].truncated, true);
+  assert.ok(current.history.next);
+  const stale = await read({ sessionId: f.target.id, history: { ...current.history.next, conversationId: "previous-conversation" } });
+  assert.deepEqual((await stale.json()).history, { status: "unavailable", reason: "transcript_replaced" });
+  f.registry.applyDriverEvent(f.target.id, { kind: "exited", reason: "finished", resumable: false });
+  const ended = await read({ sessionId: f.target.id, history: current.history.next });
+  assert.equal(ended.status, 404);
+  assert.deepEqual(await ended.json(), { history: { status: "unavailable", reason: "no_live_session" } });
+  await f.grant(false);
+  assert.equal((await read({ sessionId: f.other.id, history: "latest" })).status, 403);
 });
 
 test("review answers preserve delegation, ownership, structured choices and continuation delivery", async () => {
@@ -1038,6 +1103,57 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
   assert.deepEqual(actions.slice(-3), ["flag_blocker_reply", "clear_blocker", "clear_blocker"]);
 });
 
+test("residents list sessions awaiting a background process, overdue ones included, and clear one through the dashboard route", async (t) => {
+  const f = fixture(); await f.grant(true);
+  const now = Date.now();
+  const wait = (what: string, expectedBy: number) => ({
+    what, wakeSource: "command" as const, expectedBy, referenceUrl: null, details: "Long **notes**",
+  });
+  assert.equal(f.registry.reportAwaiting(f.target.id, wait("CI checks on PR #7", now + 20 * 60_000), now).ok, true);
+  // Declared twenty minutes ago with a ten-minute deadline: overdue now.
+  const past = now - 20 * 60_000;
+  assert.equal(f.registry.reportAwaiting(f.other.id, wait("Staging deploy", past + 10 * 60_000), past).ok, true);
+
+  // The list form carries a compact summary on every row, and `awaiting: true` narrows to the
+  // sessions with a declared wait, the overdue one included.
+  const filtered = await (await f.request("/mcp/session-control/read", { awaiting: true })).json() as {
+    sessions: Array<{ id: string; awaiting: { what: string; overdue: boolean } & Record<string, unknown> }>;
+  };
+  assert.deepEqual(filtered.sessions.map((s) => s.id).sort(), [f.target.id, f.other.id].sort());
+  const target = filtered.sessions.find((s) => s.id === f.target.id)!.awaiting;
+  assert.deepEqual(Object.keys(target).sort(), ["expectedBy", "id", "overdue", "referenceUrl", "startedAt", "wakeSource", "what"]);
+  assert.equal(target.what, "CI checks on PR #7");
+  assert.equal(target.overdue, false);
+  const other = filtered.sessions.find((s) => s.id === f.other.id)!.awaiting;
+  assert.equal(other.what, "Staging deploy");
+  assert.equal(other.overdue, true);
+
+  // clear_awaiting maps onto the dashboard route: a stale id is refused, the current one clears
+  // the target's wait, sends the session nothing and leaves the other session's wait alone.
+  const shown = f.registry.getSession(f.target.id)!.awaiting!.id;
+  // Watched directly: `f.messages` records `send` only, and a clear must use neither path.
+  const sends = t.mock.method(f.sdk, "send");
+  const idleSends = t.mock.method(f.sdk, "sendWhenIdle");
+  assert.equal((await f.act({ action: "clear_awaiting", awaitingId: "a-wait-that-was-replaced" })).status, 409);
+  assert.ok(f.registry.getSession(f.target.id)!.awaiting, "a stale resident clear removed the wait");
+  const cleared = await f.act({ action: "clear_awaiting", awaitingId: shown, resolution: "CI was cancelled" });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(await cleared.json(), { ok: true, cleared: true });
+  assert.equal(f.registry.getSession(f.target.id)!.awaiting, null);
+  assert.ok(f.registry.getSession(f.other.id)!.awaiting, "clearing one session's wait touched another's");
+  assert.equal(f.messages.length, 0, "a clear sends nothing to the session");
+  assert.equal(sends.mock.callCount(), 0, "a clear called send");
+  assert.equal(idleSends.mock.callCount(), 0, "a clear called sendWhenIdle");
+  const after = await (await f.request("/mcp/session-control/read", { awaiting: true })).json() as { sessions: Array<{ id: string }> };
+  assert.deepEqual(after.sessions.map((s) => s.id), [f.other.id]);
+
+  const { openDb } = await import("../src/server/db.ts");
+  const events = openDb().prepare(`SELECT kind, payload FROM session_events WHERE session_id = ? ORDER BY id`).all(f.target.id) as Array<{ kind: string; payload: string }>;
+  const clearedEvent = events.filter((e) => e.kind === "session_awaiting_cleared").at(-1)!;
+  assert.equal(JSON.parse(clearedEvent.payload).actor, `session:${f.caller.id}`);
+  assert.equal(JSON.parse(clearedEvent.payload).resolution, "CI was cancelled");
+});
+
 test("a granted controller cannot choose Remind me later for the operator", async () => {
   const f = fixture(); await f.grant(true);
   const question = "Which linter should this repo use?";
@@ -1058,4 +1174,161 @@ test("a granted controller cannot choose Remind me later for the operator", asyn
   const parked = await f.request(`/api/reviews/${review.id}/snooze`, { delay: "1h" }, f.headers);
   assert.equal(parked.status, 200);
   assert.equal(f.registry.getReview(review.id)?.status, "snoozed");
+});
+
+/** A task service that records each completion the delegated Complete makes, as the route passes it. */
+function completionTasks(refuse?: (call: CompletionCall) => Error | null) {
+  const calls: CompletionCall[] = [];
+  const tasks = {
+    async complete(id: string, outcome: string, outcomeUrl?: string, satisfyDependents = false, requireStopped = false, confirmIncompleteScout = false) {
+      const call = { id, outcome, outcomeUrl, satisfyDependents, requireStopped, confirmIncompleteScout };
+      calls.push(call);
+      eventsFor.get(tasks)?.push(`complete:${id}`);
+      const refusal = refuse?.(call);
+      if (refusal) throw refusal;
+      const current = registryFor.get(tasks)!.getTask(id)!;
+      return { ...current, status: "done", outcome };
+    },
+  } as unknown as import("../src/server/tasks.ts").TaskManager;
+  const registryFor = new Map<unknown, import("../src/server/registry.ts").Registry>();
+  const eventsFor = new Map<unknown, string[]>();
+  return {
+    tasks, calls,
+    bind: (registry: import("../src/server/registry.ts").Registry, events: string[]) => {
+      registryFor.set(tasks, registry);
+      eventsFor.set(tasks, events);
+    },
+  };
+}
+interface CompletionCall {
+  id: string; outcome: string; outcomeUrl?: string; satisfyDependents: boolean; requireStopped: boolean; confirmIncompleteScout: boolean;
+}
+
+function completionFixture(refuse?: (call: CompletionCall) => Error | null) {
+  const service = completionTasks(refuse);
+  const f = fixture(undefined, undefined, service.tasks);
+  service.bind(f.registry, f.events);
+  return { ...f, calls: service.calls };
+}
+
+test("completing another session requires the controller grant and touches nothing without it", async () => {
+  const f = completionFixture();
+  f.registry.upsertTask(mkTask({ id: `complete-ungranted-${serial}`, sessionId: f.target.id, status: "running", repoRoot: home }));
+  const refused = await f.act({ action: "complete", outcome: "done" });
+  assert.equal(refused.status, 403);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.stops, []);
+
+  await f.grant(true);
+  await f.grant(false);
+  assert.equal((await f.act({ action: "complete" })).status, 403);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.stops, []);
+});
+
+test("a controller completes another session the way the Complete dialog does: task first, then the stop", async () => {
+  const f = completionFixture(); await f.grant(true);
+  const taskId = `complete-dialog-${serial}`;
+  f.registry.upsertTask(mkTask({ id: taskId, sessionId: f.target.id, status: "running", repoRoot: home }));
+  const response = await f.act({ action: "complete" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, taskId, taskStatus: "done", session: "closing" });
+  // The dialog's own fallback outcome, and neither confirmation implied.
+  assert.deepEqual(f.calls, [{ id: taskId, outcome: "completed", outcomeUrl: undefined, satisfyDependents: false, requireStopped: false, confirmIncompleteScout: false }]);
+  assert.deepEqual(f.stops, [f.target.id]);
+  assert.deepEqual(f.interrupts, []);
+});
+
+test("delegated completion records the task before it asks the session to stop", async () => {
+  const f = completionFixture(); await f.grant(true);
+  const taskId = `complete-order-${serial}`;
+  f.registry.upsertTask(mkTask({ id: taskId, sessionId: f.target.id, status: "running", repoRoot: home }));
+  assert.equal((await f.act({ action: "complete", outcome: "done" })).status, 200);
+  // One shared record of both side effects: the Complete dialog's order, never the reverse.
+  assert.deepEqual(f.events, [`complete:${taskId}`, `stop:${f.target.id}`]);
+});
+
+test("a target that leaves while its task completes is reported closed and is not asked to stop", async (t) => {
+  // Runs inside the task completion, after it was recorded and before the route decides on a stop.
+  let leaveDuringCompletion = () => {};
+  const f = completionFixture(() => { leaveDuringCompletion(); return null; });
+  await f.grant(true);
+  const taskId = `complete-left-${serial}`;
+  f.registry.upsertTask(mkTask({ id: taskId, sessionId: f.target.id, status: "running", repoRoot: home }));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  leaveDuringCompletion = () => {
+    // The ordinary way an SDK session goes: exited, then evicted once its linger elapses.
+    f.registry.applyDriverEvent(f.target.id, { kind: "exited", reason: "finished", resumable: false });
+    t.mock.timers.tick(60_000);
+    assert.equal(f.registry.getSession(f.target.id), undefined, "the target was evicted during completion");
+  };
+  const response = await f.act({ action: "complete", outcome: "done" });
+  t.mock.timers.reset();
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, taskId, taskStatus: "done", session: "closed" });
+  assert.deepEqual(f.calls.map((call) => call.id), [taskId]);
+  assert.deepEqual(f.stops, []);
+  assert.deepEqual(f.events, [`complete:${taskId}`]);
+});
+
+test("delegated completion forwards the outcome and explicit confirmations, and sends no second stop when completion closes the session", async () => {
+  const f = completionFixture(); await f.grant(true);
+  const taskId = `complete-worktree-${serial}`;
+  // A task with its own worktree: completion itself requests the session's closure.
+  f.registry.upsertTask(mkTask({ id: taskId, sessionId: f.target.id, status: "running", repoRoot: home, worktreePath: home }));
+  const response = await f.act({ action: "complete", outcome: "  Fix merged in #42  ", satisfyDependents: true });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, taskId, taskStatus: "done", session: "closing" });
+  assert.deepEqual(f.calls, [{ id: taskId, outcome: "Fix merged in #42", outcomeUrl: undefined, satisfyDependents: true, requireStopped: false, confirmIncompleteScout: false }]);
+  assert.deepEqual(f.stops, []);
+});
+
+test("an unarchived scout is refused with its problems until the controller confirms, and nothing is stopped meanwhile", async () => {
+  const { ScoutArchiveNotReadyError } = await import("../src/server/tasks.ts");
+  const f = completionFixture((call) => call.confirmIncompleteScout ? null : new ScoutArchiveNotReadyError(["report.html was never submitted"]));
+  await f.grant(true);
+  const taskId = `complete-scout-${serial}`;
+  f.registry.upsertTask(mkTask({ id: taskId, kind: "scout", sessionId: f.target.id, status: "running", repoRoot: home }));
+  const refused = await f.act({ action: "complete", outcome: "answered" });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: "report.html was never submitted", problems: ["report.html was never submitted"], confirmIncompleteScout: true,
+  });
+  assert.deepEqual(f.stops, []);
+  const confirmed = await f.act({ action: "complete", outcome: "answered", confirmIncompleteScout: true });
+  assert.equal(confirmed.status, 200);
+  assert.equal(f.calls.at(-1)?.confirmIncompleteScout, true);
+  assert.deepEqual(f.stops, [f.target.id]);
+});
+
+test("delegated completion refuses a target without a task, the controller itself, and reports a stop that failed after the task was recorded", async () => {
+  const f = completionFixture(); await f.grant(true);
+  const none = await f.act({ action: "complete" });
+  assert.equal(none.status, 409);
+  assert.deepEqual(await none.json(), { error: "Target session has no task to complete" });
+  assert.equal((await f.act({ action: "complete" }, f.caller.id)).status, 404);
+  assert.deepEqual(f.calls, []);
+
+  const taskId = `complete-stop-refused-${serial}`;
+  f.registry.upsertTask(mkTask({ id: taskId, sessionId: f.target.id, status: "running", repoRoot: home }));
+  f.refuseStops();
+  const failed = await f.act({ action: "complete", outcome: "done" });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), {
+    ok: false, taskId, taskStatus: "done",
+    error: "task marked done, but the session could not be closed: this session has no live embedded driver",
+  });
+  assert.equal(f.calls.length, 1);
+});
+
+test("the complete action schema bounds and trims its outcome and rejects unknown fields", () => {
+  const parse = (command: unknown) => SessionControlActionSchema.safeParse(command);
+  assert.deepEqual(parse({ action: "complete", outcome: "  shipped  " }).data, { action: "complete", outcome: "shipped" });
+  assert.equal(parse({ action: "complete", taskId: "someone-else" }).success, false);
+  assert.equal(parse({ action: "complete", requireStopped: true }).success, false);
+  // Both sides of the limit, so lowering it by accident fails here as surely as raising it.
+  const atLimit = parse({ action: "complete", outcome: "x".repeat(CONVERSATION_TEXT_MAX_LENGTH) });
+  assert.equal(atLimit.success, true);
+  assert.equal(atLimit.data?.action === "complete" && atLimit.data.outcome?.length, CONVERSATION_TEXT_MAX_LENGTH);
+  assert.equal(parse({ action: "complete", outcome: "x".repeat(CONVERSATION_TEXT_MAX_LENGTH + 1) }).success, false);
 });

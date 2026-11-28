@@ -1,14 +1,15 @@
 import { after, beforeEach, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Persona } from "../src/shared/workflow.ts";
+import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
 import type { ResidentProfile } from "../src/shared/residents.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
 
@@ -16,7 +17,7 @@ ensureNativeStateLockAddon();
 // archive, the HTTP routes and their SSE frames, and the refusal of `resident` on every task
 // creation path except the resident launch.
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-profiles-"));
+const home = tempDir("mission-residents-profiles-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -45,6 +46,7 @@ const {
   RESIDENT_LIMITS,
   RESIDENT_PROFILE_SECTION_IDS,
   ResidentProfileRevisionSchema,
+  newResidentMcpSettings,
 } = await import("../src/shared/residents.ts");
 
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
@@ -133,6 +135,79 @@ test("a revision fills every later section with its defaults and round-trips unc
   assert.equal(ResidentProfileRevisionSchema.safeParse({ ...parsed, marker: { color: "cyan" } }).success, true);
   // A request body may not smuggle one in.
   assert.equal(CreateResidentProfileSchema.safeParse({ settings: { ...parsed, marker: {} } }).success, false);
+});
+
+test("new Claude and Codex profiles default to native MCP while saved revisions and explicit selections stay pinned", () => {
+  for (const agent of ["claude", "codex"]) {
+    const settings = body("Monitor", { execution: { agent } });
+    for (const input of [settings, { ...settings, mcp: {} }]) {
+      assert.equal(CreateResidentProfileSchema.parse({ settings: input }).settings.mcp.nativeSources, "all");
+    }
+    for (const mcp of [
+      { nativeSources: "pinned" },
+      { inheritDefaults: false },
+      { selected: [{ source: "global", agent, name: "docs" }] },
+    ]) {
+      assert.equal(CreateResidentProfileSchema.parse({ settings: { ...settings, mcp } }).settings.mcp.nativeSources, "pinned");
+    }
+    assert.equal(ResidentProfileRevisionSchema.parse(settings).mcp.nativeSources, "pinned");
+  }
+});
+
+test("Pi defaults to pinned MCP and the create API rejects Pi as a resident harness", async () => {
+  assert.equal(newResidentMcpSettings("pi").nativeSources, "pinned");
+  const result = await request("POST", "/api/residents/profiles", { settings: body("Pi", { execution: { agent: "pi" } }) });
+  assert.equal(result.status, 400);
+  assert.deepEqual(JSON.parse(String(result.json.error))[0].path, ["settings", "execution", "agent"]);
+});
+
+test("the profile API defaults new residents to native MCP and inherits the saved mode on a revision", async () => {
+  for (const agent of ["claude", "codex"]) {
+    const settings = body(`API ${agent}`, { execution: { agent }, loop: { spendCapUsd: null } });
+    const created = await request("POST", "/api/residents/profiles", {
+      settings: agent === "claude" ? settings : { ...settings, mcp: {} },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.json));
+    const profile = created.json as unknown as ResidentProfile;
+    assert.equal(profile.settings.mcp.nativeSources, "all");
+    const path = `/api/residents/profiles/${profile.id}`;
+    let revision = 1;
+    for (const [mcp, expectedMode] of [
+      [undefined, "all"], [{}, "all"], [{ nativeSources: "pinned" }, "pinned"],
+      [undefined, "pinned"], [{}, "pinned"], [{ nativeSources: "all" }, "all"],
+    ] as const) {
+      const result = await request("PATCH", path, { settings: { ...settings, mcp }, expectedRevision: revision });
+      assert.equal(result.status, 200, JSON.stringify(result.json));
+      revision++;
+      assert.equal(store.residentProfileRevision(profile.id, revision)?.mcp.nativeSources, expectedMode);
+    }
+    const stale = await request("PATCH", path, { settings, expectedRevision: 4 });
+    assert.equal(stale.status, 409);
+    assert.equal((stale.json.profile as ResidentProfile).settings.mcp.nativeSources, "all");
+  }
+});
+
+test("editing a stored revision that predates MCP source modes keeps it pinned", async () => {
+  const settings = body("Legacy resident");
+  const created = await request("POST", "/api/residents/profiles", { settings });
+  assert.equal(created.status, 201);
+  const profile = created.json as unknown as ResidentProfile;
+  openDb().prepare("UPDATE resident_profile_revisions SET settings_json = json_remove(settings_json, '$.mcp.nativeSources') WHERE profile_id = ? AND revision = 1")
+    .run(profile.id);
+  const saved = await request("PATCH", `/api/residents/profiles/${profile.id}`, { expectedRevision: 1, settings });
+  assert.equal(saved.status, 200);
+  assert.equal((saved.json as unknown as ResidentProfile).settings.mcp.nativeSources, "pinned");
+});
+
+test("profile creation falls back to pinned when the selected harness lacks all-native MCP support", (t) => {
+  const selection = HARNESS_CAPABILITIES.codex.mcpSelection;
+  assert.ok(selection);
+  t.after(() => { HARNESS_CAPABILITIES.codex.mcpSelection = selection; });
+  HARNESS_CAPABILITIES.codex.mcpSelection = { ...selection, allNativeSources: null };
+
+  const settings = body("Monitor", { execution: { agent: "codex" } });
+  assert.equal(CreateResidentProfileSchema.parse({ settings }).settings.mcp.nativeSources, "pinned");
+  assert.equal(CreateResidentProfileSchema.parse({ settings: body("Default Claude") }).settings.mcp.nativeSources, "all");
 });
 
 test("state reset rejects omitted and false confirmation without changing saved state", async () => {

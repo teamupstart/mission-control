@@ -1,10 +1,10 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
+import type { PersonaWorkloadEvent } from "../src/shared/repository-access.ts";
 import type {
   ClaudeSdkMessage,
   ClaudeSdkOneShotDeps,
@@ -17,17 +17,19 @@ import type {
   WorkflowCommandView,
   WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { DEFAULT_WORKFLOW_POLICY, emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import type { HostSuspendClock } from "../src/server/host-suspend.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
+const home = tempDir("mission-workflow-engine-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 // A directory for the one test that needs a real one, kept OUTSIDE the state dir. The daemon
 // owns what lives under `MISSION_HOME` and sweeps parts of it at startup; a test's stand-in
 // worktree planted in there passes or fails depending on what ran before it.
-const checkTree = mkdtempSync(join(tmpdir(), "mission-workflow-engine-tree-"));
+const checkTree = tempDir("mission-workflow-engine-tree-");
 after(() => rmSync(checkTree, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
@@ -46,6 +48,7 @@ const { claudeRunner, configureClaudeRunnerTransport } = await import(
   "../src/server/llm/claude.ts"
 );
 const { ProviderFailure } = await import("../src/server/llm/provider-failure.ts");
+const { HostSuspendMonitor, HOST_SUSPEND_INTERVAL_MS } = await import("../src/server/host-suspend.ts");
 
 function persona(
   id: string,
@@ -146,6 +149,7 @@ function seedSubmission(
   id: string,
   executionGraph: PublishedWorkflowGraph,
   captured: WorkflowContextSnapshot = context,
+  repoRoot = "/repo",
 ): InstanceType<typeof WorkflowStore> {
   seedNamedVersion(id, executionGraph);
   const store = new WorkflowStore();
@@ -156,8 +160,8 @@ function seedSubmission(
     sessionId: `session-${id}`,
     sessionAgent: "claude",
     sessionName: id,
-    sessionCwd: "/repo",
-    sessionRepoRoot: "/repo",
+    sessionCwd: repoRoot,
+    sessionRepoRoot: repoRoot,
     triggerMode: "manual",
     deliveryMode: "preview",
     maxRepairRounds: 5,
@@ -1008,6 +1012,297 @@ test("provider token exhaustion blocks immediately without scheduling a retry", 
   assert.equal(store.lastPersonaCallErrorCode(store.latestAttemptForNode("submission-provider-token", "p")!.id), "persona_token_exhausted");
 });
 
+/** A host-suspend clock a test flips: every call that fails while `asleep` overlapped a sleep. */
+function scriptedSuspend(): { clock: HostSuspendClock; asleep: boolean } {
+  const state: { clock: HostSuspendClock; asleep: boolean } = {
+    asleep: false,
+    clock: {
+      mark: () => ({ at: 0, suspendedMs: 0 }),
+      suspendedMsSince: () => (state.asleep ? 17 * 60_000 : 0),
+    },
+  };
+  return state;
+}
+
+function hostSuspendEngine(
+  store: InstanceType<typeof WorkflowStore>,
+  runner: LlmRunner,
+  now: () => number,
+  hostSuspend: ReturnType<typeof scriptedSuspend>["clock"],
+): InstanceType<typeof WorkflowEngine> {
+  return new WorkflowEngine(store, () => {}, {
+    runnerFor: () => runner, now, hostSuspend,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+    }),
+  });
+}
+
+function personaCallCodes(runId: string): (string | null)[] {
+  return openDb().prepare(`SELECT error_code FROM workflow_llm_calls
+    WHERE run_id = ? ORDER BY started_at, rowid`).all(runId)
+    .map((row) => (row as { error_code: string | null }).error_code);
+}
+
+test("calls that fail across a host sleep are retried without spending the two-call budget (#1734)", async () => {
+  const store = seedSubmission("host-sleep", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  let clock = 2_000_000;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    // The two failures the issue recorded: each Codex call timed out seconds after a wake.
+    if (calls <= 2) throw new Error("codex exec timed out");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  suspend.asleep = true;
+  const engine = hostSuspendEngine(store, runner, () => clock, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-host-sleep");
+    for (const attempt of [2, 3]) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-host-sleep", "p");
+        return latest?.attempt === attempt && latest.state === "retry_wait";
+      });
+      const waiting = store.latestAttemptForNode("submission-host-sleep", "p")!;
+      assert.equal(waiting.retryAt, clock + 5_000);
+      assert.equal(store.getRun("run-host-sleep")?.status, "running");
+      if (attempt === 3) suspend.asleep = false;
+      clock = waiting.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-host-sleep")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 3);
+  assert.deepEqual(personaCallCodes("run-host-sleep"), ["persona_host_suspended", "persona_host_suspended", null]);
+  const operationId = store.latestAttemptForNode("submission-host-sleep", "p")!.reviewInput!.operationId;
+  assert.equal(store.personaOperationCorrectionCalls(operationId), 1);
+  const scheduled = store.listEvents("run-host-sleep").filter((event) => event.kind === "persona_retry_scheduled");
+  assert.equal(scheduled.length, 2);
+  assert.ok(scheduled.every((event) => (event.payload as { hostSuspended?: boolean }).hostSuspended === true));
+  assert.equal(store.listEvents("run-host-sleep").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+  assert.match(
+    store.listAttempts("submission-host-sleep").find((attempt) => attempt.attempt === 1)?.error ?? "",
+    /host was asleep during this call.*codex exec timed out/,
+  );
+});
+
+test("the same failures with no host sleep still spend the budget and block the run", async () => {
+  const store = seedSubmission("awake-timeout", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    throw new Error("codex exec timed out");
+  });
+  const engine = hostSuspendEngine(store, runner, Date.now, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-awake-timeout");
+    await waitFor(() => store.getRun("run-awake-timeout")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 2);
+  assert.equal(store.getRun("run-awake-timeout")?.currentPhase, "infrastructure_error");
+  assert.deepEqual(personaCallCodes("run-awake-timeout"), ["persona_infrastructure", "persona_infrastructure"]);
+});
+
+test("a token limit during a host sleep still blocks immediately", async () => {
+  const store = seedSubmission("sleep-token", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    throw new ProviderFailure("prompt exceeds model token limit", "prompt_too_long");
+  });
+  const engine = hostSuspendEngine(store, runner, Date.now, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-token");
+    await waitFor(() => store.getRun("run-sleep-token")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 1);
+  assert.equal(store.getRun("run-sleep-token")?.currentPhase, "provider_token_exhausted");
+  assert.deepEqual(personaCallCodes("run-sleep-token"), ["persona_token_exhausted"]);
+});
+
+test("a sleep that ended before a call started cannot excuse that call", async () => {
+  // The real detector on a fake clock, so each call is judged by the windows it overlaps
+  // rather than by a flag: one sleep is recorded during call 1, and calls 2 and 3 run after it.
+  const store = seedSubmission("sleep-stale", providerRetryGraph);
+  let clock = 4_000_000;
+  const monitor = new HostSuspendMonitor({ now: () => clock });
+  const awake = (ms: number): void => {
+    for (let left = ms; left > 0; left -= HOST_SUSPEND_INTERVAL_MS) {
+      clock += Math.min(HOST_SUSPEND_INTERVAL_MS, left);
+      monitor.tick();
+    }
+  };
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    awake(20_000);
+    // Only call 1 has a sleep inside it: seventeen minutes, seen by the next heartbeat.
+    if (calls === 1) {
+      clock += 17 * 60_000;
+      monitor.tick();
+    }
+    throw new Error("codex exec timed out");
+  });
+  const engine = hostSuspendEngine(store, runner, () => clock, monitor);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-stale");
+    await waitFor(() => {
+      const latest = store.latestAttemptForNode("submission-sleep-stale", "p");
+      return latest?.attempt === 2 && latest.state === "retry_wait";
+    });
+    // The host is awake from here on. The earlier window is still on record, which is the point.
+    awake(store.latestAttemptForNode("submission-sleep-stale", "p")!.retryAt! - clock);
+    engine.wake();
+    await waitFor(() => store.getRun("run-sleep-stale")?.status === "blocked");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 3);
+  assert.deepEqual(
+    personaCallCodes("run-sleep-stale"),
+    ["persona_host_suspended", "persona_infrastructure", "persona_infrastructure"],
+  );
+  assert.equal(store.getRun("run-sleep-stale")?.currentPhase, "infrastructure_error");
+  assert.equal(store.listEvents("run-sleep-stale").some((event) => event.kind === "persona_infrastructure_exhausted"), true);
+});
+
+test("a Persona attempt without review input is also excused by a host sleep", async () => {
+  // The legacy path: no frozen review input, so the budget is the node's three infrastructure
+  // attempts rather than the operation's two calls. Three sleeps would have spent all of it.
+  const store = seedSubmission("sleep-legacy", providerRetryGraph);
+  const node = providerRetryGraph.nodes.find((candidate) => candidate.id === "p");
+  assert.ok(node && node.kind === "persona");
+  store.insertAttempt({
+    id: "legacy-attempt-1", submissionId: "submission-sleep-legacy", nodeId: "p", attempt: 1,
+    state: "queued", persona: node.persona, inputFingerprint: "legacy", now: 1,
+  });
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let clock = 12_000_000;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    if (calls <= 3) throw new Error("codex exec timed out");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  const engine = hostSuspendEngine(store, runner, () => clock, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-legacy");
+    for (let excused = 1; excused <= 3; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-sleep-legacy", "p");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      assert.equal(store.latestAttemptForNode("submission-sleep-legacy", "p")?.reviewInput, undefined);
+      assert.equal(store.getRun("run-sleep-legacy")?.status, "running", `still running after sleep ${excused}`);
+      if (excused === 3) suspend.asleep = false;
+      clock = store.latestAttemptForNode("submission-sleep-legacy", "p")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-sleep-legacy")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, 4);
+  assert.equal(store.hostSuspendedAttempts("submission-sleep-legacy", "p"), 3);
+  assert.deepEqual(personaCallCodes("run-sleep-legacy"),
+    ["persona_host_suspended", "persona_host_suspended", "persona_host_suspended", null]);
+  assert.equal(store.listEvents("run-sleep-legacy").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+});
+
+test("every call a host sleep overlaps is excused, however many there are", async () => {
+  const store = seedSubmission("sleep-night", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let clock = 3_000_000;
+  let calls = 0;
+  // A night of maintenance wakes: twenty calls in a row fail across a sleep, then the Mac wakes.
+  const sleeps = 20;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    if (calls <= sleeps) throw new Error("codex exec timed out");
+    return JSON.stringify({
+      verdict: "pass", summary: "Approved", confidence: 0.9,
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+    });
+  });
+  const engine = hostSuspendEngine(store, runner, () => clock, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-night");
+    for (let excused = 1; excused <= sleeps; excused++) {
+      await waitFor(() => {
+        const latest = store.latestAttemptForNode("submission-sleep-night", "p");
+        return latest?.attempt === excused + 1 && latest.state === "retry_wait";
+      });
+      assert.equal(store.getRun("run-sleep-night")?.status, "running", `still running after sleep ${excused}`);
+      if (excused === sleeps) suspend.asleep = false;
+      clock = store.latestAttemptForNode("submission-sleep-night", "p")!.retryAt!;
+      engine.wake();
+    }
+    await waitFor(() => store.getRun("run-sleep-night")?.status === "completed");
+  } finally {
+    await engine.stop();
+  }
+  assert.equal(calls, sleeps + 1);
+  assert.deepEqual(personaCallCodes("run-sleep-night"), [...Array(sleeps).fill("persona_host_suspended"), null]);
+  assert.equal(store.listEvents("run-sleep-night").some((event) => event.kind === "persona_infrastructure_exhausted"), false);
+});
+
+test("a run stopped before a host-sleep retry is scheduled cancels the attempt and queues nothing", async () => {
+  const store = seedSubmission("sleep-cancelled", providerRetryGraph);
+  const suspend = scriptedSuspend();
+  suspend.asleep = true;
+  let calls = 0;
+  const runner = providerRetryRunner(async () => {
+    calls++;
+    // The operator cancels while the call is in flight; the call then fails across the sleep.
+    store.cancelRun("run-sleep-cancelled", "test_cancel", Date.now());
+    throw new Error("codex exec timed out");
+  });
+  const engine = hostSuspendEngine(store, runner, Date.now, suspend.clock);
+  engine.start();
+  try {
+    engine.activateSubmission("submission-sleep-cancelled");
+    await waitFor(() => calls === 1 && /codex exec timed out/.test(
+      store.latestAttemptForNode("submission-sleep-cancelled", "p")?.error ?? "",
+    ));
+  } finally {
+    await engine.stop();
+  }
+  const attempts = store.listAttempts("submission-sleep-cancelled").filter((attempt) => attempt.nodeId === "p");
+  assert.equal(attempts.length, 1, "no retry attempt may be queued for a stopped run");
+  assert.equal(attempts[0]!.state, "cancelled");
+  // The host-sleep branch records the call's own failure, not the "after the submission
+  // stopped" note the ordinary infrastructure path writes.
+  assert.equal(attempts[0]!.error, "Provider Persona failed: Error: codex exec timed out");
+  assert.doesNotMatch(attempts[0]!.error ?? "", /Audit-only/);
+  assert.equal(store.listEvents("run-sleep-cancelled").some((event) => event.kind === "persona_retry_scheduled"), false);
+  assert.equal(store.getRun("run-sleep-cancelled")?.status, "cancelled");
+});
+
 for (const [kind, code, expectedState] of [
   ["token", "prompt_too_long", "blocked"],
   ["retryable", "api_error", "retry_wait"],
@@ -1033,7 +1328,7 @@ for (const [kind, code, expectedState] of [
       ? store.getRun(`run-${id}`)?.status === "blocked"
       : store.latestAttemptForNode(`submission-${id}`, "p")?.state === "retry_wait");
     error = expectedState === "blocked"
-      ? (store.getRun(`run-${id}`)?.gateState as { error: string }).error
+      ? (store.getRun(`run-${id}`)?.gateState as { error: string })?.error
       : store.latestAttemptForNode(`submission-${id}`, "p")?.error ?? "";
   } finally {
     if (expectedState === "retry_wait") store.cancelRun(`run-${id}`, "test_cleanup");
@@ -2939,8 +3234,41 @@ test("a disabled node with an override still launches nothing and stamps no prov
   assert.equal(skipped.model, null);
 });
 
-// A disconnect must retain the review gate across retries, restart and allowance exhaustion.
-for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
+for (const [label, firstReply, expected] of [
+  ["a schema miss", JSON.stringify({ verdict: "pass", summary: "LEAK-ME", approvalDetails: { reason: "Proven", evidence: [] }, confidence: "high" }),
+    "Correction required: the prior reply was valid JSON but did not match the required shape (confidence: Expected number, received string)."],
+  ["unparseable prose", "I approve this change.", "Correction required: the prior reply was not valid JSON."],
+] as const) test(`the Persona correction names ${label} rather than a generic parse failure`, async () => {
+  const id = `correction-${label.replaceAll(" ", "-")}`;
+  const reviewer = persona("p", "Contract reviewer", "claude", "Review");
+  const executionGraph: PublishedWorkflowGraph = {
+    nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "p", kind: "persona", persona: reviewer, position: { x: 100, y: 0 } }, { id: "end", kind: "end", outcome: "Done", position: { x: 200, y: 0 } }],
+    edges: [{ id: "start", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" }, { id: "pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" }, { id: "fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" }],
+  };
+  const store = seedSubmission(id, executionGraph);
+  const { personaReviewInput, personaReviewInputDigest } = await import("../src/server/workflows/persona-contract.ts");
+  const input = personaReviewInput(store.getSubmission(`submission-${id}`)!, store.getWorkflowVersionById(`version-${id}`)!);
+  store.insertAttempt({ id: `attempt-${id}`, submissionId: `submission-${id}`, nodeId: "p", attempt: 1, state: "running", persona: reviewer, reviewInput: input, inputFingerprint: personaReviewInputDigest(input), now: 4 });
+  store.setRunState(`run-${id}`, "running", "persona_review", null, 6);
+  const prompts: string[] = [];
+  const fake: LlmRunner = { id: "claude", label: "fake", runInThread: null, structuredOutput: null, sandbox: null, price: () => null, litter: null, killLiveRuns() {}, async run(prompt) {
+    prompts.push(prompt);
+    return prompts.length === 1
+      ? firstReply
+      : JSON.stringify({ verdict: "pass", summary: "Pass", approvalDetails: { reason: "Proven", evidence: [{ kind: "decision", quote: "Chosen", path: null }] }, confidence: 1 });
+  } };
+  const engine = new WorkflowEngine(store, () => {}, { runnerFor: () => fake, resolveExecution: () => ({ runner: { id: "claude", source: "config", unknown: null }, model: { id: "fake", source: "config" } }), retryBaseMs: 1 });
+  engine.start();
+  try { await waitFor(() => ["completed", "blocked"].includes(store.getRun(`run-${id}`)?.status ?? "")); }
+  finally { await engine.stop(); }
+  assert.equal(prompts.length, 2);
+  assert.ok(prompts[1]!.includes(expected), prompts[1]!.slice(-600));
+  assert.doesNotMatch(prompts[1]!, /could not be executed or parsed|LEAK-ME/);
+  assert.equal(store.getRun(`run-${id}`)?.status, "completed");
+});
+
+// A disconnect must retain the review gate across retries and restart.
+for (const scenario of ["recover", "limit", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
   const timerLimit = 2_147_483_647;
   const vendorWaitMs = scenario === "long-vendor-wait" ? timerLimit + 120_000 : 120_000;
   const id = `cr-connection-${scenario}`;
@@ -2949,7 +3277,7 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
   const store = seedSubmission(id, crGraph, { ...context, evidence: { ...context.evidence, coderabbit: yaml } });
   const comparison = store.freezeCodeRabbitComparison(`submission-${id}`, {
     interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
-    baseRef: "main", severity: "major", maxRuns: ["allowance", "resubmit"].includes(scenario) ? 1 : 10,
+    baseRef: "main", severity: "major", maxRuns: ["recover", "limit", "resubmit"].includes(scenario) ? 1 : 10,
     timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
   });
   let clock = Date.now();
@@ -2968,8 +3296,8 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
         return { kind: "exited", exitCode: recovered ? 0 : 1, output: "", truncatedBytes: 0,
           review: { comparison, status: recovered ? "complete" : "incomplete",
             counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 }, titles: [],
-            diagnostic: recovered ? "Complete CodeRabbit review" : "CodeRabbit connection failed: WebSocket closed (provider marked recoverable)",
-            ...(!recovered ? { retryableConnection: true as const } : {}),
+            diagnostic: recovered ? "Complete CodeRabbit review" : scenario === "resubmit" ? "Incomplete coverage" : "CodeRabbit connection failed: WebSocket closed (provider marked recoverable)",
+            ...(!recovered && scenario !== "resubmit" ? { retryableConnection: true as const } : {}),
             ...(["vendor-wait", "long-vendor-wait"].includes(scenario) ? { retryAt: clock + vendorWaitMs } : {}),
           } };
       },
@@ -2978,30 +3306,29 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
   let engine = makeEngine();
   engine.start(); engine.activateSubmission(`submission-${id}`);
   try {
-    if (scenario === "allowance" || scenario === "resubmit") {
+    if (scenario === "resubmit") {
       await waitFor(() => store.getRun(`run-${id}`)?.status === "blocked");
-      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /allowance exhausted/);
+      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /Incomplete coverage/);
       assert.equal(calls, 1);
-      if (scenario === "resubmit") {
-        const repair = store.createRepairSubmission({
-          id: `submission-${id}-2`, runId: `run-${id}`, round: 2,
-          triggerSource: "manual", triggerKey: `manual:${id}:round-2`, context: {}, evidence: {}, now: clock,
-        });
-        const captured = { ...context, evidence: { ...context.evidence, coderabbit: yaml } };
-        store.updateSubmissionCapture(repair.submission.id, {
-          context: workflowJson(captured), evidence: workflowJson(captured.evidence),
-          fingerprint: `${id}-round-2`, status: "running",
-        }, clock);
-        engine.activateSubmission(repair.submission.id);
-        await waitFor(() => ["blocked", "completed"].includes(store.getRun(`run-${id}`)!.status));
-        assert.equal(store.getRun(`run-${id}`)!.status, "blocked", "a new submission must not skip an incomplete review");
-        assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /review remains incomplete.*allowance is exhausted/);
-        assert.equal(store.listReceipts(repair.submission.id).filter(r => r.edgeId.startsWith("gate-")).length, 0);
-        assert.equal(calls, 1, "resubmission cannot grant another execution");
-      }
+      const repair = store.createRepairSubmission({
+        id: `submission-${id}-2`, runId: `run-${id}`, round: 2,
+        triggerSource: "manual", triggerKey: `manual:${id}:round-2`, context: {}, evidence: {}, now: clock,
+      });
+      const captured = { ...context, evidence: { ...context.evidence, coderabbit: yaml } };
+      store.updateSubmissionCapture(repair.submission.id, {
+        context: workflowJson(captured), evidence: workflowJson(captured.evidence),
+        fingerprint: `${id}-round-2`, status: "running",
+      }, clock);
+      engine.activateSubmission(repair.submission.id);
+      await waitFor(() => ["blocked", "completed"].includes(store.getRun(`run-${id}`)!.status));
+      assert.equal(store.getRun(`run-${id}`)!.status, "blocked", "a new submission must not skip an incomplete review");
+      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /review remains incomplete.*allowance is exhausted/);
+      assert.equal(store.listReceipts(repair.submission.id).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+      assert.equal(calls, 1, "resubmission cannot grant another execution");
     } else {
       await waitFor(() => store.latestAttemptForNode(`submission-${id}`, "gate")?.state === "retry_wait");
       const waiting = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+      assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
       assert.ok(waiting.retryAt! >= clock + 30_000);
       assert.ok(waiting.retryAt! <= clock + (["vendor-wait", "long-vendor-wait"].includes(scenario) ? vendorWaitMs + 15_000 : 45_000));
       assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
@@ -3027,7 +3354,7 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
         assert.equal(deferred.retryAt, extended);
         assert.equal(deferred.startedAt, null);
         assert.equal(calls, 1);
-        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
         assert.equal(store.listReceipts(waiting.submissionId).filter(r => r.edgeId.startsWith("gate-")).length, 0);
         clock = extended;
         t.mock.timers.setTime(clock);
@@ -3092,6 +3419,7 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
         }
         await waitFor(() => store.getRun(`run-${id}`)?.status === (scenario === "recover" ? "completed" : "blocked"));
         assert.equal(calls, scenario === "recover" ? 2 : 3);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), scenario === "recover" ? 1 : 0);
         if (scenario === "limit") {
           assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /WebSocket closed.*retry limit reached/);
           assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
@@ -3100,3 +3428,649 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
     }
   } finally { await engine.stop(); store.cancelRun(`run-${id}`, "test cleanup", clock); }
 });
+
+async function captureRepositoryFixture(t: TestContext, store: InstanceType<typeof WorkflowStore>, submissionId: string) {
+  const { execFileSync } = await import("node:child_process");
+  const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
+  const directory = tempDir("mission-repository-review-supervision-");
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", directory]);
+  writeFileSync(join(directory, "submitted.txt"), "submitted\n");
+  const service = WorkflowRepositoryArtifactService.forRoot(store);
+  const signal = new AbortController().signal;
+  store.setSubmissionState(submissionId, "capturing");
+  const snapshot = await service.promote(await service.prepare({ checkout: directory, sourceBase: null }, signal), submissionId);
+  store.commitRepositoryCaptureActivation({ ...snapshot, capture: {
+    context: workflowJson(context), evidence: workflowJson(context.evidence), readiness: null,
+    fingerprint: "frozen", repositoryFingerprint: "repository",
+  } });
+  return service;
+}
+
+test("recovery capture replays the inherited parent digest before and after startup reconciliation", async (t) => {
+  const { RepositoryOwnership } = await import("../src/server/workflows/repository-artifact/ownership.ts");
+  const id = "inherited-checkout", parent = `submission-${id}`, runId = `run-${id}`;
+  const store = seedSubmission(id, providerRetryGraph);
+  const service = await captureRepositoryFixture(t, store, parent);
+  const digest = service.activeSnapshot(parent)!.digest;
+  const claim = (submissionId: string) => openDb().prepare(
+    "SELECT digest,state,released_at FROM workflow_repository_snapshot_claims WHERE submission_id=?",
+  ).get(submissionId);
+  // Mapping recovery starts with the provisional claim held by the failed parent.
+  store.setRunState(runId, "blocked", "evidence_reconciliation_error", { submissionId: parent, error: "Unavailable mapping" });
+  store.setSubmissionState(parent, "failed");
+  openDb().prepare("UPDATE workflow_repository_snapshot_claims SET state='provisional', activated_at=NULL WHERE submission_id=?").run(parent);
+  const child = randomUUID();
+  assert.ok(store.reserveEvidenceRecovery({ id: child, runId, parentId: parent, requestId: randomUUID(), reason: "Retry mapping", now: Date.now() }));
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  // Startup first interrupts the capturing submission, then reconciles artifact ownership.
+  store.setSubmissionState(child, "failed");
+  store.setRunState(runId, "blocked", "capture_interrupted", { error: "Restart" });
+  new RepositoryOwnership(store).recoverProvisional();
+  assert.equal(claim(parent)?.state, "provisional");
+  assert.equal(claim(child)?.state, "released");
+  assert.ok(store.resumeCapture(runId, child, ["capture_interrupted"]));
+  assert.equal(store.inheritRepositoryClaim(child), digest);
+  assert.equal(claim(child)?.released_at, null);
+  store.commitRepositoryCaptureActivation({ submissionId: child, digest, capture: {
+    context: workflowJson(context), evidence: workflowJson(context.evidence), fingerprint: "frozen", repositoryFingerprint: "repo", readiness: null,
+  } });
+  assert.equal(service.activeSnapshot(child)?.digest, digest);
+  assert.throws(() => store.inheritRepositoryClaim(child), /capturing recovery child/);
+  store.cancelRun(runId, "test complete", Date.now());
+});
+
+test("terminal-run maintenance verifies local lease and home ownership without restarting", async t => {
+  const { LocalRepositoryWorkloadOwnership } = await import("../src/server/workflows/persona-workload/local-ownership.ts");
+  const id = "local-terminal-cleanup", runId = `run-${id}`, submissionId = `submission-${id}`;
+  const store = seedSubmission(id, graph);
+  const service = await captureRepositoryFixture(t, store, submissionId);
+  const snapshot = service.activeSnapshot(submissionId)!;
+  const attemptId = randomUUID(), callId = randomUUID();
+  store.insertAttempt({ id: attemptId, submissionId, nodeId: "p1", attempt: 1, state: "running",
+    persona: persona("p1", "Reviewer", "claude", "Review"), inputFingerprint: "frozen", now: 5 });
+  store.insertLlmCall({ id: callId, runId, submissionId, nodeAttemptId: attemptId, purpose: "persona_review",
+    runner: "claude", model: "fixture", attempt: 1, state: "running", startedAt: 6, finishedAt: null,
+    durationMs: null, inputBytes: 1, outputBytes: 0, costUsd: null, errorCode: null });
+  const db = openDb();
+  db.prepare(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
+    VALUES(?,?,?,'running',?)`).run(callId, attemptId, snapshot.digest, Date.now() + 30_000);
+  db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(callId);
+  const request = { workloadId: callId, attemptId, submissionId, digest: snapshot.digest, locator: snapshot.locator };
+  service.setActiveRequestLookup(key => key === callId ? request : null);
+  const lease = await service.materialize(request, new AbortController().signal);
+  const providerHome = tempDir("mission-repository-workload-");
+  t.after(() => rmSync(providerHome, { recursive: true, force: true }));
+  new LocalRepositoryWorkloadOwnership(store, () => false).recordHome(callId, providerHome);
+  const nonce = store.repositoryLocalOwner(callId)!.lease_nonce!;
+  store.markRepositoryCancellationPending(callId, 1);
+  store.cancelRun(runId, "Operator cancelled");
+  const engine = new WorkflowEngine(store, () => {});
+  const setNonce = db.prepare("UPDATE workflow_repository_local_owners SET lease_nonce=? WHERE workload_id=?");
+  setNonce.run(randomUUID(), callId);
+  const binding = store.getBinding(store.getRun(runId)!.bindingId)!;
+  assert.throws(() => store.resetForNoteKey(binding.noteKey), /cleanup must finish/);
+  // An already exited group is independently confirmed even if lease cleanup then fails.
+  db.prepare("UPDATE workflow_repository_local_owners SET group_pid=?, group_identity=? WHERE workload_id=?")
+    .run(2147483647, "fixture-exited", callId);
+  await engine.reconcileTerminalRepositoryWorkloads();
+  assert.ok(existsSync(lease.objectDirectory) && existsSync(providerHome));
+  assert.equal(store.repositoryLocalOwner(callId)?.group_pid, null);
+  assert.equal(store.repositoryLocalOwner(callId)?.group_identity, null);
+  setNonce.run(nonce, callId);
+  await engine.reconcileTerminalRepositoryWorkloads();
+  assert.equal(store.repositoryLocalOwner(callId), undefined);
+  assert.equal(existsSync(lease.objectDirectory), false);
+  assert.equal(existsSync(providerHome), false);
+  assert.equal(store.getRun(runId)?.status, "cancelled");
+  assert.equal(store.listLlmCallPage(runId).items.length, 1);
+});
+
+for (const restartState of ["cancellation_pending", "running", "interrupted", "cancelled run"] as const)
+test(`external repository workload left ${restartState} blocks retries across restart until confirmed terminal`, async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  const id = "failed-cancel-" + restartState, runId = `run-${id}`, submissionId = `submission-${id}`;
+  const store = seedSubmission(id, { ...providerRetryGraph, nodes: providerRetryGraph.nodes.map(node =>
+    node.kind === "persona" ? { ...node, persona: { ...node.persona, repositoryAccess: "read" } } : node) });
+  await captureRepositoryFixture(t, store, submissionId);
+  const launches: string[] = [];
+  let oldState: "unknown" | "running" | "terminal" = "unknown";
+  const executor: import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor = {
+    repositoryEvidenceCapability: REPOSITORY_EVIDENCE_CAPABILITY,
+    async *dispatch(request) {
+      launches.push(request.workloadId);
+      const envelope = { workloadId: request.workloadId, attemptId: request.attemptId, timestamp: Date.now() };
+      if (launches.length === 1) {
+        yield { ...envelope, type: "accepted", eventId: randomUUID(), sequence: 2 };
+        return;
+      }
+      yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 1, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+        result: { status: "failed", code: "provider_unavailable", providerFailure: "token_exhausted" } };
+    },
+    async cancel(workloadId, generation) {
+      assert.equal(workloadId, launches[0]);
+      assert.equal(generation, 1);
+      throw new Error("Provider cleanup offline");
+    },
+    async reconcile(workloadId) {
+      assert.equal(workloadId, launches[0]);
+      return { workloadId, state: oldState, events: [] };
+    },
+  };
+  const makeEngine = () => new WorkflowEngine(store, () => {}, { repositoryExecutor: executor });
+  let engine = makeEngine();
+  t.after(() => engine.stop());
+  engine.activateSubmission(submissionId);
+  engine.start();
+  const waitBlocked = () => waitFor(() => store.getRun(runId)?.status === "blocked");
+  const prior = () => openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(launches[0]!);
+  await waitBlocked();
+  assert.match(store.latestAttemptForNode(submissionId, "p")!.error!, /failed to confirm cancellation.*Provider cleanup offline/);
+  assert.equal(prior()?.state, "cancellation_pending");
+  assert.equal(launches.length, 1);
+  if (restartState === "cancelled run") {
+    store.cancelRun(runId, "Operator cancelled");
+    await engine.reconcileTerminalRepositoryWorkloads();
+    assert.equal(prior()?.state, "cancellation_pending");
+    oldState = "terminal";
+    await engine.reconcileTerminalRepositoryWorkloads();
+    assert.equal(prior()?.state, "failed");
+    assert.equal(store.getRun(runId)?.status, "cancelled");
+    assert.equal(launches.length, 1);
+    return;
+  }
+  await engine.stop();
+  // The same external job can survive an abrupt crash before cancellation, or a
+  // previous daemon that classified it as interrupted without contacting the executor.
+  openDb().prepare("UPDATE workflow_repository_workloads SET state=?, cancellation_generation=? WHERE id=?")
+    .run(restartState, restartState === "running" ? 0 : 1, launches[0]!);
+  engine = makeEngine();
+  engine.start();
+  for (const state of ["unknown", "running", "terminal"] as const) {
+    oldState = state;
+    store.manualInfrastructureRetry(runId, submissionId, store.latestAttemptForNode(submissionId, "p")!, randomUUID(), randomUUID());
+    engine.activateSubmission(submissionId);
+    await waitBlocked();
+    assert.equal(launches.length, state === "terminal" ? 2 : 1);
+    assert.equal(store.listLlmCallPage(runId).items.length, launches.length);
+    assert.equal(prior()?.state, state === "terminal" ? "failed"
+      : restartState === "interrupted" ? "interrupted" : "cancellation_pending");
+  }
+  assert.equal(store.getRun(runId)?.currentPhase, "provider_token_exhausted");
+});
+
+for (const timing of ["before initial dispatch", "before provider retry", "during executor setup"] as const) {
+  test(`repository preview disabled ${timing} blocks the frozen read grant`, async (t) => {
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+    const setPreview = (enabled: boolean) => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled });
+    setPreview(true);
+    t.after(() => setPreview(false));
+    const id = timing.replaceAll(" ", "-");
+    const runId = `run-${id}`;
+    const submissionId = `submission-${id}`;
+    const store = seedSubmission(id, {
+      ...providerRetryGraph,
+      nodes: providerRetryGraph.nodes.map(node => node.kind === "persona"
+        ? { ...node, persona: { ...node.persona, repositoryAccess: "read" } } : node),
+    });
+    await captureRepositoryFixture(t, store, submissionId);
+    let clock = Date.now();
+    let launches = 0;
+    const ordinaryRunner = t.mock.fn(() => { throw new Error("Unexpected prompt-only dispatch"); });
+    const engine = new WorkflowEngine(store, () => {}, {
+      now: () => clock,
+      runnerFor: ordinaryRunner,
+      repositoryExecutor: {
+        get repositoryEvidenceCapability() {
+          // Apply the live change after setup begins, just before the executor is handed the request.
+          if (timing === "during executor setup") setPreview(false);
+          return REPOSITORY_EVIDENCE_CAPABILITY;
+        },
+        async *dispatch(request) {
+          launches++;
+          yield {
+            type: "terminal", eventId: randomUUID(), sequence: 1, timestamp: clock,
+            workloadId: request.workloadId, attemptId: request.attemptId, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+            result: { status: "failed", code: "provider_unavailable", providerFailure: "retryable" },
+          };
+        },
+        async cancel() {},
+        async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
+      },
+    });
+    engine.activateSubmission(submissionId);
+    if (timing === "before initial dispatch") setPreview(false);
+    engine.start();
+    try {
+      if (timing === "before provider retry") {
+        await waitFor(() => store.latestAttemptForNode(submissionId, "p")?.state === "retry_wait");
+        setPreview(false);
+        clock = store.latestAttemptForNode(submissionId, "p")!.retryAt!;
+        engine.wake();
+      }
+      await waitFor(() => store.getRun(runId)?.status === "blocked");
+      const attempt = store.latestAttemptForNode(submissionId, "p")!;
+      assert.equal(ordinaryRunner.mock.callCount(), 0);
+      assert.equal(launches, timing === "before provider retry" ? 1 : 0);
+      assert.equal(store.listLlmCallPage(runId).items.length, timing === "before initial dispatch" ? 0 : 1);
+      assert.equal(openDb().prepare("SELECT id FROM workflow_repository_workloads WHERE attempt_id=?").get(attempt.id), undefined);
+      assert.equal(attempt.state, "error");
+      assert.equal(attempt.attempt, timing === "before provider retry" ? 2 : 1);
+      assert.match(attempt.error ?? "", /Persona repository access preview is off/);
+      assert.deepEqual(store.listReceipts(submissionId).map(receipt => receipt.edgeId), ["s-p"]);
+    } finally {
+      await engine.stop();
+    }
+  });
+}
+
+test("repository review verifies executor capability, the live grant at materialization, event order, and attempt ownership", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { RepositoryReview } = await import("../src/server/workflows/repository-review.ts");
+  const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+  const id = "repository-supervision";
+  const store = seedSubmission(id, graph);
+  const submissionId = `submission-${id}`;
+  const runId = `run-${id}`;
+  const reviewer = { ...persona("p1", "Reviewer", "claude", "Review"), repositoryAccess: "read" as const };
+  const signal = new AbortController().signal;
+  const service = await captureRepositoryFixture(t, store, submissionId);
+  store.setRunState(runId, "running", "persona_review", null);
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  type Executor = import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor;
+  // AbortSignal.timeout is unref'ed. Model the live daemon while testing a transport
+  // that owns no event-loop handles and never settles its promises.
+  const keepAlive = setTimeout(() => {}, 15_000);
+  t.after(() => clearTimeout(keepAlive));
+  const scenarios = ["unsupported", "cancel acknowledged", "conflict", "gap", "failed query", "revoked before materialization", "equal replay", "revoked during cleanup", "unresponsive", "unreturned", "returned before start", "returned after terminal", "stale"] as const;
+  // The permission decision must hold even when the supervisor's watchdog has never fired.
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  for (const [index, scenario] of scenarios.entries()) {
+    const attempt = index + 1;
+    const attemptId = randomUUID(), callId = randomUUID();
+    store.insertAttempt({ id: attemptId, submissionId, nodeId: "p1", attempt, state: "running",
+      persona: reviewer, inputFingerprint: "frozen", now: 5 });
+    store.insertLlmCall({ id: callId, runId, submissionId, nodeAttemptId: attemptId, purpose: "persona_review",
+      runner: "claude", model: "fake-model", attempt: 1, state: "running", startedAt: 6, finishedAt: null,
+      durationMs: null, inputBytes: 1, outputBytes: 0, costUsd: null, errorCode: null });
+    let launches = 0;
+    const cancellations: { workloadId: string; generation: number }[] = [];
+    let cancellationRequested = false;
+    let leaseOpened = false;
+    // Everything the executor reported, so its replay can offer the same events again.
+    const replayed: PersonaWorkloadEvent[] = [];
+    const executor: Executor = {
+      repositoryEvidenceCapability: scenario === "unsupported" ? "older" : REPOSITORY_EVIDENCE_CAPABILITY,
+      async *dispatch(request, workloadSignal) {
+        launches++;
+        const envelope = { workloadId: request.workloadId, attemptId, timestamp: 7 };
+        if (scenario === "returned before start") {
+          // A return reported before the provider started. The replay offers it again, and
+          // the supervisor must refuse it there too rather than charge an unstarted provider.
+          replayed.push(
+            { ...envelope, type: "accepted", eventId: randomUUID(), sequence: 1 },
+            { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: 2 },
+            { ...envelope, type: "persona_returned", eventId: randomUUID(), sequence: 3 },
+            { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 4 },
+            { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 5, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+              result: { status: "failed", code: "invalid_verdict", usage: {} } },
+          );
+          yield* replayed;
+          return;
+        }
+        if (scenario === "returned after terminal") {
+          // The replay settles the workload as a provider failure and only then reports a return.
+          // The live stream breaks off after the start, so only the replay carries that order.
+          replayed.push(
+            { ...envelope, type: "accepted", eventId: randomUUID(), sequence: 1 },
+            { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: 2 },
+            { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 3 },
+            { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 4, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+              result: { status: "failed", code: "provider_unavailable" } },
+            { ...envelope, type: "persona_returned", eventId: randomUUID(), sequence: 5 },
+          );
+          yield* replayed.slice(0, 3);
+          yield replayed[4]!;
+          return;
+        }
+        const accepted = { ...envelope, type: "accepted" as const, eventId: randomUUID(), sequence: 1 };
+        yield accepted;
+        if (scenario === "revoked before materialization" || scenario === "equal replay") {
+          if (scenario === "revoked before materialization") {
+            applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false });
+          }
+          const lease = await service.materialize({
+            workloadId: request.workloadId, attemptId, submissionId, ...request.artifact,
+          }, workloadSignal);
+          leaseOpened = true;
+          await lease.release();
+        }
+        if (scenario === "unresponsive") await new Promise<void>(() => {});
+        if (scenario === "conflict" || scenario === "cancel acknowledged") yield { ...accepted, timestamp: 8 };
+        if (scenario === "equal replay") yield accepted;
+        try {
+          yield { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: scenario === "gap" ? 3 : 2 };
+        } finally {
+          if (scenario === "gap") assert.ok(cancellationRequested, "cancel before closing the iterator");
+        }
+        yield { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 3 };
+        if (scenario === "failed query") yield {
+          ...envelope, type: "repository_query", eventId: randomUUID(), sequence: 4, audit: {
+            workloadId: request.workloadId, attemptId, operationId: randomUUID(), operation: "read",
+            snapshotDigest: request.artifact.digest, inputHash: "1".repeat(64), status: "failed", code: "unavailable",
+            bytes: 0, items: 0, durationMs: 1, truncated: false, handles: [],
+          },
+        };
+        if (scenario === "stale") store.cancelRun(runId, "operator cancelled", Date.now());
+        // "unreturned" claims a completed verdict without ever reporting the provider's return.
+        if (scenario !== "unreturned") yield { ...envelope, type: "persona_returned", eventId: randomUUID(), sequence: 4 };
+        yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: scenario === "unreturned" ? 4 : 5, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+          result: { status: "completed", usage: {}, result: { kind: "persona_verdict", verdict: {
+            verdict: "pass", approvalDetails: { reason: "Verified", evidence: [] }, summary: "Verified", confidence: 1,
+          } } } };
+      },
+      async cancel(workloadId, generation) {
+        cancellationRequested = true;
+        await new Promise<void>(resolve => setImmediate(resolve));
+        cancellations.push({ workloadId, generation });
+        if (scenario === "unresponsive") await new Promise<void>(() => {});
+      },
+      async reconcile(workloadId, after) {
+        return { workloadId, state: scenario === "cancel acknowledged" ? "running" : "terminal",
+          events: replayed.filter(event => event.sequence > after) };
+      },
+    };
+    if (scenario === "revoked during cleanup") {
+      const { LocalPersonaWorkloadExecutor } = await import("../src/server/workflows/persona-workload/executor.ts");
+      const { LocalRepositoryWorkloadOwnership } = await import("../src/server/workflows/persona-workload/local-ownership.ts");
+      t.mock.method(LocalPersonaWorkloadExecutor.prototype, "dispatch", executor.dispatch);
+      const close = LocalRepositoryWorkloadOwnership.prototype.confirmClosed;
+      t.mock.method(LocalRepositoryWorkloadOwnership.prototype, "confirmClosed", async function (
+        this: InstanceType<typeof LocalRepositoryWorkloadOwnership>, ...args: Parameters<typeof close>
+      ) {
+        await close.apply(this, args);
+        applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false });
+      });
+    }
+    const response = new RepositoryReview(store, scenario === "revoked during cleanup" ? undefined : executor).run({
+      attemptId, submissionId, persona: reviewer, execution: { provider: "claude", model: "fake-model" },
+      accounting: { runId, purpose: "persona_review", attempt: 1, callId }, images: [], prompt: "Review",
+      deadline: Date.now() + (scenario === "unresponsive" ? 100 : 30_000),
+    }, signal);
+    if (scenario === "equal replay") assert.equal(JSON.parse(await response).verdict, "pass");
+    else await assert.rejects(response, {
+      unsupported: /executor capability mismatch/i, "cancel acknowledged": /has not confirmed cleanup/i, conflict: /conflicting repository event/i,
+      gap: /sequence mismatch/i, "failed query": /query failed: unavailable/i, stale: /ownership expired/i,
+      "revoked before materialization": { code: "artifact_unavailable" },
+      "revoked during cleanup": /ownership expired before verdict acceptance/i,
+      unresponsive: /failed to confirm cancellation/i,
+      unreturned: /no verified repository execution/i,
+      "returned before start": /returned before it started/i,
+      "returned after terminal": /sequence mismatch/i,
+    }[scenario]);
+    if (scenario === "unreturned" || scenario === "returned before start" || scenario === "returned after terminal") {
+      assert.equal(openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(callId)?.state, "failed");
+      assert.equal(openDb().prepare("SELECT 1 FROM workflow_repository_events WHERE workload_id=? AND kind IN ('terminal','persona_returned')").get(callId), undefined);
+    }
+    assert.equal(launches, scenario === "unsupported" ? 0 : 1);
+    assert.equal(leaseOpened, scenario === "equal replay", scenario);
+    if (scenario === "unresponsive" || scenario === "cancel acknowledged") {
+      assert.ok(store.pendingRepositoryCancellations(runId, "p1").some(row => row.id === callId && row.generation === 1));
+    }
+    if (scenario === "revoked during cleanup") {
+      assert.equal(openDb().prepare("SELECT state FROM workflow_repository_workloads WHERE id=?").get(callId)?.state, "failed");
+    }
+    if (scenario === "revoked before materialization" || scenario === "revoked during cleanup") {
+      applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+    }
+    assert.deepEqual(cancellations, scenario === "unsupported" || scenario === "equal replay" || scenario === "revoked during cleanup"
+      ? [] : [{ workloadId: callId, generation: 1 }], scenario);
+    const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
+    assert.deepEqual(rows.map(row => row.sequence), {
+      unsupported: [], "cancel acknowledged": [1], conflict: [1], gap: [1], "failed query": [1, 2, 3, 4], "revoked before materialization": [1],
+      unresponsive: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4, 5], "revoked during cleanup": [1, 2, 3, 4, 5], unreturned: [1, 2, 3], "returned before start": [1, 2], "returned after terminal": [1, 2, 3],
+    }[scenario]);
+  }
+});
+
+for (const { id, description, query, severity } of [
+  { id: "local-inspector-repair", description: "carries off-diff findings across restart and waits for a verified repair before Pull Request", query: true, severity: "major" },
+  { id: "local-inspector-removal", description: "resolves an off-diff finding after verified removal of its newly added file", query: true, severity: "major" },
+  { id: "local-inspector-without-query", description: "rejects a terminal verdict without a verified repository query", query: false, severity: "major" },
+  { id: "local-inspector-saved-severity", description: "uses the saved minor threshold to fail before Pull Request", query: true, severity: "minor" },
+  { id: "local-inspector-revoked", description: "does not dispatch if Commands permission is revoked while waiting for a review slot", query: false, severity: "major" },
+  { id: "local-inspector-retention", description: "spends the allowance after review and blocks a skip retry when retention failed", query: true, severity: "major" },
+] as const) {
+  test(`Local Inspector ${description}`, async t => {
+    const { execFileSync } = await import("node:child_process");
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+    const { fingerprint } = await import("../src/server/inspector/marker.ts");
+    const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
+    const { WorkflowCommandArtifactService } = await import("../src/server/workflows/command-artifacts.ts");
+    const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+    const { InspectorConfigPatchSchema, WorkflowCheckOutcomeSchema } = await import("../src/shared/protocol.ts");
+    const prior = InspectorConfigPatchSchema.parse(getInspectorConfig());
+    applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: true });
+    setInspectorConfig({ enabled: true, localReview: true, runner: "codex", model: "gpt-5.6-sol" });
+    t.after(() => {
+      setInspectorConfig(prior);
+      applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: false });
+    });
+    const repo = tempDir("mission-local-inspector-engine-");
+    t.after(() => rmSync(repo, { recursive: true, force: true }));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+    const commit = (name: string) => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", name);
+    git("init", "-q");
+    commit("base");
+    const base = git("rev-parse", "HEAD");
+    git("update-ref", "refs/remotes/origin/main", base);
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+
+    const runId = `run-${id}`;
+    const first = `submission-${id}`;
+    const store = seedSubmission(id, {
+      nodes: [
+        graph.nodes[0]!,
+        { id: "inspect", kind: "check", slot: "inspector", position: { x: 200, y: 0 } },
+        { id: "pr", kind: "session_action", position: { x: 400, y: 0 }, action: {
+          sourceSessionActionId: "builtin:pull-request", sourceRevision: 1, name: "Pull Request",
+          description: "", promptMarkdown: "Open the pull request", requiredSkillId: null,
+          completion: { kind: "pull_request" },
+        } },
+        graph.nodes.at(-1)!,
+      ],
+      edges: [
+        { id: "inspect", source: "session", sourcePort: "submitted", target: "inspect", targetPort: "activate" },
+        { id: "publish", source: "inspect", sourcePort: "pass", target: "pr", targetPort: "activate" },
+        { id: "repair", source: "inspect", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+        { id: "end", source: "pr", sourcePort: "complete", target: "end", targetPort: "terminal" },
+      ],
+    }, context, repo);
+    const retentionFailed = id === "local-inspector-retention";
+    if (severity === "minor" || retentionFailed) {
+      const { WorkflowCommandManager } = await import("../src/server/workflows/commands.ts");
+      const catalog = new WorkflowCommandManager(new Registry(), store);
+      const command = catalog.get("inspector");
+      assert.ok(command);
+      assert.equal(command.inspectorSeverity, "major");
+      const saved = catalog.replace("inspector", {
+        ...command, expectedRevision: command.revision, inspectorSeverity: severity,
+        ...(retentionFailed ? { maxRuns: 1, onBudgetExhausted: "skip" } : {}),
+      });
+      assert.ok(saved.ok);
+      t.after(() => {
+        assert.ok(catalog.replace("inspector", { ...command, expectedRevision: saved.view.revision }).ok);
+      });
+    }
+    const artifacts = WorkflowRepositoryArtifactService.forRoot(store);
+    const capture = async (id: string, text: string, path = "submitted.txt") => {
+      writeFileSync(join(repo, path), text + "\n");
+      git("add", path);
+      commit(text);
+      const head = git("rev-parse", "HEAD");
+      const evidence = { ...context.evidence, headSha: head, reviewCommit: head, localInspectorEnabled: true,
+        contentTreeOid: git("rev-parse", "HEAD^{tree}") };
+      store.setSubmissionState(id, "capturing");
+      const candidate = await artifacts.prepare({ checkout: repo, sourceBase: base }, new AbortController().signal);
+      const claim = await artifacts.promote(candidate, id);
+      store.commitRepositoryCaptureActivation({ ...claim, capture: {
+        context: workflowJson({ ...context, evidence }), evidence: workflowJson(evidence),
+        readiness: null, fingerprint: head, repositoryFingerprint: head,
+      } });
+    };
+
+    const finding = { path: "submitted.txt", line: 1, severity, title: "Remove placeholder", body: "The task still contains a placeholder." } as const;
+    const fp = fingerprint(finding.path, finding.title);
+    const removeFindingFile = id === "local-inspector-removal";
+    let allowed = true;
+    let providerCalls = 0;
+    const commandArtifacts = new WorkflowCommandArtifactService();
+    if (retentionFailed) t.mock.method(commandArtifacts, "retainFindings", () => { throw new Error("fixture disk failure"); });
+    const options: ConstructorParameters<typeof WorkflowEngine>[2] = {
+      commandArtifacts,
+      workflowPolicy: () => ({ ...DEFAULT_WORKFLOW_POLICY, checksEnabled: true, repoAllowlist: allowed ? [repo] : [] }),
+      ...(id === "local-inspector-revoked" ? { schedule: async fn => {
+        allowed = false;
+        return fn();
+      } } : {}),
+      repositoryExecutor: {
+        repositoryEvidenceCapability: REPOSITORY_EVIDENCE_CAPABILITY,
+        async *dispatch(request) {
+          providerCalls++;
+          assert.equal(request.accounting.purpose, "inspector_review");
+          assert.equal(request.execution.provider, "codex");
+          assert.equal(request.persona, undefined);
+          assert.equal(store.hasActiveRepositoryClaim(request.submissionId), true);
+          let next = 0;
+          const event = () => ({ eventId: randomUUID(), sequence: ++next, timestamp: Date.now(),
+            workloadId: request.workloadId, attemptId: request.attemptId });
+          yield { ...event(), type: "accepted" };
+          yield { ...event(), type: "repository_verified" };
+          yield { ...event(), type: "persona_started" };
+          const subsequent = request.submissionId !== first;
+          if (subsequent) assert.match(request.prompt, new RegExp(fp));
+          if (query) {
+            const read = (path: string, readLayer: "worktree" | "index", absent = false): PersonaWorkloadEvent => {
+              const operationId = randomUUID();
+              const binding = { operationId, workloadId: request.workloadId, attemptId: request.attemptId,
+                snapshotDigest: request.artifact.digest, operation: "read", truncated: false } as const;
+              return { ...event(), type: "repository_query", audit: { ...binding, readLayer, inputHash: "a".repeat(64),
+                status: "ok", code: null, bytes: 10, items: 1, durationMs: 1,
+                ...(absent ? { absentWorktreePath: path, handles: [] } : { handles: [{ ...binding, path,
+                  evidenceHandleId: randomUUID(), itemOrdinal: 0, policyVersion: 1,
+                  range: { kind: "line", startLine: 1, endLineExclusive: 2 },
+                }] }),
+              } };
+            };
+            if (request.submissionId.endsWith("-unrelated")) {
+              yield read("notes.txt", "worktree");
+              yield read("unrelated-removed.txt", "worktree", true);
+              yield read(finding.path, "index");
+            } else {
+              yield read(finding.path, "worktree", removeFindingFile && subsequent);
+            }
+          }
+          const resolved = subsequent ? [fp] : [];
+          yield { ...event(), type: "persona_returned" };
+          yield { ...event(), type: "terminal", capability: REPOSITORY_EVIDENCE_CAPABILITY,
+            result: { status: "completed", usage: {}, result: { kind: "inspector_verdict", verdict: {
+              summary: "Fixture review", findings: subsequent || !query ? [] : [finding], resolved,
+            } } } };
+        },
+        async reconcile(workloadId) { return { workloadId, state: "terminal", events: [] }; },
+        async cancel() {},
+      },
+    };
+    await capture(first, "placeholder");
+    let engine = new WorkflowEngine(store, undefined, options);
+    t.after(async () => { await engine.stop(); });
+    engine.start();
+    engine.activateSubmission(first);
+    if (severity === "minor") {
+      await waitFor(() => store.latestAttemptForNode(first, "inspect")?.state === "completed");
+      const outcome = WorkflowCheckOutcomeSchema.parse(store.latestAttemptForNode(first, "inspect")?.output);
+      assert.equal(outcome.status, "failed");
+      assert.partialDeepStrictEqual(outcome.localInspector, { status: "failed", blockingSeverity: "minor", findingCount: 1 });
+    }
+    if (retentionFailed) {
+      await waitFor(() => store.getRun(runId)?.currentPhase === "command_action_required");
+      const blocked = store.latestAttemptForNode(first, "inspect")!;
+      assert.match(blocked.error ?? "", /fixture disk failure/);
+      assert.equal(store.checkRunsSpent(runId, "inspector", null), 1);
+      await engine.stop();
+      store.manualInfrastructureRetry(runId, first, blocked, randomUUID(), randomUUID(), Date.now());
+      engine = new WorkflowEngine(store, undefined, options);
+      engine.start();
+      engine.activateSubmission(first);
+      await waitFor(() => store.getRun(runId)?.currentPhase === "command_action_required");
+      assert.match(store.latestAttemptForNode(first, "inspect")?.error ?? "", /earlier review could not be completed/i);
+      assert.equal(store.checkRunsSpent(runId, "inspector", null), 1);
+      assert.equal(store.latestAttemptForNode(first, "pr"), null);
+      assert.equal(providerCalls, 1);
+      return;
+    }
+    await waitFor(() => store.getRun(runId)?.status === (query ? "waiting_for_session" : "blocked"));
+    assert.equal(store.latestAttemptForNode(first, "pr"), null);
+    if (!query) {
+      assert.equal(store.getRun(runId)?.currentPhase, "command_action_required");
+      const revoked = id === "local-inspector-revoked";
+      // A provider that returned a verdict spent its execution even though the verdict was
+      // rejected; a review that was never dispatched spent nothing.
+      assert.equal(store.checkRunsSpent(runId, "inspector", null), revoked ? 0 : 1);
+      assert.equal(providerCalls, revoked ? 0 : 1);
+      assert.match(store.latestAttemptForNode(first, "inspect")?.error ?? "",
+        revoked ? /not on the workflow allowlist/ : /verified repository query/);
+      return;
+    }
+    assert.match(JSON.stringify(store.getRun(runId)?.gateState), /Remove placeholder/);
+    assert.equal(store.checkRunsSpent(runId, "inspector", null), 1);
+    if (severity === "minor") return;
+
+    await engine.stop();
+    // The next base already contains the original defect, so the unrelated submission's
+    // diff omits its file even though the sealed checkout still contains the defect.
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    const second = `${first}-unrelated`;
+    store.createRepairSubmission({ id: second, runId, round: 2, triggerSource: "manual",
+      triggerKey: `manual:${id}:unrelated`, context: {}, evidence: {}, now: Date.now() });
+    await capture(second, "unrelated", "notes.txt");
+    assert.equal(git("diff", "--name-only", "refs/remotes/origin/main", "HEAD"), "notes.txt");
+    engine = new WorkflowEngine(store, undefined, options);
+    engine.start();
+    engine.activateSubmission(second);
+    await waitFor(() => ["completed", "error"].includes(store.latestAttemptForNode(second, "inspect")?.state ?? ""));
+    assert.equal(store.latestAttemptForNode(second, "inspect")?.error, null);
+    const carried = WorkflowCheckOutcomeSchema.parse(store.latestAttemptForNode(second, "inspect")?.output);
+    assert.partialDeepStrictEqual(carried.localInspector, { status: "failed", findingCount: 1 });
+    assert.match(carried.output, /Remove placeholder/);
+    assert.equal(store.latestAttemptForNode(second, "pr"), null);
+    await waitFor(() => store.getRun(runId)?.status === "waiting_for_session");
+
+    const third = `${first}-repair`;
+    store.createRepairSubmission({ id: third, runId, round: 3, triggerSource: "manual",
+      triggerKey: `manual:${id}:repair`, context: {}, evidence: {}, now: Date.now() });
+    if (removeFindingFile) {
+      git("rm", finding.path);
+      git("update-ref", "refs/remotes/origin/main", base);
+    } else {
+      writeFileSync(join(repo, finding.path), "fixed\n");
+      git("add", finding.path);
+      commit("upstream fix");
+      git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    }
+    await capture(third, "unrelated revision", "notes.txt");
+    assert.equal(git("diff", "--name-only", "refs/remotes/origin/main", "HEAD"), "notes.txt");
+    engine.activateSubmission(third);
+    await waitFor(() => store.latestAttemptForNode(third, "pr")?.state === "waiting");
+    assert.equal(store.checkRunsSpent(runId, "inspector", null), 3);
+    assert.match(JSON.stringify(store.latestAttemptForNode(third, "inspect")?.output), /"status":"passed"/);
+  });
+}

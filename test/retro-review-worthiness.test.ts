@@ -1,10 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision, ServerEvent, Session } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A human decision made through a REVIEW makes its session worth retrospecting, exactly as a
 // typed correction does.
@@ -30,7 +29,7 @@ import type { PlanDecision, ServerEvent, Session } from "../src/shared/types.ts"
 //  - BOUNDS are per introduced session. The durable half is queried when a session enters the
 //    live map and forgotten when its row leaves, never preloaded for the whole review history.
 
-const home = mkdtempSync(join(tmpdir(), "mission-retro-review-"));
+const home = tempDir("mission-retro-review-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");

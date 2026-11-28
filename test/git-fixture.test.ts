@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { cachedGitTree, gitIn, mkOriginAndClone, seedGitHistory, seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /** Run `body` with one more git config entry in this worker's environment, then remove it. */
 function withGitConfig(key: string, value: string, body: () => void): void {
@@ -24,7 +24,7 @@ function withGitConfig(key: string, value: string, body: () => void): void {
 }
 
 function supportsReftable(): boolean {
-  const probe = mkdtempSync(join(tmpdir(), "mission-git-fixture-probe-"));
+  const probe = tempDir("mission-git-fixture-probe-");
   try {
     execFileSync("git", ["init", "-q", "--ref-format=reftable", probe], { stdio: "pipe" });
     return true;
@@ -36,7 +36,7 @@ function supportsReftable(): boolean {
 }
 
 test("a seeded copy is the same repository, clean and on its branch", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "mission-git-fixture-"));
+  const root = tempDir("mission-git-fixture-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const files = { "a.txt": "a\n", "dir/b.txt": "b\n" };
   const first = seedGitRepo(join(root, "first"), { branch: "main", files });
@@ -80,7 +80,7 @@ test("a committed relative symlink in a cached tree stays relative in every copy
   const roots: string[] = [];
   t.after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
   const build = () => {
-    const root = mkdtempSync(join(tmpdir(), "mission-git-fixture-symlink-"));
+    const root = tempDir("mission-git-fixture-symlink-");
     roots.push(root);
     return cachedGitTree("relative-symlink", root, (dir) => {
       const repo = join(dir, "repo");
@@ -105,7 +105,7 @@ test("a cached copy rewrites git's metadata only, never tracked files named like
   const roots: string[] = [];
   t.after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
   const build = () => {
-    const root = mkdtempSync(join(tmpdir(), "mission-git-fixture-metadata-"));
+    const root = tempDir("mission-git-fixture-metadata-");
     roots.push(root);
     return cachedGitTree("tracked-config-and-gitdir", root, (dir) => {
       const origin = join(dir, "origin");
@@ -129,7 +129,7 @@ test("a cached copy rewrites git's metadata only, never tracked files named like
 
 test("fixtures still work when git defaults new repositories to reftable", { skip: !supportsReftable() }, (t) => {
   // A global `init.defaultRefFormat=reftable` leaves no loose branch ref to read the sha from.
-  const root = mkdtempSync(join(tmpdir(), "mission-git-fixture-reftable-"));
+  const root = tempDir("mission-git-fixture-reftable-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   withGitConfig("init.defaultRefFormat", "reftable", () => {
     const repo = join(root, "repo");

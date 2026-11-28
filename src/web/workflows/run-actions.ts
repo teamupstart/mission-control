@@ -402,6 +402,20 @@ export function runNextMove(detail: WorkflowRunDetail): RunNextMove | null {
   }
 
   if (primary === "retry") {
+    // The daemon offers `retry` for a session action blocked only because its session was
+    // away, too. Nothing failed there, so it must not read as a provider call.
+    if (detail.run.currentPhase === "session_action_blocked") {
+      return {
+        id: "retry",
+        kind: "retry",
+        label: "Check the action again",
+        tooltip: "The session was away when this action was observed - look at its turn again"
+          + " without spending a repair round",
+        path: runPath(detail, "retry"),
+        body: {},
+        confirm: null,
+      };
+    }
     return {
       id: "retry",
       kind: "retry",

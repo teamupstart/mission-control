@@ -1,13 +1,13 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { Persona } from "../src/shared/workflow.ts";
-import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask, openedResource } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A dispatch Persona: the Library Persona an ordinary task names under Advanced, delivered to
 // the launched agent as part of its standing instructions.
@@ -18,7 +18,7 @@ import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 // Persona's text exactly once, on the pair's own channel, after the repository block. And a
 // task with no Persona launches byte-identically to one filed before this existed.
 
-const home = mkdtempSync(join(tmpdir(), "mission-dispatch-persona-"));
+const home = tempDir("mission-dispatch-persona-");
 process.env.HARNESS_HOME = home;
 // Binaries that exist, so bin resolution is never what fails a launch. The terminal home is
 // faked through the dispatcher's `spawn` seam.
@@ -349,7 +349,7 @@ async function terminalDispatch(options: {
         transcriptPath: null,
         env: { tmuxPane: (discovered.terminals[0] as { paneId: string }).paneId },
       });
-      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: `home-${options.taskId}`, homeBackend: "tmux", terminalResourceId: openedResource(discovered) };
     },
     inject: async (session, text) => {
       pasted = text;

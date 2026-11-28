@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,8 +12,9 @@ import type { PlanIdentity } from "../src/shared/managed-plans.ts";
 import type { ReviewActor } from "../src/shared/types.ts";
 import { declaredBlockers } from "../src/shared/backlog.ts";
 import { localSourceContent } from "../src/shared/task-source-sync.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-local-publication-")));
+const home = realpathSync(tempDir("mission-local-publication-"));
 process.env.MISSION_HOME = join(home, "state");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
@@ -27,6 +27,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { openDb, closeDb, loadActiveTasks } = await import("../src/server/db.ts");
 const { savePlan, planContext, readPlanFile, reserveTaskPlans } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
+const { buildInbox } = await import("../src/server/home-dispatch/inbox.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
 const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery, taskPlanDependencyRequirements } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
@@ -228,6 +229,34 @@ test("plan inputs cannot reuse a satisfied merge dependency from an earlier sour
   assert.equal(taskPlanInputProblem({ ...current, dependencies: current.dependencies.map((edge) => ({ ...edge, satisfiedAt: Date.now() })) }), null);
   assert.throws(() => f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Wrong episode", intent: "Cannot substitute the current episode", backlog: true, workflowId: null,
     planInputs: [input], dependencies: [{ type: "task", taskId: f.task.id }] }), /originating.*episode/);
+});
+
+test("a run summary carries when its run started, for headless mode's inbox to tell a task's own run from an earlier one", async () => {
+  const f = await fixture(true); await f.review();
+  const { runId } = frozenValidation(f);
+  const summary = f.workflows.store.runSummary(runId)!;
+  assert.equal(typeof summary.startedAt, "number");
+  assert.equal(summary.startedAt, f.workflows.store.getRun(runId)!.startedAt, "the same value the run row holds");
+  // Every way the daemon lists runs shares one builder, including the list the inbox reads.
+  const started = f.workflows.store.getRun(runId)!.startedAt;
+  assert.equal(f.workflows.runs().find((r) => r.id === runId)?.startedAt, started, "manager.runs(), the list the inbox reads");
+  assert.equal(f.workflows.store.listRunSummaryPage({ limit: 50, cursor: null }).items.find((r) => r.id === runId)?.startedAt, started, "the paged list");
+});
+
+test("the inbox attaches a real run to a task only when it started after the task did", async () => {
+  const f = await fixture(true); await f.review();
+  const { runId } = frozenValidation(f);
+  const runStart = f.workflows.store.getRun(runId)!.startedAt;
+  openDb().prepare(`UPDATE tasks SET origin_surface = 'mctl', origin_repo = ? WHERE id = ?`).run(f.repo, f.task.id);
+  const cli = { caller: { surface: "cli" as const, repoRoot: null }, sessionId: null, allRepos: true };
+  const runOf = () => buildInbox({ registry: f.registry, workflows: f.workflows }, cli).items.find((i) => i.taskId === f.task.id)?.run;
+
+  // The task was dispatched before the run began: the run is its own, read from the real store.
+  f.registry.upsertTask({ ...f.task, dispatchedAt: runStart - 1_000 });
+  assert.equal(runOf()?.workflowId !== undefined, true, "a run that started after the task did is attached");
+  // The task was dispatched after the run began: the run belongs to whichever task held the session before.
+  f.registry.upsertTask({ ...f.task, dispatchedAt: runStart + 1_000 });
+  assert.equal(runOf(), undefined, "a run that started before the task did is not");
 });
 
 // Headless mode (7.9): only `home-approval:` approves from a home session; a later plain `home:` or
@@ -863,4 +892,73 @@ test("a source sync that would drop a pinned plan input's prerequisite is refuse
   assert.equal(persisted, false, "a refused update must not advance the sync baseline");
   assert.deepEqual(f.tasks.get(dependent.id)!.dependencies.map((d) => d.type === "task" ? d.taskId : d.type), [f.task.id]);
   assert.equal(f.tasks.get(dependent.id)!.title, "Pinned merge");
+});
+
+test("explicit revision changes refuse a completed replacement origin without merge proof atomically", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
+  const f = await fixture(false, "ship");
+  const from = { ...f.input, files: ["plan.md"] };
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Keep the saved origin", intent: "Refuse completion without merge proof", backlog: true, workflowId: null,
+    planInputs: [from], dependencies: [{ type: "task", taskId: f.task.id }] });
+
+  f.registry.upsertTask({ ...f.task, status: "done", sessionId: null });
+  f.registry.resetWorkEpisode(f.id);
+  const replacement = { ...f.task, id: randomUUID(), title: "Completed replacement origin" };
+  f.registry.upsertTask(replacement);
+  const authority = planAuthority(f.registry, f.registry.getSession(f.id)!, "repo-01");
+  assert.equal(authority.taskId, replacement.id);
+  const saved = await savePlan(authority, { repoSlot: "repo-01", requestId: randomUUID(), slug: "replacement-plan", expectedRevision: 0, files: f.files });
+  const to = { repoKey: saved.manifest.repoKey, planId: saved.manifest.planId, revision: saved.manifest.revision, files: ["phase-1.md"] };
+  f.registry.upsertTask({ ...replacement, status: "done", sessionId: null });
+  const binding = f.registry.workEpisodeForTask(replacement.id)!;
+  assert.equal(binding.episodeId, authority.episodeId);
+  assert.equal(binding.mergedAt, null);
+  assert.equal(binding.prUrl, null);
+  assert.equal(publicationReceipt(to), null);
+  const before = structuredClone(f.tasks.get(dependent.id)!);
+  const persistedBefore = loadActiveTasks().find(task => task.id === dependent.id)!;
+  assert.ok(before.dependencies.every(edge => edge.type !== "task" || edge.taskId !== replacement.id), "no retained replacement edge can authorize the change");
+
+  const refused = await f.tasks.update(dependent.id, { planInputChange: { from, to } });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, `Completed replacement origin "${replacement.title}" has no merge proof for work episode ${binding.episodeId}. Select a revision with verified merge proof.`);
+  assert.deepEqual(f.tasks.get(dependent.id), before, "refusal preserves the in-memory pin and dependencies");
+  assert.deepEqual(loadActiveTasks().find(task => task.id === dependent.id), persistedBefore, "refusal persists neither half of the pin/origin change");
+});
+
+test("explicit revision changes preserve shared origins and never reinterpret mixed local work as publication", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "pinned-plan-change", enabled: false }));
+  const f = await fixture(false, "ship");
+  const from = { ...f.input, files: ["plan.md"] };
+  const shared = { ...f.input, files: ["phase-1.md"] };
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Shared plan origin", intent: "Keep the other pin", backlog: true, workflowId: null,
+    planInputs: [from, shared], dependencies: [{ type: "task", taskId: f.task.id }] });
+  await savePlan(f.authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 1, files: f.files });
+  const to = { ...from, revision: 2 };
+  const result = await f.tasks.update(dependent.id, { planInputChange: { from, to } });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.task!.planInputs, [to, shared]);
+  assert.deepEqual(result.task!.dependencies, dependent.dependencies, "both pins retain their shared exact origin");
+
+  f.registry.resetWorkEpisode(f.id);
+  f.registry.upsertTask({ ...f.task, status: "running" });
+  f.registry.bindTaskToWorkEpisode(f.task.id, f.id);
+  const authority = planAuthority(f.registry, f.registry.getSession(f.id)!, "repo-01");
+  await savePlan(authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 2, files: f.files });
+  // A separate pin sharing the old task edge prevents replacing its episode silently.
+  const refused = await f.tasks.update(dependent.id, { planInputChange: { from: to, to: { ...to, revision: 3 } } });
+  assert.equal(refused.ok, false);
+  assert.deepEqual(f.tasks.get(dependent.id)!.planInputs, [to, shared]);
+  // With only the superseded pin, the same task can move to its new work episode.
+  const single = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "New episode pin", intent: "Use current episode", backlog: true, workflowId: null });
+  f.registry.upsertTask({ ...single, planInputs: [to], dependencies: dependent.dependencies });
+  const moved = await f.tasks.update(single.id, { planInputChange: { from: to, to: { ...to, revision: 3 } } });
+  assert.equal(moved.ok, true, moved.error);
+  assert.equal(moved.task!.dependencies[0]!.type, "task");
+  assert.equal(moved.task!.dependencies[0]!.episodeId, authority.episodeId);
+  assert.equal(moved.task!.dependencies[0]!.satisfiedAt, null, "an older merge cannot satisfy the new episode");
 });

@@ -1,21 +1,21 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-delivery-"));
+const home = tempDir("mission-workflow-delivery-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 
-function seededStore(suffix: string): InstanceType<typeof WorkflowStore> {
+function seededStore(suffix: string, identity?: { noteKey: string; sessionAgent: "pi"; sessionCwd: string }): InstanceType<typeof WorkflowStore> {
   const store = new WorkflowStore();
   const binding = store.insertBinding({
     id: `binding-${suffix}`,
@@ -30,6 +30,7 @@ function seededStore(suffix: string): InstanceType<typeof WorkflowStore> {
     deliveryMode: "live",
     maxRepairRounds: 5,
     now: 1,
+    ...identity,
   });
   store.createInitialSubmission(
     { id: `run-${suffix}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `manual:${suffix}`, now: 2 },
@@ -56,7 +57,7 @@ function prepare(
     submissionId: `submission-${suffix}`,
     kind,
     sessionId: `session-${suffix}`,
-    noteKey: `note-${suffix}`,
+    noteKey: store.getBinding(`binding-${suffix}`)!.noteKey,
     payload: "repair exactly once",
     payloadSha256: "a".repeat(64),
   }).delivery;
@@ -77,13 +78,73 @@ test("confirmed workflow payloads remain available for transcript attribution af
   const store = seededStore("attribution");
   const delivered = prepare(store, "attribution", "evidence_readiness");
   store.claimDeliverySend(delivered.id);
-  store.confirmDeliverySend(delivered.id, 1_234, true, 11);
+  store.confirmDeliverySend(delivered.id, 1_234, true, 11, 900);
 
   const restarted = new WorkflowStore();
   assert.deepEqual(
     restarted.listDeliveredTranscriptAnchors("session-attribution", "note-attribution"),
-    [{ payload: "repair exactly once", transcriptAnchor: 1_234 }],
+    [{ payload: "repair exactly once", transcriptAnchor: 900, beforeSend: true, legacySend: { start: 11, end: 11 } }],
   );
+});
+
+test("after restart a persisted legacy post-send anchor excludes only the packet in its native conversation file", async (t) => {
+  const { closeDb } = await import("../src/server/db.ts");
+  const { Registry } = await import("../src/server/registry.ts");
+  const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+  const { piProjectDir } = await import("../src/server/harness/pi/transcript.ts");
+  const suffix = "legacy-attribution";
+  const previousPiDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(home, suffix);
+  t.after(() => {
+    if (previousPiDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousPiDir;
+  });
+  const noteKey = "e395b35b-a5cd-4711-a7d3-cb6e4e9a80e1";
+  const store = seededStore(suffix, { noteKey, sessionAgent: "pi", sessionCwd: home });
+  const delivery = prepare(store, suffix, "evidence_readiness");
+  mkdirSync(piProjectDir(home), { recursive: true });
+  const transcriptPath = join(piProjectDir(home), `2026-09-06T13-01-00-000Z_${noteKey}.jsonl`);
+  const replacement = join(home, "replacement.jsonl");
+  const header = JSON.stringify({ type: "session", id: noteKey, cwd: home }) + "\n";
+  writeFileSync(transcriptPath, header);
+  writeFileSync(replacement, header);
+  const started = Date.now();
+  const turn = (id: string, text: string, ts: number) => JSON.stringify({
+    type: "message", id, timestamp: new Date(ts).toISOString(), message: { role: "user", content: text },
+  }) + "\n";
+  const throughDelivery = header + turn("initial-ask", "Publish the reviewed work", started - 1)
+    + turn("workflow-packet", delivery.payload, started + 1);
+  const transcriptAnchor = Buffer.byteLength(throughDelivery);
+  writeFileSync(transcriptPath, throughDelivery + turn("human-repeat", delivery.payload, started + 3));
+  writeFileSync(replacement, throughDelivery.replace('"workflow-packet"', '"human-copy-here"'));
+
+  // Persist exactly the old event shape. Today's confirmation writer also records transcriptStart.
+  store.claimDeliverySend(delivery.id);
+  store.appendEvent(delivery.runId, "delivery_sending", { deliveryId: delivery.id }, started);
+  store.setDeliveryState(delivery.id, "delivered", null, started + 2);
+  store.appendEvent(delivery.runId, "delivery_delivered", {
+    deliveryId: delivery.id, transcriptAnchor, submitVerified: true,
+  }, started + 2);
+  closeDb();
+
+  const restarted = new WorkflowStore();
+  const binding = restarted.getBinding(`binding-${suffix}`)!;
+  const anchors = restarted.listDeliveredTranscriptAnchors(delivery.sessionId, binding.noteKey);
+  assert.deepEqual(anchors, [{ payload: delivery.payload, transcriptAnchor, legacySend: { start: started, end: started + 2 } }]);
+  const registry = new Registry();
+  const decisions = (path: string) => {
+    registry.applyDiscovery([{
+      syntheticId: delivery.sessionId, agentSessionId: binding.noteKey, agent: "pi", name: "work",
+      nameSource: "process", cwd: home, gitBranch: "feature", gitRoot: home, repoRoot: home,
+      pid: 91, tty: "tty-legacy-attribution", terminals: [], startedAt: 1, transcriptPath: path,
+    } as DiscoveredSession]);
+    return readWorkflowIntentSnapshot(registry, binding, anchors)!.decisions.filter(d => d.source.kind === "transcript").map(d => d.source.id);
+  };
+  assert.deepEqual(decisions(transcriptPath), ["initial-ask", "human-repeat"]);
+  // Both files predate delivery, report the same conversation, and match its bytes and timing.
+  assert.deepEqual(decisions(replacement), ["initial-ask", "human-copy-here"]);
+  writeFileSync(transcriptPath, header + turn("another-human", delivery.payload, started + 5));
+  assert.deepEqual(decisions(transcriptPath), ["another-human"]);
 });
 
 test("positive refusal is explicitly retryable while uncertain delivery never auto-retries", () => {
@@ -431,10 +492,11 @@ test("workflow Live delivery sends an SDK session through its driver", async () 
     pid: null,
   });
 
-  const sent: { id: string; text: string }[] = [];
+  const sent: { id: string; text: string; clientMessageId?: string }[] = [];
   const supervisor = {
-    async send(id: string, turn: { text: string }) {
-      sent.push({ id, text: turn.text });
+    async send(id: string, turn: { text: string; clientMessageId?: string }, beforeSend?: () => string | null) {
+      assert.equal(beforeSend?.(), null);
+      sent.push({ id, ...turn });
       return "started" as const;
     },
   } as unknown as SdkSupervisor;
@@ -453,7 +515,10 @@ test("workflow Live delivery sends an SDK session through its driver", async () 
   }, 5);
 
   assert.equal(result.ok && result.value.state, "delivered");
-  assert.deepEqual(sent, [{ id: sessionId, text: "apply the requested review changes" }]);
+  const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(sessionId, noteKey);
+  assert.ok(anchors[0]?.clientMessageId);
+  assert.equal(anchors[0].transcriptAnchor, null);
+  assert.deepEqual(sent, [{ id: sessionId, text: "apply the requested review changes", clientMessageId: anchors[0].clientMessageId }]);
   assert.deepEqual(attributed, [
     `${sessionId}:workflow:apply the requested review changes`,
   ]);

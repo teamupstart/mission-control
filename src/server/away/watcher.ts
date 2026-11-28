@@ -10,6 +10,7 @@ import {
   emptyBuffer,
   foldAlerts,
   mergeBuffers,
+  reconcileReports,
   refreshAlerts,
 } from "@shared/away-buffer.ts";
 import type { AwayBuffer } from "@shared/away-buffer.ts";
@@ -18,6 +19,12 @@ import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun } from "@shared/pipeline.ts";
+import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
+import { mutedAuthorKeys, type ReportItem, type ReportMute } from "@shared/reports.ts";
+import { withCurrentReferenceNames } from "@shared/display-name.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
 // timer, runs the stall rules against a real clock, and folds what happened into
@@ -42,6 +49,14 @@ export interface AwaySource {
     ensembleSummaries?: EnsembleSummary[];
     pipelineCommissions?: PipelineCommission[];
     pipelineRuns?: PipelineRun[];
+    /** Live resident runs, which name a resident's alerts while the `inbox` flag is on. */
+    residentRuns?: ResidentRunSummary[];
+    /** Live resident profiles, whose current reference names those alerts use. */
+    residentProfiles?: ResidentProfile[];
+    /** Agent reports waiting to be read, present while the `inbox` flag is on. */
+    reports?: ReportItem[];
+    /** Muted report authors, present while the `inbox` flag is on. Their reports are not counted. */
+    reportMutes?: ReportMute[];
   };
 }
 
@@ -71,6 +86,16 @@ export interface AwayDeps {
    * renders as no claim at all.
    */
   unpushedObserver?: UnpushedObserver;
+  /**
+   * Told, as a window closes, every report waiting to be read that its digest counted, so none
+   * raises a notification afterwards in any window (see `ReportItem.countedInDigestAt`).
+   */
+  reportsCountedInDigest?: (ids: string[]) => void;
+  /**
+   * Told when a dashboard claims the digest, so the marks `reportsCountedInDigest` set are kept
+   * from then on. Until then they live and die with the digest, which is only in memory.
+   */
+  reportsDigestClaimed?: () => void;
 }
 
 export interface AwayWatcher {
@@ -100,6 +125,12 @@ export interface AwayWatcher {
   tick: () => void;
 }
 
+/** The reports waiting to be read whose authors are not muted: what the digest may count. */
+function listedReports(snap: Pick<ReturnType<AwaySource["snapshot"]>, "reports" | "reportMutes">): ReportItem[] {
+  const muted = mutedAuthorKeys(snap.reportMutes);
+  return (snap.reports ?? []).filter((report) => !muted.has(report.author.key));
+}
+
 export function startAwayWatcher(
   registry: AwaySource,
   now = () => Date.now(),
@@ -116,6 +147,22 @@ export function startAwayWatcher(
   let pending: AwayBuffer | null = null;
   /** The `awaySince` the buffer was opened for, so a NEW away window starts fresh. */
   let bufferedSince: number | null = null;
+  /**
+   * The reports waiting to be read right now, or null while the `inbox` flag is off. Read fresh
+   * rather than from the last tick, because closing the window is not on the tick.
+   */
+  const waitingReports = (): ReportItem[] | null =>
+    featureEnabled(INBOX_FLAG) ? listedReports(registry.snapshot()) : null;
+
+  // Project at both read boundaries, so a flag change between the last tick, leaving Away,
+  // and claiming the digest never needs another occurrence (or a still-live session).
+  const displayedBuffer = (source: AwayBuffer | null): AwayBuffer | null => {
+    if (!source) return null;
+    const variant = !featureEnabled(INBOX_FLAG) ? "withoutInbox" : featureEnabled(VOICE_FLAG) ? "spoken" : "fallback";
+    return { ...source, events: source.events.map((event) =>
+      event.sessionTitles ? { ...event, title: event.sessionTitles[variant] } : event) };
+  };
+
   /** When each parked gate was first seen parked - the gate rule's only honest clock. */
   /** Close the open window into `pending`. Idempotent - a second call is a no-op. */
   const closeWindow = (): void => {
@@ -123,10 +170,34 @@ export function startAwayWatcher(
     // Merge rather than overwrite: leaving twice before any dashboard claimed the
     // first digest must not silently destroy it - `takePending` is read-once, so
     // there is nowhere else to recover it from.
-    const closed = closeBuffer(buffer, now());
-    pending = pending ? mergeBuffers(pending, closed) : closed;
+    const at = now();
+    const closed = closeBuffer(buffer, at);
+    // The digest's reports are the reports waiting as you return, including one whose
+    // announcement has not landed yet and excluding one you read while away: see
+    // `reconcileReports`. Reports posted during this window join it before the merge, against
+    // this window's own start, so a report posted at the desk between it and an unclaimed earlier
+    // window is never counted as away activity. The merge is then pruned, without adding, so the
+    // earlier window is brought up to date too.
+    const waiting = waitingReports();
+    // With the flag off no report may be named or counted: the digest loses its report events,
+    // keeps every other event, and nothing is marked counted.
+    const closedWithReports = reconcileReports(closed, waiting ?? [], at, true);
+    pending = reconcileReports(pending ? mergeBuffers(pending, closedWithReports) : closedWithReports, waiting ?? [], at, false);
+    // Closed before anything else can fail: a window left open after being merged into `pending`
+    // would be merged again on the next close, doubling every count in the digest.
     buffer = null;
     bufferedSince = null;
+    if (waiting && deps.reportsCountedInDigest) {
+      const counted = new Set(pending.events.filter((e) => e.kind === "report").map((e) => e.key));
+      const ids = waiting.filter((r) => counted.has(`report:${r.id}`)).map((r) => r.id);
+      // A failed write (a busy database) loses only the marks, so a counted report may notify
+      // once more; it must not stop the window closing or the return that closes it.
+      try {
+        if (ids.length > 0) deps.reportsCountedInDigest(ids);
+      } catch (err) {
+        console.error("[away] marking reports counted in the digest failed:", err);
+      }
+    }
   };
 
   /** One pass: re-run the stall rules, reconcile the window, fold what changed. */
@@ -170,6 +241,24 @@ export function startAwayWatcher(
         ensembleSummaries: snap.ensembleSummaries ?? [],
         pipelineCommissions: snap.pipelineCommissions,
         pipelineRuns: snap.pipelineRuns,
+        // Read each pass, like the browser's gate, so a toggle names the next alert alike on
+        // both sides without a restart.
+        // Call signs and reference names name an agent only while voice is on as well.
+        //
+        // Reports ride the same gate: while away a report's alert is buffered rather than
+        // delivered, and the digest names who posted. `takenAt` lets a report posted and stamped
+        // between two reads still count as news (see `AlertScope.takenAt`).
+        //
+        // A muted author's reports are left out of this scope, so they are never buffered and the
+        // digest never counts them; one buffered before the mute leaves at the next reconcile.
+        ...(featureEnabled(INBOX_FLAG)
+          ? {
+              names: withCurrentReferenceNames(snap.residentRuns ?? [], snap.residentProfiles ?? []),
+              spokenNames: featureEnabled(VOICE_FLAG),
+              reports: listedReports(snap),
+            }
+          : {}),
+        takenAt: t,
       };
 
       // Open a buffer when you leave; on return, CLOSE it into `pending` rather than
@@ -212,8 +301,12 @@ export function startAwayWatcher(
       if (buffer) {
         buffer = refreshAlerts(
           buffer,
-          stalls.map((st) => stuckAlert(st, snap.sessions)),
+          stalls.map((st) => stuckAlert(st, snap.sessions, scope.names, scope.spokenNames)),
         );
+        // Reports read or replaced since they were buffered leave it, so the Away card's
+        // preview does not count them. Unannounced ones join only when the window closes.
+        // With the flag off there are none, so the preview stops counting any.
+        buffer = reconcileReports(buffer, scope.reports ? [...scope.reports] : [], t, false);
       }
       prev = scope;
     } catch (err) {
@@ -236,11 +329,20 @@ export function startAwayWatcher(
       if (timer) clearTimeout(timer);
     },
     stalls: () => stalls,
-    buffer: () => buffer,
+    buffer: () => displayedBuffer(buffer),
     takePending: () => {
       const p = pending;
       pending = null;
-      return p;
+      // A failed write loses only the marks, so a counted report may notify once more after a
+      // restart; the digest is still handed over.
+      if (p) {
+        try {
+          deps.reportsDigestClaimed?.();
+        } catch (err) {
+          console.error("[away] keeping the digest's report marks failed:", err);
+        }
+      }
+      return displayedBuffer(p);
     },
     flush: closeWindow,
     tick: pass,

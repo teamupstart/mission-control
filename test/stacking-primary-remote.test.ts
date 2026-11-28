@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // A stack parent's branch is fetched from the remote its pull request actually lives on. A
 // checkout whose `origin` is not GitHub (a local mirror) but which has one GitHub remote has
@@ -13,7 +13,7 @@ import { join } from "node:path";
 // Real git, no network: the GitHub remote's URL is rewritten to a local bare repository with
 // `url.<path>.insteadOf`, so the checkout's config names github.com while the fetch is local.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-primary-remote-"));
+const home = tempDir("mission-stacking-primary-remote-");
 process.env.HARNESS_HOME = home;
 const { primaryBranchSha, primaryGitHubRemote, primaryGitHubRepository } = await import("../src/server/stacking/github.ts");
 after(() => rmSync(home, { recursive: true, force: true }));

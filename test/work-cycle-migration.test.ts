@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-work-cycle-migration-"));
+const home = tempDir("mission-work-cycle-migration-");
 process.env.MISSION_HOME = home;
 
 // A pre-feature database with the hook-only table already populated. Opening it through
@@ -38,11 +38,13 @@ after(() => rmSync(home, { recursive: true, force: true }));
 test("an upgraded database gains the dedicated current-state table", () => {
   const columns = db.prepare(`PRAGMA table_info(session_work_cycles)`).all() as unknown as Array<{
     name: string;
+    dflt_value: string | null;
   }>;
   assert.deepEqual(
     columns.map((column) => column.name),
-    ["logical_key", "generation", "active", "completed_at", "updated_at"],
+    ["logical_key", "generation", "active", "completed_at", "updated_at", "spoken_hold", "spoken_hold_since"],
   );
+  assert.equal(columns.find(column => column.name === "spoken_hold")?.dflt_value, "0");
   assert.equal(workCycleFor("never-observed"), null);
 });
 

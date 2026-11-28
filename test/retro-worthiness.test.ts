@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
 import { forgetInjections, recordInjection } from "../src/server/injections.ts";
@@ -17,6 +16,7 @@ import {
 // isolation guard refuses outside an isolated MISSION_HOME.
 import type { Registry } from "../src/server/registry.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Whether a session is worth retrospecting, which is the whole condition on the offer.
 //
@@ -58,7 +58,7 @@ test("findings that were raised but never resolved are not a reason", () => {
 // ---- the transcript scan ---------------------------------------------------------------
 
 function transcriptFixture(): { path: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "mc-retro-"));
+  const dir = tempDir("mc-retro-");
   const path = join(dir, "conversation.jsonl");
   writeFileSync(path, "");
   return { path, cleanup: () => rmSync(dir, { force: true, recursive: true }) };
@@ -360,7 +360,7 @@ function pollerHost(): {
   } as unknown as Registry;
   return {
     host,
-    exit: (session) => { for (const fn of [...listeners]) fn(session); },
+    exit: (session) => { for (const fn of Array.from(listeners)) fn(session); },
     recorded,
   };
 }

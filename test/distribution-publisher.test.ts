@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { distributionManifest, distributionMetadata, distributionNames, localDistributionAssets } from '../scripts/distribution-contract.mjs';
 import { publishDistribution, qualifiedDistribution, retainLatestAlpha } from '../scripts/publish-distribution.mjs';
 import type { DistributionTransport, RemoteAsset } from '../scripts/distribution-github.mjs';
 import { binaryPublisherPolicy, binaryReleaseTag, BINARY_MANIFEST_NAME } from '../src/shared/binary-publisher-policy.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 const versions = {packageVersion: '1.26.0', lockVersion: '1.26.0', lockPackageVersion: '1.26.0'};
 const metadata = (channel = 'stable') => distributionMetadata({channel, tag: 'v1.26.0', commit: 'a'.repeat(40), versions});
 
 function fixture(t: TestContext, channel = 'stable') {
-  const root = mkdtempSync(join(tmpdir(), 'mission-publisher-'));
+  const root = tempDir('mission-publisher-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const build = metadata(channel), names = distributionNames(build);
   const files = {'app-zip': join(root, names['app-zip']), dmg: join(root, names.dmg)};

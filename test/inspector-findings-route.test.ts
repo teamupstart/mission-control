@@ -1,15 +1,14 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { InspectorComment, InspectorCommentStatus, InspectorSeverity } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `GET /api/inspector/findings?pr=<prKey>` is the only way Foreman's worker and the dashboard
 // can read a pull request's individual findings: the worker never touches SQLite, and no
 // other route returns finding rows outside a gated workflow run. Both clients parse the same
 // response schema, so this file drives the route and then each client against it.
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-findings-route-"));
+const home = tempDir("mission-inspector-findings-route-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

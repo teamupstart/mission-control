@@ -5,12 +5,10 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
   pipelineRepoKey,
@@ -23,6 +21,7 @@ import {
   type PipelineRunDetail,
   type PipelinesView,
 } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this route is the consent boundary. Everything the integration does is
 // downstream of a repository being switched on here, so the two things it must never do are
@@ -35,7 +34,7 @@ import {
 // off - which reads as a setting that did not take, and is the exact thing the "everything
 // arrives disabled" posture is supposed to make trustworthy.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-http-"));
+const home = tempDir("mission-pipeline-http-");
 const originalPath = process.env.PATH;
 // An explicit `<PREFIX>_NODE_BIN` outranks every directory below, `MISSION_EXECUTABLE_PATHS`
 // included. A session launched by Mission Control (or an operator who pinned Node) exports
@@ -320,6 +319,77 @@ test("both Engineer runtimes round-trip and the cheap Dispatch read reports the 
     };
     assert.equal(dispatch.launchRuntime, launchRuntime);
     assert.deepEqual(dispatch.repos.map((entry) => entry.repoRoot), [repo]);
+  }
+});
+
+test("saving pipeline observation consent keeps the stored Engineer runtime", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("consent-runtime");
+  const save = (body: unknown) => request("/api/pipelines/config", {
+    method: "PUT", body: JSON.stringify(body),
+  });
+  const before = { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }] };
+  assert.equal((await save({ ...before, launchRuntime: "terminal" })).status, 200);
+  const saved = await save({ ...before, enabled: false });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as PipelinesView).config.launchRuntime, "terminal");
+  assert.equal(getPipelinesConfig().launchRuntime, "terminal");
+  assert.equal(getPipelinesConfig().enabled, false);
+});
+
+test("an Engineer runtime patch preserves current observation and Foreman consent", async () => {
+  const { request } = fixture();
+  const repoRoot = gitRepo("runtime-patch-consent");
+  setPipelinesConfig({
+    launchRuntime: "agent-sdk", enabled: true, foremanMechanicalTriage: true,
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+  });
+  const revoked = await request("/api/pipelines/config", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: false, foremanMechanicalTriage: false,
+      repos: [{ provider: "ai-conductor", repoRoot, enabled: false }],
+    }),
+  });
+  assert.equal(revoked.status, 200);
+  const consent = getPipelinesConfig();
+  const patchRuntime = (body: unknown) => request("/api/pipelines/config", {
+    method: "PATCH", body: JSON.stringify(body),
+  });
+  const response = await patchRuntime({ launchRuntime: "terminal" });
+  assert.equal(response.status, 200);
+  const saved = { ...consent, launchRuntime: "terminal" };
+  assert.deepEqual((await response.json() as PipelinesView).config, saved);
+  assert.deepEqual(getPipelinesConfig(), saved);
+
+  assert.equal((await patchRuntime({ launchRuntime: "invalid" })).status, 400);
+  assert.deepEqual(getPipelinesConfig(), saved);
+});
+
+test("an Engineer runtime PATCH rejects consent fields and preserves the saved config", async (t) => {
+  const { request } = fixture();
+  const repoRoot = gitRepo("runtime-patch-reject-consent");
+  const saved = setPipelinesConfig({
+    launchRuntime: "terminal",
+    enabled: false,
+    foremanMechanicalTriage: false,
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: false }],
+  });
+  const consentChanges = {
+    enabled: true,
+    foremanMechanicalTriage: true,
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+  };
+
+  for (const [field, value] of Object.entries(consentChanges)) {
+    await t.test(`rejects ${field} alongside a valid runtime with HTTP 400`, async () => {
+      const response = await request("/api/pipelines/config", {
+        method: "PATCH",
+        body: JSON.stringify({ launchRuntime: "agent-sdk", [field]: value }),
+      });
+      assert.equal(response.status, 400);
+      assert.deepEqual(getPipelinesConfig(), saved);
+    });
   }
 });
 

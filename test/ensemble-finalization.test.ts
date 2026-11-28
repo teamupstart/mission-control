@@ -1,7 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -14,7 +13,7 @@ import { join } from "node:path";
  * machine is exercised deterministically without touching Git, a real agent, or a real Workflow.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-final-"));
+const home = tempDir("mission-ensemble-final-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -23,6 +22,7 @@ const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
 const { ensemblePayload } = await import("../src/shared/ensemble.ts");
 const { FakeGateway, FakeFinalize, stubAdapters, decidePlan, runInsert } = await import("./ensemble-fixture.ts");
 import type { EnsembleFinalizeDeps } from "../src/server/ensembles/engine.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -47,7 +47,7 @@ function harness(finalize: EnsembleFinalizeDeps) {
 async function driveToDecision(store: InstanceType<typeof EnsembleStore>, gateway: InstanceType<typeof FakeGateway>, engine: InstanceType<typeof EnsembleEngine>, count = 3) {
   const { run } = store.createRun(runInsert(decidePlan(count, 2)));
   await engine.launch(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await engine.wake(run.id);
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;

@@ -1,8 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type {
@@ -11,8 +9,9 @@ import type {
   WorkflowEdgeReceipt,
 } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-recovery-"));
+const home = tempDir("mission-workflow-recovery-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

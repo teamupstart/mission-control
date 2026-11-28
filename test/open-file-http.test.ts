@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildApp } from "../src/server/routes.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
+import { tempDirAsync, testTempRoot } from "./temp-root.mjs";
 
 // What is at stake: this route is the one place a request causes the daemon to hand a
 // PATH to an application launcher. Everything that stops that path being an arbitrary one
@@ -20,11 +20,11 @@ import type { QueueManager } from "../src/server/queue.ts";
 // browser on whoever's machine is running the tests. `open-target-contract.test.ts` drives
 // the same call with injected deps and asserts the exact argv instead.
 
-const checkout = await mkdtemp(path.join(os.tmpdir(), "mission-open-"));
+const checkout = await tempDirAsync("mission-open-");
 execFileSync("git", ["-C", checkout, "init", "-q"]);
 await writeFile(path.join(checkout, "page.html"), "<h1>hi</h1>");
 await mkdir(path.join(checkout, "docs"));
-await symlink(path.join(os.tmpdir()), path.join(checkout, "escape"));
+await symlink(testTempRoot(), path.join(checkout, "escape"));
 test.after(() => rm(checkout, { recursive: true, force: true }));
 
 const registry = {

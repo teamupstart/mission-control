@@ -5,7 +5,9 @@ import type { InspectorConfig } from "./protocol.ts";
 import type { CodeRabbitSummary } from "./code-rabbit.ts";
 import type { InspectorInspection, InspectorSummary } from "./types.ts";
 import { guardProviderModel, providerModelDefault } from "./model.ts";
+import { resolveLlmEffort } from "./llm.ts";
 import type { LlmRunnerId } from "./llm.ts";
+import type { ThinkingLevel } from "./types.ts";
 
 const INSPECTOR_MAX_ROUNDS = 100;
 const INSPECTOR_MAX_COMMENTS_PER_ROUND = 20;
@@ -45,13 +47,21 @@ export const INSPECTOR_LIMITS = {
 // it too.
 
 /**
- * What the Inspector is currently able to do about one pull request.
+ * What the Inspector is able to do about one pull request, and what a reviewed head was
+ * recorded under. APPEND-ONLY: persisted beside a reviewed head.
  *
- * `live` is the only value that means "this review is real": it was published under the
- * operator's GitHub identity, in a repo they trusted, with the feature switched on.
- * Every other value names which switch is withholding that.
+ * `live` is the only value that means "this GitHub review is real": it was published under the
+ * operator's GitHub identity, in a repo they trusted, with the feature switched on. `off`,
+ * `dry-run` and `not-allowlisted` each name the switch that is withholding that.
+ *
+ * `local` is different: it withholds nothing. It records that a head's tree matched a passed
+ * Local Inspector review, so no GitHub review ran. It is a recorded posture, never a current
+ * one - `inspectorPosture` cannot return it - and the worker writes it only while the current
+ * posture is `live`, so Dry run never produces one. The merge predicate accepts it as review
+ * provenance only while Local review is on and the workflow manager still reports the match for
+ * the observed head; otherwise it refuses it as `local-review-missing`.
  */
-export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted"] as const;
+export const INSPECTOR_POSTURES = ["live", "off", "dry-run", "not-allowlisted", "local"] as const;
 export type InspectorPosture = (typeof INSPECTOR_POSTURES)[number];
 
 /**
@@ -68,7 +78,7 @@ export function inspectorPosture(
   cfg: Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist">,
   cwd: string | null,
   repoRoot: string | null,
-): InspectorPosture {
+): Exclude<InspectorPosture, "local"> {
   if (!cfg.enabled) return "off";
   if (cfg.mode !== "live") return "dry-run";
   if (!repoAllowlisted(cwd, repoRoot, cfg.repoAllowlist)) return "not-allowlisted";
@@ -81,12 +91,67 @@ export function inspectorPosture(
  * A non-live current posture does not spend another model run: it still could not
  * publish the result. The transition to live is what makes an earlier dry-run,
  * unallowlisted, or legacy review stale for shipping purposes.
+ *
+ * A `local` head counts as unpublished here too. The worker never asks about a head that
+ * still matches a passed local review - it records that head and stops - so a `local` head
+ * that reaches this question no longer matches (Local review switched off, or a newer run that
+ * did not pass) and is reviewed on GitHub.
  */
 export function reviewNeedsLiveRerun(
   current: InspectorPosture,
   reviewed: InspectorPosture | null,
 ): boolean {
   return current === "live" && reviewed !== "live";
+}
+
+/**
+ * The reasoning effort a full review asks for when the operator has not chosen one.
+ *
+ * A review is asked for every finding that clears the bar in its first round, and later
+ * rounds only check the repair, so the first read has to be the thorough one. At the
+ * provider's default effort a round returned one or two findings and the rest surfaced a
+ * push at a time.
+ */
+export const INSPECTOR_REVIEW_EFFORT: ThinkingLevel = "xhigh";
+
+/** The two calls the Inspector makes: a full review, and an answer in one of its threads. */
+export type InspectorCall = "review" | "reply";
+
+/**
+ * The effort an Inspector call wants, before the provider is asked whether it offers it.
+ *
+ * `saved` is the operator's setting, and its three states mean three things. A level is
+ * their choice and applies to both calls. `null` is their choice of the provider's default.
+ * `undefined` means they never chose, and then a review takes `INSPECTOR_REVIEW_EFFORT`
+ * while a reply, which answers one thread, keeps the provider's default.
+ *
+ * One definition because the settings page must show what the review will run at: reading
+ * "never chosen" as "provider default" there would print a level the review does not use.
+ */
+export function inspectorEffortChoice(
+  saved: ThinkingLevel | null | undefined,
+  call: InspectorCall,
+): ThinkingLevel | null {
+  if (saved !== undefined) return saved;
+  return call === "review" ? INSPECTOR_REVIEW_EFFORT : null;
+}
+
+/**
+ * The value the settings row shows for the Inspector's review effort.
+ *
+ * A saved choice is shown as saved; the row itself marks a level the model does not offer.
+ * With nothing saved the row shows what a review will actually run at, which is the review
+ * default only when this provider and model offer it. Showing an unoffered default would
+ * print a level nobody chose and the review does not use.
+ */
+export function inspectorEffortShown(
+  saved: ThinkingLevel | null | undefined,
+  runner: LlmRunnerId | undefined,
+  model: string | undefined,
+): ThinkingLevel | null {
+  if (saved !== undefined) return saved;
+  if (runner === undefined || model === undefined) return null;
+  return resolveLlmEffort(runner, model, inspectorEffortChoice(saved, "review")).level;
 }
 
 /**
@@ -150,6 +215,7 @@ export function resolveInspectorModel(
   const chosen = resolveModelChoice(
     {
       ...INSPECTOR_MODEL_SPEC,
+      // oxlint-disable-next-line repository/agent-comparison -- The Inspector has a pinned Claude model fallback.
       fallback: runner === "claude" ? INSPECTOR_MODEL_SPEC.fallback : providerModelDefault(runner, "deep"),
     },
     cfg?.model,
@@ -199,5 +265,6 @@ export function inspectorSummaryOf(
     reviewedHeadSha: row.headSha,
     observedHeadSha: row.observedHeadSha,
     cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
+    localReviewHeadSha: row.localReviewHeadSha ?? null,
   };
 }

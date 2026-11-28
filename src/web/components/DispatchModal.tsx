@@ -1,7 +1,10 @@
+import { PinnedPlanChange, type PinnedPlanSelection } from "./PinnedPlanChange.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   AGENT_TYPES,
   TASK_KINDS,
@@ -29,6 +32,7 @@ import {
   type TaskDependencyInput,
 } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
+import { kindAfterWork } from "@shared/after-work.ts";
 import {
   BACKLOG_TASK_KINDS,
   SCHEDULE_TASK_KINDS,
@@ -40,7 +44,6 @@ import {
   TASK_PRIORITIES,
   hasReviewableDiff,
   isGrillFirstTaskKind,
-  taskDefaultWorkflowId,
   taskAllowsBacklog,
   taskKindAllowsBacklog,
   CHAT_WORKFLOW_REFUSAL,
@@ -71,13 +74,16 @@ import {
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "../lib/workflow-fix.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
+  draftCallSign,
   draftFromTask,
   draftPersonaId,
+  draftStackStartEdge,
   draftsEqual,
   parseLabelInput,
   taskUpdatePatch,
   type DispatchDraft,
 } from "../lib/task-draft.ts";
+import { stackEdgeLabel } from "../lib/backlog-copy.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { repoLeaf } from "../lib/format.ts";
 import {
@@ -103,6 +109,10 @@ import { Tooltip } from "./Tooltip.tsx";
 import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
 import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaField.tsx";
+import { SpokenNameField } from "./SpokenNameField.tsx";
+import { rosterWithout, VoiceRosterContext } from "../lib/voice-roster.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { taskSpokenNameKey, validateSpokenName } from "@shared/voice-names.ts";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
 import {
@@ -202,10 +212,10 @@ export function pipelineAgentForKindTransition(
  * than beside the rest of the draft shape because it is the one piece that reads the
  * browser: `lib/task-draft.ts` stays a pure translation between a form and a task.
  */
-function freshDispatchDraft(): DispatchDraft {
+function freshDispatchDraft(repoRoot = readLastDispatchRepo()): DispatchDraft {
   return {
     ...EMPTY_DISPATCH_DRAFT,
-    repoRoot: readLastDispatchRepo(),
+    repoRoot,
     // Secondary repos widen one task's worktree and write scope. They are never a default
     // for the next task, even though the primary repo deliberately remains sticky.
     extraRepoRoots: [],
@@ -293,9 +303,9 @@ type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
  * against the seed instead of "" is what keeps Clear greyed out on a form nobody has
  * touched yet.
  */
-function isEmptyDispatchDraft(d: DispatchDraft): boolean {
+function isEmptyDispatchDraft(d: DispatchDraft, seedRepo = readLastDispatchRepo()): boolean {
   return (
-    d.repoRoot.trim() === readLastDispatchRepo() &&
+    d.repoRoot.trim() === seedRepo &&
     d.extraRepoRoots.length === 0 &&
     !d.intent.trim() &&
     !d.title.trim() &&
@@ -308,6 +318,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
     d.personaId === EMPTY_DISPATCH_DRAFT.personaId &&
+    !d.callSign.trim() &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
     d.planStorage === EMPTY_DISPATCH_DRAFT.planStorage &&
     d.grillFirst === EMPTY_DISPATCH_DRAFT.grillFirst &&
@@ -635,8 +646,9 @@ export function harnessDefaultsLine(
  * a save that was only meant to fix a typo. So the slot carries the seed it was built
  * from, and a reopen whose row has moved on drops it and starts from the row.
  */
-export function DispatchLayer({
+function DispatchDraftOwner({
   opening,
+  suspended = false,
   tasks = [],
   sessions = [],
   personas = [],
@@ -668,6 +680,8 @@ export function DispatchLayer({
    * applies it.
    */
   opening: DispatchOpening | null;
+  /** A card-only route hides the form while this owner retains its drafts and attachment URLs. */
+  suspended?: boolean;
   tasks?: Task[];
   sessions?: Session[];
   /** Live Personas, for the Ensemble evaluator-guidance selector and the Advanced Persona choice. */
@@ -728,7 +742,8 @@ export function DispatchLayer({
   const requested = openingProblem ? null : opening;
   const editTask = requested?.kind === "edit" ? requested.task : null;
   const tourDemo = requested?.kind === "tour" ? requested.demo : null;
-  const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  const seedRepo = requested?.kind === "new" ? requested.followUp?.repoRoot : undefined;
+  const [draft, setDraft] = useState<DispatchDraft>(() => freshDispatchDraft(seedRepo));
   // Lives with the draft, which outlives the modal: a guess left by a closed form is still a guess.
   const draftProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   // The tour demonstrates the real form without borrowing or erasing the operator's draft.
@@ -779,6 +794,7 @@ export function DispatchLayer({
   const tourDraftRef = useRef(tourSlot?.draft ?? null);
   const ensembleDraftRef = useRef(ensembleDraft);
   draftRef.current = draft;
+  useEffect(() => () => revokeAttachments(draftRef.current.attachments), []);
   tourDraftRef.current = tourSlot?.draft ?? null;
   ensembleDraftRef.current = ensembleDraft;
 
@@ -930,9 +946,17 @@ export function DispatchLayer({
   // is what makes the next open re-read the row we just wrote, rather than re-showing
   // a working copy that is now merely a duplicate of it.
   const onEditSubmitted = useCallback(
-    (submitted: DispatchDraft) => {
+    (submitted: DispatchDraft, savedPinTask?: Task) => {
       const cur = editRef.current;
-      if (!cur || !draftsEqual(cur.draft, submitted)) return;
+      if (!cur) return;
+      if (!draftsEqual(cur.draft, submitted)) {
+        // Reconcile first: rebasing before this comparison would keep an otherwise
+        // consumed draft open. Newer typing keeps the dependencies just saved with the pin.
+        if (savedPinTask?.id === cur.id) setEdit({ ...cur, draft: {
+          ...cur.draft, dependencies: savedPinTask.dependencies.map(dependencyInputOf),
+        } });
+        return;
+      }
       revokeAttachments(cur.draft.attachments);
       setEdit(null);
       onClose();
@@ -1003,9 +1027,9 @@ export function DispatchLayer({
 
   /** Clear, for a fresh dispatch: blank but for the seeded repo, as it opened. */
   const onNewRevert = useCallback(() => {
-    setDraft(freshDispatchDraft());
+    setDraft(freshDispatchDraft(seedRepo));
     setGuidedPass(null);
-  }, []);
+  }, [seedRepo]);
 
   /**
    * Clear the Ensemble draft: reset the compose fields AND rotate the request id, so the next
@@ -1013,10 +1037,10 @@ export function DispatchLayer({
    */
   const onEnsembleClear = useCallback(() => {
     revokeAttachments(draftRef.current.attachments);
-    setDraft(freshDispatchDraft());
+    setDraft(freshDispatchDraft(seedRepo));
     setGuidedPass(null);
     setEnsembleDraft(freshEnsembleDraft());
-  }, []);
+  }, [seedRepo]);
 
   /**
    * An Ensemble was accepted. Like a Single dispatch it clears the compose draft and revokes
@@ -1047,7 +1071,7 @@ export function DispatchLayer({
   );
 
   if (openingProblem) return refuse(openingProblem);
-  if (requested === null) return null;
+  if (requested === null || suspended) return null;
   refused.current = null;
 
   /**
@@ -1188,6 +1212,7 @@ export function DispatchLayer({
       onDraftChange={setDraft}
       provisionalWorkflowRef={draftProvisionalWorkflow}
       onAttachmentsChange={onAttachmentsChange}
+      seedRepo={seedRepo}
       onRevert={onNewRevert}
       onClose={onClose}
       onSubmitted={onSubmitted}
@@ -1201,6 +1226,16 @@ export function DispatchLayer({
       personas={personas}
     />
   );
+}
+
+export function DispatchLayer({ repairFollowUpId, ...props }: React.ComponentProps<typeof DispatchDraftOwner> & { repairFollowUpId?: string }) {
+  const followUp = props.opening?.kind === "new" ? props.opening.followUp : undefined;
+  const retainedId = followUp?.id ?? repairFollowUpId;
+  // Keep the regular owner's drafts and guided progress mounted underneath the temporary form.
+  return <>
+    <DispatchDraftOwner {...props} opening={followUp ? null : props.opening} />
+    {retainedId && <DispatchDraftOwner key={retainedId} {...props} opening={followUp ? props.opening : null} />}
+  </>;
 }
 
 /**
@@ -1226,6 +1261,7 @@ function DispatchModal({
   onDraftChange,
   provisionalWorkflowRef,
   onAttachmentsChange,
+  seedRepo,
   onRevert,
   onClose,
   onSubmitted,
@@ -1256,9 +1292,10 @@ function DispatchModal({
   provisionalWorkflowRef?: MutableRefObject<ProvisionalWorkflow | null>;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   /** Discard the working copy - an empty form for a create, the live row for an edit. */
+  seedRepo?: string;
   onRevert: () => void;
   onClose: () => void;
-  onSubmitted: (submitted: DispatchDraft) => void;
+  onSubmitted: (submitted: DispatchDraft, savedPinTask?: Task) => void;
   /** Open the settings screen that grants what a refused launch named as missing. */
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
   /** Open the Setup row that repairs what an environment warning reports. */
@@ -1419,7 +1456,8 @@ function DispatchModal({
   // Which action is in flight, not merely whether one is: every footer button reaches the
   // daemon, and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch" | "delete" | "push">(null);
-  const busy = pending !== null;
+  const [pinPreviewPending, setPinPreviewPending] = useState(false);
+  const busy = pending !== null || pinPreviewPending;
   /**
    * The refusal printed under the form, and the settings screen that would clear it.
    *
@@ -1538,6 +1576,21 @@ function DispatchModal({
         ? undefined
         : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
   });
+  const pinChangesEnabled = useFeatureFlag(PINNED_PLAN_CHANGE_FLAG_ID);
+  // Voice addressing: the Advanced fold's call sign, checked against who else answers to a name.
+  const voiceNames = useFeatureFlag(VOICE_FLAG);
+  const voiceRoster = useContext(VoiceRosterContext);
+  const callSignRoster = useMemo(
+    () => rosterWithout(voiceRoster, editing ? taskSpokenNameKey(editing.id) : null),
+    [voiceRoster, editing],
+  );
+  const [editingPin, setEditingPin] = useState<number | null>(null);
+  const [pinSelection, setPinSelection] = useState<PinnedPlanSelection | null>(null);
+  const pinChange = pinSelection?.change ?? null;
+  const pinPreviewRequired = editingPin !== null && pinChange === null;
+  const pinPreviewHint = "Preview or cancel the revision change before saving or dispatching";
+  const dependencyEditsBlocked = busy || editingPin !== null || pinChange !== null;
+  const [pinReset, setPinReset] = useState(0);
   const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
   const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
   useEffect(() => {
@@ -1554,6 +1607,9 @@ function DispatchModal({
     : null;
   const dependencyKey = dependencyInputKey;
   function removalReason(key: string): string | null {
+    if (pinPreviewPending) return "Wait for the revision preview before editing dependencies.";
+    if (busy) return "Wait for the current task action before editing dependencies.";
+    if (editingPin !== null || pinChange) return "Cancel the revision change before editing dependencies.";
     if (planRequirementsProblem) return planRequirementsProblem;
     const required = planRequirementsResult?.requirements.filter(requirement =>
       requirement.dependencyKeys.includes(key) && !draft.dependencies.some(candidate =>
@@ -1626,14 +1682,18 @@ function DispatchModal({
     }
     return out;
   }, [editing, sessions, tasks]);
-  const unmetDependencyCount = draft.dependencies.filter((dependency) => {
+  const byId = useMemo(() => new Map(tasks.map(task => [task.id, task])), [tasks]);
+  const stackEdge = editing && !pinSelection ? draftStackStartEdge(editing, draft, byId) : null;
+  const unmetDependencyCount = pinSelection
+    ? pinSelection.dependencies.filter(dependency => dependency.satisfiedAt === null).length
+    : draft.dependencies.filter((dependency) => {
     const stored = editing?.dependencies.find(
       (candidate) =>
         dependencyKey(
           dependencyInputOf(candidate),
         ) === dependencyKey(dependency),
     );
-    if (stored?.satisfiedAt != null) return false;
+    if (stored === stackEdge || stored?.satisfiedAt != null) return false;
     // Only the source's sweep can satisfy an external item, only its publication a plan edge,
     // and nothing satisfies an edge this build does not know.
     if (dependency.type === "source" || dependency.type === "unknown" || dependency.type === "plan") return true;
@@ -1653,7 +1713,7 @@ function DispatchModal({
   // Null while the config is out, as it always was: the rows are not known yet, and arming a
   // built-in the operator may have replaced would gate the launch on Foreman for nothing.
   const defaultWorkflowId = workflowConfig
-    ? taskDefaultWorkflowId(
+    ? kindAfterWork(
       draft.kind,
       workflowConfig.kindWorkflowDefaults,
       draft.planStorage ?? planStorage ?? "repository",
@@ -1714,8 +1774,10 @@ function DispatchModal({
   const repoSetBlocked = multiRepoBlocked || collidingRepo !== null;
 
   // Merge one field's change into the lifted draft.
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
   function update(patch: Partial<DispatchDraft>): void {
-    onDraftChange({ ...draft, ...patch });
+    onDraftChange({ ...latestDraft.current, ...patch });
   }
 
   /**
@@ -1762,11 +1824,11 @@ function DispatchModal({
     }
     const rows = workflowConfig?.kindWorkflowDefaults ?? {};
     const storage = draft.planStorage ?? planStorage ?? "repository";
-    const target = taskDefaultWorkflowId(kind, rows, storage);
+    const target = kindAfterWork(kind, rows, storage);
     if (
       !hasReviewableDiff(kind)
       && !hasReviewableDiff(draft.kind)
-      && target === taskDefaultWorkflowId(draft.kind, rows, storage)
+      && target === kindAfterWork(draft.kind, rows, storage)
     ) {
       // The rows only agree as built-ins, so a guess still standing stays a guess.
       if (guess && guess.kind === draft.kind && guess.workflowId === draft.workflowId) {
@@ -1790,7 +1852,7 @@ function DispatchModal({
     // An edit into a mission chat is locked at None (`afterWorkLocked`): a chat row configured
     // in Settings must not land on it late, where the daemon would refuse the save.
     if (editing !== null && !taskKindAllowsBacklog(guess.kind)) return;
-    const resolved = taskDefaultWorkflowId(
+    const resolved = kindAfterWork(
       guess.kind,
       workflowConfig.kindWorkflowDefaults,
       draft.planStorage ?? planStorage ?? "repository",
@@ -1815,6 +1877,7 @@ function DispatchModal({
   }
 
   function updateDependencies(dependencies: DispatchDraft["dependencies"]): void {
+    if (dependencyEditsBlocked) return;
     stashedDependencies.current = NO_STASH;
     update({ dependencies });
   }
@@ -2545,7 +2608,7 @@ function DispatchModal({
    * cannot be edited from here. Disabled with a tooltip that says which order to do it in,
    * rather than silently pushing something the operator can see is not what is on screen.
    */
-  const editDirty = editing !== null && !draftsEqual(draft, draftFromTask(editing));
+  const editDirty = editing !== null && (pinChange !== null || !draftsEqual(draft, draftFromTask(editing)));
 
   /**
    * File this task upstream, through the source the block has selected.
@@ -2598,6 +2661,9 @@ function DispatchModal({
   function clearDraft(): void {
     revokeAttachments(draft.attachments);
     onRevert();
+    setPinSelection(null);
+    setEditingPin(null);
+    setPinReset(value => value + 1);
     setError(null);
     // A pass is part of how a guided dispatch OPENED, so putting the form back where it
     // started puts the questions back too - whether or not one is still on screen. Asking
@@ -2663,7 +2729,7 @@ function DispatchModal({
     if (!config) return editing ? { resolved: false } : { resolved: true, workflowId: undefined };
     return {
       resolved: true,
-      workflowId: taskDefaultWorkflowId(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository"),
+      workflowId: kindAfterWork(d.kind, config.kindWorkflowDefaults, d.planStorage ?? planStorage ?? "repository"),
     };
   }
 
@@ -2683,6 +2749,7 @@ function DispatchModal({
       !draft.repoRoot.trim() ||
       !draft.intent.trim() ||
       busy ||
+      pinPreviewRequired ||
       drop.uploading ||
       repoSetBlocked ||
       kindUnavailable ||
@@ -2730,7 +2797,8 @@ function DispatchModal({
       return;
     }
     const { workflowId } = settled;
-    const patch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
+    const draftPatch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent, voiceNames) : null;
+    const patch = pinChange ? { ...draftPatch, planInputChange: pinChange } : draftPatch;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher
     // the repo and nothing else, and a Single dispatch posts the form.
@@ -2738,7 +2806,7 @@ function DispatchModal({
     // Typed as the refusal shape every branch satisfies, so a Workflow block's `fix` survives
     // whichever call produced it rather than being narrowed away by the branch that cannot
     // carry one.
-    const r: DispatchResult = mode.kind === "edit"
+    const r: DispatchResult & { task?: Task } = mode.kind === "edit"
       ? patch
         ? await api.updateTask(mode.task.id, patch)
         : { ok: true }
@@ -2757,6 +2825,9 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           personaId: draftPersonaId(submitted) ?? undefined,
+          // Only while the field is drawn: a name typed before voice was switched off is not
+          // sent from a form that no longer shows it.
+          callSign: voiceNames ? draftCallSign(submitted) ?? undefined : undefined,
           workflowId,
           ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           // Omitted unless chosen here, so the daemon pins the Settings default itself.
@@ -2771,6 +2842,11 @@ function DispatchModal({
     // has landed by the time the dispatch is asked for, and a refused dispatch leaves
     // the modal open over a task whose text is already stored - nothing to lose, and
     // the same button to press again.
+    if (r.ok && pinChange) {
+      setPinSelection(null);
+      setEditingPin(null);
+      setPinReset(value => value + 1);
+    }
     const launched =
       r.ok && editing && dispatchNow ? await api.dispatchBacklog(editing.id, true) : null;
     setPending(null);
@@ -2793,9 +2869,10 @@ function DispatchModal({
       ? `${dispatchNow ? "Could not save task; dispatch was not attempted" : "Could not save task"}: ${r.error ?? "save rejected"}`
       : r.error ?? "dispatch failed", r.fix);
     else if (launched && !launched.ok) {
+      if (pinChange && r.task) update({ dependencies: r.task.dependencies.map(dependencyInputOf) });
       fail(`saved, but ${launched.error ?? "could not dispatch"}`, launched.fix);
     }
-    else onSubmitted(submitted);
+    else onSubmitted(submitted, pinChange ? r.task : undefined);
   }
 
   const onOverlayEscape = useCallback((event: KeyboardEvent): boolean => {
@@ -3343,8 +3420,10 @@ function DispatchModal({
             <Tooltip label={advancedOpen
               ? "Collapse advanced task settings"
               : draft.kind === "plan"
-                ? "Choose this task's Persona and where it saves its plan"
-                : "Choose a Persona for this task's agent"}>
+                ? `Choose this task's Persona${voiceNames ? ", call sign" : ""} and where it saves its plan`
+                : voiceNames
+                  ? "Choose a Persona and a call sign for this task's agent"
+                  : "Choose a Persona for this task's agent"}>
               <button
                 type="button"
                 className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
@@ -3355,6 +3434,7 @@ function DispatchModal({
                 {!advancedOpen && (
                   <span className="dispatch-more-summary">
                     {dispatchPersonaSummary(personas, draft.kind, draft.personaId)}
+                    {voiceNames && draftCallSign(draft) && ` · Call sign: ${draftCallSign(draft)}`}
                     {draft.kind === "plan" && ` · Plan storage: ${(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}`}
                   </span>
                 )}
@@ -3369,6 +3449,17 @@ function DispatchModal({
                   personaId={draft.personaId}
                   onChange={(personaId) => update({ personaId })}
                 />
+                {/* Behind the voice preview. A task keeps a name it was given while the field
+                    is hidden; the draft carries it and an unchanged save does not send it. */}
+                {voiceNames && (
+                  <SpokenNameField
+                    label="Call sign"
+                    value={draft.callSign}
+                    onChange={(callSign) => update({ callSign })}
+                    roster={callSignRoster}
+                    placeholder="Leave blank to get one automatically"
+                  />
+                )}
                 {draft.kind === "plan" && (
                 <label className="field">
                   <span className="field-label">Plan storage</span>
@@ -3377,14 +3468,14 @@ function DispatchModal({
                       onChange={(event) => {
                         const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
                         const rows = workflowConfig?.kindWorkflowDefaults ?? {};
-                        const previousDefault = taskDefaultWorkflowId("plan", rows, draft.planStorage ?? planStorage ?? "repository");
+                        const previousDefault = kindAfterWork("plan", rows, draft.planStorage ?? planStorage ?? "repository");
                         const savedDefault = editing?.kind === "plan"
-                          && editing.workflowId === taskDefaultWorkflowId("plan", rows, editing.planPolicy?.storage ?? "repository");
+                          && editing.workflowId === kindAfterWork("plan", rows, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
                           // A None plan row makes an explicit null look like the default.
                           ...(draft.workflowId !== null && draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
                             ? undefined
-                            : taskDefaultWorkflowId("plan", rows, storage ?? planStorage ?? "repository") } : {}) });
+                            : kindAfterWork("plan", rows, storage ?? planStorage ?? "repository") } : {}) });
                       }}>
                       <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
                       <option value="local">Local plan store</option>
@@ -3539,8 +3630,9 @@ function DispatchModal({
                 </span>
               </button>
             </Tooltip>
-            {detailsOpen && (
-              <div className={`dispatch-more-body${guidedDim}`}>
+            {/* A collapsed fold must retain the revision editor that owns the staged preview. */}
+            {(detailsOpen || editingPin !== null) && (
+              <div className={`dispatch-more-body${guidedDim}`} hidden={!detailsOpen}>
                 <div className="field-row">
                   <label className="field">
                     <span className="field-label">
@@ -3620,12 +3712,17 @@ function DispatchModal({
                       and the picker only offers what is not already chosen. */}
                   {hasPlanPins && <div className="field-hint">
                     Pinned plan inputs:
-                    {editing?.planInputs?.map(input => <div key={`${input.repoKey}:${input.planId}:${input.revision}`}>
+                    {editing?.planInputs?.map((input, inputIndex) => <div key={`${input.repoKey}:${input.planId}:${input.revision}`}>
                       <Tooltip label={`Open pinned plan revision ${input.revision} in a new tab`}>
                         <a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">
                           {planRequirementsResult?.requirements.find(requirement => requirement.input.planId === input.planId && requirement.input.revision === input.revision)?.title ?? input.planId} revision {input.revision}
                         </a>
                       </Tooltip>{" · "}{input.files.join(", ")}
+                      {(pinChangesEnabled || editingPin === inputIndex) && editing && <PinnedPlanChange key={pinReset} task={editing} input={input}
+                        disabled={!pinChangesEnabled || busy || (editingPin !== null && editingPin !== inputIndex) || JSON.stringify(draft.dependencies) !== JSON.stringify(editing.dependencies.map(dependencyInputOf))}
+                        onPending={setPinPreviewPending}
+                        onEditing={open => setEditingPin(open ? inputIndex : null)}
+                        onChange={selection => { setPinSelection(selection); if (selection) update({}); }} />}
                     </div>)}
                   </div>}
                   <div className="dep-chips">
@@ -3653,6 +3750,7 @@ function DispatchModal({
                                       type="button"
                                       className={`dep-mode-opt${shown === option ? " is-on" : ""}${shown === option && mode === undefined ? " is-inherited" : ""}`}
                                       aria-pressed={shown === option}
+                                      disabled={dependencyEditsBlocked}
                                       onClick={() =>
                                         updateDependencies(draft.dependencies.map((candidate) =>
                                           dependencyKey(candidate) === key && candidate.type === "task"
@@ -3694,6 +3792,7 @@ function DispatchModal({
                         className="dep-add"
                         value=""
                         aria-label="Add dependency"
+                        disabled={dependencyEditsBlocked}
                         onChange={(event) => {
                           const option = dependencyByKey.get(event.target.value);
                           if (option) {
@@ -3722,6 +3821,7 @@ function DispatchModal({
                   <span className="field-hint">
                     Sessions without observable hooks cannot be selected.
                   </span>
+                  {stackEdge && !selectedDependenciesUnmet && <span className="field-hint">{stackEdgeLabel(stackEdge)}</span>}
                   {selectedDependenciesUnmet && (
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
@@ -3831,6 +3931,9 @@ function DispatchModal({
       </div>
 
       <footer className={`modal-foot${guidedDim}`}>
+        {voiceNames && advancedOpen && !ensembleMode && !tourDemo && validateSpokenName(draft.callSign, callSignRoster).length > 0 && (
+          <span className="voice-name-warning">Warning only</span>
+        )}
         {/* Leading edge, ahead of the verbs that keep the task, because it is the one action
             here that destroys something - and edit-only, because a new dispatch has no row
             behind it to delete. Ghost-danger rather than filled: it must be findable without
@@ -3853,12 +3956,13 @@ function DispatchModal({
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
             backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
         {!tourDemo && !ensembleMode && backlogCompatible && (
-          <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
+          <Tooltip label={pinPreviewRequired ? pinPreviewHint : editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
             <button
               className="btn btn-ghost"
               onClick={() => void submit(false)}
               disabled={
                 busy
+                || pinPreviewRequired
                 || drop.uploading
                 || !draft.repoRoot.trim()
                 || !draft.intent.trim()
@@ -3882,7 +3986,7 @@ function DispatchModal({
             onClick={mode.kind === "ensemble" ? mode.onEnsembleClear : clearDraft}
             disabled={
               busy ||
-              (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft))
+              (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft, seedRepo))
             }
           >
             {editing ? "Revert" : "Clear"}
@@ -3901,7 +4005,7 @@ function DispatchModal({
         ) : (
           <Tooltip
             label={
-              selectedDependenciesUnmet
+              pinPreviewRequired ? pinPreviewHint : selectedDependenciesUnmet
                 ? "Dependencies must complete first; schedule this in the backlog"
                 : selectedWorkflowBlocked
                   ? "Resolve the after-work Workflow requirement before dispatching"
@@ -3915,6 +4019,7 @@ function DispatchModal({
               onClick={() => void submit(true)}
               disabled={
                 busy ||
+                pinPreviewRequired ||
                 drop.uploading ||
                 !draft.repoRoot.trim() ||
                 !draft.intent.trim() ||

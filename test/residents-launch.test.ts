@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { createElement } from "react";
@@ -13,6 +11,7 @@ import { LaunchResidentRequestSchema, MAX_TASK_EXTRA_REPOS } from "../src/shared
 import type { Persona } from "../src/shared/workflow.ts";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // `ResidentManager.launch` against a real Registry, a real TaskManager and real `sdk_sessions`
 // rows. Only the dispatcher is a stand-in: it plays the SDK supervisor's part by writing the
@@ -20,7 +19,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-launch-"));
+const home = tempDir("mission-residents-launch-");
 process.env.HARNESS_HOME = home;
 
 const { Registry } = await import("../src/server/registry.ts");

@@ -1,7 +1,8 @@
+import { persistConfigPatch } from "../config-patch-storage.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { LlmConfigSchema } from "@shared/protocol.ts";
 import type { LlmConfig, LlmConfigPatch } from "@shared/protocol.ts";
-import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModel, resolveLlmJobModels } from "@shared/llm-jobs.ts";
+import { LLM_JOB_IDS, LLM_JOB_SPECS, resolveLlmJobModel } from "@shared/llm-jobs.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "@shared/llm-jobs.ts";
 import {
   CLAUDE_TRANSPORT_ENV,
@@ -21,7 +22,9 @@ import type {
   ResolvedLlmRunner,
 } from "@shared/llm.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { getAppConfig, setAppConfig } from "../db.ts";
+import { getAppConfig } from "../db.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
+import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
 
 // The LLM config: a schema-validated blob over the `app_config` KV, mirroring
 // `foreman/config.ts` and `inspector/config.ts`, so a new key needs no migration - Zod's
@@ -48,6 +51,10 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.llm;
 
+export function backgroundReasoningEffortEnabled(): boolean {
+  return featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID);
+}
+
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getLlmConfig(): LlmConfig {
   return LlmConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
@@ -56,8 +63,7 @@ export function getLlmConfig(): LlmConfig {
 /**
  * Merge a patch over the current config and persist it.
  *
- * `models` merges PER KEY - it does not replace the map - the one place this parts from
- * `setForemanConfig`'s plain spread, and for `setSkillsConfig`'s reason. Replacement would
+ * Per-job maps merge by key. Replacing the model map would
  * make `{models: {goal: "…"}}` mean "goal set, and every other job cleared", so the panel
  * would have to round-trip the whole map on every commit. Which sounds survivable until two
  * dashboards are open: the second tab's field carries a map from its last poll and silently
@@ -67,15 +73,15 @@ export function getLlmConfig(): LlmConfig {
  */
 export function setLlmConfig(patch: LlmConfigPatch): LlmConfig {
   const before = getLlmConfig();
-  const next = LlmConfigSchema.parse({
-    ...before,
-    ...patch,
+  const merged = {
     models: { ...before.models, ...patch.models },
+    ...(patch.efforts && { efforts: { ...before.efforts, ...patch.efforts } }),
     // Same per-key merge, same argument. Two tabs setting different jobs' providers commute,
     // and the panel never has to round-trip the whole map to change one row.
     runners: { ...before.runners, ...pinOutgoingProvider(before, patch), ...patch.runners },
-  });
-  setAppConfig(CONFIG_ENTRY, next);
+  };
+  const next = LlmConfigSchema.parse({ ...before, ...patch, ...merged });
+  persistConfigPatch(CONFIG_ENTRY, before, next, patch, Object.keys(merged));
   return next;
 }
 

@@ -175,11 +175,11 @@ const MAX_NESTED_CHECKOUT_DEPTH = 8;
 /**
  * One worktree's, or one task's, Git-visible identity.
  *
- * `known` carries a hex digest and nothing else. `unknown` carries a short internal reason and
+ * `known` carries a hex digest and, for a task probe, its component digests. `unknown` carries a short internal reason and
  * is the answer to every question this module cannot settle - see property (1) above.
  */
 export type ActivityFingerprint =
-  | { kind: "known"; digest: string }
+  | { kind: "known"; digest: string; head?: string; checkouts?: ReadonlyMap<string, string> }
   | { kind: "unknown"; reason: string };
 
 function unknown(reason: string): ActivityFingerprint {
@@ -490,7 +490,7 @@ export async function worktreeActivityFingerprint(
     if (content.kind === "unknown") return content;
     hash.update(`${content.digest}\0`);
   }
-  return { kind: "known", digest: hash.digest("hex") };
+  return { kind: "known", digest: hash.digest("hex"), head: head.kind === "text" ? head.text.trim() : undefined };
 }
 
 /** One `git status -z` record: its two-letter code and the path it is about. */
@@ -685,16 +685,24 @@ async function capture(
 export async function taskActivityFingerprint(
   task: TaskRepoSource,
   deps: WorktreeActivityDeps = defaultWorktreeActivityDeps,
+  /**
+   * A checkout this returns a fingerprint for is read through it instead of Git's own probe;
+   * null leaves it to the probe. Automatic retention uses it for checkouts Git no longer
+   * recognizes, which have their own read-only fingerprint.
+   */
+  checkout?: (ref: TaskRepoRef & { worktreePath: string }) => Promise<ActivityFingerprint | null>,
 ): Promise<ActivityFingerprint> {
   const refs = taskRepoRefs(task).filter(
     (ref): ref is TaskRepoRef & { worktreePath: string } => ref.worktreePath !== null,
   );
   if (refs.length === 0) return unknown("task holds no worktree");
   const hash = createHash("sha256");
+  const checkouts = new Map<string, string>();
   for (const ref of refs) {
-    const one = await worktreeActivityFingerprint(ref.worktreePath, deps);
+    const one = (await checkout?.(ref)) ?? await worktreeActivityFingerprint(ref.worktreePath, deps);
     if (one.kind === "unknown") return one;
+    checkouts.set(ref.worktreePath, one.digest);
     hash.update(`${ref.position}\0${ref.worktreePath}\0${one.digest}\0`);
   }
-  return { kind: "known", digest: hash.digest("hex") };
+  return { kind: "known", digest: hash.digest("hex"), checkouts };
 }

@@ -1,6 +1,6 @@
 # Phase 8: Mod core and glance layer (WP13, minimal)
 
-Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`). Branch from `main`; start only after P5 has merged, then `git rebase --onto origin/main <old base>`.
+Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v21 (sha256 `1fd49cff22923784a63151d622d0bcc3b83729f912dce2b6530d059821f661c3`). Branch from `main`; start only after P5 has merged, then `git rebase --onto origin/main <old base>`.
 
 **1. Outcome.** With the flag on, the mod loads in Claude Code, registers the session with the daemon, polls the inbox, and opens the Mission Control pane as Claude launches, with the start-up banner. It tells the person when something needs them: a toast for each new item, the band with its `1` button (which opens the pane on Needs you), and a quiet status entry. With the flag off, or on a `modApi` mismatch, it shows nothing. Until P12 lands the pane shows a placeholder.
 

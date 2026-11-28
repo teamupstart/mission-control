@@ -1,5 +1,7 @@
 import {
   Children,
+  createContext,
+  useContext,
   cloneElement,
   isValidElement,
   useCallback,
@@ -212,6 +214,9 @@ export interface TooltipContent {
   description: string;
 }
 
+/** Floating voice controls live in a second document owned by the same React tree. */
+export const TooltipDocument = createContext<Document | null>(null);
+
 export function Tooltip({
   label,
   children,
@@ -225,9 +230,11 @@ export function Tooltip({
   children: ReactElement;
 }): React.JSX.Element {
   // Derived once, and named for the two jobs above rather than for their types.
+  const owner = useContext(TooltipDocument) ?? (typeof document === "undefined" ? null : document);
   const rich = typeof label !== "string";
   const description = rich ? label.description : label;
-  const painted: ReactNode = rich ? label.content : label;
+  const bubbleContent = rich ? label.content : label;
+  const hasBubble = bubbleContent != null;
   const [tip, setTip] = useState<TipState | null>(null);
   const id = useId();
 
@@ -258,12 +265,14 @@ export function Tooltip({
     setTip(null);
   }, []);
   const showOnly = useCallback((el: HTMLElement) => {
+    // Description-only triggers (the expanding voice button) supply their own visual hint.
+    if (!hasBubble) return;
     if (beside) {
       if (shownOption !== hide) shownOption?.();
       shownOption = hide;
     }
     show(el);
-  }, [beside, show, hide]);
+  }, [beside, show, hide, hasBubble]);
   // A trigger unmounted with its bubble open must not stay the one `shownOption` names.
   useEffect(() => hide, [hide]);
 
@@ -280,7 +289,7 @@ export function Tooltip({
       setTip(settleSide(tip, r.width, r.height));
       return;
     }
-    const shift = onScreen(r.left, r.right, window.innerWidth);
+    const shift = onScreen(r.left, r.right, el.ownerDocument.defaultView!.innerWidth);
     // Flip under the trigger when the bubble does not actually FIT above it. The
     // threshold in `show` cannot answer this: it runs before the bubble exists, so it
     // can only ask whether the trigger sits near the top of the viewport, not whether
@@ -371,8 +380,8 @@ export function Tooltip({
   return (
     <>
       {trigger}
-      {typeof document === "undefined" ? describedBy : createPortal(describedBy, document.body)}
-      {tip &&
+      {owner ? createPortal(describedBy, owner.body) : describedBy}
+      {owner && tip &&
         createPortal(
           <span
             ref={measure}
@@ -392,12 +401,12 @@ export function Tooltip({
               // Until measured, the bubble is positioned but not yet corrected. Painting
               // it in the wrong place for a frame is what the fade-in would otherwise be
               // covering up, and at a viewport edge that frame is a visible jump.
-              visibility: tip.shift === undefined ? "hidden" : undefined,
+              visibility: tip.shift === undefined || !hasBubble ? "hidden" : undefined,
             }}
           >
-            {painted}
+            {bubbleContent}
           </span>,
-          document.body,
+          owner.body,
         )}
     </>
   );

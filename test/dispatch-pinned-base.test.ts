@@ -1,10 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitHistory } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: two agents that were supposed to start from the same place, and did not.
 //
@@ -23,7 +23,7 @@ import { seedGitHistory } from "./helpers/git-fixture.ts";
 // and making the suite depend on either would make it pass or fail for reasons that have
 // nothing to do with this code.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pinned-base-"));
+const home = tempDir("mission-pinned-base-");
 // Set before importing anything that resolves the state dir - WORKTREES_DIR hangs off it.
 process.env.HARNESS_HOME = join(home, "state");
 
@@ -317,6 +317,24 @@ test("a fetch stopped by its time limit says so instead of reporting an exit git
     stdout: "", stderr: "", code: 128, outcomeUnknown: false, overflowed: false,
   })));
   assert.equal(refused.ok === false ? refused.reason : "", "git fetch origin failed: exit 128");
+});
+
+test("the remote HEAD probe names its 30-second network timeout", async () => {
+  const probe = (timedOut: boolean) => currentRemoteDefaultSha("/anywhere", async (_bin, args, options) => {
+    assert.deepEqual(args.slice(2), ["ls-remote", "--symref", "origin", "HEAD"]);
+    assert.equal(options?.timeoutMs, 30_000);
+    return { stdout: "", stderr: "", code: 1, outcomeUnknown: true, overflowed: false, timedOut, signal: "SIGTERM" };
+  });
+  assert.deepEqual(await probe(true), {
+    ok: false,
+    outcomeUnknown: true,
+    reason: "network probe timeout: git ls-remote --symref origin HEAD timed out after 30 s",
+  });
+  assert.deepEqual(await probe(false), {
+    ok: false,
+    outcomeUnknown: true,
+    reason: "git ls-remote --symref origin HEAD was stopped before it finished (it is allowed 30s)",
+  });
 });
 
 test("a stale-ref fetch race is retried because the competing fetch already made progress", async () => {

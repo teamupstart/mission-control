@@ -1,7 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { appendFileSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
@@ -9,6 +10,7 @@ import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Session, TranscriptStreamMsg } from "../src/shared/types.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: whether a dropped connection costs the reader their place.
 //
@@ -25,11 +27,11 @@ import { mkSession } from "./helpers/session-fixture.ts";
 // cannot, because a continuation with a hole in it is indistinguishable to the reader
 // from one without.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stream-resume-"));
+const home = tempDir("mission-stream-resume-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 
-const dir = mkdtempSync(join(tmpdir(), "mission-stream-resume-tx-"));
+const dir = tempDir("mission-stream-resume-tx-");
 after(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
@@ -185,5 +187,483 @@ test("a malformed offset is ignored rather than trusted", async () => {
   for (const bad of ["", "abc", "-1", "1.5", "9e99"]) {
     const frame = await firstFrame(`?from=${encodeURIComponent(bad)}`);
     assert.equal(frame.type, "init", `from=${bad} should re-seed`);
+  }
+});
+
+for (const reconnect of [false, true]) {
+  test(`the first SDK handoff during ${reconnect ? "reconnect" : "opening"} publishes a reseeded frame with its own cursor`, async t => {
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const db = await import("../src/server/db.ts");
+    const { sessionMessages } = await import("../src/server/harness/index.ts");
+    const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+    t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+    const key = "first-sdk-during-frame-" + reconnect;
+    const current = { ...session, agentSessionId: key };
+    t.mock.method(registry, "getSession", () => current);
+    const transcript = sessionMessages(current)!;
+    const words = "check the receipt";
+    const payload = words + "\n\nYour operator has not read your report r 'Build status' yet.";
+    const now = Date.now();
+    const row = db.createPendingTurn({ id: key, noteKey: key, spokenWords: words, text: words, now });
+    const claim = db.claimNextPendingTurn(key, now, row, () => payload)!;
+    const from = statSync(path).size;
+    assert.equal(db.spokenTranscriptState(key), null);
+    const land = () => {
+      const receipt = reserveSpokenHandoff({ key, session: current, transcript }, claim, words, true, 0, now)!;
+      assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, receipt.id));
+      appendFileSync(path, JSON.stringify({ type: "user", uuid: receipt.id, timestamp: new Date(now).toISOString(),
+        message: { role: "user", content: payload } }) + "\n");
+    };
+    const { read } = transcript;
+    if (reconnect) {
+      const appended = read.appended.bind(read);
+      t.mock.method(read, "appended", (...args: Parameters<typeof appended>) => { land(); return appended(...args); }, { times: 1 });
+    } else {
+      const initial = read.initial.bind(read);
+      t.mock.method(read, "initial", (...args: Parameters<typeof initial>) => { land(); return initial(...args); }, { times: 1 });
+    }
+    const frame = await firstFrame(reconnect ? "?from=" + from : "");
+    assert.ok(frame.type === "init" && frame.refreshSpoken && frame.spokenCursor);
+    assert.deepEqual(frame.messages.at(-1)?.presentation, { kind: "spoken", displayText: words, received: payload });
+    assert.equal(frame.spokenReceipt, null, "an SDK reservation has no text-only receipt token");
+    const next = await firstFrame(`?from=${frame.pos}&spokenCursor=${frame.spokenCursor}`);
+    assert.deepEqual(next.type, "resume");
+  });
+}
+
+test("a byte resume after a missed text-only receipt refreshes existing words and then resumes normally", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const db = await import("../src/server/db.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const key = noteKeyFor(session);
+  const words = "inspect the build";
+  const payload = words + "\n\nYour operator has not read your report r 'Build status' yet.";
+  const now = Date.now();
+  const queued = db.createPendingTurn({ id: "stream-receipt", noteKey: key, spokenWords: words, text: words, now });
+  const claim = db.claimNextPendingTurn(key, now, queued, () => payload)!;
+  const transcript = sessionMessages(session)!;
+  const prepared = await prepareSpokenTranscript(key, transcript, claim.text);
+  const reservation = reserveSpokenHandoff({ key, session, transcript }, claim, words, false, 0, now, prepared)!;
+  appendFileSync(path, JSON.stringify({ type: "user", uuid: "early-user", timestamp: new Date(now).toISOString(),
+    message: { role: "user", content: payload } }) + "\n");
+  const early = await firstFrame();
+  assert.ok(early.type === "init");
+  assert.equal(early.messages.at(-1)?.text, payload);
+  assert.equal(early.messages.at(-1)?.presentation, undefined);
+  assert.equal(early.spokenReceipt, null);
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, reservation.id));
+  db.closeDb();
+  const refreshed = await firstFrame("?from=" + early.pos);
+  assert.ok(refreshed.type === "init" && refreshed.refreshSpoken);
+  assert.deepEqual(refreshed.messages.at(-1)?.presentation, { kind: "spoken", displayText: words, received: payload });
+  assert.equal(refreshed.spokenReceipt, db.spokenTranscriptState(key)?.receipt);
+  const cursorQuery = "?from=" + early.pos + "&spokenReceipt=" + refreshed.spokenReceipt + "&spokenCursor=" + refreshed.spokenCursor;
+  const current = await firstFrame(cursorQuery);
+  assert.ok(current.type === "resume");
+  assert.deepEqual(current.messages, []);
+  appendFileSync(path, turn("tail", "APPENDED"));
+  const appended = await firstFrame(cursorQuery);
+  assert.ok(appended.type === "resume");
+  assert.deepEqual(appended.messages.map(m => m.text), ["APPENDED"]);
+  // A rewrite accompanied by an append still has a larger size. Its earlier bytes
+  // must prove they match the resume cursor before the new bytes can be appended.
+  writeFileSync(path, readFileSync(path, "utf8").replace("FIRST", "OTHER") + turn("tail-2", "APPENDED AGAIN"));
+  const rewritten = await firstFrame(cursorQuery);
+  assert.ok(rewritten.type === "init" && rewritten.refreshSpoken);
+  assert.equal(rewritten.messages[0]?.text, "OTHER");
+  writeFileSync(path, turn("replacement", "SHORTER"));
+  const truncated = await firstFrame(cursorQuery);
+  assert.ok(truncated.type === "init" && truncated.refreshSpoken);
+  assert.deepEqual(truncated.messages.map(m => m.text), ["SHORTER"]);
+});
+
+test("a fresh spoken stream and its resume advance while the native file grows during every proof", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const read = sessionMessages(session)!.read;
+  const snapshot = read.snapshot;
+  assert.ok(snapshot);
+  const key = noteKeyFor(session);
+  const now = Date.now();
+  const words = "keep watching the build";
+  const queued = db.createPendingTurn({ id: "growing-stream", noteKey: key, spokenWords: words, text: words, now });
+  const claim = db.claimNextPendingTurn(key, now, queued, () => words)!;
+  const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  const receipt = reserveSpokenHandoff({ key, session, transcript: sessionMessages(session) }, claim, words, true, 0, now)!;
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, receipt.id));
+  writeFileSync(path, turn("opening", "OPENING"));
+  let sequence = 0;
+  t.mock.method(read as { snapshot: typeof snapshot }, "snapshot", (file: string) => {
+    const captured = snapshot(file);
+    appendFileSync(file, turn("active-" + ++sequence, "OUTPUT " + sequence));
+    return captured;
+  });
+  const opening = await firstFrame();
+  assert.ok(opening.type === "init" && opening.spokenCursor);
+  assert.equal(opening.messages[0]?.text, "OPENING");
+  const query = new URLSearchParams({ from: String(opening.pos), spokenCursor: opening.spokenCursor });
+  if (opening.spokenReceipt) query.set("spokenReceipt", opening.spokenReceipt);
+  const continuation = await firstFrame("?" + query);
+  assert.ok(continuation.type === "resume");
+  assert.ok(continuation.pos > opening.pos && continuation.messages.length > 0);
+  assert.ok(continuation.messages.every(message => message.text.startsWith("OUTPUT ")));
+});
+
+test("a live spoken cursor bounds append I/O and recovers rewritten history", { timeout: 25_000 }, async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const key = noteKeyFor(session);
+  const words = "watch the long transcript";
+  const now = Date.now();
+  const queued = db.createPendingTurn({ id: "stream-append-cost", noteKey: key, spokenWords: words, text: words, now });
+  const claim = db.claimNextPendingTurn(key, now, queued, () => words)!;
+  const receipt = reserveSpokenHandoff({ key, session, transcript: sessionMessages(session) }, claim, words, true, 0, now)!;
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, receipt.id));
+
+  // The byte cursor and an independently unbound text receipt share this live feed.
+  const native = sessionMessages(session)!;
+  const missing = "an instruction the runtime has not written";
+  const outbox = db.createPendingTurn({ id: "stream-unmatched-terminal", noteKey: key, spokenWords: missing, text: missing, now });
+  const textClaim = db.claimNextPendingTurn(key, now, outbox, s => s)!;
+  const prepared = await prepareSpokenTranscript(key, native, textClaim.text);
+  const waiting = reserveSpokenHandoff({ key, session, transcript: native }, textClaim, missing, false, 0, now, prepared)!;
+  assert.ok(db.retireDeliveredPendingTurn(textClaim.id, textClaim.revision, now, waiting.id));
+
+  const padding = JSON.stringify({ padding: "x".repeat(2 * 1024 * 1024) }) + "\n";
+  writeFileSync(path, padding + turn("original", "ORIGINAL"));
+  const res = await app.request("/api/sessions/s1/transcript/stream", { headers: { host: "127.0.0.1:7317" } });
+  const reader = res.body!.getReader();
+  t.after(() => reader.cancel());
+  const nextFrame = async () => {
+    // Keep the worker alive while the daemon's unref'd poll timer is the only other handle.
+    const deadline = setTimeout(() => void reader.cancel(), 15_000);
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        assert.ok(!done, "SSE stream ended before the expected frame");
+        const line = new TextDecoder().decode(value).split("\n").find(s => s.startsWith("data: {"));
+        if (line) return JSON.parse(line.slice(6)) as TranscriptStreamMsg;
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
+  };
+  const checkProof = (frame: TranscriptStreamMsg) => {
+    assert.ok(frame.type === "init" || frame.type === "append");
+    const stat = statSync(path, { bigint: true });
+    const expected = createHash("sha256").update([stat.dev, stat.ino, stat.birthtimeNs].join(":") + "\n")
+      .update(readFileSync(path).subarray(0, frame.pos)).digest("hex");
+    assert.equal(frame.spokenCursor, expected);
+  };
+  const opening = await nextFrame();
+  assert.ok(opening.type === "init");
+  checkProof(opening);
+  const handle = await open(path, "r");
+  const prototype: FileHandle = Object.getPrototypeOf(handle);
+  await handle.close();
+  const reads = t.mock.method(prototype, "read");
+  const scans = t.mock.method(native.read, "after");
+  const second = turn("two", "SECOND");
+  const writes = [turn("one", "FIRST") + second.slice(0, -2), second.slice(-2), turn("three", "THIRD")];
+  for (const [i, write] of writes.entries()) {
+    appendFileSync(path, write);
+    const frame = await nextFrame();
+    assert.ok(frame.type === "append");
+    assert.deepEqual(frame.messages.map(m => m.text), [["FIRST"], ["SECOND"], ["THIRD"]][i]);
+    checkProof(frame);
+  }
+  const bytesRead = (await Promise.all(reads.mock.calls.map(call => call.result))).reduce((n, r) => n + r!.bytesRead, 0);
+  t.diagnostic(`Historical transcript ${opening.pos} bytes; three appends ${writes.join("").length} bytes; cursor file reads ${bytesRead} bytes`);
+  assert.equal(scans.mock.callCount(), 0, "the unmatched spoken receipt starts no suffix scans on append frames");
+  assert.ok(bytesRead < 64 * 1024, "three small appends have a bounded cursor read budget");
+
+  // An unchanged length with a new revision and a larger replacement inode both reseed immediately.
+  writeFileSync(path, turn("edited", "AFTER TRUNCATION"));
+  assert.equal((await nextFrame()).type, "init");
+  writeFileSync(path, turn("edited", "SAME SIZE CHANGE"));
+  const edited = await nextFrame();
+  assert.ok(edited.type === "init" && edited.refreshSpoken);
+  checkProof(edited);
+  const olderPages = JSON.stringify({ padding: "x".repeat(512 * 1024) }) + "\n";
+  writeFileSync(path + ".next", olderPages + readFileSync(path, "utf8") + turn("rotated", "REPLACED"));
+  renameSync(path + ".next", path);
+  const replaced = await nextFrame();
+  assert.ok(replaced.type === "init" && replaced.refreshSpoken);
+  checkProof(replaced);
+
+  // A same-inode rewrite can be coalesced with growth between polls. Even on a quiet
+  // connection the already displayed words must be corrected without a reconnect.
+  writeFileSync(path, readFileSync(path, "utf8").replace("SAME SIZE CHANGE", "EDITED WHILE BIG") + turn("more", "NEW"));
+  const progress = await nextFrame();
+  assert.ok(progress.type === "append");
+  assert.deepEqual(progress.messages.map(m => m.text), ["NEW"]);
+  const corrected = await nextFrame();
+  assert.ok(corrected.type === "init" && corrected.refreshSpoken);
+  assert.equal(corrected.messages[0]?.text, "EDITED WHILE BIG");
+  checkProof(corrected);
+});
+
+test("cold transcript views verify multiple visible spoken handoff offsets off-thread, including after file replacement", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const key = noteKeyFor(session);
+  const native = sessionMessages(session)!;
+  const offsets: number[] = [];
+  const now = Date.now();
+  writeFileSync(path, JSON.stringify({ padding: "p".repeat(2 * 1024 * 1024) }) + "\n");
+  for (const id of ["visible-first", "visible-second"]) {
+    const queued = db.createPendingTurn({ id, noteKey: key, spokenWords: id, text: id, now });
+    const claim = db.claimNextPendingTurn(key, now, queued, text => text)!;
+    const prepared = await prepareSpokenTranscript(key, native, claim.text);
+    const row = reserveSpokenHandoff({ key, session, transcript: native }, claim, id, false, 0, now, prepared)!;
+    offsets.push(row.transcriptOffset!);
+    assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
+    appendFileSync(path, JSON.stringify({ type: "user", uuid: "native-" + id, timestamp: new Date(now).toISOString(),
+      message: { role: "user", content: id } }) + "\n");
+  }
+  spokenLedger.bindLanded(key, native, now);
+  spokenLedger.forgetCaches();
+  const reader = native.read as Required<Pick<typeof native.read, "boundary" | "prepareHandoffBoundaries">>;
+  const sync = t.mock.method(reader, "boundary");
+  let appendsDuringVerification = 0;
+  let rewritePrefix = false;
+  const prepare = reader.prepareHandoffBoundaries.bind(reader);
+  const worker = t.mock.method(reader, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+    const result = await prepare(...args);
+    if (appendsDuringVerification > 0) {
+      appendsDuringVerification--;
+      if (rewritePrefix) {
+        rewritePrefix = false;
+        writeFileSync(path, readFileSync(path, "utf8").replace("pppp", "edit"));
+      }
+      appendFileSync(path, turn("during-verification", "appended while reading history"));
+    }
+    return result;
+  });
+  const spokenIds = (messages: import("../src/shared/types.ts").TranscriptMessage[]) =>
+    messages.filter(m => m.presentation?.kind === "spoken").map(m => m.id);
+  const opened = await firstFrame();
+  assert.ok(opened.type === "init");
+  assert.deepEqual(spokenIds(opened.messages), ["native-visible-first", "native-visible-second"]);
+  assert.deepEqual(worker.mock.calls[0]?.arguments, [path, [...offsets, opened.pos], false]);
+  appendFileSync(path, turn("advance-revision", "more output"));
+  appendsDuringVerification = 1;
+  const end = statSync(path).size;
+  const historyPage = () => app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
+  const history = await historyPage();
+  assert.equal(history.status, 200);
+  assert.deepEqual(spokenIds((await history.json()).messages), ["native-visible-first", "native-visible-second"]);
+  for (const call of worker.mock.calls.slice(1)) assert.deepEqual(call.arguments, [path, [...offsets, end], false]);
+  assert.equal(worker.mock.callCount(), 3, "both worker passes tolerated growth beyond the captured page");
+  // Continuous growth after every completed worker pass must defer attribution.
+  appendFileSync(path, turn("invalidate", "another revision"));
+  appendsDuringVerification = 4;
+  const deferred = await (await historyPage()).json();
+  assert.equal(deferred.spokenDeferred, true);
+  assert.deepEqual(spokenIds(deferred.messages), []);
+  assert.deepEqual(spokenIds((await (await historyPage()).json()).messages), ["native-visible-first", "native-visible-second"]);
+  appendFileSync(path, turn("invalidate-again", "more output"));
+  appendsDuringVerification = 1;
+  rewritePrefix = true;
+  const rewritten = await historyPage();
+  assert.equal(rewritten.status, 200);
+  assert.deepEqual(spokenIds((await rewritten.json()).messages), [], "changing earlier bytes during growth invalidates both disclosures");
+  writeFileSync(path + ".new", readFileSync(path));
+  renameSync(path + ".new", path);
+  const replacement = await firstFrame();
+  assert.ok(replacement.type === "init");
+  assert.deepEqual(spokenIds(replacement.messages), []);
+  assert.equal(sync.mock.callCount(), 0);
+  t.diagnostic(`Projections of ${statSync(path).size} bytes verified ${offsets.length} handoff offsets per worker batch, with zero synchronous boundary reads`);
+});
+
+async function confirmedTerminalRecord(id: string, bind = true) {
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const db = await import("../src/server/db.ts");
+  const key = noteKeyFor(session);
+  const native = sessionMessages(session)!;
+  const now = Date.now();
+  writeFileSync(path, turn("intro", "INTRO"));
+  const pending = db.createPendingTurn({ id, noteKey: key, spokenWords: id, text: id, now });
+  const claim = db.claimNextPendingTurn(key, now, pending, text => text)!;
+  const prepared = await prepareSpokenTranscript(key, native, claim.text);
+  const receipt = reserveSpokenHandoff({ key, session, transcript: native }, claim, id, false, 0, now, prepared)!;
+  assert.ok(db.retireDeliveredPendingTurn(id, claim.revision, now, receipt.id));
+  const record = JSON.stringify({ type: "user", uuid: id + "-native", timestamp: new Date(now).toISOString(),
+    message: { role: "user", content: id } }) + "\n";
+  appendFileSync(path, record);
+  if (bind) spokenLedger.bindLanded(key, native, now);
+  spokenLedger.forgetCaches();
+  return { read: native.read, record, key };
+}
+
+test("a rewrite after native parsing cannot certify stale spoken history with a cold or cached proof", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  for (const cached of [false, true]) {
+    const words = "received-" + cached;
+    const { read } = await confirmedTerminalRecord(words);
+    const end = statSync(path).size;
+    const history = async () => {
+      const res = await app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
+      assert.equal(res.status, 200);
+      return res.json();
+    };
+    if (cached) assert.equal((await history()).messages.at(-1).presentation.kind, "spoken");
+    const original = read.before.bind(read);
+    const mock = t.mock.method(read, "before", (...args: Parameters<typeof original>) => {
+      const page = original(...args);
+      writeFileSync(path, readFileSync(path, "utf8").replace('"content":"' + words, '"content":"REPLACED-' + cached));
+      return page;
+    }, { times: 1 });
+    const stale = await history();
+    assert.equal(stale.spokenDeferred, true);
+    assert.equal(stale.messages.at(-1).presentation, undefined);
+    mock.mock.restore();
+    const current = await history();
+    assert.equal(current.messages.at(-1).text, "REPLACED-" + cached);
+    assert.equal(current.messages.at(-1).presentation, undefined);
+  }
+});
+
+test("a failed proof leaves native history, opening, resume and live appends readable until disclosure recovers", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const words = "proof-worker-failure";
+  const { read, record } = await confirmedTerminalRecord(words);
+  let unreadable = false;
+  const worker = t.mock.method(read as Required<Pick<typeof read, "prepareHandoffBoundaries">>, "prepareHandoffBoundaries", async () => {
+    if (unreadable) return { version: read.snapshot!(path)!.version, eof: null, proofs: new Map(), unreadable: true };
+    throw new Error("transient proof worker failure");
+  });
+  const end = statSync(path).size;
+  const page = await app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
+  assert.equal(page.status, 200);
+  const history = await page.json();
+  assert.equal(history.spokenDeferred, true);
+  assert.equal(history.messages.at(-1).text, words);
+  assert.equal(history.messages.at(-1).presentation, undefined);
+  unreadable = true; // The worker can also report an I/O error with the same stat revision.
+  const res = await app.request("/api/sessions/s1/transcript/stream", { headers: { host: "127.0.0.1:7317" } });
+  const reader = res.body!.getReader();
+  const timer = setTimeout(() => void reader.cancel(), 15_000);
+  t.after(() => { clearTimeout(timer); return reader.cancel(); });
+  async function next() {
+    for (;;) {
+      const chunk = await reader.read();
+      assert.ok(!chunk.done);
+      const line = new TextDecoder().decode(chunk.value).split("\n").find(s => s.startsWith("data: {"));
+      if (line) return JSON.parse(line.slice(6)) as TranscriptStreamMsg;
+    }
+  }
+  const init = await next();
+  assert.ok(init.type === "init" && init.spokenDeferred && init.spokenCursor && init.spokenReceipt);
+  assert.equal(init.messages.at(-1)?.text, words);
+  assert.equal(init.messages.at(-1)?.presentation, undefined);
+  appendFileSync(path, record.replace(words + "-native", "independent-copy"));
+  const copy = await next();
+  assert.ok(copy.type === "append" && copy.spokenDeferred && copy.pos > init.pos);
+  assert.equal(copy.messages[0]?.presentation, undefined);
+  const resume = await firstFrame("?" + new URLSearchParams({ from: String(init.pos),
+    spokenCursor: init.spokenCursor, spokenReceipt: init.spokenReceipt }));
+  assert.ok(resume.type === "resume" && resume.spokenDeferred && resume.pos === copy.pos);
+  appendFileSync(path, turn("later", "New output during worker failure"));
+  const progress = await next();
+  assert.ok(progress.type === "append" && progress.pos > copy.pos);
+  assert.equal(progress.messages[0]?.text, "New output during worker failure");
+  worker.mock.restore();
+  const recovered = await firstFrame();
+  assert.ok(recovered.type === "init" && !recovered.spokenDeferred);
+  assert.equal(recovered.messages.find(m => m.id === words + "-native")?.presentation?.kind, "spoken");
+});
+
+test("growth after the final prefix capture cannot disclose or bind a turn against an edited prefix", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { loadSpokenTurns } = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  for (const bound of [true, false]) {
+    const words = "post-capture-growth-" + bound;
+    const { read, key } = await confirmedTerminalRecord(words, bound);
+    const reader = read as Required<Pick<typeof read, "prepareHandoffBoundaries">>;
+    const prepare = reader.prepareHandoffBoundaries.bind(reader);
+    let passes = 0;
+    const worker = t.mock.method(reader, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+      const captured = await prepare(...args);
+      passes++;
+      if (passes === 1) appendFileSync(path, turn("after-first", "first append"));
+      if (passes === 2) writeFileSync(path, readFileSync(path, "utf8").replace("INTRO", "ALTER") + turn("after-final", "second append"));
+      return captured;
+    });
+    const frame = await firstFrame();
+    assert.ok(frame.type === "init");
+    assert.ok(passes >= 2);
+    const message = frame.messages.find(m => m.id === words + "-native");
+    assert.equal(message?.text, words);
+    assert.equal(message?.presentation, undefined);
+    if (!bound) assert.equal(loadSpokenTurns(key).find(row => row.spokenWords === words)?.messageId, null);
+    worker.mock.restore();
+  }
+});
+
+test("the open feed restores a spoken label on a quiet file after repeated native binding read failures", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const words = "quiet-read-recovery";
+  const { read } = await confirmedTerminalRecord(words, false);
+  const after = read.after.bind(read);
+  let refusals = 0;
+  t.mock.method(read, "after", (...args: Parameters<typeof after>) => {
+    if (refusals < 2) {
+      refusals++;
+      if (args[3]) throw new Error("fixture transcript temporarily unavailable");
+      return { messages: [], start: args[1], end: args[1], atEnd: true };
+    }
+    return after(...args);
+  });
+  const res = await app.request("/api/sessions/s1/transcript/stream", { headers: { host: "127.0.0.1:7317" } });
+  const reader = res.body!.getReader();
+  const timeout = setTimeout(() => void reader.cancel(), 10_000);
+  t.after(() => { clearTimeout(timeout); return reader.cancel(); });
+  let sawRaw = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    assert.ok(!done, "the quiet feed must publish the recovered disclosure");
+    const line = new TextDecoder().decode(value).split("\n").find(s => s.startsWith("data: {"));
+    if (!line) continue;
+    const frame = JSON.parse(line.slice(6)) as TranscriptStreamMsg;
+    assert.ok(frame.type === "init");
+    const msg = frame.messages.find(m => m.text === words);
+    assert.ok(msg);
+    if (msg.presentation?.kind === "spoken") {
+      assert.ok(sawRaw && frame.refreshSpoken);
+      assert.equal(refusals, 2);
+      break;
+    }
+    sawRaw = true;
   }
 });

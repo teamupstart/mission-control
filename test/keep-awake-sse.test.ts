@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { KeepAwakeStatus, ServerEvent } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the Registry is the ONE convergence path for keep-awake state - the
 // snapshot answers a fresh or reconnecting dashboard, `keep_awake_status` answers the
@@ -16,11 +16,12 @@ import type { KeepAwakeStatus, ServerEvent } from "../src/shared/types.ts";
 // a second dashboard's click produces, so without change suppression every no-op would
 // wake every browser with a status none of them can see move.
 //
-// And the transience contract, at this layer: nothing here touches SQLite, so a new
-// Registry over the same database always opens at the seeded off - which is exactly the
-// restart-reset the feature promises.
+// And the observation contract, at this layer: the Registry holds the OBSERVED status only
+// and nothing here touches SQLite, so a new Registry over the same database always opens at
+// the seeded off. The operator's saved choice lives in the manager's store
+// (`keep-awake-preference.test.ts`); the Registry never carries it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-keep-awake-sse-"));
+const home = tempDir("mission-keep-awake-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { Registry } = await import("../src/server/registry.ts");
@@ -103,12 +104,12 @@ test("every observable field is part of the change gate", () => {
   }
 });
 
-test("nothing persists: a new Registry over the same database starts off again", () => {
+test("the observation is not persisted: a new Registry over the same database starts off again", () => {
   const first = new Registry();
   first.setKeepAwakeStatus(mkStatus({ state: "on", since: 42 }));
-  // The restart: a fresh Registry hydrates everything durable from SQLite. Keep awake
-  // must not be among it - the next daemon's snapshot reports the placeholder until the
-  // next manager (which always starts off) seeds it.
+  // The restart: a fresh Registry hydrates everything durable from SQLite. The observed
+  // status must not be among it - a held assertion belongs to the process that took it - so
+  // the next daemon's snapshot reports the placeholder until its manager seeds it.
   const second = new Registry();
   const keepAwake = second.snapshot().keepAwake;
   assert.equal(keepAwake.state, "off");

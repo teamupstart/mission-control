@@ -1,8 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
 // What is at stake: an embedded session has TWO parties who can report what a turn cost,
 // and exactly one of them may write it down.
@@ -28,7 +26,7 @@ import { join } from "node:path";
 // The invariant under test is unchanged and is the only one that matters: ONE report of a
 // turn is spent. These tests pin which party makes it, and that neither doubles the other.
 
-const home = mkdtempSync(join(tmpdir(), "mission-sdk-cost-"));
+const home = tempDir("mission-sdk-cost-");
 process.env.MISSION_HOME = home;
 
 const {
@@ -42,6 +40,7 @@ const {
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { recordSdkSessionBinding, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 import type { SdkEvent } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

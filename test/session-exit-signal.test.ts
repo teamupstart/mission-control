@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * `Registry.onSessionExit` - the one moment a reader gets between "this session is over" and
@@ -25,7 +24,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
  * static import would be hoisted above the assignment (see `db.ts`'s isolation guard).
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-exit-signal-"));
+const home = tempDir("mission-exit-signal-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

@@ -10,6 +10,9 @@ import {
 } from "@shared/pipeline.ts";
 import { pipelineSessionDisplay } from "./attention.ts";
 import { NO_HELD_SESSIONS } from "./held.ts";
+import { byAwaitingDue, NO_AWAITING_SESSIONS } from "./awaiting.ts";
+import { byStalledLongest, NO_STALLED_SESSIONS } from "./stalled.ts";
+import type { Stall } from "@shared/stall.ts";
 import { groupByTone, TONE_ORDER, type ToneGroup } from "./tone.ts";
 import type { Tone } from "./format.ts";
 
@@ -93,6 +96,63 @@ export interface FleetToneGroup extends ToneGroup {
    * Only the `idle` group ever sets it. See `orderSessions`.
    */
   heldFrom: number | null;
+  /**
+   * Where this group's sessions awaiting a background process are, or null when it has none.
+   *
+   * A span rather than a boundary because the partition sits in the middle: pinned residents
+   * first, then the awaiting sessions soonest-due first, then the free ones, then the held ones.
+   * Like `heldFrom`, only the `idle` group ever sets it, and an overdue wait is not in it.
+   *
+   * It is the section's span, so a pinned resident that is awaiting is NOT in it: the pin keeps
+   * it at the top. `awaitingCount` is the number to report.
+   */
+  awaiting: { startIndex: number; length: number } | null;
+  /**
+   * How many sessions in the group are inside a declared wait, pinned residents included: the
+   * pin decides where a card sits, not whether it is free to take work. Zero outside Idle.
+   */
+  awaitingCount: number;
+  /**
+   * Where this group's stalled sessions are (`idle-stalled`), or null when it has none.
+   *
+   * A span between the free sessions and the held ones: free first, because it is what an
+   * operator dispatches to, then stalled, because it is what they act on, then held, which a
+   * workflow run will move on its own. Longest stalled first. Like `awaiting`, only the `idle`
+   * group ever sets it, and it is kept flat: never grouped by repository or clustered by run, so
+   * the section stays the queue of oldest stalls it reads as. Each card names its own repository.
+   */
+  stalled: { startIndex: number; length: number } | null;
+}
+
+/**
+ * The Idle head's split, for the Board column head and the console rail head alike: how many are
+ * awaiting (pinned residents included), how many are free whenever anything is awaiting or held,
+ * and how many are held when anything is. Free never counts an awaiting session, wherever its
+ * card sits. `free` null means the group is one kind of thing and the head draws one number.
+ */
+export function idleHeadCounts(group: FleetToneGroup): {
+  awaiting: number;
+  free: number | null;
+  /** Null when nothing is stalled, so the head draws no stalled pill. */
+  stalled: number | null;
+  held: number | null;
+} {
+  const stalled = group.stalled?.length ?? null;
+  if (group.heldFrom === null && stalled === null) {
+    // Nothing held, but some awaiting: the total beside "N awaiting" would not say how many
+    // can take work, so the rest are counted as free, exactly as the Free rules below count them.
+    return group.awaitingCount > 0
+      ? { awaiting: group.awaitingCount, free: group.sessions.length - group.awaitingCount, stalled: null, held: null }
+      : { awaiting: 0, free: null, stalled: null, held: null };
+  }
+  // Pinned and awaiting sessions all sit before the stalled span and `heldFrom`, never in either.
+  const freeEnd = group.stalled?.startIndex ?? group.heldFrom ?? group.sessions.length;
+  return {
+    awaiting: group.awaitingCount,
+    free: freeEnd - group.awaitingCount,
+    stalled,
+    held: group.heldFrom === null ? null : group.sessions.length - group.heldFrom,
+  };
 }
 
 /** No pinned sessions: the default, which reproduces the order before pinning existed. */
@@ -216,7 +276,11 @@ export type FleetBlock =
  * partition, inside the tone group and outside everything else: a pinned resident is first
  * in its column whatever its repository, and the tone rule still holds, so a pinned resident
  * that needs you sits at the top of "needs you", not of its old column. A pinned session is
- * never also held - pinned wins - because a resident has no Workflow to hold it.
+ * never also held - pinned wins - because a resident has no Workflow to hold it. The one thing that
+ * outranks the pin is a stall: a pinned resident with an idle stall (`stalled`) leaves its pinned
+ * place for Idle's Stalled section, because that section is where an idle stall is drawn at all -
+ * the inbox no longer lists it - and a card kept at the top without its facts and fixes would be
+ * the stall shown nowhere. A stall outranks a declared wait for the same reason.
  *
  * IDLE BLOCKED SESSIONS ARE ONE GROUP, drawn where `blockedPlacement` says
  * (Settings → Display → Blocked sessions). An idle or unconfirmed session with a blocker
@@ -239,6 +303,10 @@ export function orderSessions(
   pipelineRunByKey?: ReadonlyMap<string, PipelineRun>,
   pinned: ReadonlySet<string> = NO_PINNED_SESSIONS,
   blockedPlacement: BlockedPlacement = UI_CONFIG_DEFAULTS.blockedPlacement,
+  /** Sessions inside a declared wait (`awaitingSessionIds`), drawn under Idle's Awaiting rule. */
+  awaiting: ReadonlySet<string> = NO_AWAITING_SESSIONS,
+  /** Idle stalls by session (`stalledSessions`), drawn under Idle's Stalled rule. */
+  stalled: ReadonlyMap<string, Stall> = NO_STALLED_SESSIONS,
 ): FleetOrder {
   const display = (session: Session) => {
     const commissionId = session.task?.pipelineCommissionId;
@@ -264,7 +332,7 @@ export function orderSessions(
   const rest = blockedIds.size > 0 ? baseline.filter((s) => !blockedIds.has(s.id)) : baseline;
 
   const groups = groupByTone(rest, (session) => display(session).tone)
-    .map((group) => clusterGroup(group, held, byRepo, pinned));
+    .map((group) => clusterGroup(group, held, byRepo, pinned, awaiting, stalled));
   const columns = fleetColumns(groups, blocked, blockedPlacement);
   return {
     sessions: columns.flatMap((c) => c.sessions),
@@ -337,6 +405,20 @@ export function fleetColumnOf(
   return placement === "column" ? "blocked" : placement === "needs-you" ? "attention" : "idle";
 }
 
+/**
+ * The sessions an order draws under Idle's Stalled rule: the members of the idle group's stalled
+ * span. A view hands a card its stall only when the card is here, so a stalled session the pin or
+ * a wait kept elsewhere is not tagged as stalled in a section it does not sit in.
+ */
+export function stalledInOrder(groups: readonly FleetToneGroup[]): ReadonlySet<string> {
+  const idle = groups.find((group) => group.tone === "idle");
+  const span = idle?.stalled;
+  if (!idle || !span) return NO_IDS;
+  return new Set(idle.sessions.slice(span.startIndex, span.startIndex + span.length).map((s) => s.id));
+}
+
+const NO_IDS: ReadonlySet<string> = new Set();
+
 export type FleetRailSection =
   | { kind: "tone"; group: FleetToneGroup }
   | { kind: "blocked"; sessions: Session[] };
@@ -395,7 +477,17 @@ function clusterGroup(
   held: ReadonlySet<string>,
   byRepo: boolean,
   pinned: ReadonlySet<string>,
+  awaitingIn: ReadonlySet<string>,
+  stalled: ReadonlyMap<string, Stall> = NO_STALLED_SESSIONS,
 ): FleetToneGroup {
+  // A stall outranks a declared wait in Idle, as it outranks the pin below: an idle stall is drawn
+  // in the Stalled section and nowhere else (the inbox no longer lists it), so a stalled session
+  // kept under the Awaiting rule would be the stall shown nowhere. The daemon reports no stall for
+  // a session inside its own wait, so this is the moment a stall and a wait overlap - a poll
+  // straddling a new declaration - and the card still draws its wait track.
+  const awaiting = group.tone === "idle" && stalled.size > 0 && awaitingIn.size > 0
+    ? new Set([...awaitingIn].filter((id) => !stalled.has(id)))
+    : awaitingIn;
   // The free/held split happens BEFORE clustering, and each side is then clustered on its own.
   // Clustering the group as a whole and splitting after would not work: the buckets are keyed by
   // run id across everything handed to them, so a run with one free member and one held member
@@ -407,23 +499,81 @@ function clusterGroup(
   //
   // Pinned residents are split off first, for the same reason and in the same way: each side is
   // clustered and repository-grouped on its own, so no frame straddles the pinned boundary.
-  const pinnedPart = pinned.size > 0 ? group.sessions.filter((s) => pinned.has(s.id)) : [];
-  const rest = pinnedPart.length > 0 ? group.sessions.filter((s) => !pinned.has(s.id)) : group.sessions;
-  const unpinned = group.tone === "idle" && rest.some((s) => held.has(s.id))
-    ? [
-        rest.filter((s) => !held.has(s.id)),
-        rest.filter((s) => held.has(s.id)),
-      ]
-    : [rest];
-  const partitions = pinnedPart.length > 0 ? [pinnedPart, ...unpinned] : unpinned;
-  const heldPartition = pinnedPart.length > 0 ? 2 : 1;
+  //
+  // Sessions awaiting a background process are split off after the pinned ones, the same way
+  // and for the same reason, and sorted soonest-due first: the Awaiting rule reads as a queue
+  // of things coming back. Only Idle splits them; a wait anywhere else is drawn on its card.
+  // That queue is kept as it is, never grouped by repository or clustered by run (see below).
+  // A stall outranks the pin in Idle: a pinned resident with an idle stall sorts under the Stalled
+  // rule like any other stalled session (see `orderSessions`). Removed from the pinned set here, so
+  // the rest of the partitioning treats it as the unpinned stalled session it is drawn as. Every
+  // stalled idle session reaches the Stalled span, a waiting one included (above), so dropping the
+  // pin never leaves a card in neither place.
+  const pinnedHere = group.tone === "idle" && stalled.size > 0 && pinned.size > 0
+    ? new Set([...pinned].filter((id) => !stalled.has(id)))
+    : pinned;
+  const pinnedPart = pinnedHere.size > 0 ? group.sessions.filter((s) => pinnedHere.has(s.id)) : [];
+  // Pinned residents inside a wait are their own partition, ahead of the other pinned ones, so
+  // the Free rule can start below them rather than drawing them as free (`fleetRows`). Split
+  // rather than sorted, so repository grouping inside the pinned side cannot reorder them.
+  const pinnedWaiting = group.tone === "idle" && awaiting.size > 0 ? pinnedPart.filter((s) => awaiting.has(s.id)) : [];
+  const pinnedRest = pinnedWaiting.length > 0 ? pinnedPart.filter((s) => !awaiting.has(s.id)) : pinnedPart;
+  const unpinnedAll = pinnedPart.length > 0 ? group.sessions.filter((s) => !pinnedHere.has(s.id)) : group.sessions;
+  const awaitingPart = group.tone === "idle" && awaiting.size > 0
+    ? unpinnedAll.filter((s) => awaiting.has(s.id)).sort(byAwaitingDue)
+    : [];
+  // A pinned resident inside a wait keeps its pinned place but still counts as awaiting.
+  const pinnedAwaiting = pinnedWaiting.length;
+  const afterWait = awaitingPart.length > 0 ? unpinnedAll.filter((s) => !awaiting.has(s.id)) : unpinnedAll;
+  // Stalled sessions leave the free and held sides alike for a span of their own between them.
+  // Stalled wins over held, as blocked does: a parked run's session is stalled precisely because
+  // the run did not move it, so "a workflow owns the next turn" would be the wrong thing to say.
+  // A stalled pinned or waiting session was already taken out of those partitions above.
+  const stalledPart = group.tone === "idle" && stalled.size > 0
+    ? afterWait.filter((s) => stalled.has(s.id)).sort(byStalledLongest(stalled))
+    : [];
+  const rest = stalledPart.length > 0 ? afterWait.filter((s) => !stalled.has(s.id)) : afterWait;
+  const freePart = group.tone === "idle" ? rest.filter((s) => !held.has(s.id)) : rest;
+  const heldPart = group.tone === "idle" && freePart.length < rest.length ? rest.filter((s) => held.has(s.id)) : [];
+  // The free side is kept even when empty while anything follows it, so the partition indices
+  // below stay fixed: an empty partition pushes no sessions and draws nothing.
+  const unpinned = [freePart, ...(stalledPart.length > 0 ? [stalledPart] : []), ...(heldPart.length > 0 ? [heldPart] : [])];
+  const leading = [
+    ...(pinnedWaiting.length > 0 ? [pinnedWaiting] : []),
+    ...(pinnedRest.length > 0 ? [pinnedRest] : []),
+  ];
+  const partitions = [
+    ...leading,
+    ...(awaitingPart.length > 0 ? [awaitingPart] : []),
+    ...unpinned,
+  ];
+  const awaitingPartition = awaitingPart.length > 0 ? leading.length : -1;
+  const heldPartition = heldPart.length > 0 ? partitions.length - 1 : -1;
+  const stalledPartition = stalledPart.length > 0 ? partitions.length - 1 - (heldPart.length > 0 ? 1 : 0) : -1;
 
   const sessions: Session[] = [];
   const clusters: FleetClusterSpan[] = [];
   const repos: FleetRepoSpan[] = [];
   let heldFrom: number | null = null;
+  let awaitingSpan: FleetToneGroup["awaiting"] = null;
+  let stalledSpan: FleetToneGroup["stalled"] = null;
   for (const [index, partition] of partitions.entries()) {
     if (index === heldPartition) heldFrom = sessions.length;
+    if (index === stalledPartition) {
+      // Kept flat and longest first, like the Awaiting queue above it and for the same reason.
+      stalledSpan = { startIndex: sessions.length, length: partition.length };
+      sessions.push(...partition);
+      continue;
+    }
+    if (index === awaitingPartition) {
+      awaitingSpan = { startIndex: sessions.length, length: partition.length };
+      // The Awaiting section is a deadline queue, so it keeps its soonest-due order even with
+      // repository grouping on: a repository span, or a run cluster, would pull one
+      // repository's later deadline ahead of another's sooner one. Each card names its own
+      // repository and run, so nothing is lost by not framing them here.
+      sessions.push(...partition);
+      continue;
+    }
     // Repositories partition INSIDE the free/held split and OUTSIDE the run clustering, which
     // is the only order the three can compose in. Outside the held split, a repository span
     // would straddle the boundary and swallow the section rule, exactly as a run cluster
@@ -446,7 +596,11 @@ function clusterGroup(
       sessions.push(...run.sessions);
     }
   }
-  return { ...group, sessions, clusters, repos, heldFrom };
+  return {
+    ...group, sessions, clusters, repos, heldFrom, awaiting: awaitingSpan,
+    awaitingCount: awaitingPart.length + pinnedAwaiting,
+    stalled: stalledSpan,
+  };
 }
 
 /**
@@ -616,7 +770,7 @@ export function fleetBlocks(group: FleetToneGroup): FleetBlock[] {
  * where the next heading starts is a view that can draw the box around the wrong cards.
  */
 export type FleetRow =
-  | { kind: "section"; section: "free" | "held"; count: number }
+  | { kind: "section"; section: "free" | "held" | "awaiting" | "stalled"; count: number }
   | {
       kind: "repo";
       repoRoot: string;
@@ -655,7 +809,24 @@ export type FleetRow =
 export function fleetRows(group: FleetToneGroup): FleetRow[] {
   const blocks = fleetBlocks(group);
   const heldFrom = group.heldFrom;
-  if (heldFrom === null && group.repos.length === 0) return blocks;
+  const awaiting = group.awaiting;
+  const stalled = group.stalled;
+  // One kind of thing, drawn without rules: nothing held, nothing waiting (a pinned resident in a
+  // wait counts, though it has no span of its own) and no repository frames.
+  if (
+    heldFrom === null && stalled === null && awaiting === null && group.awaitingCount === 0
+    && group.repos.length === 0
+  ) return blocks;
+  // The Awaiting rule sits on its span, and the free rule moves to where the span ends: the
+  // cards below an Awaiting section are the ones that are not waiting on anything, so they are
+  // labelled whether or not anything is held. With no awaiting span the free rule sits at the
+  // top, after any pinned residents in a wait, whenever something is held or such a resident is
+  // waiting, so the head's "N free" always has a rule over exactly those cards.
+  const awaitingEnd = awaiting ? awaiting.startIndex + awaiting.length : null;
+  // Free runs up to the Stalled span when there is one, else up to the held split.
+  const freeEnd = stalled?.startIndex ?? heldFrom ?? group.sessions.length;
+  const split = heldFrom !== null || stalled !== null;
+  const pinnedAwaiting = group.awaitingCount - (awaiting?.length ?? 0);
 
   const repoAt = new Map(group.repos.map((span) => [span.startIndex, span]));
   const rows: FleetRow[] = [];
@@ -667,13 +838,32 @@ export function fleetRows(group: FleetToneGroup): FleetRow[] {
   let at = 0;
   const step = (block: FleetBlock): number => (block.kind === "session" ? 1 : block.sessions.length);
   while (at < blocks.length) {
-    if (heldFrom !== null) {
-      if (index === 0 && heldFrom > 0) {
-        rows.push({ kind: "section", section: "free", count: heldFrom });
-      }
-      if (index === heldFrom) {
-        rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
-      }
+    // Pinned residents that are free sit above the Awaiting rule, after any pinned residents in
+    // a wait: they get a Free rule of their own, so every free card sits under a Free rule and
+    // the rules' counts add up to the head's free count.
+    if (awaiting && index === pinnedAwaiting && awaiting.startIndex > pinnedAwaiting) {
+      rows.push({ kind: "section", section: "free", count: awaiting.startIndex - pinnedAwaiting });
+    }
+    if (awaiting && index === awaiting.startIndex) {
+      rows.push({ kind: "section", section: "awaiting", count: awaiting.length });
+    }
+    if (awaitingEnd !== null && index === awaitingEnd && freeEnd > awaitingEnd) {
+      rows.push({ kind: "section", section: "free", count: freeEnd - awaitingEnd });
+    }
+    // Pinned residents inside a wait lead the group as their own partition (`clusterGroup`) and
+    // are not free, so with no Awaiting span the Free rule starts after them and counts only what
+    // follows, up to the held split.
+    if (
+      awaitingEnd === null && index === pinnedAwaiting && (split || pinnedAwaiting > 0)
+      && freeEnd > pinnedAwaiting
+    ) {
+      rows.push({ kind: "section", section: "free", count: freeEnd - pinnedAwaiting });
+    }
+    if (stalled && index === stalled.startIndex) {
+      rows.push({ kind: "section", section: "stalled", count: stalled.length });
+    }
+    if (heldFrom !== null && index === heldFrom) {
+      rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
     }
     const span = repoAt.get(index);
     if (span) {

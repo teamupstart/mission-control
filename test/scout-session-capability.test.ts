@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { AGENT_TYPES, TASK_KINDS, type AgentType } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-scout-"));
+const home = tempDir("mission-session-scout-");
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { RegistryArchiveTaskGateway } = await import("../src/server/archives/task-gateway.ts");

@@ -47,6 +47,8 @@ export interface RegisteredEvidenceInput {
   registrationEligible: boolean;
   items: RegisteredEvidenceItem[];
   totalCount: number;
+  excludedCount?: number;
+  continuationStatus?: "revalidated" | "stale" | "unavailable";
   truncated: boolean;
 }
 
@@ -145,8 +147,8 @@ REGISTERED VERIFICATION EVIDENCE IS FIRST-CLASS EVIDENCE. When registered comman
 the verification the change requires, absence of command output in the transcript is NOT a gap: the
 transcript format cannot show tool-result bodies. Registered evidence from an earlier work generation
 remains valid when it belongs to this same intent episode, including a re-submission where the operator
-explicitly told the agent not to rerun the full suite. Evidence from another intent episode is excluded
-before this prompt is built. When the ONLY thing standing between the verdict and complete is missing
+explicitly told the agent not to rerun the full suite. A packet from the immediately preceding episode is usable only when Mission Control reports
+that it revalidated the unchanged contract, checkout and evidence. Other registrations are excluded. When the ONLY thing standing between the verdict and complete is missing
 or unconfirmable verification proof, answer complete=true with a blocking gap of kind "unverified",
 not complete=false.
 
@@ -253,7 +255,18 @@ export function buildVerifyPrompt(input: VerifyInput): string {
       workflowEvidenceRequirement(evidence.registrationEligible),
       "",
     );
-    if (evidence.totalCount === 0 && evidence.registrationEligible) {
+    if (evidence.continuationStatus === "revalidated") {
+      lines.push("Mission Control revalidated the preceding episode's complete packet after a continuation-only instruction.");
+    }
+    if (evidence.excludedCount) {
+      lines.push(`${evidence.excludedCount} registered items belong to another or unknown intent episode and are excluded.`);
+      if (evidence.continuationStatus === "stale") lines.push("The checkout or evidence files no longer match the registration.");
+      if (evidence.continuationStatus === "unavailable") lines.push("Mission Control could not verify the checkout or read the registered files.");
+      if (evidence.registrationEligible && !evidence.totalCount) {
+        lines.push("Current-contract proof is required. Recheck the work and register verified evidence through submit_workflow_evidence.");
+      }
+    }
+    if (evidence.totalCount === 0 && evidence.registrationEligible && !evidence.excludedCount) {
       lines.push(
         "No evidence is registered for this work, so the contract clause 'evidence registration",
         "is done' is not satisfied.",

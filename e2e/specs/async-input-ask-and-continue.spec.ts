@@ -32,7 +32,6 @@ async function capture(target: Locator | Page, name: string, page: Page): Promis
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/async-input/${name}.png`);
 }
 
@@ -124,8 +123,10 @@ test("a filed question lets the agent keep working, turns it amber only once it 
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = page.locator(".console-detail");
   const badge = detail.locator(".badge", { has: page.locator(".badge-dot") }).first();
-  // Still working past its question: not amber, but the question is already in the inbox.
-  await expect(badge).toHaveText(/working/);
+  // Still working past its question: not amber, but the question is already in the inbox. The
+  // badge names the open question in the working tone (Phase 3's working-tone branch).
+  await expect(badge).toHaveText(/1 question open/);
+  await expect(badge).toHaveClass(/badge-working/);
   await expect(badge).not.toHaveClass(/badge-attention/);
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" }).locator(".pulse-n")).toHaveText("1");
   await capture(page, "working-with-question", page);
@@ -147,7 +148,8 @@ test("a filed question lets the agent keep working, turns it amber only once it 
   await expect(inbox).toBeHidden();
 
   // The answer reaches the agent as a message, which starts its next turn.
-  await expect(detail.getByText(`Mock reply to: Mission Control answer to question ${filed.id}`, { exact: false }).first())
+  // The message opens with the review marker line, then exactly the answer text.
+  await expect(detail.getByText(`Mock reply to: [mission-control:answer review=${filed.id}]`, { exact: false }).first())
     .toBeVisible({ timeout: 30_000 });
   await expect(badge).not.toHaveClass(/badge-attention/);
   // The conversation shows the operator's answer once, as the gold answer entry. The message

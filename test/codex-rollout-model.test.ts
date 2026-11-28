@@ -1,13 +1,13 @@
 // A bounded tail must never turn an older model in the rollout head into the current one.
 import assert from "node:assert/strict";
-import fs, { appendFileSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { appendFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readRolloutMeta, retainRolloutMeta } from "../src/server/harness/codex/rollout.ts";
 import { codexTranscript } from "../src/server/harness/codex/transcript.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const turn = (model: string, effort: string, timestamp: string) =>
   JSON.stringify({ type: "turn_context", timestamp, payload: { model, effort } }) + "\n";
@@ -23,7 +23,7 @@ for (const [older, newer] of [
 ]) {
   for (const warm of [false, true]) {
     test(`${warm ? "warm" : "cold"} rollout reads keep ${newer} when its turn leaves the tail`, (t) => {
-      const dir = mkdtempSync(join(tmpdir(), "codex-model-"));
+      const dir = tempDir("codex-model-");
       t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
       const path = join(dir, "rollout.jsonl");
       writeFileSync(path, turn(older!, "medium", "2026-10-28T10:00:00Z") + output);
@@ -41,7 +41,7 @@ for (const [older, newer] of [
 }
 
 test("bound rollout paths keep verified model evidence through the poller's retention pass", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-bound-model-"));
+  const dir = tempDir("codex-bound-model-");
   t.after(() => { codexTranscript.retain!(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   const session = mkSession({ id: "sdk:bound-model", agent: "codex", runtime: "sdk",
@@ -63,7 +63,7 @@ test("bound rollout paths keep verified model evidence through the poller's rete
 });
 
 test("rollout replacement, truncation, and disappearance cannot reuse another file's model", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-replaced-model-"));
+  const dir = tempDir("codex-replaced-model-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   writeFileSync(path, turn("gpt-6.1-sol", "high", "old") + output);
@@ -78,7 +78,7 @@ test("rollout replacement, truncation, and disappearance cannot reuse another fi
 });
 
 test("a split turn record is retried, and an explicit move to an older model is respected", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-split-model-"));
+  const dir = tempDir("codex-split-model-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   const next = turn("gpt-5.6-sol", "low", "new");
@@ -89,7 +89,7 @@ test("a split turn record is retried, and an explicit move to an older model is 
 });
 
 test("an in-place rewrite with unchanged size invalidates the cached model", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-rewritten-model-"));
+  const dir = tempDir("codex-rewritten-model-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   writeFileSync(path, turn("gpt-5.6-sol", "high", "old") + output + tokens);
@@ -107,7 +107,7 @@ test("an in-place rewrite with unchanged size invalidates the cached model", (t)
 });
 
 test("a growing in-place rewrite invalidates a cached turn even when the head and old tail match", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-growing-rewrite-"));
+  const dir = tempDir("codex-growing-rewrite-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   // Preserve both end windows; only the previously observed turn in the middle changes.
@@ -141,7 +141,7 @@ test("a growing in-place rewrite invalidates a cached turn even when the head an
 });
 
 test("the latest turn is confirmed only while its record boundary fits within the 16 MiB scan ceiling", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-scan-boundary-"));
+  const dir = tempDir("codex-scan-boundary-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const scanBytes = 16 * 1024 * 1024;
   const prefix = turn("gpt-5.6-sol", "medium", "old") + output;
@@ -166,7 +166,7 @@ test("the latest turn is confirmed only while its record boundary fits within th
 });
 
 test("an unobserved gap beyond the scan budget stays unknown without rescanning history on each append", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-bounded-model-"));
+  const dir = tempDir("codex-bounded-model-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   writeFileSync(path, turn("gpt-5.6-sol", "medium", "old"));
@@ -199,7 +199,7 @@ test("an unobserved gap beyond the scan budget stays unknown without rescanning 
 });
 
 test("an unfinished record beyond the scan budget retains progress across chunked appends", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-unfinished-model-"));
+  const dir = tempDir("codex-unfinished-model-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   writeFileSync(path, turn("gpt-5.6-sol", "medium", "old"));
@@ -228,7 +228,7 @@ test("an unfinished record beyond the scan budget retains progress across chunke
 });
 
 test("a newline outside the tail preserves a split turn's retry boundary", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-large-split-model-"));
+  const dir = tempDir("codex-large-split-model-");
   t.after(() => { retainRolloutMeta(new Set()); rmSync(dir, { recursive: true, force: true }); });
   const path = join(dir, "rollout.jsonl");
   // The initial scan cannot establish a model, but it can locate the start of

@@ -8,7 +8,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
   ClaudeSdkMessage,
@@ -31,6 +30,7 @@ import {
   PNG_IMAGE,
   writeImageDescriptor,
 } from "./helpers/llm-image-fixtures.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this is the new boundary around app-owned Claude calls. A regression
 // here is silent in the dangerous cases. Reusing a session lets one review influence the
@@ -39,7 +39,7 @@ import {
 // caller has given up. Every query below is scripted; the boundary case uses a token-free
 // fake binary behind the real vendor serializer, and no model is used.
 
-const root = mkdtempSync(join(tmpdir(), "claude-sdk-oneshot-"));
+const root = tempDir("claude-sdk-oneshot-");
 after(() => rmSync(root, { recursive: true, force: true }));
 
 class FakeQuery implements ClaudeSdkOneShotQuery {
@@ -141,6 +141,9 @@ test("one fresh query has tools off, deterministic settings, and no context opti
   assert.equal(captured.options.cwd, realpathSync(HEADLESS_CWD));
   assert.equal(captured.options.pathToClaudeCodeExecutable, "/fake/bin/claude");
   assert.equal(captured.options.env.MISSION_HEADLESS, "1");
+  // claude.ai connectors are not settings, so `settingSources: []` leaves them on. One
+  // triage run collected 451 connector tool schemas and overflowed Haiku's context.
+  assert.equal(captured.options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
   assert.ok(captured.options.abortController instanceof AbortController);
   for (const absent of ["resume", "sessionId", "forkSession", "continue", "persistSession"]) {
     assert.equal(
@@ -159,7 +162,7 @@ function withoutRuntimeFields(options: ClaudeSdkOneShotQueryOptions): Record<str
   const { abortController, stderr, env, ...rest } = options;
   assert.ok(abortController instanceof AbortController);
   assert.equal(typeof stderr, "function");
-  assert.deepEqual(env, { PATH: "/usr/bin", MISSION_HEADLESS: "1" });
+  assert.deepEqual(env, { PATH: "/usr/bin", MISSION_HEADLESS: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" });
   return rest;
 }
 
@@ -435,6 +438,7 @@ test("a validated grant reaches the SDK with the Inspector's exact tools, cwd, a
   );
   assert.deepEqual(options.settingSources, []);
   assert.deepEqual(options.outputFormat, { type: "json_schema", schema: SCHEMA });
+  assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "false", "a grant holds built-in tools only");
   assert.equal(
     Object.hasOwn(options, "maxTurns"),
     false,

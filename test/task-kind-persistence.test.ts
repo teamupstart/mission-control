@@ -16,19 +16,18 @@
 
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
 import { mkTask } from "./helpers/session-fixture.ts";
 import { TASK_KINDS } from "../src/shared/types.ts";
 import { TASK_KIND_INFO } from "../src/shared/task.ts";
 import { buildBacklogPrompt } from "../src/server/foreman/backlog-prompt.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Above the dynamic imports, in the file body: a home arriving through the environment was
 // there before the preload ran, which is what an operator's configured state dir looks
 // like, and `openDb` refuses it.
-const home = mkdtempSync(join(tmpdir(), "mission-task-kind-"));
+const home = tempDir("mission-task-kind-");
 process.env.HARNESS_HOME = home;
 const { getTask, openDb, upsertTask } = await import("../src/server/db.ts");
 

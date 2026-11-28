@@ -138,7 +138,7 @@ test("changing the indexed directories forgets the list, and drops a read sent b
   assert.deepEqual(await api.fetchRepos(), ["/old/alpha"]);
   const inFlight = api.fetchRepos();
 
-  await api.api.setRepoIndex({ directories: [{ path: "/new" }] });
+  await api.api.setRepoIndex({ directories: [{ path: "/new" }] }, "fixture");
   assert.equal(api.cachedRepos(), null, "a picker opened now cannot offer a removed directory's repo");
 
   releaseOld();
@@ -173,8 +173,8 @@ test("a refused or failed directory save leaves the list, reads in flight and an
   });
   try {
     const inFlight = api.fetchRepos({ rescan: true });
-    assert.equal((await api.api.setRepoIndex({ directories: [{ path: "relative" }] })).ok, false);
-    assert.equal((await api.api.setRepoIndex({ directories: [{ path: "/new" }] })).ok, false);
+    assert.equal((await api.api.setRepoIndex({ directories: [{ path: "relative" }] }, "fixture")).ok, false);
+    assert.equal((await api.api.setRepoIndex({ directories: [{ path: "/new" }] }, "fixture")).ok, false);
     assert.deepEqual(api.cachedRepos(), ["/w/alpha"], "nothing changed, so the list stays");
     assert.equal(drops, 0, "an open picker does not flash back to indexing");
     releaseRead();
@@ -288,7 +288,7 @@ test("the window that saves takes its new index before its own announcement arri
     list(["/new/beta"], 200, "index-b"),
   ]);
   await api.fetchRepos();
-  await api.api.setRepoIndex({ directories: [{ path: "/new" }] });
+  await api.api.setRepoIndex({ directories: [{ path: "/new" }] }, "fixture");
   // `repo_index_changed` for index B has not landed yet; the answer is still taken.
   assert.deepEqual(await api.fetchRepos({ rescan: true }), ["/new/beta"]);
   // When it lands it matches, so the list stays.

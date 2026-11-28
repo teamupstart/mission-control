@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ghBin } from "../src/server/config.ts";
 import { TASK_SOURCES, pushToSource } from "../src/server/task-sources/index.ts";
 import { TaskSourceInstanceSchema } from "../src/shared/task-source.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: three subsystems shell out to `gh` - the PR poller, the Inspector, and
@@ -82,7 +82,7 @@ test("no server module names the gh binary itself - every spawn goes through ghB
 // into the implementation, into a subprocess. If any link resolved the binary its own way
 // this would spawn the real `gh` and fail on the argv the fake never recorded.
 test("a gh on the seam is the binary the GitHub source actually runs", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "gh-seam-"));
+  const dir = tempDir("gh-seam-");
   const argvFile = join(dir, "argv.txt");
   const fake = join(dir, "fake-gh");
   writeFileSync(

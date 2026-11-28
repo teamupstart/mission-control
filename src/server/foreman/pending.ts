@@ -1,4 +1,4 @@
-import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
+import type { ReviewItem, Session } from "@shared/types.ts";
 import { activePaneDialog, dialogMarker } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 

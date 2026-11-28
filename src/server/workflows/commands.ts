@@ -206,6 +206,7 @@ export class WorkflowCommandManager {
       input.expectedRevision,
       {
         defaultCommand: input.defaultCommand,
+        inspectorSeverity: input.inspectorSeverity,
         overrides: input.overrides,
         maxRuns: input.maxRuns,
         timeoutMs: input.timeoutMs,

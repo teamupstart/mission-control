@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { Session } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The DAEMON's half of the Foreman invite rule
 // (docs/plans/foreman-invite/phase-2-foreman-enforcement.md, contract C6).
@@ -24,7 +23,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // asserted beside every refusal rather than in a test of its own, so a regression that
 // widens the gate cannot pass by being read as a narrower one.
 
-const home = mkdtempSync(join(tmpdir(), "mission-foreman-enforce-"));
+const home = tempDir("mission-foreman-enforce-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
@@ -272,7 +271,7 @@ test("a review whose session is gone still resolves - there is no pane left to p
   // The deliberate narrowing: refused only on a POSITIVE answer (the session is here and
   // uninvited). An unresolvable owner makes this bookkeeping that settles a dangling row,
   // and refusing it would strand the review rather than protect anybody.
-  const { registry, reviews, app } = harness();
+  const { reviews, app } = harness();
   const review = reviews.create("proc:long-gone:1:0", "input", "Still there?", "?");
   const r = await post(app, `/api/reviews/${review.id}/resolve`, {
     action: "answer",

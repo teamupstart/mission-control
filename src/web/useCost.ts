@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CostConfigPatch, CostTelemetryStatus } from "@shared/protocol.ts";
 import { api, fetchCostConfig } from "./lib/api.ts";
@@ -46,6 +47,7 @@ export function useCost(): CostState {
     setStatusState(s);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("cost");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -58,7 +60,7 @@ export function useCost(): CostState {
       alive = false;
       clearInterval(id);
     };
-  }, [setStatus]);
+  }, [setStatus, settingsRevision]);
 
   /**
    * Apply a change optimistically and TAKE IT BACK if the daemon refuses.

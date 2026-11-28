@@ -24,6 +24,7 @@ import {
   type ResidentMcpCredentialFile,
   type ResidentMcpLauncherDefinition,
 } from "../../shared/resident-mcp.ts";
+import { fetchOnOrigin } from "../origin-fetch.ts";
 
 function fail(message: string): never {
   process.stderr.write(`resident-mcp-launcher: ${message}\n`);
@@ -99,50 +100,8 @@ function runStdio(runtime: Extract<ResidentMcpLauncherDefinition, { transport: "
   });
 }
 
-/** Redirects a bridge request may follow before it gives up. */
-const MAX_REDIRECTS = 5;
-
-/**
- * Every request the bridge makes, the event stream and an SSE server's message endpoint
- * included, carries the server's headers and query values - and only to the configured origin. Redirects are handled here rather than by `fetch`, which would
- * follow one to another origin with these headers attached: a redirect within the origin is
- * followed with them, and one that leaves it is refused, so no other host ever receives them.
- */
-export async function fetchOnOrigin(
-  origin: string,
-  secretHeaders: Readonly<Record<string, string>>,
-  input: string | URL | Request,
-  init: RequestInit = {},
-  secretQuery: URLSearchParams = new URLSearchParams(),
-): Promise<Response> {
-  let target = new URL(input instanceof Request ? input.url : String(input));
-  let request: RequestInit = input instanceof Request
-    ? { method: input.method, headers: input.headers, body: input.body, signal: input.signal, ...init }
-    : { ...init };
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    if (target.origin !== origin) {
-      throw new Error("the MCP server redirected to another origin, which never receives its headers");
-    }
-    const headers = new Headers(request.headers);
-    for (const [name, value] of Object.entries(secretHeaders)) headers.set(name, value);
-    // The configured query rides every request too, as exactly one value per name: an SSE
-    // server names its own message endpoint, possibly with its own value for the parameter, and
-    // a redirect may drop or change it, but the credential is the one configured for the server.
-    for (const [name, value] of secretQuery) target.searchParams.set(name, value);
-    const response = await fetch(target, { ...request, headers, redirect: "manual" });
-    const location = response.headers.get("location");
-    if (response.status < 300 || response.status >= 400 || !location) return response;
-    void response.body?.cancel().catch(() => {});
-    target = new URL(location, target);
-    // As a browser would: 303, and 301 or 302 after a POST, continue as a GET without a body.
-    const method = (request.method ?? "GET").toUpperCase();
-    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
-      const { body: _body, ...rest } = request;
-      request = { ...rest, method: "GET" };
-    }
-  }
-  throw new Error("the MCP server redirected too many times");
-}
+// Every bridged request carries the server's headers and query values, only to its origin.
+export { fetchOnOrigin };
 
 /**
  * Why a forwarded request failed, for the harness's MCP log. Node's message for every transport

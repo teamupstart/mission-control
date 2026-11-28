@@ -1,12 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-reset-"));
+const home = tempDir("mission-workflow-reset-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -161,6 +160,13 @@ test("successful reset uses resetSession to clear session workflow rows and pres
     completionKind: "drain",
   }, 3);
   const session = registry.getSession("session")!;
+  openDb().exec(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
+    VALUES('call','attempt','digest','cancellation_pending',1)`);
+  const refused = await resetSession(registry, session, false, async () => assert.fail("checkout reset started before reviewer cleanup"));
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /reviewer cleanup/);
+  assert.ok(workflows.store.getRun("run"));
+  workflows.store.confirmRepositoryCancellation("call", 0);
   await resetSession(registry, session, false, async () => ({
     ok: true,
     error: null,

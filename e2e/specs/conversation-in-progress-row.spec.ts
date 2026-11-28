@@ -44,9 +44,7 @@ async function shot(page: Page, locator: Locator, name: string, observed: string
   // in-progress row has one.
   await page.mouse.move(0, 0);
   await locator.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`OBSERVED ${observed}`);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/conversation-in-progress-row/${name}.png`);
 }
 

@@ -1,9 +1,8 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
@@ -14,8 +13,9 @@ import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
 import { ConversationFindBar, ConversationFindRail } from "../src/web/components/ConversationFind.tsx";
 import type { FindHit } from "../src/web/lib/find.ts";
 import { resetHistories, seedTail } from "../src/web/lib/transcript-history.ts";
-import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { assertElectronGuiLaunchAllowed, electronGuiCommand } from "./helpers/electron-gui.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Whether you can scroll a conversation.
@@ -267,8 +267,8 @@ before(() => {
   const electron = require("electron") as string;
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const dir = mkdtempSync(join(tmpdir(), "mission-transcript-scroll-"));
-  const userData = mkdtempSync(join(tmpdir(), "mission-transcript-scroll-profile-"));
+  const dir = tempDir("mission-transcript-scroll-");
+  const userData = tempDir("mission-transcript-scroll-profile-");
   try {
     const htmlPath = join(dir, "transcript.html");
     const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
@@ -276,12 +276,12 @@ before(() => {
     const plain = panelMarkup();
     const withTray = panelMarkup(FULL_TRAY);
     writeFileSync(htmlPath, page(plain, withTray, styles));
-    const output = execFileSync(electron, [
+    const output = execFileSync(...electronGuiCommand(electron, [
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/transcript-scroll-browser.cjs", import.meta.url)),
       htmlPath,
-    ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+    ]), { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
     measured = JSON.parse(output.trim()) as Record<string, Measured>;
   } finally {
     rmSync(dir, { force: true, recursive: true });

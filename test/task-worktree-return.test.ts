@@ -1,485 +1,793 @@
-import { after, test } from "node:test";
+import { SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { mkTask, mkSession } from "./helpers/session-fixture.ts";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { mkTask } from "./helpers/session-fixture.ts";
 import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
-import type { Session, Task } from "../src/shared/types.ts";
+import type { Task } from "../src/shared/types.ts";
 import type { TaskManagerStartupDeps } from "../src/server/tasks.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-return-"));
+const home = tempDir("mission-task-return-");
 process.env.MISSION_HOME = home;
+const { buildApp } = await import("../src/server/routes.ts");
+const { disposableWorktreeCensus } = await import("../src/server/worktrees/disposable-census.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
-const { WorktreeTeardownError, teardownWorktree } = await import("../src/server/dispatcher.ts");
+const { worktreeSlotPath, teardownWorktree } = await import("../src/server/dispatcher.ts");
+const { run } = await import("../src/server/util/exec.ts");
 const { worktreeReturnBlocker } = await import("../src/server/git/worktree-return-safety.ts");
-const { getTaskSessionClosure, openTaskSessionClosure, openDb, closeDb, taskOwesWorktreeReturn,
-  getTask: durableTask, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+const { reserveWorktreeUse } = await import("../src/server/worktrees/use-reservation.ts");
+const { reserveSessionTransfer, updateSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { getWorktreesConfig, setWorktreesConfig } = await import("../src/server/worktrees/config.ts");
+const { CheckLeaseStore } = await import("../src/server/workflows/check-lease.ts");
+const { setSdkSessionStatus, upsertSdkSession } = await import("../src/server/sdk/store.ts");
+const {
+  getTaskSessionClosure, getTaskWorktreeRetention, openDb, closeDb,
+  taskOwesWorktreeReturn, recordTaskWorktreeObservation,
+} = await import("../src/server/db.ts");
+const {
+  TaskWorktreeRetentionObserver, defaultRetentionObserverDeps, defaultRetentionCleanupDeps,
+  createDaemonRetentionObserver, taskResourceGeneration, SEVEN_DAY_RETENTION_MS: WEEK, backgroundWorktreeRetentionStatus,
+} = await import("../src/server/task-worktree-retention.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
-function world(over: Partial<Task> = {}, observed = true, deps: TaskManagerStartupDeps = {}) {
-  const registry = new Registry();
-  for (const stale of registry.listTasks()) registry.removeTask(stale.id);
-  const sessions = (registry as unknown as { sessions: Map<string, Session> }).sessions;
-  const state = {
-    occupancy: { status: "known", occupants: [] } as WorktreeOccupancy,
-    unsafe: null as string | null,
-    released: [] as string[],
-    stopped: [] as string[],
-    probed: [] as string[],
-    duringProbe: null as (() => void) | null,
-    partial: false,
-    runtimeLive: false,
-    archiveRefused: false,
-    archived: false,
-  };
-  const manager = new TaskManager(registry, {
-    resetWouldDestroyWork: async () => null,
-    kill: async (session) => { state.stopped.push(session.id); return { ok: true }; },
-  }, { handleFor: () => state.runtimeLive ? {} : null, taskLiveness: () => null } as never, undefined, {
-    ensureReady: async () => ({ ok: true }),
-    settleBeforeCleanup: async () => {
-      state.archived = true;
-      return state.archiveRefused ? { ok: false, error: "archive unavailable" } : { ok: true };
-    },
-  }, {
-    occupancy: async (paths) => new Map(paths.map((path) => [path, state.occupancy])),
-    returnBlocker: async (path) => {
-      state.probed.push(path);
-      state.duringProbe?.();
-      return state.unsafe;
-    },
-    teardown: async (task, _legacy, _priority, _worktrees, guard) => {
-      assert.ok(state.archived, "archives precede teardown");
-      const paths = [task.worktreePath, ...(task.extraRepos ?? []).map((ref) => ref.worktreePath)].filter((path): path is string => Boolean(path));
-      for (const path of paths) {
-        const blocked = await guard?.(path);
-        if (blocked) throw new Error(blocked);
-        state.released.push(path);
-        if (state.partial) throw new WorktreeTeardownError("second provider refused", [path]);
-      }
-    },
-    ...deps,
-  });
-  if (observed) registry.applyDiscovery([]);
-  const task = mkTask({ id: "return-task", status: "running", sessionId: "return-session",
-    worktreePath: "/pool/one", provider: "mission", worktreeLeaseId: "lease-one", ...over });
-  registry.upsertTask(task);
-  const session = mkSession({ id: "return-session", cwd: "/pool/one", pid: undefined, terminals: [] });
-  sessions.set(session.id, session);
-  const remove = async () => {
-    sessions.delete(session.id);
-    registry.emit("event", { type: "session_remove", id: session.id });
-    await manager.settleWorktreeReturns();
-  };
-  return { registry, manager, state, task, session, sessions, remove };
+const DAY = WEEK / 7;
+let sequence = 0;
+
+function checkout(t: TestContext, id: string, position = 0) {
+  const { root, clone, origin } = mkOriginAndClone("mission-background-return-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = worktreeSlotPath(id, position);
+  mkdirSync(dirname(path), { recursive: true });
+  const branch = `harness/${id}`;
+  return { origin, repoRoot: clone, worktreePath: mkLinkedWorktree(clone, branch, path),
+    branch, provider: "git" as const, worktreeLeaseId: null, baseSha: null,
+    prUrl: null, prState: null, mergedAt: null };
 }
 
-const extra = { repoRoot: "/repo/two", worktreePath: "/pool/two", branch: "task", provider: "mission" as const,
-  worktreeLeaseId: "lease-two", baseSha: null, prUrl: null, prState: null, mergedAt: null };
+function world(t: TestContext, opts: {
+  status?: Task["status"];
+  multiRepo?: boolean;
+  deps?: TaskManagerStartupDeps;
+  archiveError?: () => boolean;
+} = {}) {
+  const id = `return-task-${++sequence}`;
+  const primary = checkout(t, id);
+  const secondary = opts.multiRepo ? checkout(t, id, 1) : null;
+  const state = {
+    now: 1_900_000_000_000,
+    occupancy: { status: "known", occupants: [] } as WorktreeOccupancy,
+    stops: 0,
+    stopRequests: 0,
+  };
+  const setup = (observe = true) => {
+    const registry = new Registry();
+    const supervisor = {
+      requestStop: () => { state.stopRequests++; return true; },
+      stop: async () => { state.stops++; },
+      handleFor: (id: string) => {
+        const session = registry.getSession(id);
+        return session && session.state !== "exited" ? {} : null;
+      },
+      taskLiveness: () => null,
+    };
+    const manager = new TaskManager(registry, undefined, supervisor as never, undefined, {
+      ensureReady: async () => ({ ok: true }),
+      settleBeforeCleanup: async () => opts.archiveError?.() ? { ok: false, error: "archive unavailable" } : { ok: true },
+    }, {
+      occupancy: async (paths) => new Map(paths.map((path) => [path, state.occupancy])),
+      ...opts.deps,
+    });
+    const observer = new TaskWorktreeRetentionObserver({
+      ...defaultRetentionObserverDeps,
+      listTasks: () => registry.listTasks().filter((row) => row.id === id),
+      now: () => state.now,
+      retentionMs: () => WEEK,
+      departure: {
+        useBlocker: (task) => manager.backgroundWorktreeUseBlocker(task),
+        occupancyBlocker: (task) => manager.backgroundWorktreeOccupancyBlocker(task),
+      },
+      cleanup: {
+        ...defaultRetentionCleanupDeps,
+        reclaim: (request) => manager.enqueueRetentionCleanup(request),
+        refreshSummary: (taskId) => registry.refreshTaskAutomaticCleanup(taskId),
+      },
+    });
+    const addSession = (id: string, cwd = primary.worktreePath) =>
+      registry.registerSdkSession({ id: `sdk:${id}`, agent: "claude", name: id, cwd, initialState: "idle" });
+    const exit = (id: string) => {
+      registry.applyDriverEvent(id, { kind: "exited", reason: "test stop", resumable: false });
+    };
+    if (observe) registry.applyDiscovery([]);
+    return { registry, manager, observer, addSession, exit, supervisor };
+  };
 
-test("completion persists closure, waits for removal, and returns every tree despite local work", async () => {
-  const w = world({ extraRepos: [extra] });
-  w.state.unsafe = "local changes";
+  const first = setup();
+  const task = mkTask({ ...primary, id, status: opts.status ?? "done",
+    sessionId: null, homeName: null, extraRepos: secondary ? [secondary] : [] });
+  first.registry.upsertTask(task);
+  return {
+    ...first, state, task, primary, secondary, setup,
+    row: () => getTaskWorktreeRetention(id),
+    path: primary.worktreePath,
+  };
+}
+
+test("completion closes the agent but waits for linger, the other attached user and seven days", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const w = world(t, { status: "running", multiRepo: true });
+  const owner = w.addSession("completion-owner");
+  const other = w.addSession("attached-idle", join(w.secondary!.worktreePath, "packages", "test"));
+  w.registry.upsertTask({ ...w.task, sessionId: owner.id });
   await w.manager.complete(w.task.id, "shipped");
   assert.equal(w.registry.getTask(w.task.id)?.status, "done");
   assert.ok(getTaskSessionClosure(w.task.id));
-  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
+  assert.ok(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!));
   await w.manager.sweepMissionSessionClosures();
-  assert.deepEqual(w.state.stopped, [w.session.id]);
-  assert.deepEqual(w.state.released, []);
-  await w.remove();
+  assert.equal(w.state.stops, 1);
+  w.exit(owner.id);
+  assert.equal(w.registry.getSession(owner.id)?.state, "exited");
+  await w.observer.runPass();
+  assert.equal(w.row()?.unownedSince, null);
+  t.mock.timers.tick(8_000);
   await w.manager.sweepMissionSessionClosures();
+  await w.observer.runPass();
+  assert.equal(w.row()?.unownedSince, null, "idle subdirectory user on an attachment protects the task");
+  w.exit(other.id);
+  t.mock.timers.tick(8_000);
   await w.manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, ["/pool/one", "/pool/two"]);
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
-  assert.equal(w.registry.getTask(w.task.id)?.extraRepos[0]?.worktreePath, null);
+  await w.observer.runPass();
+  assert.equal(getTaskSessionClosure(w.task.id), null);
+  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false, "retention adopted the return intent");
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+  w.state.now += WEEK - 1;
+  await w.observer.runPass();
+  assert.ok(existsSync(w.path));
+  assert.ok(existsSync(w.secondary!.worktreePath));
+  w.state.now++;
+  await w.observer.runPass();
+  assert.equal(existsSync(w.path), false);
+  assert.equal(existsSync(w.secondary!.worktreePath), false);
   assert.equal(w.registry.getTask(w.task.id)?.outcome, "shipped");
-  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
+  assert.equal(w.row(), null);
 });
 
-for (const reset of [false, true]) {
-  test(`accepted Kill returns safe resources${reset ? " after Reset detached the session" : ""}`, async () => {
-    const w = world(reset ? { status: "cancelled", sessionId: null } : {});
-    w.manager.prepareKilledSessionReturn(w.session)();
-    assert.deepEqual(w.state.released, []);
-    await w.remove();
-    assert.deepEqual(w.state.released, ["/pool/one"]);
-    assert.equal(w.registry.getTask(w.task.id)?.status, reset ? "cancelled" : "failed");
-    assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
+test("Kill retains the checkout across eviction and daemon restart", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const w = world(t, { status: "running" });
+  const session = w.addSession("killed-session");
+  w.registry.upsertTask({ ...w.task, sessionId: session.id });
+  const app = buildApp({
+    registry: w.registry, tasks: w.manager, sdkSessions: w.supervisor as never, queues: {} as never, reviews: {} as never,
   });
-}
-
-for (const ownershipChanged of [false, true]) {
-  test(`Kill retries a busy cleanup queue${ownershipChanged ? " without releasing a new owner" : " once its slot is free"}`, async (t) => {
-    t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
-    const w = world();
-    // Hold the real queue slot as startup reconciliation can while inspecting the task.
-    let release!: () => void;
-    const pending = new Promise<void>((resolve) => { release = resolve; });
-    const queue = (w.manager as unknown as { cleanupQueue: {
-      enqueue: (job: { taskId: string; repoKeys: string[]; run: () => Promise<void> }) => boolean;
-    } }).cleanupQueue;
-    assert.equal(queue.enqueue({ taskId: w.task.id, repoKeys: [w.task.repoRoot], run: () => pending }), true);
-    w.manager.prepareKilledSessionReturn(w.session)();
-    w.sessions.delete(w.session.id);
-    w.registry.emit("event", { type: "session_remove", id: w.session.id });
-    assert.deepEqual(w.state.released, [], "the existing job keeps exclusive queue ownership");
-    if (ownershipChanged) w.registry.upsertTask({ ...w.registry.getTask(w.task.id)!, worktreeLeaseId: "new-lease" });
-    release();
-    await w.manager.settleWorktreeReturns();
-    // The existing closure timer must retry; there is no second Kill or removal event.
-    t.mock.timers.tick(10_000);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await w.manager.settleWorktreeReturns();
-    assert.deepEqual(w.state.released, ownershipChanged ? [] : ["/pool/one"]);
-    assert.equal(w.registry.getTask(w.task.id)?.worktreeLeaseId, ownershipChanged ? "new-lease" : null);
+  const killed = await app.request(`/api/sessions/${session.id}/kill`, {
+    method: "POST", headers: { host: "127.0.0.1:7317" },
   });
-}
-
-test("Kill preserves ignored files created after eligibility before Git-provider teardown", async (t) => {
-  const { root, clone } = mkOriginAndClone("mission-kill-ignored-race-");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const branch = "harness/kill-ignored";
-  const path = mkLinkedWorktree(clone, branch, join(root, "task"));
-  writeFileSync(join(path, ".gitignore"), "private-notes.txt\n");
-  gitIn(path, "add", ".gitignore");
-  gitIn(path, "commit", "-m", "ignore local notes");
-  gitIn(path, "push", "origin", branch);
-  let probes = 0;
-  const w = world({ repoRoot: clone, worktreePath: path, branch, provider: "git", worktreeLeaseId: null }, true, {
-    returnBlocker: async (checkout, options) => {
-      const blocked = await worktreeReturnBlocker(checkout, options);
-      if (++probes === 1) {
-        assert.equal(blocked, null, "initial eligibility passes");
-        writeFileSync(join(path, "private-notes.txt"), "keep this local work\n");
-      }
-      return blocked;
-    },
-    teardown: teardownWorktree,
-  });
-  w.manager.prepareKilledSessionReturn(w.session)();
-  await w.remove();
-  assert.equal(probes, 2, "the destructive provider guard rechecks ignored work");
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, path);
-  assert.equal(readFileSync(join(path, "private-notes.txt"), "utf8"), "keep this local work\n");
-});
-
-test("Kill preserves a Git-provider tree when its upstream branch is deleted after initial eligibility", async (t) => {
-  const { root, clone, origin } = mkOriginAndClone("mission-kill-publication-race-");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const branch = "harness/kill-publication";
-  const path = mkLinkedWorktree(clone, branch, join(root, "task"));
-  writeFileSync(join(path, "keep.txt"), "published task work\n");
-  gitIn(path, "commit", "-am", "task work");
-  gitIn(path, "push", "origin", branch);
-  const head = gitIn(path, "rev-parse", "HEAD");
-  let probes = 0;
-  const w = world({ repoRoot: clone, worktreePath: path, branch, provider: "git", worktreeLeaseId: null }, true, {
-    returnBlocker: async (checkout, options) => {
-      const blocked = await worktreeReturnBlocker(checkout, options);
-      if (++probes === 1) {
-        assert.equal(blocked, null, "initial fresh-origin eligibility must succeed");
-        gitIn(origin, "update-ref", "-d", `refs/heads/${branch}`);
-        assert.equal(gitIn(path, "rev-parse", `refs/remotes/origin/${branch}`), head,
-          "deleting upstream leaves the original publication proof stale locally");
-      }
-      return blocked;
-    },
-    // Exercise real fallback removal, which does not fetch on the provider's behalf.
-    teardown: teardownWorktree,
-  });
-  w.session.cwd = path;
-  w.manager.prepareKilledSessionReturn(w.session)();
-  await w.remove();
-
-  assert.equal(probes, 2, "recheck publication at the destructive provider boundary");
+  assert.equal(killed.status, 200);
+  // Accepted stop leaves the active task untouched until the runtime exits.
+  assert.equal(w.registry.getSession(session.id)?.state, "idle");
+  await w.observer.runPass();
+  assert.equal(w.row(), null);
+  w.exit(session.id);
+  t.mock.timers.tick(8_000);
+  await w.manager.settleWorktreeReturns();
   assert.equal(w.registry.getTask(w.task.id)?.status, "failed");
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, path, "retain ownership for existing cleanup policy");
-  assert.equal(w.registry.getTask(w.task.id)?.provider, "git");
-  assert.ok(existsSync(path), "the checkout must not be removed");
-  assert.equal(gitIn(path, "rev-parse", "HEAD"), head);
-  assert.equal(gitIn(clone, "rev-parse", `refs/heads/${branch}`), head, "the local task branch must survive");
+  assert.ok(existsSync(w.path));
+  await w.observer.runPass();
+  const deadline = w.state.now + WEEK;
+  assert.equal(w.row()?.cleanupDueAt, deadline);
+  await w.manager.stop();
+  closeDb();
+  w.state.now += 6 * DAY;
+
+  const restarted = w.setup(false);
+  assert.equal(restarted.manager.backgroundWorktreeUseBlocker(w.task), "session discovery has not completed");
+  restarted.registry.applyDiscovery([]);
+  await restarted.manager.settleWorktreeReturns();
+  await restarted.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, deadline);
+  assert.ok(existsSync(w.path));
+  w.state.now = deadline;
+  await restarted.observer.runPass();
+  assert.equal(existsSync(w.path), false);
 });
 
-for (const reason of ["dirty", "unknown", "occupied", "new-owner", "refused-stop", "other-session", "runtime-draining"] as const) {
-  test(`Kill preserves resources when ${reason}`, async () => {
-    const w = world();
-    const accept = w.manager.prepareKilledSessionReturn(w.session);
-    if (reason !== "refused-stop") accept();
-    if (reason === "runtime-draining") w.state.runtimeLive = true;
-    if (reason === "dirty") w.state.unsafe = "untracked work";
-    if (reason === "unknown") w.state.occupancy = { status: "unknown", reason: "could not inspect" };
-    if (reason === "occupied") w.state.occupancy = { status: "known", occupants: [{} as never] };
-    if (reason === "new-owner") w.state.duringProbe = () => w.registry.upsertTask({
-      ...w.registry.getTask(w.task.id)!, worktreeLeaseId: "replacement",
-    });
-    if (reason === "other-session") w.sessions.set("other", mkSession({ id: "other", cwd: "/pool/one/subdir" }));
-    await w.remove();
-    assert.deepEqual(w.state.released, []);
-    assert.equal(w.registry.getTask(w.task.id)?.worktreePath, "/pool/one");
+test("unrequested session loss grants the checkout a full seven days after eviction", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const w = world(t, { status: "running" });
+  const session = w.addSession("lost-session");
+  w.registry.upsertTask({ ...w.task, sessionId: session.id });
+  await w.observer.runPass();
+  assert.equal(w.row(), null);
+
+  w.registry.applyDriverEvent(session.id, { kind: "exited", reason: "driver connection lost", resumable: false });
+  assert.equal(w.registry.getSession(session.id)?.state, "exited");
+  t.mock.timers.tick(8_000);
+  await w.manager.settleWorktreeReturns();
+  assert.equal(w.registry.getSession(session.id), undefined);
+  assert.equal(w.registry.getTask(w.task.id)?.status, "failed");
+
+  await w.observer.runPass();
+  const deadline = w.state.now + WEEK;
+  assert.equal(w.row()?.cleanupDueAt, deadline);
+  w.state.now = deadline - 1;
+  assert.deepEqual((await w.observer.runPass()).cleanups, {});
+  assert.equal(w.row()?.lastAttemptAt, null);
+  assert.ok(existsSync(w.path));
+
+  w.state.now = deadline;
+  assert.deepEqual((await w.observer.runPass()).cleanups, { reclaimed: 1 });
+  assert.equal(existsSync(w.path), false);
+  assert.equal(w.state.stopRequests, 0);
+  assert.equal(w.state.stops, 0);
+});
+
+test("legacy clocks cannot backdate departure and reattachment between sweeps revokes the deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const w = world(t);
+  recordTaskWorktreeObservation({
+    taskId: w.task.id, generation: taskResourceGeneration(w.task), fingerprint: "old",
+    now: w.state.now - 40 * DAY, retentionMs: 30 * DAY,
+  });
+  assert.equal(w.row()?.unownedSince, null);
+  await w.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+  w.state.now += 6 * DAY;
+  const session = w.addSession("reattached");
+  assert.equal(w.row()?.unownedSince, null, "upsert immediately invalidates the old deadline");
+  w.exit(session.id);
+  t.mock.timers.tick(8_000);
+  await w.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+  w.state.now += DAY;
+  await w.observer.runPass();
+  assert.ok(existsSync(w.path));
+});
+
+test("hidden discoveries, launch reservations, dormant SDK owners and check leases protect paths", async (t) => {
+  const w = world(t);
+  w.registry.applyDiscovery([], [], new Set([join(w.path, "hidden")]));
+  await w.observer.runPass();
+  assert.match(w.row()?.lastError ?? "", /tracked session/);
+  w.registry.applyDiscovery([]);
+  using launch = reserveWorktreeUse([join(w.path, "launch")]);
+  assert.ok(launch);
+  await w.observer.runPass();
+  assert.match(w.row()?.lastError ?? "", /reserved/);
+  launch[Symbol.dispose]();
+
+  upsertSdkSession({ id: "hibernated-reservation", agent: "claude", cwd: w.path, taskId: w.task.id,
+    agentSessionId: null, model: null, effort: null, permissionMode: null, status: "hibernated", turnInProgress: false });
+  await w.observer.runPass();
+  assert.match(w.row()?.lastError ?? "", /embedded session/);
+  openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run("hibernated-reservation");
+  const checks = new CheckLeaseStore();
+  checks.insertHeld({ attemptId: "check-reservation", submissionId: "test", nodeId: "test",
+    repoRoot: w.primary.repoRoot, leasePath: w.path, holderToken: "check", provider: "git", now: w.state.now });
+  await w.observer.runPass();
+  assert.match(w.row()?.lastError ?? "", /workflow check/);
+  checks.delete("check-reservation");
+  const transfer = reserveSessionTransfer({
+    sourceSessionId: "sdk:transferring", taskId: null, noteKey: "retention-transfer",
+    facts: {
+      agent: "claude", nativeId: "test", sourceName: "Resume", sourceRuntime: "sdk",
+      sourceEpisodeId: null, cwd: join(w.path, "resume"), repoRoot: w.primary.repoRoot,
+      taskIdentity: null, taskEpisodeId: null, bindings: [], leaseRoot: home, leaseId: "transfer",
+      backend: null, home: null, sourceStopped: false, stopStarted: false,
+      sourceProcess: null, launchAt: null, launchOutcome: "not_started", canEnd: false,
+    },
+  });
+  await w.observer.runPass();
+  assert.match(w.row()?.lastError ?? "", /session transfer/);
+  updateSessionTransfer(transfer, { state: "aborted" });
+  await w.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+});
+
+test("an unbound SDK grant protects a checkout through restart and exited card linger", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const w = world(t);
+  await w.observer.runPass();
+  const id = "sdk:unbound-additional-checkout";
+  upsertSdkSession({
+    id, agent: "claude", cwd: w.primary.repoRoot, extraDirs: [join(w.path, "packages", "app")],
+    taskId: null, agentSessionId: null, model: null, effort: null, permissionMode: null,
+    status: "starting", turnInProgress: false,
+  });
+  w.addSession("unbound-additional-checkout", w.primary.repoRoot);
+  assert.equal(w.row()?.unownedSince, null, "registration revokes an existing clock");
+  await w.manager.stop();
+  closeDb();
+  w.state.now += WEEK;
+
+  const restarted = w.setup();
+  await restarted.observer.runPass();
+  assert.match(w.row()?.lastError ?? "", /embedded session/);
+  restarted.addSession("unbound-additional-checkout", w.primary.repoRoot);
+  setSdkSessionStatus(id, "exited");
+  restarted.exit(id);
+  await restarted.observer.runPass();
+  assert.equal(w.row()?.unownedSince, null, "the exited card still holds its additional checkout");
+  t.mock.timers.tick(8_000);
+  await restarted.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+  assert.ok(existsSync(w.path));
+});
+
+test("retention preserves a due checkout when an SDK grant is unreadable", async (t) => {
+  const w = world(t);
+  await w.observer.runPass();
+  const id = "sdk:unreadable-retention-grant";
+  upsertSdkSession({
+    id, agent: "claude", cwd: w.primary.repoRoot, taskId: null, agentSessionId: "unknown-grant",
+    model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress: false,
+  });
+  t.after(() => { openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run(id); });
+  openDb().prepare("UPDATE sdk_sessions SET extra_dirs_json = ? WHERE id = ?").run("{", id);
+  w.state.now += WEEK;
+  const pass = await w.observer.runPass();
+  assert.deepEqual(pass.cleanups, {});
+  assert.equal(w.row()?.unownedSince, null);
+  assert.match(w.row()?.lastError ?? "", /embedded session/);
+  assert.ok(existsSync(w.path));
+});
+
+test("task dispatch refuses a checkout reserved by cleanup", async (t) => {
+  const w = world(t, { status: "failed" });
+  const before = w.registry.getTask(w.task.id);
+  using cleanup = reserveWorktreeCleanup([w.path]);
+  assert.ok(cleanup);
+  const result = await w.manager.dispatch(w.task.id);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /automatic cleanup currently owns a task checkout/);
+  assert.deepEqual(w.registry.getTask(w.task.id), before);
+});
+
+for (const flag of ["assume-unchanged", "skip-worktree"] as const) {
+  test(`automatic return retains a published checkout with a hidden index change (${flag})`, async (t) => {
+    const w = world(t);
+    gitIn(w.path, "push", "origin", w.primary.branch);
+    assert.equal(gitIn(w.path, "rev-parse", "HEAD"), gitIn(w.path, "rev-parse", `origin/${w.primary.branch}`));
+    gitIn(w.path, "update-index", `--${flag}`, "keep.txt");
+    writeFileSync(join(w.path, "keep.txt"), "local work hidden from status");
+    assert.equal(gitIn(w.path, "status", "--porcelain"), "");
+    await w.observer.runPass();
+    w.state.now += WEEK;
+    await w.observer.runPass();
+    assert.ok(existsSync(w.path));
+    assert.equal(w.registry.getTask(w.task.id)?.worktreePath, w.path);
+    assert.match(w.row()?.lastError ?? "", /index has hidden changes/);
   });
 }
 
-test("an unsafe secondary repo preserves the whole killed task", async () => {
-  const w = world({ extraRepos: [extra] });
-  w.state.duringProbe = () => { if (w.state.probed.at(-1) === "/pool/two") w.state.unsafe = "local commit"; };
-  w.manager.prepareKilledSessionReturn(w.session)();
-  await w.remove();
-  assert.deepEqual(w.state.released, []);
-  assert.deepEqual(w.state.probed, ["/pool/one", "/pool/two"]);
+test("a provider reset refuses ignored data created during the final occupancy scan", async (t) => {
+  let inProvider = false;
+  let reset = false;
+  const w = world(t, { deps: {
+    occupancy: async (paths) => {
+      if (inProvider) writeFileSync(join(w.path, "private-cache"), "keep this file");
+      return new Map(paths.map((path) => [path, { status: "known", occupants: [] }]));
+    },
+    teardown: async (_task, _legacy, _priority, _manager, guard) => {
+      inProvider = true;
+      const blocked = await guard!(w.path);
+      if (blocked) throw new Error(blocked);
+      reset = true;
+    },
+  } });
+  writeFileSync(join(w.path, ".gitignore"), "private-cache\n");
+  gitIn(w.path, "add", ".gitignore");
+  gitIn(w.path, "commit", "-m", "ignore private cache");
+  gitIn(w.path, "push", "origin", w.primary.branch);
+  await w.observer.runPass();
+  w.state.now += WEEK;
+  await w.observer.runPass();
+  assert.equal(inProvider, true);
+  assert.equal(reset, false);
+  assert.ok(existsSync(join(w.path, "private-cache")));
+  assert.match(w.row()?.lastError ?? "", /ignored work/);
 });
 
-test("partial provider failure clears only returned trees", async () => {
-  const w = world({ extraRepos: [extra] });
-  w.state.partial = true;
-  w.manager.prepareKilledSessionReturn(w.session)();
-  await w.remove();
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
-  assert.equal(w.registry.getTask(w.task.id)?.extraRepos[0]?.worktreeLeaseId, "lease-two");
+test("a provider reset refuses an unpublished HEAD created during the final occupancy scan", async (t) => {
+  let inProvider = false;
+  let reset = false;
+  let unpublishedHead: string | undefined;
+  const w = world(t, { deps: {
+    occupancy: async (paths) => {
+      if (inProvider) {
+        writeFileSync(join(w.path, "keep.txt"), "unpublished work");
+        gitIn(w.path, "commit", "-am", "unpublished work during occupancy");
+        unpublishedHead = gitIn(w.path, "rev-parse", "HEAD");
+        assert.equal(gitIn(w.path, "status", "--porcelain"), "");
+      }
+      return new Map(paths.map((path) => [path, { status: "known", occupants: [] }]));
+    },
+    teardown: async (_task, _legacy, _priority, _manager, guard) => {
+      inProvider = true;
+      const blocked = await guard!(w.path);
+      if (blocked) throw new Error(blocked);
+      reset = true;
+    },
+  } });
+  await w.observer.runPass();
+  w.state.now += WEEK;
+  await w.observer.runPass();
+  assert.ok(unpublishedHead);
+  assert.equal(reset, false);
+  assert.equal(gitIn(w.path, "rev-parse", "HEAD"), unpublishedHead);
+  assert.match(w.row()?.lastError ?? "", /unpublished/);
 });
 
-test("Reset ownership in a secondary-only checkout remains eligible", async () => {
-  const w = world({ status: "cancelled", sessionId: null, worktreePath: null, extraRepos: [extra] });
-  w.session.cwd = "/pool/two";
-  w.manager.prepareKilledSessionReturn(w.session)();
-  await w.remove();
-  assert.deepEqual(w.state.released, ["/pool/two"]);
+test("a different published HEAD during final occupancy receives a fresh retention window", async (t) => {
+  let inProvider = false;
+  let publishedHead: string;
+  let changed = false;
+  const w = world(t, { deps: {
+    occupancy: async (paths) => {
+      if (inProvider && !changed) {
+        gitIn(w.path, "reset", "--hard", publishedHead);
+        assert.equal(gitIn(w.path, "status", "--porcelain"), "");
+        changed = true;
+      }
+      return new Map(paths.map((path) => [path, { status: "known", occupants: [] }]));
+    },
+    teardown: async (...args) => {
+      inProvider = true;
+      await teardownWorktree(...args);
+    },
+  } });
+  const initialHead = gitIn(w.path, "rev-parse", "HEAD");
+  gitIn(w.path, "commit", "--allow-empty", "-m", "another published commit");
+  publishedHead = gitIn(w.path, "rev-parse", "HEAD");
+  gitIn(w.path, "push", "origin", "HEAD:refs/heads/published-retention-fixture");
+  gitIn(w.path, "reset", "--hard", initialHead);
+
+  await w.observer.runPass();
+  w.state.now += WEEK;
+  await w.observer.runPass();
+  assert.ok(changed);
+  assert.ok(existsSync(w.path));
+  assert.equal(gitIn(w.path, "rev-parse", "HEAD"), publishedHead);
+  assert.match(w.row()?.lastError ?? "", /Git activity changed/);
+
+  await w.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+  assert.equal(w.row()?.claimToken, null);
+  assert.ok(existsSync(w.path));
 });
 
-test("ambiguous retained owners never authorize a return", async () => {
-  const w = world({ status: "cancelled", sessionId: null });
-  w.registry.upsertTask({ ...w.task, id: "other-owner" });
-  w.manager.prepareKilledSessionReturn(w.session)();
-  await w.remove();
-  assert.deepEqual(w.state.released, []);
+test("automatic return retains edits hidden during final publication verification", async (t) => {
+  let inserted = false;
+  let activityRechecked = false;
+  const w = world(t, { deps: {
+    returnBlocker: (path, options) => worktreeReturnBlocker(path, {
+      ...options,
+      readActivity: options?.readActivity && (async () => {
+        assert.ok(inserted, "activity must be sampled after publication finishes");
+        activityRechecked = true;
+        return options.readActivity!();
+      }),
+      execute: async (command, args, runOptions) => {
+        const result = await run(command, args, runOptions);
+        if (!inserted && args.includes("rev-list") && options?.fetch === false) {
+          gitIn(path, "update-index", "--assume-unchanged", "keep.txt");
+          writeFileSync(join(path, "keep.txt"), "keep this late hidden work");
+          assert.equal(gitIn(path, "status", "--porcelain"), "");
+          inserted = true;
+        }
+        return result;
+      },
+    }),
+  } });
+  await w.observer.runPass();
+  w.state.now += WEEK;
+  await w.observer.runPass();
+  assert.ok(inserted);
+  assert.ok(activityRechecked);
+  assert.equal(readFileSync(join(w.path, "keep.txt"), "utf8"), "keep this late hidden work");
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, w.path);
+  assert.match(w.row()?.lastError ?? "", /index has hidden changes/);
 });
 
+test("automatic Git return refuses a different branch recreated at the recorded path", async (t) => {
+  let inProvider = false;
+  let replacementHead: string | undefined;
+  const replacementBranch = "unrelated-worktree";
+  const w = world(t, { deps: {
+    occupancy: async (paths) => {
+      if (inProvider && !replacementHead) {
+        const recordedHead = gitIn(w.path, "rev-parse", "HEAD");
+        gitIn(w.primary.repoRoot, "worktree", "remove", w.path);
+        gitIn(w.primary.repoRoot, "worktree", "add", "-b", replacementBranch, w.path, recordedHead);
+        replacementHead = gitIn(w.path, "rev-parse", "HEAD");
+        assert.equal(replacementHead, recordedHead);
+        assert.equal(gitIn(w.path, "status", "--porcelain"), "");
+      }
+      return new Map(paths.map((path) => [path, { status: "known", occupants: [] }]));
+    },
+    teardown: async (...args) => {
+      inProvider = true;
+      await teardownWorktree(...args);
+    },
+  } });
+  await w.observer.runPass();
+  w.state.now += WEEK;
+  await w.observer.runPass();
 
-test("archive refusal preserves completion resources and the closure sweep retries later", async (t) => {
-  let now = Date.now();
-  t.mock.method(Date, "now", () => now);
-  const w = world({ sessionId: null });
-  w.sessions.clear();
-  w.state.archiveRefused = true;
-  await w.manager.complete(w.task.id, "finished");
-  await w.manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, []);
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, "/pool/one");
-  for (let index = 0; index < 60; index++) {
-    w.registry.upsertTask(mkTask({ id: `newer-completed-${index}`, status: "done", updatedAt: now + index + 1 }));
-  }
-  assert.equal(w.registry.getTask("newer-completed-0"), undefined, "the recent-terminal cap was exercised");
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, "/pool/one", "a failed return stays in memory outside the recent cap");
-  assert.equal(new Registry().getTask(w.task.id)?.worktreePath, "/pool/one", "restart reloads the durable resource holder outside the cap");
-  w.state.archiveRefused = false;
-  now += 30_001;
-  await w.manager.sweepMissionSessionClosures();
-  await w.manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, ["/pool/one"]);
+  assert.ok(replacementHead, "the replacement was created during the final occupancy scan");
+  assert.ok(existsSync(w.path), "the unrelated checkout must survive");
+  assert.equal(gitIn(w.path, "branch", "--show-current"), replacementBranch);
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, w.path);
+  assert.match(w.row()?.lastError ?? "", /branch does not match/);
 });
 
-test("completion recovery waits for observed sessions before returning a newly completed tree", async () => {
-  const w = world({ sessionId: null }, false);
-  w.sessions.clear();
-  await w.manager.complete(w.task.id, "finished");
-  w.manager.stopMissionSessionClosures();
-  closeDb();
-  const registry = new Registry();
-  const manager = new TaskManager(registry, undefined, undefined, undefined, undefined, {
-    occupancy: async (paths) => new Map(paths.map((path) => [path, w.state.occupancy])),
-    teardown: async (task) => { w.state.released.push(task.worktreePath!); },
+for (const observation of ["unknown", "occupied"] as const) {
+  test(`retention refuses ${observation} process occupancy at departure and at teardown`, async (t) => {
+    const w = world(t);
+    const active: WorktreeOccupancy = observation === "unknown"
+      ? { status: "unknown", reason: "no process probe" }
+      : { status: "known", occupants: [{} as never] };
+    w.state.occupancy = active;
+    await w.observer.runPass();
+    assert.equal(w.row()?.unownedSince, null);
+    w.state.occupancy = { status: "known", occupants: [] };
+    await w.observer.runPass();
+    w.state.now += WEEK;
+    w.state.occupancy = active;
+    await w.observer.runPass();
+    assert.match(w.row()?.lastError ?? "", /process/);
+    assert.ok(existsSync(w.path));
   });
-  await manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, []);
-  assert.equal(taskOwesWorktreeReturn(registry.getTask(w.task.id)!), true);
-  registry.applyDiscovery([]);
-  await manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, ["/pool/one"]);
-  assert.equal(taskOwesWorktreeReturn(registry.getTask(w.task.id)!), false);
+}
+
+test("the disposable census reports an unowned linked checkout without task provenance", async (t) => {
+  const w = world(t);
+  const unownedId = "unowned-census-checkout";
+  const unowned = checkout(t, unownedId);
+  const census = await disposableWorktreeCensus(w.registry.listTasks());
+  assert.deepEqual(census.entries.find((entry) => entry.root === "task" && entry.name === unownedId), {
+    root: "task", name: unownedId, taskId: null, checkState: null, gitMetadata: "readable", orphanEvidence: null,
+  });
+  assert.ok(!JSON.stringify(census).includes(worktreeSlotPath(unownedId, 0)), "the census carries no checkout path");
+  assert.ok(existsSync(unowned.worktreePath));
 });
 
-for (const table of ["task_worktree_returns", "task_session_closures"]) {
-  test(`a failed ${table} write rolls back completion and both obligations`, async () => {
-    const w = world();
-    openDb().exec(`CREATE TRIGGER refuse_completion BEFORE INSERT ON ${table}
-      BEGIN SELECT RAISE(ABORT, 'obligation unavailable'); END`);
-    try {
-      await assert.rejects(w.manager.complete(w.task.id, "finished"), /obligation unavailable/);
-      assert.equal(durableTask(w.task.id)?.status, "running");
-      assert.equal(w.registry.getTask(w.task.id)?.status, "running");
-      assert.equal(getTaskSessionClosure(w.task.id), null);
-      assert.equal(taskOwesWorktreeReturn(durableTask(w.task.id)!), false);
-      assert.equal(openDb().prepare("SELECT count(*) AS n FROM task_worktree_returns").get()?.n, 0);
-    } finally {
-      openDb().exec("DROP TRIGGER refuse_completion");
+test("an unregistered directory stays on disk and appears with its blocker", async (t) => {
+  const w = world(t);
+  await w.observer.runPass();
+  const admin = gitIn(w.path, "rev-parse", "--absolute-git-dir");
+  rmSync(admin, { recursive: true });
+  w.state.now += WEEK;
+  await w.observer.runPass();
+  assert.ok(existsSync(w.path));
+  assert.ok((await backgroundWorktreeRetentionStatus(w.registry.listTasks(), worktreeSlotPath)).entries.find((row) =>
+    row.taskId === w.task.id && row.blocker));
+  const census = await disposableWorktreeCensus(w.registry.listTasks());
+  assert.equal(census.entries.find((entry) => entry.taskId === w.task.id)?.gitMetadata, "unverified");
+});
+
+function setCleanupPreviewEnv(t: TestContext, setting?: string): void {
+  for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
+    const key = `${prefix}_WORKTREE_CLEANUP_PREVIEW`;
+    const previous = process.env[key];
+    t.after(() => {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
+    delete process.env[key];
+  }
+  if (setting !== undefined) process.env.MISSION_WORKTREE_CLEANUP_PREVIEW = setting;
+}
+
+for (const change of ["ignored work", "deleted origin branch", "reattachment", "replacement", "flag disabled"] as const) {
+  test(`retention preserves the checkout when ${change} appears at the provider boundary`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let mutate: () => void;
+    let checks = 0;
+    const w = world(t, { deps: {
+      returnBlocker: async (path, options) => {
+        const blocked = await worktreeReturnBlocker(path, options);
+        if (++checks === 1) {
+          assert.equal(blocked, null, "the checkout initially passes the safety gate");
+          assert.equal(reserveWorktreeUse([path]), null, "launch cannot enter the removal reservation");
+          mutate();
+        }
+        return blocked;
+      },
+      teardown: teardownWorktree,
+    } });
+    if (change === "ignored work") {
+      writeFileSync(join(w.path, ".gitignore"), "keep-private\n");
+      gitIn(w.path, "add", ".gitignore");
+      gitIn(w.path, "commit", "-m", "ignore private work");
+    }
+    if (change === "deleted origin branch") {
+      writeFileSync(join(w.path, "keep.txt"), "published work\n");
+      gitIn(w.path, "commit", "-am", "publish task work");
+    }
+    gitIn(w.path, "push", "origin", w.primary.branch);
+    const setFlag = (enabled: boolean) => applyFeatureFlagIntent({
+      kind: "flag", id: SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID, enabled,
+    });
+    const observer = change === "flag disabled"
+      ? createDaemonRetentionObserver({
+        listTasks: () => [w.registry.getTask(w.task.id)!],
+        refreshTaskAutomaticCleanup: (id) => w.registry.refreshTaskAutomaticCleanup(id),
+      }, w.manager, () => w.state.now)
+      : w.observer;
+    if (change === "flag disabled") {
+      setCleanupPreviewEnv(t);
+      assert.equal(setFlag(true).ok, true);
+      t.after(() => { setFlag(false); });
+    }
+    mutate = () => {
+      if (change === "ignored work") writeFileSync(join(w.path, "keep-private"), "private data\n");
+      if (change === "deleted origin branch") gitIn(w.primary.origin, "update-ref", "-d", `refs/heads/${w.primary.branch}`);
+      if (change === "reattachment") {
+        const returning = w.addSession("returns-during-cleanup");
+        w.exit(returning.id);
+        t.mock.timers.tick(8_000);
+      }
+      if (change === "flag disabled") assert.equal(setFlag(false).ok, true);
+      if (change === "replacement") {
+        w.registry.upsertTask({ ...w.registry.getTask(w.task.id)!, dispatchedAt: w.state.now });
+      }
+    };
+    await observer.runPass();
+    w.state.now += WEEK;
+    await observer.runPass();
+    assert.ok(checks > 0, "the cleanup reached the provider guard");
+    assert.ok(existsSync(w.path));
+    assert.equal(w.registry.getTask(w.task.id)?.worktreePath, w.path);
+    if (change === "reattachment") assert.equal(w.row()?.unownedSince, null);
+  });
+}
+
+test("a partial return clears only the released repo and retains the unsafe sibling", async (t) => {
+  const w = world(t, { multiRepo: true, deps: {
+    teardown: async (task, legacy, priority, worktrees, guard) => {
+      await teardownWorktree(task, legacy, priority, worktrees, async (path) => {
+        const blocked = await guard!(path);
+        if (!blocked && path === w.path) writeFileSync(join(w.secondary!.worktreePath, "late"), "late work");
+        return blocked;
+      });
+    },
+  } });
+  await w.observer.runPass();
+  w.state.now += WEEK;
+  await w.observer.runPass();
+  assert.equal(existsSync(w.path), false);
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
+  assert.ok(existsSync(join(w.secondary!.worktreePath, "late")));
+  assert.equal(w.registry.getTask(w.task.id)?.extraRepos[0]?.worktreePath, w.secondary!.worktreePath);
+  await w.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+});
+
+test("retention leaves a hibernated task intact past its former deadline", async (t) => {
+  const w = world(t);
+  await w.observer.runPass();
+  const deadline = w.row()?.cleanupDueAt;
+  assert.equal(deadline, w.state.now + WEEK);
+  const { dev, ino } = statSync(w.path, { bigint: true });
+  w.registry.upsertTask({
+    ...w.registry.getTask(w.task.id)!,
+    status: "hibernated",
+    hibernation: {
+      sessionId: "sdk:hibernated-task", runtime: "sdk", agentSessionId: "sleeping-thread",
+      noteKey: "sleeping-thread", permissionMode: null, hibernatedAt: w.state.now,
+      checkout: { path: w.path, dev: String(dev), ino: String(ino) }, blocker: null, failure: null,
+    },
+  });
+
+  w.state.now = deadline! + DAY;
+  const pass = await w.observer.runPass();
+  assert.equal(pass.observed, 0);
+  assert.deepEqual(pass.cleanups, {});
+  assert.equal(w.row(), null, "the old clock is pruned and no claim is taken");
+  assert.equal(w.registry.getTask(w.task.id)?.status, "hibernated");
+  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, w.path);
+  assert.ok(existsSync(w.path));
+});
+
+for (const [setting, enabled, mode, localWork, disableBeforeDue] of [
+  ["report-only", true, "report-only"], [undefined, false, "configured"],
+  ["enforce", false, "configured"], [undefined, true, "enforce"],
+  [undefined, true, "enforce", false, true],
+  ["unexpected-preview-value", true, "report-only"],
+  ["report-only", true, "report-only", true],
+] as const) {
+  test(`daemon preview setting selects ${mode} retention when ${setting ?? "unset"}, flag ${enabled ? "on" : "off"}${localWork ? " with local work" : ""}${disableBeforeDue ? " then switched off before due" : ""}`, async (t) => {
+    setCleanupPreviewEnv(t, setting);
+    const previousDays = getWorktreesConfig().taskRetentionDays;
+    t.after(() => { setWorktreesConfig({ taskRetentionDays: previousDays }); });
+    setWorktreesConfig({ taskRetentionDays: 11 });
+
+    const w = world(t);
+    const notes = join(w.path, "local-notes.txt");
+    if (localWork) writeFileSync(notes, "keep this local work");
+    const registry = {
+      listTasks: () => [w.registry.getTask(w.task.id)!],
+      refreshTaskAutomaticCleanup: (id: string) => w.registry.refreshTaskAutomaticCleanup(id),
+    };
+    const observer = createDaemonRetentionObserver(registry, w.manager, () => w.state.now);
+    const setFlag = (value: boolean) => applyFeatureFlagIntent({
+      kind: "flag", id: SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID, enabled: value,
+    });
+    t.after(() => { setFlag(false); });
+    if (enabled) assert.equal(setFlag(true).ok, true);
+    await observer.runPass();
+    const deadline = w.state.now + (mode === "configured" ? 11 * DAY : WEEK);
+    assert.equal(w.row()?.cleanupDueAt, deadline);
+    assert.equal((await backgroundWorktreeRetentionStatus(registry.listTasks(), worktreeSlotPath)).mode, mode);
+    w.state.now = deadline;
+    if (disableBeforeDue) {
+      assert.equal(setFlag(false).ok, true);
+      assert.deepEqual((await observer.runPass()).cleanups, {});
+      assert.ok(existsSync(w.path));
+      assert.equal(w.row()?.cleanupDueAt, deadline + 4 * DAY);
+      w.state.now += 4 * DAY;
+    }
+    const pass = await observer.runPass();
+    if (mode === "report-only") {
+      assert.deepEqual(pass.cleanups, {});
+      assert.equal(w.row()?.claimToken, null);
+      assert.equal(w.row()?.lastAttemptAt, null);
+      const diagnostic = (await backgroundWorktreeRetentionStatus(registry.listTasks(), worktreeSlotPath))
+        .entries.find((entry) => entry.taskId === w.task.id);
+      assert.equal(diagnostic?.cleanupDueAt, deadline);
+      assert.match(diagnostic?.blocker ?? "", localWork ? /uncommitted, untracked or ignored work/ : /report only/);
+      if (localWork) assert.equal(readFileSync(notes, "utf8"), "keep this local work");
+      assert.ok(existsSync(w.path));
+    } else {
+      assert.deepEqual(pass.cleanups, { reclaimed: 1 });
+      assert.equal(existsSync(w.path), false);
     }
   });
 }
 
-test("partial completion return resets backed-off retries while retaining the secondary tree obligation", async (t) => {
-  let now = Date.now();
-  t.mock.method(Date, "now", () => now);
-  const completed: Array<{ outcome: string; retryAt?: number }> = [];
-  t.mock.method(console, "info", (message: string) => {
-    if (!message.startsWith("[tasks] {")) return;
-    const record = JSON.parse(message.slice("[tasks] ".length));
-    if (record.event === "worktree_return_completed") completed.push(record);
-  });
-  const w = world({ sessionId: null, extraRepos: [extra] });
-  w.sessions.clear();
-  w.state.occupancy = { status: "unknown", reason: "scan unavailable" };
-  await w.manager.complete(w.task.id, "finished");
-  await w.manager.settleWorktreeReturns();
-  assert.equal(completed.at(-1)?.retryAt, now + 30_000);
-  now += 30_000;
-  await w.manager.sweepMissionSessionClosures();
-  await w.manager.settleWorktreeReturns();
-  assert.equal(completed.length, 2);
-  assert.equal(completed.at(-1)?.retryAt, now + 60_000);
-
-  now += 60_000;
-  w.state.occupancy = { status: "known", occupants: [] };
-  w.state.partial = true;
-  await w.manager.sweepMissionSessionClosures();
-  await w.manager.settleWorktreeReturns();
-  assert.equal(completed.length, 3);
-  assert.equal(completed.at(-1)?.outcome, "retained");
-  assert.equal(completed.at(-1)?.retryAt, now + 30_000, "partial progress resets the next delay, rather than doubling it to 120 seconds");
-  assert.deepEqual(w.state.released, ["/pool/one"]);
-  assert.equal(w.registry.getTask(w.task.id)?.worktreePath, null);
-  assert.equal(w.registry.getTask(w.task.id)?.extraRepos[0]?.worktreePath, "/pool/two");
-  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
-  w.state.partial = false;
-  now += 29_999;
-  await w.manager.sweepMissionSessionClosures();
-  await w.manager.settleWorktreeReturns();
-  assert.equal(completed.length, 3, "no return before the reset delay expires");
-  now++;
-  await w.manager.sweepMissionSessionClosures();
-  await w.manager.settleWorktreeReturns();
-  assert.equal(completed.length, 4);
-  assert.equal(completed.at(-1)?.outcome, "returned");
-  assert.deepEqual(w.state.released, ["/pool/one", "/pool/two"]);
-  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
+test("explicit task cleanup can release its own dirty checkout before retention is due", async (t) => {
+  const w = world(t);
+  writeFileSync(join(w.path, "operator-cleanup"), "deliberately discarded fixture\n");
+  await w.observer.runPass();
+  assert.equal(w.row()?.cleanupDueAt, w.state.now + WEEK);
+  assert.deepEqual(await w.manager.reclaim(w.task.id), { ok: true });
+  assert.equal(existsSync(w.path), false);
 });
 
-test("reopening an attempt clears its completion-return obligation", async () => {
-  const w = world({ sessionId: null }, false);
-  w.sessions.clear();
-  await w.manager.complete(w.task.id, "finished");
-  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), true);
-  w.registry.upsertTask({ ...w.registry.getTask(w.task.id)!, status: "backlog", completedAt: null });
-  assert.equal(openDb().prepare("SELECT count(*) AS n FROM task_worktree_returns").get()?.n, 0);
-  w.registry.applyDiscovery([]);
-  await w.manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, []);
+test("archive refusal retains the worktree and retries through the retention ledger", async (t) => {
+  let archiveError = true;
+  const w = world(t, { archiveError: () => archiveError });
+  await w.observer.runPass();
+  w.state.now += WEEK;
+  await w.observer.runPass();
+  assert.ok(existsSync(w.path));
+  assert.match(w.row()?.lastError ?? "", /archive/);
+  archiveError = false;
+  w.state.now = w.row()?.retryAt ?? 0;
+  await w.observer.runPass();
+  assert.equal(existsSync(w.path), false);
 });
 
-for (const legacyClosure of [false, true]) {
-  test(`upgrade preserves a legacy completed checkout${legacyClosure ? " with an old session-closure obligation" : ""}`, async (t) => {
-    const { root, clone } = mkOriginAndClone("mission-legacy-complete-");
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const path = mkLinkedWorktree(clone, "harness/legacy", join(root, "task"));
-    writeFileSync(join(path, "keep.txt"), "uncommitted legacy work\n");
-    const w = world({ status: "done", completedAt: 123, repoRoot: clone, worktreePath: path,
-      branch: "harness/legacy", provider: "git", worktreeLeaseId: null }, false, { teardown: teardownWorktree });
-    w.sessions.clear();
-    if (legacyClosure) openTaskSessionClosure(w.task.id, w.session.id, 123, 456);
-    // Reopen a pre-feature schema: upgrading creates an empty obligation table, never
-    // inferring destructive authorization from historical task status or session closure.
-    openDb().exec("DROP TABLE IF EXISTS task_worktree_returns");
-    openDb().exec(`PRAGMA user_version = ${CURRENT_DATABASE_SCHEMA_VERSION - 1}`);
-    closeDb();
-    openDb();
-    assert.equal(taskOwesWorktreeReturn(w.task), false);
-    w.registry.applyDiscovery([]);
-    await w.manager.sweepMissionSessionClosures();
-    await w.manager.settleWorktreeReturns();
-    assert.equal(readFileSync(join(path, "keep.txt"), "utf8"), "uncommitted legacy work\n");
-    assert.equal(w.registry.getTask(w.task.id)?.worktreePath, path);
-    assert.equal(getTaskSessionClosure(w.task.id), null, "an old closure may settle without authorizing return");
+for (const table of ["task_worktree_returns", "task_session_closures"]) {
+  test(`a failed ${table} write rolls back completion and both obligations`, async (t) => {
+    const w = world(t, { status: "running" });
+    const session = w.addSession("closure-transaction");
+    w.registry.upsertTask({ ...w.task, sessionId: session.id });
+    openDb().exec(`CREATE TRIGGER refuse_completion BEFORE INSERT ON ${table}
+      BEGIN SELECT RAISE(ABORT, 'obligation unavailable'); END`);
+    try {
+      await assert.rejects(w.manager.complete(w.task.id, "finished"), /obligation unavailable/);
+      assert.equal(w.registry.getTask(w.task.id)?.status, "running");
+      assert.equal(getTaskSessionClosure(w.task.id), null);
+      assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
+    } finally {
+      openDb().exec("DROP TRIGGER refuse_completion");
+    }
   });
-}
-
-
-test("read-only Kill eligibility never reserves a dirty checkout against manual cleanup", async () => {
-  const w = world();
-  w.state.duringProbe = () => {
-    assert.equal(w.manager.taskCleanupIsReserved(w.task.id), false);
-    w.state.unsafe = "dirty checkout";
-  };
-  w.manager.prepareKilledSessionReturn(w.session)();
-  await w.remove();
-  assert.deepEqual(w.state.released, []);
-});
-
-for (const outcome of ["returned", "retained", "failed"] as const) {
-  test(`worktree return records start and completion when ${outcome}`, async (t) => {
-    const records: Array<Record<string, unknown>> = [];
-    t.mock.method(console, "info", (message: string) => {
-      if (message.startsWith("[tasks] {")) records.push(JSON.parse(message.slice("[tasks] ".length)));
-    });
-    const w = world({}, true, outcome === "failed" ? {
-      occupancy: async () => { throw new Error("probe crashed"); },
-    } : {});
-    if (outcome === "retained") w.state.unsafe = "local work";
-    w.manager.prepareKilledSessionReturn(w.session)();
-    await w.remove();
-    assert.deepEqual(records.map(({ event, taskId, reason, outcome: result }) => ({ event, taskId, reason, outcome: result })), [
-      { event: "worktree_return_started", taskId: w.task.id, reason: "kill", outcome: undefined },
-      { event: "worktree_return_completed", taskId: w.task.id, reason: "kill", outcome },
-    ]);
-    if (outcome !== "returned") assert.equal(typeof records[1]?.detail, "string");
-  });
-}
-
-for (const observation of ["unknown", "occupied"] as const) {
- test(`${observation} completion returns back off from completion time, cap at thirty minutes, and recover`, async (t) => {
-  let now = Date.now();
-  t.mock.method(Date, "now", () => now);
-  let scans = 0;
-  let blocked = true;
-  const records: Array<Record<string, unknown>> = [];
-  t.mock.method(console, "info", (message: string) => {
-    if (message.startsWith("[tasks] {")) records.push(JSON.parse(message.slice("[tasks] ".length)));
-  });
-  const w = world({ sessionId: null }, true, {
-    occupancy: async (paths) => {
-      scans++;
-      now += 1_000; // A slow observation must not spend its own retry delay.
-      return new Map(paths.map((path) => [path, blocked
-        ? observation === "unknown"
-          ? { status: "unknown" as const, reason: "lsof timed out" }
-          : { status: "known" as const, occupants: [{ pid: 99, ppid: 1, startRaw: "now", startMs: 1,
-              command: "node dev-server", cwd: path, knownOwner: null }] }
-        : { status: "known" as const, occupants: [] }]));
-    },
-  });
-  w.sessions.clear();
-  await w.manager.complete(w.task.id, "finished");
-  await w.manager.settleWorktreeReturns();
-  assert.match(String(records[1]?.detail), observation === "unknown" ? /lsof timed out/ : /PID 99 node dev-server/);
-  assert.equal(records[1]?.retryAt, now + 30_000);
-  for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000, 1_800_000]) {
-    const before = scans;
-    now += delay - 1;
-    await w.manager.sweepMissionSessionClosures();
-    await w.manager.settleWorktreeReturns();
-    assert.equal(scans, before, `no scan before ${delay} ms`);
-    now++;
-    await w.manager.sweepMissionSessionClosures();
-    await w.manager.settleWorktreeReturns();
-    assert.equal(scans, before + 1);
-  }
-  blocked = false;
-  now += 1_800_000;
-  await w.manager.sweepMissionSessionClosures();
-  await w.manager.settleWorktreeReturns();
-  assert.deepEqual(w.state.released, ["/pool/one"]);
-  assert.equal(taskOwesWorktreeReturn(w.registry.getTask(w.task.id)!), false);
-});
-
 }

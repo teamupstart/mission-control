@@ -138,6 +138,7 @@ export class QueueManager {
     const next: WorkItem = {
       ...item,
       intent,
+      firstDeliveredAt: intent === item.intent ? item.firstDeliveredAt : undefined,
       approvedAt: null,
       proposedPayload: null,
       revision: item.revision + 1,
@@ -263,6 +264,8 @@ export class QueueManager {
       // The row is written before the tmux write, which makes it the only timestamp
       // a crash is guaranteed to leave behind - and `recover` adjudicates against it.
       sentAt: state === "sending" ? now : item.sentAt,
+      ...(state === "in_progress" && item.state === "awaiting_pickup" && item.sentAt !== null &&
+        item.firstDeliveredAt === undefined ? { firstDeliveredAt: item.sentAt } : {}),
       // A later acknowledgement belongs to this attempt even if its session exits or
       // hands off to another runtime while the worker is awaiting delivery.
       deliveryRuntime: state === "sending" && item.state !== "sending"
@@ -354,6 +357,7 @@ export class QueueManager {
       // delivery), and treating it as absent would re-anchor past round 0's turns.
       transcriptAnchor: item.transcriptAnchor ?? transcriptAnchor,
       sentAt: now,
+      ...(acknowledged && item.firstDeliveredAt === undefined ? { firstDeliveredAt: now } : {}),
       approvedAt: null, // consent is spent; a later round needs a fresh one
       proposedPayload: null, // and so is the draft it consented to - it's typed now
       // This send WAS watched all the way through the inject, so the resend
@@ -411,8 +415,32 @@ export class QueueManager {
     );
   }
 
-  setWrapupAnswer(key: string, answer: string | null, now = Date.now()): void {
-    this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now);
+  setWrapupAnswer(key: string, answer: string | null, now = Date.now(), retire = false): void {
+    // Every writer of an answer comes through here: Foreman's automatic wrap-up once its
+    // instruction landed, the Ship it? card, and a skipped wrap-up's marker. What an answer
+    // durably owes commits with it, so a daemon that stops right after cannot lose it.
+    const recorders = answer !== null ? [...this.wrapupRecorders] : [];
+    this.registry.setQueueWrapup(key, { wrapupAnswer: answer, ...(retire ? { wrapupAskedAt: now } : {}) }, now,
+      recorders.length > 0 ? () => { for (const record of recorders) record(key); } : undefined);
+    if (answer !== null) for (const listener of this.wrapupListeners) listener(key);
+  }
+
+  private readonly wrapupListeners = new Set<(key: string) => void>();
+  private readonly wrapupRecorders = new Set<(key: string) => void>();
+
+  /**
+   * A database write to make in the same transaction as each recorded wrap-up answer. It must not
+   * publish or start a transaction of its own; it may throw, which rolls the answer back with it.
+   */
+  onWrapupAnswerRecorded(recorder: (key: string) => void): () => void {
+    this.wrapupRecorders.add(recorder);
+    return () => this.wrapupRecorders.delete(recorder);
+  }
+
+  /** Told each time a wrap-up answer is recorded for a conversation key. A listener must not throw. */
+  onWrapupAnswered(listener: (key: string) => void): () => void {
+    this.wrapupListeners.add(listener);
+    return () => this.wrapupListeners.delete(listener);
   }
 
   /**

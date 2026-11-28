@@ -46,6 +46,7 @@ import type {
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
+import { withWorkUnit } from "../../agent-work-unit.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import { sdkAskChannel } from "../../ask-channel-prompt.ts";
@@ -577,6 +578,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     this.turns.push({
       type: "user",
       message: { role: "user", content: turnContent(turn) },
+      ...(turn.clientMessageId && { uuid: turn.clientMessageId }),
       parent_tool_use_id: null,
       ...(this.agentSessionId ? { session_id: this.agentSessionId } : {}),
     });
@@ -1582,6 +1584,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
     drainMs: deps.authRecoveryDrainMs ?? DEFAULT_AUTH_TIMING.drainMs,
   };
   return {
+    clientMessageIds: true,
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
       // Every decision a Claude SDK session asks goes through `request_input` - with its
@@ -1614,9 +1617,15 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // This session's trace context, which also clears any `TRACEPARENT` the daemon
         // inherited. Claude Code reads it at each interaction span in an SDK session; it
         // needs no `CLAUDE_CODE_PROPAGATE_TRACEPARENT`, which governs OUTBOUND headers.
-        env: withAgentTraceContext(
-          withAdvisorEnv(withArtifactTool({ ...deps.env(opts.cwd, opts.stateHome), ...(opts.residentStateDir ? { RESIDENT_STATE_DIR: opts.residentStateDir } : {}) }), opts.advisorModel),
-          opts.traceContext,
+        // And this launch's work unit, which also clears any `WORK_UNIT_ID` the daemon
+        // inherited. The in-session relaunch reuses this environment, so it carries the same
+        // value and is not a new decision.
+        env: withWorkUnit(
+          withAgentTraceContext(
+            withAdvisorEnv(withArtifactTool({ ...deps.env(opts.cwd, opts.stateHome, opts.namedEnvironment), ...(opts.residentStateDir ? { RESIDENT_STATE_DIR: opts.residentStateDir } : {}) }), opts.advisorModel),
+            opts.traceContext,
+          ),
+          opts.workUnitId,
         ),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import type { startDaemon } from '../src/main/daemon.ts';
+import { tempDir } from "./temp-root.mjs";
 
 test('fresh migration startup rejects an occupied unhealthy port and starts only after it is absent', async (t) => {
   let mode = 'http-error';
@@ -19,7 +19,7 @@ test('fresh migration startup rejects an occupied unhealthy port and starts only
   t.after(() => { server.closeAllConnections(); server.close(); });
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
-  const root = mkdtempSync(join(tmpdir(), 'mission-daemon-adapter-'));
+  const root = tempDir('mission-daemon-adapter-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const outfile = join(root, 'daemon.cjs');
   await build({stdin: {contents: 'export {startDaemon} from "./src/main/daemon.ts"; export {calls} from "./src/main/utility-supervisor.ts";', resolveDir: resolve('.')}, outfile,

@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: an operator being told a confident, false thing about their repository.
 //
@@ -22,7 +22,7 @@ import { delimiter, join } from "node:path";
 // So these tests pin the three-way distinction, and the two negatives matter as much as the
 // positive: a real "no" has to stay a "no", or the fix is just a guard that never fires.
 
-const home = mkdtempSync(join(tmpdir(), "mission-git-preflight-"));
+const home = tempDir("mission-git-preflight-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { provisionWorktree, verifyPinnedBase } = await import("../src/server/dispatcher.ts");

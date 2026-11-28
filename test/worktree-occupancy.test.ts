@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Proc } from "../src/server/discovery/processes.ts";
@@ -10,6 +9,7 @@ import {
   pathContains,
 } from "../src/server/worktrees/occupancy.ts";
 import { bothAttempts } from "../src/server/worktrees/observation-retry.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function process(pid: number, ppid = 1): Proc {
   return {
@@ -28,7 +28,7 @@ function process(pid: number, ppid = 1): Proc {
 const noPause = async () => {};
 
 function fixture(): { root: string; one: string; ten: string; nested: string } {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-worktree-occupancy-")));
+  const root = realpathSync(tempDir("mission-worktree-occupancy-"));
   const one = join(root, "1", "repo");
   const ten = join(root, "10", "repo");
   const nested = join(one, "packages", "app");

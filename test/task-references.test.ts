@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -10,6 +8,7 @@ import { TASK_REFERENCE_RULE, taskIdCandidates, withTaskTitles } from "../src/sh
 import { buildBacklogPrompt } from "../src/server/foreman/backlog-prompt.ts";
 import type { TaskDependency } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A person reading Mission Control sees tasks by title only. Every agent surface that hands
 // out task ids has to say so, and prose the board renders verbatim must not carry one.
@@ -82,7 +81,7 @@ test("the backlog planner is told to name tasks by title, and sees each prerequi
 });
 
 // The real stdio server, so the assertion is on what a harness actually receives.
-const home = mkdtempSync(join(tmpdir(), "task-references-"));
+const home = tempDir("task-references-");
 const client = new Client({ name: "task-references", version: "1" });
 before(async () => {
   await client.connect(new StdioClientTransport({

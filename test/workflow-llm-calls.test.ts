@@ -1,12 +1,11 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { WorkflowLlmCall } from "../src/shared/workflow.ts";
 import { workflowCallCost } from "../src/web/workflows/run-model.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-llm-calls-"));
+const home = tempDir("mission-workflow-llm-calls-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

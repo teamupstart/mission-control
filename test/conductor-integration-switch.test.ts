@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The ai-conductor integration is hidden behind one switch. These pin the shipped state - off -
 // at every boundary it is applied, and pin that the same helpers restore everything when the
 // switch is on, so flipping it back is the whole of the change.
 
-const home = mkdtempSync(join(tmpdir(), "mission-conductor-switch-"));
+const home = tempDir("mission-conductor-switch-");
 process.env.HARNESS_HOME = join(home, "state");
 process.env.MISSION_CONDUCTOR_BIN = join(home, "no-such-conductor");
 process.env.AI_CONDUCTOR_REGISTRY = join(home, "no-such-registry.json");
@@ -100,8 +100,11 @@ test("Setup hides the ai-conductor row and the Pipelines family it empties, and 
   );
   // Repositories has no catalog dependency at all; hiding must not take it with it.
   assert.ok(visibleSetupFamilyIds([], false).includes("repositories"));
-  // A family is never withheld while a row names it.
+  // A family is never withheld while a row names it...
   assert.ok(visibleSetupFamilyIds([{ family: "pipelines" }], false).includes("pipelines"));
+  // ...unless it follows a preview flag that is off: the live flag outranks a cached row.
+  assert.equal(visibleSetupFamilyIds([{ family: "voice" }], false, () => false).includes("voice"), false);
+  assert.ok(visibleSetupFamilyIds([{ family: "voice" }], false, () => true).includes("voice"));
   // The defaults are the shipped switch.
   assert.deepEqual(availableSetupDependencyIds(), availableSetupDependencyIds(CONDUCTOR_INTEGRATION_ENABLED));
 
@@ -293,6 +296,7 @@ test("the pipeline routes answer 'nothing observed' to pollers and 404 to everyt
 
   for (const [method, path] of [
     ["GET", "/api/pipelines/config"],
+    ["PATCH", "/api/pipelines/config"],
     ["GET", "/api/pipelines/installers?provider=ai-conductor"],
     ["POST", "/api/pipelines/register"],
     ["POST", "/api/pipelines/install"],

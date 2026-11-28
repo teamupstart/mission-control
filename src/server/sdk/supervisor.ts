@@ -1,11 +1,16 @@
+import { canonicalWorktreePath } from "../worktrees/path.ts";
+import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
+import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
+import { launchAgentEnvironment } from "../agent-environment.ts";
 import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
+import { launchWorkUnitId } from "../work-unit.ts";
 import type { PauseRelease } from "../pause/release.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
 import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
 import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -51,7 +56,7 @@ import {
   type HumanEchoTicket,
 } from "../injections.ts";
 import { getStandingInstructions, getTask as getDurableTask, taskIdForSession, taskSessionClosureForSession } from "../db.ts";
-import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import type { RepoTaskSkillRecord, StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { noteSessionRestoring, observeSessionRestore, sessionTraceContext } from "../telemetry/index.ts";
 import {
   cleanupDisposableAgentStateHome,
@@ -116,21 +121,25 @@ function requiresInstalledMissionTools(agent: AgentType, taskId: string | null):
   return taskId !== null && capabilitiesFor(agent).missionTools?.mechanism === "installed-extension";
 }
 
+function missionToolCaller(sessionId: string) {
+  return { sessionId, locator: sessionScoutCredentialLocator(sessionId) };
+}
+
 /** Bind one launch-scoped MCP process to the SDK session Mission Control registered. */
 function missionMcpForSession(
   descriptor: MissionMcpDescriptor | null,
   sessionId: string,
 ): MissionMcpDescriptor | null {
-  return descriptor
-    ? {
-        ...descriptor,
-        env: {
-          ...descriptor.env,
-          [MISSION_SESSION_ID_ENV]: sessionId,
-          [SCOUT_SESSION_LOCATOR_ENV]: sessionScoutCredentialLocator(sessionId),
-        },
-      }
-    : null;
+  if (!descriptor) return null;
+  const caller = missionToolCaller(sessionId);
+  return {
+    ...descriptor,
+    env: {
+      ...descriptor.env,
+      [MISSION_SESSION_ID_ENV]: caller.sessionId,
+      [SCOUT_SESSION_LOCATOR_ENV]: caller.locator,
+    },
+  };
 }
 
 /** The block a pair with an out-of-band channel carries there, or `""` for one without. */
@@ -393,8 +402,15 @@ export class SdkSupervisor {
         // projection is not yet a usable session, and the two must not share one count.
         noteSessionRestoring(row.id, row.taskId);
         const restoreStartedAt = Date.now();
+        // The restore's one work unit decision, made here so the launch and the span that
+        // reports this attempt carry the same value whether or not the agent comes back. Inside
+        // the `try`: the owner lookup reads SQLite, and a throw there must reach this row's
+        // failure handling rather than abort every row after it. A decision that could not be
+        // made is reported as none, never guessed.
+        let workUnitId: string | null = null;
         try {
-          await this.resume(row);
+          workUnitId = this.restoreWorkUnitId(row);
+          await this.resume(row, null, workUnitId);
           clearSdkSessionResumeDeferrals(row.id);
           observeSessionRestore({
             sessionId: row.id,
@@ -411,6 +427,7 @@ export class SdkSupervisor {
             outcome: this.shuttingDown ? "interrupted" : "succeeded",
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
+            workUnitId,
           });
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
@@ -436,6 +453,7 @@ export class SdkSupervisor {
             outcome: "failed",
             durationMs: Date.now() - restoreStartedAt,
             turnInProgress: row.turnInProgress,
+            workUnitId,
           });
           if (deferred) {
             // Not a verdict on this session: keep it live for the next restore, which is the
@@ -532,12 +550,23 @@ export class SdkSupervisor {
        * working launch and deliver the operator's rules nowhere.
        */
       fallbackPrompt: string;
+      /** What repository task skills this launch included or skipped; recorded with the snapshot. */
+      repoTaskSkills?: RepoTaskSkillRecord | null;
     };
     taskId: string | null;
+    /**
+     * The launch's one work unit decision (`launchWorkUnitId`, made by the caller where its
+     * launch began). The agent gets it as `WORK_UNIT_ID`, and it becomes the session's launch
+     * record once the driver has started. Omitted or null launches with none.
+     */
+    workUnitId?: string | null;
     gitBranch?: string | null;
     gitRoot?: string | null;
     repoRoot?: string | null;
   }): Promise<Session> {
+    const extraDirs = (input.extraDirs ?? []).map((path) => canonicalWorktreePath(resolve(input.cwd, path)));
+    using reservation = reserveWorktreeUse([input.cwd, ...extraDirs]);
+    if (!reservation) throw new Error("automatic cleanup currently owns this checkout");
     if (this.shuttingDown) throw new Error("the SDK supervisor is shutting down");
     const spec = sdkFor(input.agent);
     if (!spec) throw new Error(`${input.agent} has no embedded driver`);
@@ -557,12 +586,16 @@ export class SdkSupervisor {
       this.startOwnership.delete(ownership);
     };
     let handle: SdkSessionHandle;
+    let namedEnvironment: NamedAgentEnvironment | undefined;
     try {
+      const residentStateDir = await residentStateForTask(input.taskId);
+      namedEnvironment = await launchAgentEnvironment(!!residentStateDir || !!input.residentMcp);
       handle = await spec.launch({
         cwd: input.cwd,
         stateHome,
         prompt: input.prompt,
-        residentStateDir: await residentStateForTask(input.taskId),
+        residentStateDir,
+        namedEnvironment,
         residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
@@ -570,8 +603,10 @@ export class SdkSupervisor {
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
         ...(requiresInstalledMissionTools(input.agent, input.taskId) ? { missionToolsRequired: true } : {}),
+        ...(capabilitiesFor(input.agent).missionTools?.mechanism === "installed-extension"
+          ? { missionToolCaller: missionToolCaller(id) } : {}),
         residentMcp: input.residentMcp ?? null,
-        extraDirs: input.extraDirs ?? [],
+        extraDirs,
         standingInstructions: outOfBandStanding,
         // What to send instead if that channel turns out to be unusable. Composed by the
         // DISPATCHER, which is the only place that can put the block in the same slot the
@@ -584,6 +619,7 @@ export class SdkSupervisor {
         // `mission.session.started` is captured under the same derived ids when this id is
         // first published, so the agent's spans join that span's trace.
         traceContext: sessionTraceContext(id),
+        workUnitId: input.workUnitId ?? null,
       });
     } catch (error) {
       cleanupDisposableAgentStateHome(stateHome);
@@ -605,12 +641,15 @@ export class SdkSupervisor {
         registration: {
           id,
           agent: input.agent,
+          missingEnvironment: namedEnvironment?.missing,
           name: input.name,
           cwd: input.cwd,
           permissionMode: input.permissionMode,
           gitBranch: input.gitBranch ?? null,
           gitRoot: input.gitRoot ?? null,
           repoRoot: input.repoRoot ?? null,
+          // The driver has started, so this is what the agent carries.
+          launchWorkUnitId: input.workUnitId ?? null,
         },
         handle,
         stateHome,
@@ -618,6 +657,7 @@ export class SdkSupervisor {
         launchPresentation: input.launchPresentation,
         durable: {
           taskId: input.taskId,
+          extraDirs,
           model: input.model,
           effort: input.effort,
           advisorModel: input.advisorModel,
@@ -641,12 +681,17 @@ export class SdkSupervisor {
     // channel would later tell an assignment the rule was still installed on the process
     // when it was only ever turn-one prose.
     try {
-      if (input.standingInstructions?.delivery.text) {
-        this.registry.recordStandingInstructions(started.id, {
-          ...input.standingInstructions.delivery,
-          mechanism:
-            handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
-        });
+      if (input.standingInstructions) {
+        this.registry.recordStandingInstructions(
+          started.id,
+          {
+            ...input.standingInstructions.delivery,
+            mechanism:
+              handle.standingInstructionsMechanism ?? input.standingInstructions.delivery.mechanism,
+          },
+          // A start is a launch: no record on the input means this launch had none.
+          input.standingInstructions.repoTaskSkills ?? null,
+        );
       }
       return started;
     } finally {
@@ -681,6 +726,7 @@ export class SdkSupervisor {
      */
     durable: {
       taskId: string | null;
+      extraDirs?: readonly string[];
       model: string | null;
       effort: ThinkingLevel | null;
       advisorModel?: AdvisorChoice | null;
@@ -733,6 +779,7 @@ export class SdkSupervisor {
       agent: registration.agent,
       agentSessionId: durable.agentSessionId ?? null,
       cwd: registration.cwd,
+      extraDirs: durable.extraDirs,
       taskId: durable.taskId,
       model: durable.model,
       effort: durable.effort,
@@ -1203,7 +1250,7 @@ export class SdkSupervisor {
     const waiters = this.conversationWaiters.get(id);
     if (!waiters) return;
     this.conversationWaiters.delete(id);
-    for (const waiter of [...waiters]) waiter(conversation);
+    for (const waiter of Array.from(waiters)) waiter(conversation);
   }
 
   /**
@@ -1258,7 +1305,7 @@ export class SdkSupervisor {
    * `hibernated` so the operator can retry. On success the session is registered idle and the
    * row is live again; binding it back to its task is the caller's.
    */
-  async wake(id: string, conversation: string): Promise<Session> {
+  async wake(id: string, conversation: string, ownerTaskId: string | null = null): Promise<Session> {
     if (this.shuttingDown) throw new Error("Mission Control is shutting down");
     if (this.handles.has(id)) throw new Error("its agent is already running");
     if (this.waking.has(id)) throw new Error("it is already resuming");
@@ -1280,7 +1327,7 @@ export class SdkSupervisor {
     this.unboundWakes.add(id);
     try {
       // No continuation turn is owed: only an idle session is hibernated.
-      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false });
+      await this.resume({ ...row, agentSessionId: conversation, turnInProgress: false }, ownerTaskId);
     } catch (error) {
       // Adopted, then something after the adoption threw: the conversation IS open again and
       // its pump owns it from here, so this is a resume, not a failure to report.
@@ -1588,21 +1635,51 @@ export class SdkSupervisor {
   }
 
   /**
+   * The work unit decision for relaunching `row`. A restore or a wake is a start, so it decides
+   * again, once. The process it replaces has ended, so what that one carried no longer
+   * describes anything. Decided from the task that OWNS the session now, not from `row.taskId`,
+   * which is launch provenance: an agent started with no work unit may since have been assigned
+   * another unit's task, and the restored agent runs that task, so it must carry that task's id.
+   * With no current owner, the launch task is what the session last worked for. A hibernation
+   * wake names its task (`ownerTaskId`): hibernating cleared the task's session pointer, so the
+   * lookup would otherwise fall back to the launch task.
+   */
+  private restoreWorkUnitId(row: SdkSessionRow, ownerTaskId: string | null = null): string | null {
+    const ownerId = ownerTaskId ?? taskIdForSession(row.id) ?? row.taskId;
+    // The registry first, then SQLite: the registry may already have dropped a finished task.
+    const owner = ownerId ? (this.registry.getTask(ownerId) ?? getDurableTask(ownerId) ?? null) : null;
+    return launchWorkUnitId(owner);
+  }
+
+  /**
    * Relaunch one persisted session, continuing the SAME conversation.
    *
    * `resume` is the harness-native id the driver reported when it bound, which is what
    * makes this a continuation rather than a new session wearing an old card: the note,
    * queue, goal and work episode are all keyed on it, and a fresh id would strand every one
    * of them. A row that never got that far has nothing to continue and is refused here.
+   *
+   * `workUnitId` is that relaunch's decision. The restore loop makes it first, so the span
+   * reporting the attempt carries the same value; a wake lets this make it.
    */
-  private async resume(row: SdkSessionRow): Promise<void> {
+  private async resume(
+    row: SdkSessionRow,
+    ownerTaskId: string | null = null,
+    workUnitId: string | null = this.restoreWorkUnitId(row, ownerTaskId),
+  ): Promise<void> {
+    if (row.extraDirs === null) throw new ResumeDeferred("additional checkout grants could not be read");
+    const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    // Older task-backed rows reconstruct the launch grants once and record them on adoption.
+    const extraDirs = row.extraDirs ?? (task?.extraRepos ?? [])
+      .flatMap((entry) => entry.worktreePath ? [entry.worktreePath] : []);
+    using reservation = reserveWorktreeUse([row.cwd, ...extraDirs]);
+    if (!reservation) throw new ResumeDeferred("automatic cleanup currently owns this checkout");
     if (!row.agent) throw new Error("its harness is not one this build knows");
     const spec = sdkFor(row.agent);
     if (!spec) throw new Error(`${row.agent} has no embedded driver in this build`);
     if (!row.agentSessionId) {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
-    const task = row.taskId ? this.registry.getTask(row.taskId) : null;
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;
@@ -1703,14 +1780,20 @@ export class SdkSupervisor {
     // text and must not be able to disagree about what this session was launched under.
     const resumeStanding = standingInstructionsForResume(row.agentSessionId ?? row.id);
     let adopted = false;
+    // Held outside the `try` so a failure between launch and adoption can stop the driver it
+    // started: nothing else owns it, and a retried wake would start a second one.
+    let launched: SdkSessionHandle | null = null;
     try {
+      const residentStateDir = await residentStateForTask(row.taskId);
+      const namedEnvironment = await launchAgentEnvironment(!!residentStateDir || task?.kind === "resident");
       const handle = await spec.launch({
+        namedEnvironment,
         cwd: row.cwd,
         stateHome,
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
-        residentStateDir: await residentStateForTask(row.taskId),
+        residentStateDir,
         residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
@@ -1720,17 +1803,12 @@ export class SdkSupervisor {
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
         ...(requiresInstalledMissionTools(row.agent, row.taskId) ? { missionToolsRequired: true } : {}),
+        ...(capabilitiesFor(row.agent).missionTools?.mechanism === "installed-extension"
+          ? { missionToolCaller: missionToolCaller(row.id) } : {}),
         // A resident's MCP set comes from its run's snapshot, never from native configuration,
         // so a restart resumes exactly the servers it launched with.
         residentMcp: task ? this.residentMcp?.(task) ?? null : null,
-        // Rebuilt from the task row rather than remembered on the session row, because the
-        // task is where the repo set durably lives - and this grant can only be made at
-        // launch, so a resumed multi-repo session that omitted it would come back able to
-        // read its secondary worktrees and unable to write to them, which is the failure
-        // nobody would attribute to a daemon restart.
-        extraDirs: (task?.extraRepos ?? [])
-          .map((entry) => entry.worktreePath)
-          .filter((p): p is string => p !== null),
+        extraDirs,
         // Replayed from THIS session's launch snapshot, never re-resolved. A daemon restart
         // ends the process that carried the operator's text, so a resume that omitted it
         // would quietly drop a rule the session had been running under - but re-reading live
@@ -1757,7 +1835,9 @@ export class SdkSupervisor {
         // The same session id derives the same parent, so the restored process continues the
         // trace its first launch started rather than opening a second one.
         traceContext: sessionTraceContext(row.id),
+        workUnitId,
       });
+      launched = handle;
       // A signal can arrive while a provider handshake is in flight. The handle is now ours,
       // but no real Registry session has been published yet, so stop and clean it at this
       // existing ownership boundary instead of briefly adopting an actionable card.
@@ -1773,6 +1853,7 @@ export class SdkSupervisor {
         registration: {
           id: row.id,
           agent: row.agent,
+          missingEnvironment: namedEnvironment?.missing,
           name: restoredName(row, task?.title ?? null),
           cwd: row.cwd,
           // An idle resume emits a binding but owes no assistant/result frame, so carry the
@@ -1783,11 +1864,13 @@ export class SdkSupervisor {
           gitBranch: task?.branch ?? null,
           gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
           repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
+          launchWorkUnitId: workUnitId,
         },
         handle,
         stateHome,
         durable: {
           taskId: row.taskId,
+          extraDirs,
           model: row.model,
           effort: row.effort,
           advisorModel: row.advisorModel,
@@ -1810,6 +1893,15 @@ export class SdkSupervisor {
         this.registry.markStandingInstructionsPrefixed(row.id);
       }
     } catch (error) {
+      // A driver that started but was never taken by `adopt` (its row or registration write
+      // threw) is stopped before its state home goes, as the shutdown branch does. The home goes
+      // even when the stop fails: nothing will ever adopt that driver, and nothing else removes
+      // a launch's private home, so keeping it would only strand it. A failed stop is logged.
+      if (!adopted && launched && this.handles.get(row.id) !== launched) {
+        await launched.stop().catch((stopError: unknown) => {
+          console.error(`[sdk] could not stop the unadopted driver for ${row.id}:`, stopError);
+        });
+      }
       if (!adopted) cleanupDisposableAgentStateHome(stateHome);
       if (task?.kind === "pipeline") {
         this.registry.endManagedPipelineCaller(task.id, row.id, callerCredential!);
@@ -1835,7 +1927,18 @@ export class SdkSupervisor {
       // substitution the record exists to prevent, still reachable through its own path. The
       // reservation closes that window; the release below gives it back when the driver is
       // known to have taken nothing.
-      reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      // A reservation refused because its attribution could not be stored
+      // (`AutomatedAttributionError`) recorded nothing: the continuation is not sent, and nothing
+      // is released, since a release would give back an earlier reservation of the same text.
+      try {
+        reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
+      } catch (err) {
+        console.error(
+          `[sdk] could not continue interrupted turn for ${row.id}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
       try {
         // Through the ordinary send path AFTER adoption: Codex can resume with an active
         // turn, and its handle must choose `turn/steer` rather than the launch-time seed's
@@ -2104,7 +2207,20 @@ export class SdkSupervisor {
     if (this.handles.get(id) !== handle || this.shuttingDown) return;
     // Harness-authored, like the restart continuation: the agent's prompt echo must not be
     // captured as the operator's Goal or read back to a workflow as their words.
-    reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    // A reservation refused because its attribution could not be stored
+    // (`AutomatedAttributionError`) recorded nothing: the retry is not sent and is settled as one
+    // that could not be delivered, and nothing is released, since a release would give back an
+    // earlier reservation of the same text.
+    try {
+      reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    } catch (err) {
+      console.error(
+        `[sdk] capacity retry for ${id} could not be delivered:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      if (this.handles.get(id) === handle) this.settleCapacityRetry(id);
+      return;
+    }
     const busy = new Error("the driver was already running a turn");
     try {
       // Asked again at send time: the send waits its turn on the session's chain, and a pause can
@@ -2171,7 +2287,6 @@ export class SdkSupervisor {
     this.capacityAttempts.set(id, held.attempt - 1);
     return this.scheduleCapacityRetry(id, handle, held.reason);
   }
-
 
   /**
    * Report the turn a cancelled retry was holding open as finished after all, against

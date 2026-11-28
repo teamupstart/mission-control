@@ -1,0 +1,136 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "unicorn",
+    "typescript",
+    "oxc",
+    "react",
+    "jsx-a11y"
+  ],
+  "jsPlugins": ["./scripts/oxlint-repository.mjs"],
+  "categories": {
+    "correctness": "error"
+  },
+  // React/hooks and accessibility stay advisory until the follow-up tasks
+  // "React loading and re-render fixes" and "Interface guideline defects and accessibility lint".
+  "rules": {
+    "jsx-a11y/alt-text": "warn",
+    "jsx-a11y/anchor-has-content": "warn",
+    "jsx-a11y/anchor-is-valid": "warn",
+    "jsx-a11y/aria-activedescendant-has-tabindex": "warn",
+    "jsx-a11y/aria-props": "warn",
+    "jsx-a11y/aria-proptypes": "warn",
+    "jsx-a11y/aria-role": "warn",
+    "jsx-a11y/aria-unsupported-elements": "warn",
+    "jsx-a11y/autocomplete-valid": "warn",
+    "jsx-a11y/click-events-have-key-events": "warn",
+    "jsx-a11y/control-has-associated-label": "warn",
+    "jsx-a11y/heading-has-content": "warn",
+    "jsx-a11y/html-has-lang": "warn",
+    "jsx-a11y/iframe-has-title": "warn",
+    "jsx-a11y/img-redundant-alt": "warn",
+    "jsx-a11y/interactive-supports-focus": "warn",
+    "jsx-a11y/label-has-associated-control": "warn",
+    "jsx-a11y/lang": "warn",
+    "jsx-a11y/media-has-caption": "warn",
+    "jsx-a11y/mouse-events-have-key-events": "warn",
+    "jsx-a11y/no-access-key": "warn",
+    "jsx-a11y/no-aria-hidden-on-focusable": "warn",
+    "jsx-a11y/no-autofocus": "warn",
+    "jsx-a11y/no-distracting-elements": "warn",
+    "jsx-a11y/no-interactive-element-to-noninteractive-role": "warn",
+    "jsx-a11y/no-noninteractive-element-interactions": "warn",
+    "jsx-a11y/no-noninteractive-element-to-interactive-role": "warn",
+    "jsx-a11y/no-noninteractive-tabindex": "warn",
+    "jsx-a11y/no-redundant-roles": "warn",
+    "jsx-a11y/no-static-element-interactions": "warn",
+    // Existing intentional ARIA roles produce hundreds of noisy findings.
+    "jsx-a11y/prefer-tag-over-role": "off",
+    "jsx-a11y/role-has-required-aria-props": "warn",
+    "jsx-a11y/role-supports-aria-props": "warn",
+    "jsx-a11y/scope": "warn",
+    "jsx-a11y/tabindex-no-positive": "warn",
+    "react/exhaustive-deps": "warn",
+    "react/forward-ref-uses-ref": "warn",
+    "react/jsx-key": "warn",
+    "react/jsx-no-duplicate-props": "warn",
+    "react/jsx-no-undef": "warn",
+    "react/jsx-props-no-spread-multi": "warn",
+    "react/no-children-prop": "warn",
+    "react/no-danger-with-children": "warn",
+    "react/no-did-mount-set-state": "warn",
+    "react/no-did-update-set-state": "warn",
+    "react/no-direct-mutation-state": "warn",
+    "react/no-find-dom-node": "warn",
+    "react/no-is-mounted": "warn",
+    "react/no-render-return-value": "warn",
+    "react/no-string-refs": "warn",
+    "react/no-this-in-sfc": "warn",
+    "react/no-unsafe": "warn",
+    "react/no-will-update-set-state": "warn",
+    "react/rules-of-hooks": "warn",
+    "react/void-dom-elements-no-children": "warn"
+  },
+  "overrides": [
+    {
+      "files": ["src/shared/**/*"],
+      "rules": {
+        "no-restricted-imports": ["error", { "patterns": [{ "regex": "^node:" }] }]
+      }
+    },
+    {
+      "files": ["test/**/*", "e2e/**/*"],
+      "rules": { "repository/test-imports": "error", "repository/test-temp-dirs": "error" }
+    },
+    {
+      // The owner of the temp root, and the preload that installs it before any test runs.
+      "files": ["test/temp-root.mjs", "test/setup-state.mjs"],
+      "rules": { "repository/test-temp-dirs": "off" }
+    },
+    {
+      "files": ["src/**/*", "test/**/*", "e2e/**/*"],
+      "rules": { "repository/no-test-ids": "error" }
+    },
+    {
+      "files": ["src/**/*"],
+      "rules": {
+        "repository/parse-request-body": "error",
+        "repository/agent-comparison": "error",
+        "repository/registry-eviction": "error"
+      }
+    },
+    {
+      // Checkouts, pool slots, seed staging and archive bundles can hold Electron's asar.
+      "files": ["src/server/worktrees/**/*", "src/server/archives/**/*"],
+      "rules": { "repository/tree-removal": "error" }
+    },
+    {
+      "files": ["src/server/http-body.ts"],
+      "rules": { "repository/parse-request-body": "off" }
+    },
+    {
+      "files": ["src/server/harness/**/*"],
+      "rules": { "repository/agent-comparison": "off" }
+    },
+    {
+      "files": ["src/server/registry.ts"],
+      "rules": { "repository/registry-eviction": "off" }
+    },
+    // These sanitizers deliberately remove control bytes from untrusted text/URLs.
+    // The named tests verify that those bytes cannot survive into prompts or output.
+    {
+      "files": [
+        "src/server/ensembles/reviews/prompt.ts",
+        "src/server/workflows/log.ts",
+        "src/server/workflows/packet-text.ts",
+        "src/web/lib/workspaceLinks.ts",
+        "test/ensemble-comparative-review.test.ts",
+        "test/ensemble-snapshot.test.ts",
+        "test/queue-machine.test.ts",
+        "test/workflow-feedback.test.ts",
+        "test/workflow-inspector-feedback.test.ts"
+      ],
+      "rules": { "no-control-regex": "off" }
+    }
+  ]
+}

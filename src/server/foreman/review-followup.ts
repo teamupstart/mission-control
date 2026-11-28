@@ -11,7 +11,7 @@ import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
-import { hasBlocker, settledIdle } from "@shared/session.ts";
+import { hasBlocker, isAwaiting, settledIdle } from "@shared/session.ts";
 import { buildStackPrompt, type StackPromptKind, type StackPromptRequest } from "@shared/stacking.ts";
 
 /** What Foreman's log says when it types each stack prompt. */
@@ -579,13 +579,15 @@ function followupInviteBlocker(s: Session): string | null {
   return null;
 }
 
-function followupOwnershipBlocker({ session: s, bucket, workflowOwnsSession }: FollowupSessionInput): string | null {
+function followupOwnershipBlocker({ session: s, bucket, workflowOwnsSession, now }: FollowupSessionInput): string | null {
   // 4. Something needs a human. An unanswered question or an input wait means the agent
   //    is stopped ON that, not free to be handed the PR - triage owns it until it doesn't.
   if (bucket === "needs-you") return "the session needs a human";
   if (s.state === "awaiting_input") return "the session is waiting on input";
   // 4b. A durable blocker: the session is waiting on someone else, so nothing is typed into it.
   if (hasBlocker(s)) return "the session is blocked";
+  // 4c. A declared wait inside its deadline: the session is waiting on its own background process.
+  if (isAwaiting(s, now)) return "the session is awaiting a background process";
   if (isPaused(s)) return "the session is paused";
 
   // 5. THE OVERLAP RULE, the same shape prompted-wrapup states: a checkout with live work

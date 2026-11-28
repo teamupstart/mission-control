@@ -1,15 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
-import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { gitIn, seedGitRepo } from "./helpers/git-fixture.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-context-"));
+ensureNativeStateLockAddon();
+const home = tempDir("mission-workflow-context-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -41,6 +44,99 @@ const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-work
 const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { evaluateWorkflowEvidenceReadiness, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
+
+test("a publication checkout revision detects content, inventory, index and HEAD changes", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "publication-revision");
+  seedGitRepo(dir);
+  const stamp = () => publicationCheckoutRevision(dir, []);
+  const clean = stamp();
+  assert.ok(clean);
+  assert.equal(stamp(), clean);
+  writeFileSync(join(dir, "keep.txt"), "edit\n");
+  const edited = stamp();
+  assert.ok(edited && edited !== clean);
+  writeFileSync(join(dir, "keep.txt"), "next\n");
+  assert.notEqual(stamp(), edited, "same-size tracked edit");
+  const unstaged = stamp();
+  execFileSync("git", ["-C", dir, "add", "keep.txt"]);
+  assert.notEqual(stamp(), unstaged, "staging changes the index identity");
+  const staged = stamp();
+  writeFileSync(join(dir, "untracked"), "one");
+  const added = stamp();
+  assert.ok(added && added !== staged);
+  writeFileSync(join(dir, "untracked"), "two");
+  assert.notEqual(stamp(), added, "same-size untracked edit");
+  const beforeCommit = stamp();
+  execFileSync("git", ["-C", dir, "commit", "-qm", "edit"]);
+  assert.notEqual(stamp(), beforeCommit);
+  assert.equal(publicationCheckoutRevision(join(home, "absent"), []), null);
+});
+
+test("a publication checkout revision requires the reviewed commit even when two commits share a tree", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "same-tree-publication");
+  seedGitRepo(dir);
+  const reviewed = gitIn(dir, "rev-parse", "HEAD");
+  const stamp = () => publicationCheckoutRevision(dir, [], undefined, reviewed);
+  assert.ok(stamp());
+  gitIn(dir, "commit", "--allow-empty", "-qm", "same content, different commit");
+  assert.notEqual(gitIn(dir, "rev-parse", "HEAD"), reviewed);
+  assert.equal(gitIn(dir, "rev-parse", "HEAD^{tree}"), gitIn(dir, "rev-parse", `${reviewed}^{tree}`));
+  assert.equal(stamp(), null);
+});
+
+test("a publication checkout revision refuses HEAD drift during sampling", async (t) => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const dir = join(home, "publication-revision-drift");
+  seedGitRepo(dir);
+  assert.ok(publicationCheckoutRevision(dir, []));
+  const children = createRequire(import.meta.url)("node:child_process") as typeof import("node:child_process");
+  const run = children.execFileSync.bind(children);
+  let factsReads = 0;
+  let changed = false;
+  const intercepted = t.mock.method(children, "execFileSync", (...args: Parameters<typeof run>) => {
+    const gitArgs = args[1];
+    if (Array.isArray(gitArgs) && gitArgs.includes("ls-files") && !changed) {
+      assert.equal(factsReads, 1);
+      gitIn(dir, "commit", "--allow-empty", "-qm", "HEAD changed during sampling");
+      changed = true;
+    }
+    const result = run(...args);
+    if (Array.isArray(gitArgs) && gitArgs.includes("--absolute-git-dir")) factsReads++;
+    return result;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(publicationCheckoutRevision(dir, [], performance.now() + 2_000), null);
+  } finally {
+    intercepted.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal(changed, true);
+  assert.equal(factsReads, 2);
+});
+
+test("a clean submodule publication revision refuses tracked or untracked nested edits", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const parent = join(home, "submodule-parent");
+  const source = join(home, "submodule-source");
+  const nested = join(parent, "nested");
+  seedGitRepo(parent);
+  seedGitRepo(source);
+  gitIn(parent, "-c", "protocol.file.allow=always", "submodule", "add", source, "nested");
+  gitIn(parent, "commit", "-qm", "add nested checkout");
+  const revision = () => publicationCheckoutRevision(parent, []);
+  assert.ok(revision());
+  const head = gitIn(nested, "rev-parse", "HEAD");
+  writeFileSync(join(nested, "keep.txt"), "edit\n");
+  assert.equal(gitIn(nested, "rev-parse", "HEAD"), head);
+  assert.equal(revision(), null);
+  gitIn(nested, "restore", "keep.txt");
+  assert.ok(revision());
+  writeFileSync(join(nested, "untracked"), "new");
+  assert.equal(revision(), null);
+});
 
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
@@ -107,7 +203,7 @@ test("workflow context preserves raw goal and excludes every attributed non-huma
   assert.deepEqual(context.acceptanceCriteria, []);
 });
 
-test("workflow context excludes a delivered workflow packet after live attribution is lost", async () => {
+for (const beforeSend of [false, true]) test(`workflow context excludes the delivered packet and keeps a human repeat, pre-send anchor=${beforeSend}`, async () => {
   const transcriptPath = join(home, "workflow-attribution.jsonl");
   const humanDecision = "Keep the public API stable";
   const workflowPacket = "# Evidence preflight needs repair\n\nCapture the rendered result.";
@@ -161,7 +257,9 @@ test("workflow context excludes a delivered workflow packet after live attributi
   forgetInjections(session.id);
   const captured = await readWorkflowContextRaw(registry, binding, [], [{
     payload: workflowPacket,
-    transcriptAnchor: deliveryAnchor,
+    transcriptPath,
+    transcriptAnchor: beforeSend ? Buffer.byteLength(records[0]!) : deliveryAnchor,
+    ...(beforeSend ? { beforeSend: true as const } : {}),
   }]);
 
   assert.deepEqual(captured.raw.humanDecisions, [
@@ -180,6 +278,13 @@ test("workflow context excludes a delivered workflow packet after live attributi
     captured.raw.evidence.transcript.map((message) => message.content),
     [humanDecision, workflowPacket],
   );
+  if (!beforeSend) {
+    const ambiguous = await readWorkflowContextRaw(registry, binding, [], [{
+      payload: workflowPacket, transcriptPath, transcriptAnchor: Buffer.byteLength(records.join("")),
+    }]);
+    assert.deepEqual(ambiguous.raw.humanDecisions.map(d => d.source.id),
+      ["human-decision", "workflow-repair", "human-repetition"], "an ambiguous legacy end offset cannot remove the human copy");
+  }
 });
 
 test("bounded feedback keeps recent entries in chronological order and marks the oldest boundary", async () => {
@@ -640,8 +745,33 @@ test("an uncommitted submission with Commands pins them to a review snapshot of 
     ["?? .coderabbit.yaml", "?? docs/", "?? new.txt", "M app.txt"]);
   assert.equal(await captureBoundaryChanged(registry, binding, dirty.boundary), false);
 
-  // A graph with no Command has nothing to pin and writes no snapshot.
+  // The layered capture includes local evidence that the publication tree intentionally excludes.
   const before = git("for-each-ref", "refs/mission-control/workflow-reviews/");
+  const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
+  const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+  const root = join(home, "artifact-store");
+  const service = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), root);
+  const signal = new AbortController().signal;
+  const sealed = await captureStableWorkflowContext(async () => dirty,
+    captured => captureBoundaryChanged(registry, binding, captured.boundary), {
+      sampleBoundary: () => service.sampleBoundary(repo, signal),
+      prepare: captured => service.prepare(captured.repositoryCapture!, signal),
+      stillCurrent: candidate => service.stillCurrent(candidate, signal),
+      discard: candidate => service.discard(candidate),
+    });
+  assert.ok(sealed);
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, "pending", sealed.candidate.id, "artifact", "manifest.json"), "utf8"));
+    assert.equal(manifest.view.head, head);
+    assert.equal(manifest.view.base, head);
+    assert.equal(manifest.view.indexTree, git("rev-parse", "HEAD^{tree}"));
+    assert.equal(manifest.view.worktreeTree, dirty.context.evidence.contentTreeOid);
+    assert.notEqual(manifest.view.worktreeTree, dirty.context.evidence.publication!.treeOid);
+    assert.equal(sealed.captured.context.evidence.reviewCommit, snapshot);
+    assert.equal(git("for-each-ref", "refs/mission-control/workflow-reviews/"), before);
+  } finally { await service.discard(sealed.candidate); }
+
+  // A graph with no Command has nothing to pin and writes no snapshot.
   const withoutCommands = await readWorkflowContextRaw(registry, binding, [], [], null);
   assert.equal(withoutCommands.context.evidence.reviewCommit, null);
   assert.equal(git("for-each-ref", "refs/mission-control/workflow-reviews/"), before);
@@ -683,6 +813,12 @@ test("repository capture fails closed and detects worktree evidence changes", as
   } as WorkflowBinding;
   const captured = await readWorkflowContextRaw(registry, binding);
   assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), false);
+
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const beforeProbe = publicationCheckoutRevision(repo, []);
+  assert.ok(beforeProbe);
+  await readWorkflowEvidenceProbe(registry, binding);
+  assert.equal(publicationCheckoutRevision(repo, []), beforeProbe, "the probe changed its own checkout revision");
 
   writeFileSync(join(repo, "file.txt"), "two\n");
 

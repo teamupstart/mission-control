@@ -5,13 +5,11 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +25,7 @@ import {
   piCatalogControlPath,
   piSdkModelsPath,
   writeFakeAgents,
+  writeFakeCodex,
 } from "./fake-agents.ts";
 import {
   conductorEngineerStatePath,
@@ -37,6 +36,7 @@ import {
   writeFakeConductor,
   type FakeConductor,
 } from "./conductor.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * A real Mission Control daemon, isolated from the operator's machine, for a browser to drive.
@@ -133,8 +133,9 @@ export interface DaemonHandle {
    * SIGKILL the daemon - the CRASH case, with no orderly shutdown of any kind. The
    * port, home and database stay put so `restart()` can bring a successor up on the
    * same coordinates. Exists for the states only an ungraceful death can produce:
-   * transient daemon state (keep awake) must reset, `-w`-style child backstops must
-   * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
+   * process-owned state (a keep awake assertion) must be released with no orderly stop,
+   * `-w`-style child backstops must fire, and the dashboard must fall to `reconnecting`
+   * rather than keep old claims.
    */
   crash(): Promise<void>;
   /** Gracefully suspend SDK sessions, retaining the home and database for restart(). */
@@ -269,7 +270,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   // resolved cwd for a session. The transcript path is derived from that cwd, so an
   // unresolved fixture path and the daemon's own view would disagree by a prefix and the
   // conversation would silently never be found.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "mc-e2e-")));
+  const home = realpathSync(tempDir("mc-e2e-"));
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
@@ -284,6 +285,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     extraEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY === "1";
   const codexOnDaemonPathOnly = extraEnv.MC_E2E_CODEX_ON_DAEMON_PATH_ONLY === "1";
   const gitFetchRefRace = extraEnv.MC_E2E_GIT_FETCH_REF_RACE === "1";
+  const gitCheckHandBackTimeout = extraEnv.MC_E2E_GIT_CHECK_HAND_BACK_TIMEOUT === "1";
   const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
@@ -291,18 +293,29 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   const gitFetchRefRaceMarker = join(home, "git-fetch-ref-race");
-  if (gitFetchRefRace) {
+  if (gitFetchRefRace || gitCheckHandBackTimeout) {
     const fakeGit = join(home, "bin", "git");
     mkdirSync(dirname(fakeGit), { recursive: true });
     writeFileSync(
       fakeGit,
       [
         "#!/usr/bin/env node",
-        "const { existsSync, unlinkSync } = require('node:fs');",
+        "const { existsSync, readFileSync, unlinkSync, writeFileSync } = require('node:fs');",
         "const { spawnSync } = require('node:child_process');",
         `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
         `const realPath = ${JSON.stringify(process.env.PATH ?? "")};`,
         "const args = process.argv.slice(2);",
+        ...(gitCheckHandBackTimeout ? [
+          `const stalled = ${JSON.stringify(join(home, "git-check-hand-back-stalled"))};`,
+          "const reviews = process.env.MC_E2E_RECORD_DIR + '/coderabbit.jsonl';",
+          "if (args.slice(2).join(' ') === 'ls-remote --symref origin HEAD' && !existsSync(stalled)",
+          "    && existsSync(reviews) && readFileSync(reviews, 'utf8').includes('\"args\":[\"review\"')) {",
+          "  writeFileSync(stalled, '', { flag: 'wx' });",
+          // Leave the probe unanswered until the daemon's real 30-second deadline.
+          "  setInterval(() => {}, 1000);",
+          "  return;",
+          "}",
+        ] : []),
         "if (args[0] === '-C' && args[2] === 'fetch' && args[3] === 'origin' && existsSync(marker)) {",
         "  unlinkSync(marker);",
         "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
@@ -318,8 +331,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   }
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
-    copyFileSync(bins.codex, join(daemonPathBin, "codex"));
-    chmodSync(join(daemonPathBin, "codex"), 0o755);
+    writeFakeCodex(join(daemonPathBin, "codex"));
   }
   if (piOnLoginShellOnly || conductorNodeVersion !== undefined) {
     if (piOnLoginShellOnly) {
@@ -430,7 +442,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     PATH:
       conductorNodeVersion === undefined
         ? [
-            ...(gitFetchRefRace ? [join(home, "bin")] : []),
+            ...(gitFetchRefRace || gitCheckHandBackTimeout ? [join(home, "bin")] : []),
             ...(codexOnDaemonPathOnly ? [daemonPathBin] : []),
             process.env.PATH ?? "",
           ].filter(Boolean).join(delimiter)
@@ -546,6 +558,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // unsafe, because the dashboard's Kill and Reset controls would then act on them.
     // 0 switches passive discovery off entirely.
     MISSION_POLL_MS: "0",
+    // Shaper sign-in keeps its fake tokens in daemon memory, so no browser run ever writes an
+    // item to the developer's login Keychain.
+    MISSION_SHAPER_SIGN_IN_STORE: "memory",
     // A fake agent answers instantly, so the dispatch settle windows are pure latency here.
     MISSION_DISPATCH_SETTLE_MS: "0",
     // The same reasoning for the workflow sweep, which is what advances a session action
@@ -577,6 +592,18 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // root holds no policy, so Settings > Cost reads as it does on an unmanaged machine. A
     // spec that drives the managed-policy warning points it at a fixture through `daemonEnv`.
     MISSION_MANAGED_SETTINGS_ROOT: join(home, "managed-settings-root"),
+    // No spec downloads the real speech model. A Download pressed without the fixture server
+    // (`startModelServer` in `voice.ts`, passed through `daemonEnv`) reaches a closed loopback
+    // port and fails, rather than fetching half a gigabyte from Hugging Face.
+    MISSION_VOICE_MODEL_BASE_URL: "http://127.0.0.1:9",
+    // No spec reaches a real decision-model provider (voice Phase 4). A key the machine running
+    // the suite holds is not inherited, so the decision model is off unless a spec supplies one
+    // through `daemonEnv`, and even then both providers point at a closed loopback port unless
+    // the spec points them at its own stand-in server.
+    OPENAI_API_KEY: undefined,
+    TYPESAFE_API_KEY: undefined,
+    MISSION_VOICE_OPENAI_DECISIONS_URL: "http://127.0.0.1:9",
+    MISSION_VOICE_JEV_URL: "http://127.0.0.1:9",
     // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
     ...DAEMON_TERMINAL_IDENTITY,
     // Last, so a spec that needs a different cadence or feature switch can say so through
@@ -786,7 +813,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       else isolatedEnv[key] = value;
     }
     // Same port, same home, same env: the successor is the same installation coming back,
-    // which is exactly the case transient state (keep awake) must reset across. The boot
+    // which is exactly the case process-owned state (a keep awake assertion) must be
+    // reacquired across, from the operator's saved choice rather than from the dead process. The boot
     // check re-verifies identity by pid, so a squatter that stole the freed port between
     // the crash and this bind still fails loudly rather than being driven silently.
     child = spawnDaemon();

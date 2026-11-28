@@ -1,18 +1,17 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The asynchronous input inbox, Phase 1, at the daemon: how `/mcp/reviews` negotiates the wait,
 // what a born-detached question counts toward, who its answer is delivered from, and every
 // completion gate an outstanding request_input question holds - and the rows it deliberately
 // does not hold. docs/plans/async-input-inbox/plan.md section 4 is the table these pin.
 
-const home = mkdtempSync(join(tmpdir(), "mission-async-input-daemon-"));
+const home = tempDir("mission-async-input-daemon-");
 process.env.MISSION_HOME = home;
 
 const {
@@ -22,8 +21,9 @@ const {
 const { ensureToken } = await import("../src/server/auth.ts");
 const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { resolvedSessionIntent } = await import("../src/shared/goal.ts");
-const { asyncInputReceipt } = await import("../src/shared/async-input.ts");
-const { reviewToolResult, deliversContinuation } = await import("../src/shared/review-item.ts");
+const { asyncInputReceipt, filedPlanReceipt } = await import("../src/shared/async-input.ts");
+const { reportBucket } = await import("../src/shared/session.ts");
+const { reviewToolResult, deliversContinuation, formatResponse } = await import("../src/shared/review-item.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -37,7 +37,11 @@ const setFlag = (enabled: boolean) => {
   const result = applyFeatureFlagIntent({ kind: "flag", id: "async-input", enabled });
   assert.equal(result.ok, true);
 };
-afterEach(() => setFlag(false));
+const setGateFlag = (enabled: boolean) => {
+  const result = applyFeatureFlagIntent({ kind: "flag", id: "filed-plan-decisions", enabled });
+  assert.equal(result.ok, true);
+};
+afterEach(() => { setFlag(false); setGateFlag(false); });
 
 let seq = 0;
 function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
@@ -157,9 +161,17 @@ test("counts: a message-mode question is an open question, never a pending revie
   assert.deepEqual(pick(registry.getSession(id)!), { pendingReviews: 1, openQuestions: 2 });
   reviews.snooze(q1.id, 60_000);
   assert.deepEqual(pick(registry.getSession(id)!), { pendingReviews: 1, openQuestions: 1 });
-  // waitMode is honored only on request_input's own asks.
+  // waitMode is honored only on request_input's own asks and on plan forms
+  // (`filed-plan-decisions`). A filed plan form is a gate: a pending review, never an open question.
   const plan = reviews.create(id, "plan-decisions", "Plan", "Plan", decisions("Plan?"), { waitMode: "message" });
-  assert.equal(plan.waitMode, undefined);
+  assert.equal(plan.waitMode, "message");
+  assert.deepEqual(pick(registry.getSession(id)!), { pendingReviews: 2, openQuestions: 1 });
+  // Never a snooze or a meanwhile line on a plan form, whatever the caller passes.
+  const other = reviews.create(id, "plan-decisions", "Other", "Other", decisions("Other?"), { waitMode: "message", snoozable: true, meanwhile: "x" });
+  assert.equal(other.snoozable, undefined);
+  assert.equal(other.meanwhile, undefined);
+  const diff = reviews.create(id, "diff", "Diff", "Diff", null, { waitMode: "message" });
+  assert.equal(diff.waitMode, undefined);
 });
 
 function pick(s: { pendingReviews: number; openQuestions: number }) {
@@ -321,7 +333,7 @@ test("a resident is never held by its open questions, and the snoozed-question e
   assert.equal(registry.completionHeldByQuestion(parkedSession), true);
 });
 
-test("a merge closes every outstanding request_input question with the reason merged, and leaves gates alone", async () => {
+test("a merge closes every outstanding request_input question and filed plan form with the reason merged, and leaves call-mode gates alone", async () => {
   setFlag(true);
   const { registry, reviews } = fleet();
   const d = mkDiscovered();
@@ -332,16 +344,17 @@ test("a merge closes every outstanding request_input question with the reason me
   const parked = reviews.create(id, "input", "Parked?", "Parked?", decisions("Parked?"), { snoozable: true, waitMode: "message" });
   reviews.snooze(parked.id, 60 * 60_000);
   const gate = reviews.create(id, "plan-decisions", "Plan", "Plan", decisions("Plan?"));
+  const filedGate = reviews.create(id, "plan-decisions", "Filed plan", "Filed plan", decisions("Filed plan?"), { waitMode: "message" });
   const waiting = reviews.wait(blocking.id, 60_000);
 
   const closed = reviews.closeQuestionsForMerge(id, true);
-  assert.deepEqual(closed.map((r) => r.id).sort(), [filed.id, blocking.id, parked.id].sort());
+  assert.deepEqual(closed.map((r) => r.id).sort(), [filed.id, blocking.id, parked.id, filedGate.id].sort());
   for (const r of closed) {
     assert.equal(registry.getReview(r.id)?.status, "orphaned");
     assert.equal(registry.getReview(r.id)?.closedReason, "merged");
   }
   const rows = openDb().prepare("SELECT id, closed_reason FROM reviews WHERE session_id = ? AND closed_reason = 'merged'").all(id);
-  assert.equal(rows.length, 3, "the reason is durable");
+  assert.equal(rows.length, 4, "the reason is durable");
   assert.deepEqual(registry.outstandingReviews(id).map((r) => r.id), [gate.id]);
   assert.equal(registry.completionHeldByQuestion(registry.getSession(id)!), false);
   // A call still listening hears why, rather than a generic channel loss.
@@ -513,7 +526,7 @@ test("question tools gate on the flag, list both wait modes, and withdraw only t
   assert.equal(listing.status, 200);
   const { questions } = await listing.json() as { questions: Array<Record<string, unknown>> };
   assert.deepEqual(questions.map((q) => q.id).sort(), [filed.id, call.id].sort());
-  assert.deepEqual(questions.find((q) => q.id === filed.id), { id: filed.id, title: "Filed?", createdAt: filed.createdAt, meanwhile: "Prepare tests", status: "snoozed" });
+  assert.deepEqual(questions.find((q) => q.id === filed.id), { id: filed.id, kind: "input", title: "Filed?", createdAt: filed.createdAt, meanwhile: "Prepare tests", status: "snoozed" });
   for (const id of [call.id, other.id, "missing"]) assert.equal((await request(`/mcp/questions/${id}/withdraw`, { reason: "Obsolete" })).status, 409);
   assert.equal((await request(`/mcp/questions/${filed.id}/withdraw`, { reason: " " })).status, 400);
   assert.equal((await request(`/mcp/questions/${filed.id}/withdraw`, { reason: "No longer needed" })).status, 200);
@@ -669,4 +682,234 @@ test("enabling async-input bounds existing call-mode questions without changing 
     assert.equal((await post(app, d.cwd, { title: "New after enabling?", snoozable: true, asyncCapable })).status, 409);
   }
   assert.equal(reviews.openQuestions(d.syntheticId).length, 11, "existing questions are retained, but cannot grow");
+});
+
+// ---- Filed plan decisions (`filed-plan-decisions`), Phase 1 ----
+//
+// A plan form filed instead of held in a call: still a gate. docs/plans/filed-plan-decisions/
+// phase-1-filed-gate.md is the route these pin.
+
+async function postPlan(
+  app: ReturnType<typeof fleet>["app"], cwd: string | null, extra: Record<string, unknown> = {}, route = "/mcp/reviews",
+) {
+  const title = (extra.title as string | undefined) ?? `Plan ${++seq}`;
+  return app.request(route, {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: {}, cwd, kind: "plan-decisions", title, body: `# ${title}\n\nThe plan.`, decisions: decisions(`${title}?`), ...extra }),
+  });
+}
+
+test("a plan form is filed only with both flags on, a capable child and a messageable session, on both routes", async () => {
+  const { registry, app } = fleet();
+  const d = mkDiscovered();
+  const paneless = mkDiscovered({ terminals: [] });
+  registry.applyDiscovery([d, paneless]);
+  for (const route of ["/mcp/reviews", "/mcp/v2/reviews"]) {
+    for (const [asyncInput, gate] of [[false, false], [false, true], [true, false]] as const) {
+      setFlag(asyncInput); setGateFlag(gate);
+      const res = await created(await postPlan(app, d.cwd, { asyncCapable: true }, route));
+      assert.deepEqual(Object.keys(res).sort(), ["id", "sessionId", "wait"], `${route} ${asyncInput}/${gate}: today's response`);
+      assert.equal(res.wait, "call");
+      assert.equal(registry.getReview(res.id)?.waitMode, undefined);
+    }
+    setFlag(true); setGateFlag(true);
+    assert.equal((await created(await postPlan(app, d.cwd, {}, route))).wait, "call", "an older child keeps long-polling");
+    assert.equal((await created(await postPlan(app, paneless.cwd, { asyncCapable: true }, route))).wait, "call", "an unmessageable session blocks");
+    const filed = await created(await postPlan(app, d.cwd, { asyncCapable: true }, route));
+    assert.equal(filed.wait, "message");
+    assert.equal(filed.receipt, filedPlanReceipt({ id: filed.id }));
+    assert.equal(registry.getReview(filed.id)?.waitMode, "message");
+    assert.equal(registry.getReview(filed.id)?.snoozable, undefined, "no Remind me later on a plan form");
+    // Born detached, like a filed question, so its answer leaves through the outbox.
+    const row = openDb().prepare("SELECT mcp_wait_detached_at, created_at FROM reviews WHERE id = ?").get(filed.id) as { mcp_wait_detached_at: number; created_at: number };
+    assert.equal(row.mcp_wait_detached_at, row.created_at);
+  }
+  // A request_input question is unaffected by the plan flag.
+  setGateFlag(false);
+  assert.equal((await created(await post(app, d.cwd, { snoozable: true, asyncCapable: true }))).wait, "message");
+});
+
+test("a filed plan form is a pending review from filing: amber and counted while its agent still works, and after it stops", async () => {
+  setFlag(true); setGateFlag(true);
+  const { registry, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const session = registry.getSession(d.syntheticId)!;
+  Object.assign(session, { state: "working", stateConfirmed: true, hooksSeen: true, instrumented: true });
+  const filed = await created(await postPlan(app, d.cwd, { asyncCapable: true }));
+  assert.equal(filed.wait, "message");
+  assert.deepEqual(pick(registry.getSession(d.syntheticId)!), { pendingReviews: 1, openQuestions: 0 });
+  assert.equal(reportBucket(registry.getSession(d.syntheticId)!), "needs-you", "amber while the agent finishes its turn");
+  Object.assign(registry.getSession(d.syntheticId)!, { state: "idle" });
+  assert.equal(reportBucket(registry.getSession(d.syntheticId)!), "needs-you", "and after it stops");
+});
+
+test("a filed plan form holds prompted completion, working or idle, and a resident's bucket, until it is answered", () => {
+  setFlag(true); setGateFlag(true);
+  for (const state of ["working", "idle"] as const) {
+    const { registry, reviews } = fleet();
+    const s = eligible(registry);
+    const form = reviews.create(s.id, "plan-decisions", "Plan", "Plan", decisions("Plan?"), { waitMode: "message" });
+    Object.assign(registry.getSession(s.id)!, { state });
+    assert.equal(registry.completionHeldByQuestion(registry.getSession(s.id)!), true, `${state}: held`);
+    assert.equal(registry.consumePromptedGeneration(s.id, s.request), false, `${state}: prompted completion refused`);
+    // A gate stops a resident too: its loop holds on the needs-you bucket.
+    assert.equal(reportBucket({ ...registry.getSession(s.id)!, task: mkTaskSummary({ kind: "resident" }) }), "needs-you");
+    Object.assign(registry.getSession(s.id)!, { state: "idle" });
+    reviews.resolve(form.id, "answer", "eslint", "human");
+    assert.equal(registry.completionHeldByQuestion(registry.getSession(s.id)!), false, `${state}: released`);
+    assert.equal(registry.consumePromptedGeneration(s.id, s.request), true, `${state}: consumed once answered`);
+  }
+  // Switching the flags off releases nothing: the form keeps its mode and its hold.
+  setFlag(false); setGateFlag(false);
+  const { registry, reviews } = fleet();
+  const s = eligible(registry);
+  reviews.create(s.id, "plan-decisions", "Plan", "Plan", decisions("Plan?"), { waitMode: "message" });
+  assert.equal(registry.completionHeldByQuestion(registry.getSession(s.id)!), true);
+  // A call-mode plan form is untouched in every reader: not held, not closed by a merge.
+  const t = eligible(registry);
+  reviews.create(t.id, "plan-decisions", "Plan", "Plan", decisions("Plan?"));
+  assert.equal(registry.completionHeldByQuestion(registry.getSession(t.id)!), false);
+  assert.deepEqual(reviews.closeQuestionsForMerge(t.id, true), []);
+});
+
+test("the ten-question limit neither counts nor refuses a plan form", async () => {
+  setFlag(true); setGateFlag(true);
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  for (let n = 0; n < 10; n++) await created(await post(app, d.cwd, { title: `Question ${n}?`, snoozable: true, asyncCapable: true }));
+  // Ten questions open: a plan form is still accepted ...
+  assert.equal((await created(await postPlan(app, d.cwd, { asyncCapable: true }))).wait, "message");
+  // ... and many plan forms leave the eleventh question judged on questions alone.
+  for (let n = 0; n < 12; n++) await created(await postPlan(app, d.cwd, { asyncCapable: true }));
+  assert.equal(reviews.openQuestions(d.syntheticId).length, 10);
+  assert.equal((await post(app, d.cwd, { title: "Eleventh?", snoozable: true, asyncCapable: true })).status, 409);
+  const e = mkDiscovered(); registry.applyDiscovery([e]);
+  for (let n = 0; n < 12; n++) await created(await postPlan(app, e.cwd, { asyncCapable: true }));
+  assert.equal((await post(app, e.cwd, { title: "First?", snoozable: true, asyncCapable: true })).status, 200, "plan forms take no slot");
+});
+
+test("the agent lists and withdraws its own filed plan form; another session cannot, and a call-mode form cannot be withdrawn", async () => {
+  setFlag(true); setGateFlag(true);
+  const { registry, reviews, app } = fleet();
+  const d = mkDiscovered(); const e = mkDiscovered(); registry.applyDiscovery([d, e]);
+  const filed = await created(await postPlan(app, d.cwd, { asyncCapable: true, title: "Filed plan" }));
+  const call = reviews.create(d.syntheticId, "plan-decisions", "Call plan", "Call plan", decisions("Call?"));
+  const request = (cwd: string | null, path: string, extra = {}) => app.request(path, {
+    method: "POST", headers: authed, body: JSON.stringify({ env: {}, cwd, ...extra }),
+  });
+  const { questions } = await (await request(d.cwd, "/mcp/questions/list")).json() as { questions: Array<Record<string, unknown>> };
+  assert.deepEqual(questions, [{ id: filed.id, kind: "plan-decisions", title: "Filed plan", createdAt: registry.getReview(filed.id)!.createdAt, meanwhile: null, status: "pending" }]);
+  assert.equal((await request(e.cwd, `/mcp/questions/${filed.id}/withdraw`, { reason: "Not mine" })).status, 409);
+  assert.equal(registry.getReview(filed.id)?.status, "pending", "another session's withdraw leaves it open");
+  assert.equal((await request(d.cwd, `/mcp/questions/${call.id}/withdraw`, { reason: "Scope changed" })).status, 409);
+  assert.equal((await request(d.cwd, `/mcp/questions/${filed.id}/withdraw`, { reason: "Scope changed" })).status, 200);
+  const withdrawn = registry.getReview(filed.id)!;
+  assert.equal(withdrawn.status, "withdrawn");
+  assert.equal(withdrawn.response, "Scope changed");
+  assert.equal(withdrawn.resolvedBy, null);
+  assert.deepEqual(loadReviewContinuationCandidates(filed.id), [], "no answer message is sent");
+  assert.deepEqual(pick(registry.getSession(d.syntheticId)!), { pendingReviews: 1, openQuestions: 0 }, "only the call-mode form is left");
+});
+
+test("a filed plan form's answer is one message restating the plan and each decision, and a dismissal says nothing was approved", () => {
+  const { registry, reviews } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const texts = new Map<string, string>();
+  reviews.startContinuationRecovery((review, answer) => {
+    // Answers still owed from earlier tests are recovered too; only this session's are queued here.
+    if (review.sessionId !== d.syntheticId) return true;
+    createReviewContinuationPendingTurn({ reviewId: review.id, noteKey: `plan-${d.syntheticId}`, text: answer, now: Date.now() });
+    texts.set(review.id, answer);
+    return true;
+  });
+  const body = "# Linter plan\n\nAdopt one linter for the repository.";
+  const form = reviews.create(d.syntheticId, "plan-decisions", "Linter plan", body, decisions("Which linter?"), { waitMode: "message" });
+  reviews.resolve(form.id, "answer", "Which linter?\n→ eslint", "human", [{ decisionId: "q", selected: ["o1"], other: null }]);
+  const answer = texts.get(form.id)!;
+  assert.match(answer, new RegExp(`answer to your filed plan ${form.id}`));
+  assert.match(answer, /Plan: Linter plan/);
+  assert.ok(answer.includes("Adopt one linter for the repository."));
+  assert.match(answer, /→ eslint/);
+  assert.match(answer, /The gate is lifted/);
+  assert.doesNotMatch(answer, /meanwhile|Reconcile/i, "a gate's agent did nothing meanwhile");
+  const dismissed = reviews.create(d.syntheticId, "plan-decisions", "Other plan", "Other", decisions("Other?"), { waitMode: "message" });
+  reviews.resolve(dismissed.id, "dismiss", null, "human");
+  assert.match(texts.get(dismissed.id)!, /nothing was selected and nothing was approved/);
+  const row = openDb().prepare("SELECT id FROM pending_turns WHERE id = ?").get(`${MESSAGE_ANSWER_TURN_PREFIX}${form.id}`);
+  assert.ok(row, "queued as the daemon-authored answer turn a filed question's answer is");
+});
+
+test("a filed plan form's answer restates every decision of a multi-decision plan, as the form submitted it", () => {
+  const { registry, reviews } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const texts = new Map<string, string>();
+  reviews.startContinuationRecovery((review, answer) => {
+    if (review.sessionId === d.syntheticId) texts.set(review.id, answer);
+    return true;
+  });
+  const plan: PlanDecision[] = [
+    { id: "linter", question: "Which linter?", options: [{ id: "biome", label: "biome" }, { id: "eslint", label: "eslint" }] },
+    { id: "rollout", question: "How should it roll out?", options: [{ id: "warn", label: "Warn first" }, { id: "block", label: "Block CI at once" }] },
+    { id: "scope", question: "Which packages first?", multiSelect: true, options: [{ id: "web", label: "web" }, { id: "server", label: "server" }, { id: "cli", label: "cli" }] },
+  ];
+  const body = "# Linter rollout\n\nAdd one linter to CI, then fix what it reports.";
+  const form = reviews.create(d.syntheticId, "plan-decisions", "Linter rollout plan", body, plan, { waitMode: "message" });
+  // The answer exactly as the dashboard's form submits it (`formatResponse`).
+  const selections = [
+    { decisionId: "linter", selected: ["eslint"], other: null },
+    { decisionId: "rollout", selected: ["warn"], other: null, note: "Flip to blocking next sprint" },
+    { decisionId: "scope", selected: ["web", "server"], other: null },
+  ];
+  reviews.resolve(form.id, "answer", formatResponse(plan, selections, "Plan decisions submitted:"), "human", selections);
+  const answer = texts.get(form.id)!;
+  assert.ok(answer, "one answer message was queued");
+  assert.ok(answer.includes("Add one linter to CI, then fix what it reports."), "the plan is restated");
+  for (const [question, choice] of [
+    ["Which linter?", "→ eslint"],
+    ["How should it roll out?", "→ Warn first"],
+    ["Which packages first?", "→ web, server"],
+  ] as const) {
+    const at = answer.indexOf(`• ${question}`);
+    assert.ok(at >= 0, `restates the decision: ${question}`);
+    assert.ok(answer.indexOf(choice, at) > at, `restates its choice: ${choice}`);
+  }
+  assert.match(answer, /Flip to blocking next sprint/, "and the note sent with a decision");
+  assert.ok(answer.indexOf("• Which linter?") < answer.indexOf("• How should it roll out?")
+    && answer.indexOf("• How should it roll out?") < answer.indexOf("• Which packages first?"), "in the plan's order");
+});
+
+test("an older child re-asking a filed plan form turns it into a call-mode form", async () => {
+  setFlag(true); setGateFlag(true);
+  const { registry, app } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const ask = { title: "Same plan", body: "# Same plan", decisions: decisions("Same?") };
+  const filed = await created(await postPlan(app, d.cwd, { ...ask, asyncCapable: true }));
+  assert.equal(filed.wait, "message");
+  const again = await created(await postPlan(app, d.cwd, ask));
+  assert.equal(again.id, filed.id);
+  assert.equal(again.wait, "call");
+  assert.equal(registry.getReview(filed.id)?.waitMode, undefined);
+  assert.equal(registry.completionHeldByQuestion(registry.getSession(d.syntheticId)!), false, "a call-mode form is not held");
+  // It is then exactly today's call-mode plan form, and still a gate: a pending review the session
+  // has stopped on, so it stays amber and every completion path that refuses needs-you refuses.
+  assert.deepEqual(pick(registry.getSession(d.syntheticId)!), { pendingReviews: 1, openQuestions: 0 });
+  assert.equal(reportBucket(registry.getSession(d.syntheticId)!), "needs-you");
+});
+
+test("a re-attached plan form whose call is abandoned is detached by a daemon restart and still answered as a message", () => {
+  setFlag(true); setGateFlag(true);
+  const { registry, reviews } = fleet();
+  const d = mkDiscovered(); registry.applyDiscovery([d]);
+  const form = reviews.create(d.syntheticId, "plan-decisions", "Plan", "# Plan", decisions("Plan?"), { waitMode: "message" });
+  // An older child re-asks it word for word and attaches a call, then vanishes without a cancel.
+  reviews.create(d.syntheticId, "plan-decisions", "Plan", "# Plan", decisions("Plan?"), { callerPolls: true });
+  assert.equal(registry.getReview(form.id)?.waitMode, undefined);
+  assert.equal(loadReviewContinuationCandidates(form.id).length, 0);
+  // Startup recovery detaches every pending wait, so the answer is owed as a message, as for any
+  // call-mode review whose call is gone.
+  const delivered: string[] = [];
+  reviews.startContinuationRecovery((review) => { if (review.id === form.id) delivered.push(review.id); return true; });
+  reviews.resolve(form.id, "answer", "Plan?\n→ eslint", "human");
+  assert.deepEqual(delivered, [form.id]);
 });

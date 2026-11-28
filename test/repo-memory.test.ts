@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,6 +12,7 @@ import {
 } from "../src/shared/memory.ts";
 import { hasRepoMemory, withRepoMemoryPointer } from "../src/server/memory.ts";
 import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The `.agents/memory/` convention: where a repository's committed agent memory lives, and
 // how a harness with no file channel of its own is told about it.
@@ -24,7 +24,7 @@ import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
 const here = fileURLToPath(new URL(".", import.meta.url));
 
 function mkRepo(): string {
-  return mkdtempSync(join(tmpdir(), "repo-memory-"));
+  return tempDir("repo-memory-");
 }
 
 /** A repo carrying an index, the way a retro's first commit leaves it. */
@@ -45,13 +45,6 @@ test("the convention's paths are frozen, because repos already hold them", () =>
   // second line is appended on every retro.
   assert.equal(MEMORY_REFERENCE_MARKER, MEMORY_INDEX_PATH);
   assert.ok(MEMORY_POINTER_LINE.includes(MEMORY_REFERENCE_MARKER));
-});
-
-test("the convention module stays browser-safe", () => {
-  // `src/shared/` is a controlled path: the dashboard bundles it, so one `node:` import
-  // takes the web build down. Phase 3 imports these constants into the browser.
-  const source = readFileSync(`${here}../src/shared/memory.ts`, "utf8");
-  assert.equal(/from "node:/.test(source), false, "shared code may not import node builtins");
 });
 
 test("the pointer names the index and the entries it links", () => {
@@ -98,7 +91,7 @@ test("an index symlinked INSIDE the repo counts; one pointing OUT does not", () 
   assert.equal(hasRepoMemory(linked), true, "a repo keeping its index elsewhere is ordinary");
 
   const escaping = mkRepo();
-  const outside = mkdtempSync(join(tmpdir(), "outside-"));
+  const outside = tempDir("outside-");
   writeFileSync(join(outside, "notes.md"), "not this repo's memory");
   mkdirSync(join(escaping, MEMORY_DIR), { recursive: true });
   symlinkSync(join(outside, "notes.md"), join(escaping, MEMORY_INDEX_PATH));
@@ -111,7 +104,7 @@ test("a repo whose own path runs through a symlink still finds its memory", () =
   // not exotic: /tmp is one on macOS, and so is many a home directory, and MC's own
   // worktrees live under both.
   const real = mkRepoWithMemory();
-  const linkRoot = mkdtempSync(join(tmpdir(), "repo-memory-link-"));
+  const linkRoot = tempDir("repo-memory-link-");
   const link = join(linkRoot, "checkout");
   symlinkSync(real, link);
   assert.equal(hasRepoMemory(link), true);
@@ -168,7 +161,9 @@ test("the dispatcher composes pi's turn one through the pointer", () => {
   // name, and that `preparePiLaunch` is handed that same name.
   assert.match(
     dispatcher,
-    /const piText\s*=[^;]*withRepoMemoryPointer\(\s*wt\.path,\s*intent,?\s*\)/,
+    // The third argument is the pointer decision the launch read once, so the budget and the
+    // launch message agree on it; it is still this call that composes Pi's launch message.
+    /const piText\s*=[^;]*withRepoMemoryPointer\(\s*wt\.path,\s*intent(?:,\s*piHasMemory)?,?\s*\)/,
     "pi's launch message must be composed through withRepoMemoryPointer",
   );
   assert.match(

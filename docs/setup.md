@@ -16,7 +16,9 @@ requires macOS 12+ on Apple Silicon and native GitHub CLI authentication, withou
 npm, npx, Git or local compilation. Signed release qualification is still pending; unavailable
 assets refuse installation. Existing source installs can be replaced in place by this command
 once assets are published, preserving their state and destination. Copied signed DMGs can enroll
-through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
+through **Enroll this copied app** in the footer of **Settings → Setup**. The footer also shows
+the managed installation path and offers **Check for updates**. Reopen an enrolled app to enable
+automatic stable and exact-SHA alpha binary updates.
 
 Switching on Alpha updates also switches on **Enable all feature flags**, so every preview
 feature comes on while keeping any you switched off. Adjust them in **Settings > Feature flags**.
@@ -108,6 +110,19 @@ unreadable setup state reads **Needs setup** and offers the interactive setup sk
 The row links to [Running Mission Control at Upstart](upstart.md), which includes the marketplace,
 plugin installation, sign-in, restart, daemon certificate, and verification steps. Machines
 without the plugin remain free of Upstart-specific setup chrome.
+
+The **Voice** family appears only while the **Voice addressing** preview is on. Its **Voice
+previews** row checks the three previews voice needs - Ask without stopping, Reports and inbox
+upgrades and File plan decisions - names which are on and which are off, and offers a button that
+turns on exactly the ones that are off. The panel re-reads the machine when any of those flags
+changes. **Microphone access** reads the permission the voice listener or the desktop app last
+reported, reads **Not checked yet** until one has, and says where macOS keeps the switch.
+**Voice speech model** reads **Missing** with **Download** while the model is not on disk.
+Download shows a progress bar and Cancel, and verifies every file against its pinned SHA-256
+checksum. When a download fails, or a file already on disk is the wrong size or the wrong digest,
+the row reads **Needs setup** with the reason and **Retry**. It follows the download live, in
+every window, without a Re-check. All three rows are optional, so none raises the Setup banner. See
+[Voice addressing](voice.md#the-speech-model).
 
 The **Runtime** family identifies the process serving this dashboard: the app's bundled
 Electron runtime, development Electron, or standalone Node. Connecting an Electron window to

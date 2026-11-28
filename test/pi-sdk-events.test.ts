@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SdkEvent } from "../src/server/harness/types.ts";
 import type { PiSessionEvent } from "../src/server/harness/pi/sdk-types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the supervisor's whole view of a managed Pi session.
 //
@@ -19,7 +19,7 @@ import type { PiSessionEvent } from "../src/server/harness/pi/sdk-types.ts";
 // a firehose that says nothing a card can show and would rewrite the session row thousands
 // of times a turn.
 
-const home = mkdtempSync(join(tmpdir(), "pi-sdk-events-"));
+const home = tempDir("pi-sdk-events-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { piSdkSpec } = await import("../src/server/harness/pi/sdk.ts");

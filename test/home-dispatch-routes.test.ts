@@ -1,13 +1,12 @@
 // Headless mode phase 1: every /dispatch/* route is gated by the `headless-mode` flag, answers
 // 501 once it is on, and the health capability follows the flag.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { after, beforeEach, test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 // Above the imports: `openDb` refuses a state dir this file did not name.
-const home = mkdtempSync(join(tmpdir(), "mission-home-dispatch-routes-"));
+const home = tempDir("mission-home-dispatch-routes-");
 process.env.MISSION_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");
@@ -60,7 +59,16 @@ test("flag off: every route answers the disabled 404, even with a token, and the
 });
 
 // Routes a later phase has filled; they no longer answer 501. Add a path when its phase lands.
-const FILLED = new Set(["/dispatch/sessions", "/dispatch/inbox", "/dispatch/answers", "/dispatch/config"]);
+const FILLED = new Set([
+  "/dispatch/sessions",
+  "/dispatch/inbox",
+  "/dispatch/answers",
+  "/dispatch/config",
+  "/dispatch/dispatch-options",
+  "/dispatch/drafts",
+  "/dispatch/drafts/:id",
+  "/dispatch/drafts/:id/confirm",
+]);
 
 test("flag on: every unfilled route is 501 with a token, 401 without one and 403 off loopback", async () => {
   setFlag(true);

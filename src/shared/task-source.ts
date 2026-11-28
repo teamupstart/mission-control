@@ -837,6 +837,7 @@ export interface TaskSourceWritebackStatus {
 
 /** The whole Task sources panel in one read: what is configured, and how it is doing. */
 export interface TaskSourcesView {
+  revision: string;
   sync?: import("./task-source-sync.ts").SourceSyncReview[];
   sources: TaskSourceInstance[];
   status: TaskSourceStatus[];

@@ -1,14 +1,17 @@
-import { getAppConfig, setAppConfig } from "../db.ts";
+import { LOCAL_INSPECTOR_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { persistConfigPatch } from "../config-patch-storage.ts";
+import { getAppConfig } from "../db.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
-import { INSPECTOR_MODEL_ENV, resolveInspectorModel } from "@shared/inspector.ts";
-import type { ResolvedInspectorModel } from "@shared/inspector.ts";
+import { INSPECTOR_MODEL_ENV, inspectorEffortChoice, resolveInspectorModel } from "@shared/inspector.ts";
+import type { InspectorCall, ResolvedInspectorModel } from "@shared/inspector.ts";
 import { providerOwningModel } from "@shared/model.ts";
-import { isLlmRunnerId } from "@shared/llm.ts";
+import { isLlmRunnerId, resolveLlmEffort } from "@shared/llm.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import { InspectorConfigSchema } from "@shared/protocol.ts";
 import type { InspectorConfig, InspectorConfigPatch } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { llmRunnerChoice } from "../llm/config.ts";
+import { backgroundReasoningEffortEnabled, llmRunnerChoice } from "../llm/config.ts";
 
 // The Inspector's config: a schema-validated blob over the `app_config` KV, so a new
 // key needs no migration - Zod's defaults are applied on every read, and a blob written
@@ -17,17 +20,24 @@ import { llmRunnerChoice } from "../llm/config.ts";
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.inspector;
 
 /** Read saved settings, including the defaults written when a new installation starts. */
-export function getInspectorConfig(): InspectorConfig {
+function storedInspectorConfig(): InspectorConfig {
   const parsed = InspectorConfigSchema.safeParse(getAppConfig(CONFIG_ENTRY) ?? {});
   return parsed.success ? parsed.data : InspectorConfigSchema.parse({});
 }
 
+export function getInspectorConfig(): InspectorConfig {
+  const cfg = storedInspectorConfig();
+  return featureEnabled(LOCAL_INSPECTOR_FLAG_ID) ? cfg : { ...cfg, localReview: false };
+}
+
 /** Merge a patch over the current config, persist, and return the result. */
 export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig {
-  const cur = getInspectorConfig();
-  const next = InspectorConfigSchema.parse({ ...cur, ...patch, ...pinInspectorProvider(cur, patch) });
-  setAppConfig(CONFIG_ENTRY, next);
-  return next;
+  const cur = storedInspectorConfig();
+  const writablePatch = { ...patch };
+  if (!featureEnabled(LOCAL_INSPECTOR_FLAG_ID)) delete writablePatch.localReview;
+  const next = InspectorConfigSchema.parse({ ...cur, ...writablePatch, ...pinInspectorProvider(cur, writablePatch) });
+  persistConfigPatch(CONFIG_ENTRY, cur, next, writablePatch);
+  return getInspectorConfig();
 }
 
 /**
@@ -72,8 +82,31 @@ function pinInspectorProvider(
  * Resolved per call, never captured: the config is editable at runtime through
  * `PUT /api/inspector/config`, and a value read at module load would need a restart.
  */
-export function inspectorModel(cfg: InspectorConfig = getInspectorConfig()): ResolvedInspectorModel {
-  return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV), inspectorRunner(cfg).id);
+export function inspectorModel(
+  cfg: InspectorConfig = getInspectorConfig(),
+  runner = inspectorRunner(cfg).id,
+): ResolvedInspectorModel {
+  return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV), runner);
+}
+
+/**
+ * What one Inspector call spawns with.
+ *
+ * `call` matters only for effort. The operator's saved effort is read while the preview that
+ * shows its control is on; with the preview off nobody can have chosen, so the call takes its
+ * shipped default (`inspectorEffortChoice`). Either way the level is passed only when the
+ * provider offers it for the resolved model.
+ */
+export function inspectorExecution(
+  cfg: InspectorConfig = getInspectorConfig(),
+  call: InspectorCall = "review",
+) {
+  const runner = inspectorRunner(cfg);
+  const model = inspectorModel(cfg, runner.id);
+  const saved = backgroundReasoningEffortEnabled() ? cfg.effort : undefined;
+  const effort =
+    resolveLlmEffort(runner.id, model.id, inspectorEffortChoice(saved, call)).level ?? undefined;
+  return { runner, model, effort };
 }
 
 /**

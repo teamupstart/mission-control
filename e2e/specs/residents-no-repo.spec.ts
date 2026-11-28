@@ -30,6 +30,7 @@ for (const [agent, inheritDefaults] of [["claude", true], ["codex", false], ["co
     await editor.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
     await editor.getByRole("combobox", { name: "Harness" }).selectOption(agent);
     if (agent === "codex") {
+      await editor.getByRole("radio", { name: "Pinned at launch" }).check();
       // Phase 3 requires a priced explicit model and native context metadata. Keep both
       // fixtures inside this daemon's home; every actual agent invocation stays faked.
       await editor.getByRole("combobox", { name: "Model", exact: true }).selectOption("gpt-5.4");
@@ -200,23 +201,25 @@ for (const [agent, inheritDefaults] of [["claude", true], ["codex", false], ["co
     await statePanel.getByRole("button", { name: "View state", exact: true }).hover();
     await expect(page.locator(".tooltip")).toHaveText("Browse this profile’s saved notes, watermarks and auto-memory");
     await statePanel.getByRole("button", { name: "View state", exact: true }).click();
-    await statePanel.getByRole("button", { name: "Refresh state", exact: true }).hover();
-    await expect(page.locator(".tooltip")).toHaveText("Reload this profile’s saved state files");
-    await expect(statePanel).toContainText(state.directory);
-    await expect(statePanel.locator(".resident-state-path")).toHaveCSS("font-size", descriptionSize);
-    await statePanel.getByRole("button", { name: "MEMORY.md", exact: true }).hover();
-    await expect(page.locator(".tooltip")).toHaveText("Preview MEMORY.md without changing it");
-    await statePanel.getByRole("button", { name: "MEMORY.md", exact: true }).click();
-    await expect(statePanel.getByRole("region", { name: "State file MEMORY.md" })).toContainText("handled reply 42");
-    await expect(statePanel.locator("pre")).toHaveCSS("font-size", descriptionSize);
+    const stateViewer = page.getByRole("dialog", { name: `Durable state: ${profile.name}` });
+    await expect(stateViewer).toContainText(state.directory);
+    // The viewer opens with focus on Close, whose focus tooltip may stay up beside a hovered one.
+    await stateViewer.getByRole("button", { name: "Refresh", exact: true }).hover();
+    await expect(page.locator(".tooltip", { hasText: "Reload this profile’s saved state files" })).toBeVisible();
+    await stateViewer.getByRole("button", { name: "MEMORY.md", exact: true }).hover();
+    await expect(page.locator(".tooltip", { hasText: "Preview MEMORY.md without changing it" })).toBeVisible();
+    await expect(stateViewer.getByRole("region", { name: "State file MEMORY.md" })).toContainText("handled reply 42");
     if (process.env.MC_E2E_EVIDENCE) {
-      // A focused MEMORY.md button can keep its focus tooltip after the pointer leaves.
-      await statePanel.locator("pre").click();
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.mouse.move(0, 0);
       await expect(page.locator(".tooltip")).toHaveCount(0);
-      await statePanel.screenshot({ path: join(evidence, `${agent}-durable-state.png`) });
-      await page.screenshot({ path: join(evidence, `${agent}-state-typography.png`) });
+      await stateViewer.screenshot({ path: join(evidence, `${agent}-durable-state.png`) });
     }
+    await stateViewer.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(stateViewer).toBeHidden();
+    // Closing hands focus back to View state; drop it so its focus tooltip does not cover the next hover.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: join(evidence, `${agent}-state-typography.png`) });
     await statePanel.getByRole("button", { name: "Reset state", exact: true }).hover();
     await expect(page.locator(".tooltip")).toHaveText("Clear saved notes, watermarks and auto-memory after closing all runs");
     if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: join(evidence, `${agent}-state-reset-tooltip.png`) });
@@ -227,7 +230,7 @@ for (const [agent, inheritDefaults] of [["claude", true], ["codex", false], ["co
     expect(existsSync(join(state.directory, "MEMORY.md"))).toBeTruthy();
     await statePanel.getByRole("button", { name: "Reset state", exact: true }).click();
     await resetDialog.getByRole("button", { name: "Delete saved state", exact: true }).click();
-    await expect(statePanel).toContainText("No saved state files.");
+    await expect(statePanel.getByRole("status")).toHaveText("Saved state cleared.");
     expect(existsSync(join(state.directory, "MEMORY.md"))).toBeFalsy();
 
   });

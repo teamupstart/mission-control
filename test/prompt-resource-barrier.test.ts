@@ -1,15 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkEmuHandle, mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { terminalResourceId } from "../src/shared/pane.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
 import type { PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-prompt-resource-barrier-"));
+const home = tempDir("mission-prompt-resource-barrier-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { injectPrompt, sendText } = await import("../src/server/actions.ts");

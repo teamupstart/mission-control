@@ -114,7 +114,6 @@ async function shoot(page: Page, target: Locator | Page, name: string): Promise<
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/task-hibernation/${name}.png`);
 }
 

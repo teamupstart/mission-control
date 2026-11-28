@@ -60,7 +60,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   // The viewport, not `fullPage`: the topbar and the settings rail are fixed, and a
   // full-page capture paints them again halfway down the image.
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/settings-ledger/${name}.png`);
 }
 

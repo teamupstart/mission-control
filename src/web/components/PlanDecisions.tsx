@@ -1,10 +1,14 @@
-import { useState } from "react";
+import type { HintName } from "@shared/inbox.ts";
+import { PlanVoiceHint } from "./VoiceAnswerFooter.tsx";
+import { VoiceIcon } from "./VoiceCardView.tsx";
+import { ordinal, spokenOrdinal, optionLetter } from "@shared/voice-answers.ts";
+import { useRef, useLayoutEffect, useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
 import { CHAT_ABOUT_IT, formatResponse } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import type { DecisionAnswer as Answer, DecisionAnswers as Answers } from "../lib/review-drafts.ts";
+import { readReviewDraft, type DecisionAnswer as Answer, type DecisionAnswers as Answers } from "../lib/review-drafts.ts";
 
 const EMPTY: Answer = { selected: [], other: "", note: "" };
 
@@ -104,7 +108,7 @@ export function DecisionForm({
    */
   allowChat = false,
   foremanRecommended,
-  besideSubmit,
+  besideSubmit, footer, voiceLetters, voicePending, planAddress,
   answers: heldAnswers,
   onAnswersChange,
 }: {
@@ -114,7 +118,7 @@ export function DecisionForm({
    * `response` is the agent's tool result, `selections` the record kept beside it. Handed
    * up together, from one derivation, so the two can never describe different answers.
    */
-  onSubmit: (response: string, selections: PlanDecisionAnswer[]) => void;
+  onSubmit: (response: string, selections: PlanDecisionAnswer[], submitId?: string) => void;
   /** Resolve this decision request without sending any of its options as an answer. */
   onDismiss?: () => void;
   lead?: string;
@@ -132,6 +136,10 @@ export function DecisionForm({
   foremanRecommended?: ReadonlySet<string>;
   /** A control drawn next to Submit, such as the final-bundle form's standing approval. */
   besideSubmit?: React.ReactNode;
+  footer?: React.ReactNode;
+  planAddress?: HintName;
+  voiceLetters?: boolean;
+  voicePending?: boolean;
   /**
    * The answers, held by the caller instead of by this mount.
    *
@@ -150,9 +158,16 @@ export function DecisionForm({
     return answers[id] ?? EMPTY;
   }
 
+  function editDecision(id: string, changesChoice: boolean, change: (answer: Answer) => Answer): void {
+    const manualChoiceAt = planAddress && changesChoice ? performance.timeOrigin + performance.now() : undefined;
+    setAnswers(prev => {
+      const answer = change(prev[id] ?? EMPTY);
+      return { ...prev, [id]: manualChoiceAt === undefined ? answer : { ...answer, manualChoiceAt } };
+    });
+  }
+
   function choose(d: PlanDecision, optionId: string, checked: boolean): void {
-    setAnswers((prev) => {
-      const cur = prev[d.id] ?? EMPTY;
+    editDecision(d.id, true, (cur) => {
       let selected: string[];
       if (!checked) {
         selected = cur.selected.filter((x) => x !== optionId);
@@ -161,7 +176,7 @@ export function DecisionForm({
       } else {
         selected = [optionId]; // radio: single choice replaces
       }
-      return { ...prev, [d.id]: { ...cur, selected, chat: false } };
+      return { ...cur, selected, chat: false, voice: false };
     });
   }
 
@@ -178,24 +193,44 @@ export function DecisionForm({
   }
 
   function moveToChat(id: string, chat: boolean): void {
-    setAnswers((prev) => {
-      const cur = prev[id] ?? EMPTY;
-      // Moving replaces the picks, as any other row in the group would, but keeps the typed
-      // text: it is context for the conversation, not a competing answer.
-      return { ...prev, [id]: chat ? { ...cur, selected: [], chat: true } : { ...cur, chat: false } };
-    });
+    // Moving replaces the picks but keeps the typed context for the conversation.
+    editDecision(id, true, cur => chat ? { ...cur, selected: [], chat: true, voice: false } : { ...cur, chat: false });
   }
 
   function setText(id: string, field: "other" | "note", text: string): void {
     // Typing never changes the pick. The box is an answer of its own only when nothing is
     // picked; beside a pick, or beside "Chat about it", it is context for that choice.
-    setAnswers((prev) => ({ ...prev, [id]: { ...(prev[id] ?? EMPTY), [field]: text } }));
+    editDecision(id, field === "other", cur => ({ ...cur, [field]: text }));
   }
 
   // Built once per render and used for both the completeness test and the submit, so the
   // button's enabled state is decided over exactly the payload it would send.
   const payload = toDecisionAnswers(decisions, answers);
   const complete = decisions.length > 0 && decisions.every((d, i) => isAnswered(d, payload[i]));
+  const formRef = useRef<HTMLDivElement>(null);
+  const [refused, setRefused] = useState<string>();
+  const missing = decisions.findIndex((d, i) => !isAnswered(d, payload[i]));
+  const marked = missing >= 0 && decisions[missing]?.id === refused;
+  useLayoutEffect(() => {
+    const card = formRef.current?.closest<HTMLElement>("[data-voice-kind=plan]");
+    const reviewId = card?.dataset.voiceId;
+    if (!planAddress || !card || !reviewId) return;
+    const submit = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail;
+      if (busy) return;
+      // A fill event can update the parked draft just before this event, between renders.
+      const current = toDecisionAnswers(decisions, readReviewDraft(reviewId).decisions);
+      const firstMissing = decisions.findIndex((d, i) => !isAnswered(d, current[i]));
+      if (firstMissing < 0 && decisions.length) onSubmit(formatResponse(decisions, current, lead), current, id);
+      else if (firstMissing >= 0) {
+        setRefused(decisions[firstMissing]!.id);
+        void fetch("/api/voice/form-submit/" + id + "/refuse", { method: "POST",
+          headers: { "content-type": "application/json" }, body: JSON.stringify({ missing: firstMissing + 1 }) }).catch(() => {});
+      }
+    };
+    card.addEventListener("voice-form-submit", submit);
+    return () => card.removeEventListener("voice-form-submit", submit);
+  });
   const chatCount = allowChat ? payload.filter((a) => a.chat).length : 0;
 
   function chatAboutAll(): void {
@@ -207,20 +242,27 @@ export function DecisionForm({
   }
 
   return (
-    <div className="decisions">
-      {decisions.map((d) => (
+    <div className="decisions" ref={formRef}>
+      {decisions.map((d, position) => (
         <fieldset
           key={d.id}
-          className="decision"
+          className={planAddress && marked && position === missing ? "decision pd-missing" : "decision"}
           aria-label={hideQuestions ? d.question : undefined}
         >
-          {!hideQuestions && <legend className="decision-q">{d.question}</legend>}
-          {d.options.map((o) => {
+          {!hideQuestions && (
+            <legend className="decision-q">
+              {planAddress && <span className={`pd-ord${marked && position === missing ? " is-missing" : get(d.id).voice ? " is-voice" : ""}`}>
+                {get(d.id).voice && <VoiceIcon name="mic" />}{ordinal(position + 1)}
+              </span>}
+              {d.question}
+            </legend>
+          )}
+          {d.options.map((o, index) => {
             const foremanPick = foremanRecommended?.has(decisionChoiceKey(d.id, o.id));
             return (
             <label
               key={o.id}
-              className={`decision-option${foremanPick ? " decision-foreman-pick" : ""}`}
+              className={`decision-option${planAddress && get(d.id).voice && get(d.id).selected.includes(o.id) ? " pd-picked" : ""}${voicePending ? (get(d.id).selected.includes(o.id) ? " av-picked" : " av-dim") : ""}${foremanPick ? " decision-foreman-pick" : ""}`}
             >
               {/*
                 No `Tooltip`: it repeated the detail printed below, and picking an option
@@ -237,6 +279,8 @@ export function DecisionForm({
                 }
                 disabled={busy}
               />
+              {planAddress && <span className="pd-key">{optionLetter(index)}</span>}
+              {voiceLetters && <span className="av-key">{optionLetter(index)}</span>}
               <span className="decision-option-body">
                 <span className="decision-option-label">
                   {o.label}
@@ -274,7 +318,7 @@ export function DecisionForm({
           */}
           {d.allowOther && (
             <input
-              className="decision-other"
+              className={`decision-other${voicePending ? (get(d.id).other ? " av-picked" : " av-dim") : ""}`}
               aria-label={`Other answer or context: ${d.question}`}
               placeholder="Other answer, or add context…"
               value={get(d.id).other}
@@ -293,9 +337,10 @@ export function DecisionForm({
               disabled={busy}
             />
           )}
+          {planAddress && marked && position === missing && <p className="pd-miss" role="alert"><VoiceIcon name="warn" />Not sent. The {spokenOrdinal(position + 1)} one has no answer yet.</p>}
         </fieldset>
       ))}
-      <div className="decisions-actions">
+      {footer || <div className="decisions-actions">
         {onDismiss && (
           <Tooltip label="Dismiss this decision request without sending an answer">
             <button className="btn btn-ghost" disabled={busy} onClick={onDismiss}>
@@ -333,7 +378,9 @@ export function DecisionForm({
             {chatCount ? `Submit & chat (${chatCount})` : "Submit"}
           </button>
         </Tooltip>
-      </div>
+      </div>}
+      {planAddress && <PlanVoiceHint address={planAddress} decisions={decisions} missing={missing}
+        answered={payload.filter((answer, i) => isAnswered(decisions[i]!, answer)).length} refused={marked} />}
     </div>
   );
 }

@@ -1,10 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { EpisodeWrite } from "../src/server/db.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The append-only record behind the Foreman note.
 //
@@ -13,7 +12,7 @@ import type { EpisodeWrite } from "../src/server/db.ts";
 // the one case where a second write is the same decision reaching a later state.
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
-const home = mkdtempSync(join(tmpdir(), "mission-episodes-"));
+const home = tempDir("mission-episodes-");
 process.env.HARNESS_HOME = home;
 const { openDb, recordEpisode, resolveEpisode, episodesFor, pruneEpisodes } = await import(
   "../src/server/db.ts"

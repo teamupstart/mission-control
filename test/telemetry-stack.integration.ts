@@ -1,8 +1,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The compatibility gate: Mission Control's durable path against the REAL local stack.
 //
@@ -30,7 +30,7 @@ import { join } from "node:path";
 //     Mission Control restart and is delivered as both a metric and a trace once the backend
 //     comes back, still carrying the time it originally happened.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-stack-"));
+const home = tempDir("mission-telemetry-stack-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { closeDb, openDb } = await import("../src/server/db.ts");
@@ -160,7 +160,6 @@ async function promEventually(
  * its numbers rather than take the assertion's word for it.
  */
 function checkpoint(label: string, detail: string): void {
-  // eslint-disable-next-line no-console
   console.log(`  [restart-recovery] ${label}: ${detail}`);
 }
 
@@ -270,6 +269,8 @@ test("session attribution across restart reaches real metrics and scoped traces"
   enableExport();
   const instance = resourceAttributes()["service.instance.id"];
   const sessionId = `private-session-${RUN}`;
+  // The agent was started with a work unit, so every span of the session exports it raw.
+  const workUnitId = "wu_01JD00000000000000000000ST";
   let publish: (event: { type: string } & Record<string, unknown>) => void = () => {};
   const attach = () => attachSessionTelemetry({
     subscribe(listener) {
@@ -283,7 +284,7 @@ test("session attribution across restart reaches real metrics and scoped traces"
     session: {
       id: sessionId, agent: "claude", runtime: "sdk", state: "idle", terminals: [],
       agentSessionId: `private-conversation-${RUN}`, cwd: `/private/repository/${RUN}`,
-      pendingEffort: null,
+      pendingEffort: null, launchWorkUnitId: workUnitId,
       meta: { modelId: "claude-opus-5", thinkingLevel: effort, nativeEffort: null, source: "driver" },
     },
   });
@@ -337,6 +338,9 @@ test("session attribution across restart reaches real metrics and scoped traces"
       assert.equal(attrs["mission.effort"], index === 0 ? "medium" : "high");
       assert.equal(attrs["mission.ref.session_id"], scopedRef("user", salt, `session_id:${sessionId}`));
       assert.equal(attrs["mission.ref.segment_id"], scopedRef("user", salt, `segment_id:${ref.segment_id}`));
+      // The one unscoped ref: the raw id under its own name, and never a hashed copy.
+      assert.equal(attrs.work_unit_id, workUnitId);
+      assert.equal(attrs["mission.ref.work_unit_id"], undefined);
       for (const sentinel of [sessionId, `private-conversation-${RUN}`, `/private/repository/${RUN}`]) {
         assert.equal(JSON.stringify(trace).includes(sentinel), false, `${sentinel} leaked to Tempo`);
       }

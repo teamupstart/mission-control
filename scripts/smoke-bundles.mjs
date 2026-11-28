@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { UPDATE_HELPER_FILES } from "./update-helper-files.mjs";
+import { findDisallowedModCalls } from "./mod-calls.mjs";
 // Boot the built bundles and prove they actually RUN.
 //
 // What is at stake: `npm run build` succeeding while the artifact it produced cannot start.
@@ -239,6 +240,34 @@ async function smokeNativeKeepAwake() {
     return;
   }
   console.log("[smoke] native Keep Awake addon loads without creating an assertion");
+}
+
+/**
+ * The shaper sign-in Keychain addon, checked the same way: load it and check its four
+ * functions, without one Keychain call, so smoke never reads or writes an item.
+ */
+async function smokeNativeKeychain() {
+  if (process.platform !== "darwin") {
+    console.log(`[smoke] native Keychain addon deliberately skipped on ${process.platform}`);
+    return;
+  }
+  const addonPath = resolve("dist/native/keychain.node");
+  if (!existsSync(addonPath)) {
+    fail(`the Darwin build is missing ${addonPath}`);
+    return;
+  }
+  let binding;
+  try {
+    binding = createRequire(import.meta.url)(addonPath);
+  } catch (err) {
+    fail(`the native Keychain addon could not load (${err instanceof Error ? err.message : err})`);
+    return;
+  }
+  if (["get", "set", "remove", "accounts"].some((name) => typeof binding?.[name] !== "function")) {
+    fail("the native Keychain addon does not export get, set, remove and accounts functions");
+    return;
+  }
+  console.log("[smoke] native Keychain addon loads without a Keychain call");
 }
 
 /**
@@ -523,6 +552,16 @@ async function smokeSatellitePaths() {
     }
     console.log(`[smoke] daemon bundle resolves the ${label} to the built artifact`);
   }
+}
+
+/** The `mod-calls` check (spec 7.10): the mod's source reaches only the daemon paths in `src/mod/allowed-calls.json`. */
+function smokeModCalls() {
+  const refused = findDisallowedModCalls(resolve("."));
+  if (refused.length > 0) {
+    fail(`the mod calls daemon paths outside src/mod/allowed-calls.json: ${refused.map((r) => `${r.path} (${r.file})`).join(", ")}`);
+    return;
+  }
+  console.log("[smoke] mod-calls: the mod reaches only /api/health and /dispatch/*");
 }
 
 /**
@@ -850,10 +889,12 @@ async function smokeDetachedUpdateHelper() {
 
 await smokeDetachedUpdateHelper();
 await smokeNativeKeepAwake();
+await smokeNativeKeychain();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+smokeModCalls();
 await smokeModBuild();
 // The optional wrapper ships under dist/**/*, alongside the other satellites.
 if (!existsSync(resolve("dist/satellites/harness-statusline.mjs"))) fail("the shipped statusline wrapper is missing");
@@ -873,5 +914,12 @@ else {
 }
 await smokePiSdkBundle();
 await smokeMermaidRenderer();
+// This server is a separate capability boundary from the Mission MCP smoke above.
+try {
+  await (await import("./smoke-repository-mcp.mjs")).smokeRepositoryMcp();
+} catch (error) {
+  fail(`repository MCP: ${error instanceof Error ? error.message : String(error)}`);
+}
+
 if (process.exitCode) process.exit(process.exitCode);
 console.log("[smoke] ok");

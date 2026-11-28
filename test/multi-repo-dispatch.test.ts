@@ -2,14 +2,14 @@ import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { TaskRepoEntry } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Dispatching a task that attaches secondary repositories, and the two rules that make it
 // safe rather than merely working:
@@ -23,7 +23,7 @@ import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 //    That is the one destructive edge in this feature, which is why the pins ship in the
 //    same change as the loop that creates the trees.
 
-const home = mkdtempSync(join(tmpdir(), "mission-multirepo-dispatch-"));
+const home = tempDir("mission-multirepo-dispatch-");
 process.env.HARNESS_HOME = home;
 // Binaries that exist, so bin resolution cannot be what fails below. Both harnesses that
 // these tests dispatch need one: `resolveBinPath` runs at the top of `dispatch`, before any
@@ -299,7 +299,7 @@ test("Pi dispatches both worktrees without directory grant flags", async () => {
         pid: 4567, tty: "pi-test", startedAt: Date.now(),
         terminals: [mkMuxHandle({ session: "pi-supported", paneId: "%4567" })],
       }]);
-      return { homeName: "pi-supported", homeBackend: "tmux", terminalResourceId: null };
+      return { homeName: "pi-supported", homeBackend: "tmux", terminalResourceId: "multiplexer:tmux:pi-supported" };
     },
   });
   await dispatcher.dispatch("pi-supported");

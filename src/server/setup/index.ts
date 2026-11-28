@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import { mcpTrustStatus } from "./mcp-trust.ts";
 import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV, type CodeRabbitVersionReading } from "../workflows/coderabbit.ts";
 import { shellCommand } from "../terminal/shell.ts";
@@ -21,6 +22,9 @@ import {
   SETUP_DEPENDENCY_DISPLAY_ORDER,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
+  setupFamilyFlagOn,
+  SETUP_FLAG_INPUTS,
+  setupReadingFlags,
   TERMINAL_PAIR_INFO,
   type SetupChecksView,
   type SetupDependencyId,
@@ -55,9 +59,16 @@ import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupProbeResult, SetupRepositoryIndexRead, SetupSkillsRead } from "./types.ts";
 import { repoIndexView } from "../repo-index.ts";
 import { listRepos } from "../repos.ts";
-import { locateExecutable } from "../executables/locator.ts";
+import { locateExecutable, loginShellVariables } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import type { FeatureFlagId } from "@shared/feature-flags.ts";
+import { VOICE_REQUIRED_FLAGS } from "@shared/voice.ts";
+import { voiceMicrophoneSetupStatus, voiceModelSetupStatus } from "@shared/voice-models.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
+import { voiceModelManager } from "../voice/models.ts";
+import { voiceStateStore } from "../voice/state.ts";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -191,9 +202,39 @@ async function ghAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
   }
   return {
     state: "needs-setup",
-    why: "The GitHub CLI is installed but is not authenticated to github.com.",
+    why: `The GitHub CLI is installed but is not authenticated to github.com.${await shellOnlyGhTokenHint(deps)}`,
     evidence: evidence || null,
   };
+}
+
+/** The variables `gh` reads a token from, in the order it prefers them. */
+const GH_TOKEN_VARIABLES = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+
+/**
+ * Why a token that works in the operator's terminal does not reach Mission Control's `gh`.
+ *
+ * A desktop launch inherits launchd's environment, not the login shell's, so a token exported
+ * in `~/.zshrc` authenticates `gh` in a terminal while the daemon's `gh` reports no login at
+ * all. Only which names are set is read here; their values never leave the locator.
+ */
+async function shellOnlyGhTokenHint(deps: SetupDeps): Promise<string> {
+  if (!deps.loginShellVariableNames) return "";
+  // A token the daemon already holds, under either name, is one gh read and rejected. That
+  // failure is not the launch gap, and unsetting only the login shell's names would leave it
+  // in place, so the hint stays out of it.
+  const daemonEnv = deps.processEnv?.() ?? {};
+  if (GH_TOKEN_VARIABLES.some((name) => daemonEnv[name])) return "";
+  let names: string[];
+  try {
+    names = (await deps.loginShellVariableNames(GH_TOKEN_VARIABLES))
+      .filter((name) => (GH_TOKEN_VARIABLES as readonly string[]).includes(name));
+  } catch {
+    return "";
+  }
+  if (names.length === 0) return "";
+  const listed = names.join(" and ");
+  const unset = names.map((name) => `-u ${name}`).join(" ");
+  return ` Your login shell sets ${listed}, but Mission Control was not started from that shell, so the gh it runs cannot see ${names.length > 1 ? "them" : "it"}. Store the login in gh itself: in a terminal, run \`env ${unset} gh auth login\`, then press Re-check.`;
 }
 
 async function pluginStatus(deps: SetupDeps): Promise<SetupStatus> {
@@ -485,6 +526,48 @@ async function codeRabbitAuthStatus(deps: SetupDeps): Promise<SetupStatus | Setu
   }
 }
 
+function flagLabel(id: FeatureFlagId): string {
+  return FEATURE_FLAGS.find((flag) => flag.id === id)?.label ?? id;
+}
+
+/** "a", "a and b", "a, b and c". */
+function listSentence(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * Whether the flags voice depends on are on. Unsatisfied, the row names which are on and which
+ * are off, and its Fix turns on exactly the ones that are off.
+ */
+export function voicePreviewsStatus(flagEnabled: (id: FeatureFlagId) => boolean): SetupProbeResult {
+  const on = VOICE_REQUIRED_FLAGS.filter((id) => flagEnabled(id));
+  const off = VOICE_REQUIRED_FLAGS.filter((id) => !flagEnabled(id));
+  const names = (ids: readonly FeatureFlagId[]) => listSentence(ids.map(flagLabel));
+  const verb = (ids: readonly FeatureFlagId[]) => (ids.length === 1 ? "is" : "are");
+  if (off.length === 0) {
+    return { status: { state: "satisfied", evidence: `${names(on)} ${verb(on)} on` } };
+  }
+  const why = on.length > 0
+    ? `${names(on)} ${verb(on)} on. ${names(off)} ${verb(off)} off.`
+    : `${names(off)} ${verb(off)} off.`;
+  // Voice needs three flags, so one, two or all three can be off here.
+  const label = off.length === 1
+    ? `Turn on ${flagLabel(off[0]!)}`
+    : off.length === VOICE_REQUIRED_FLAGS.length
+      ? "Turn on all three"
+      : "Turn on the two that are off";
+  return {
+    status: { state: "needs-setup", why, evidence: null },
+    remedy: {
+      kind: "feature-flags",
+      flags: off,
+      label,
+      note: `Turn on ${names(off)}, as switching ${off.length === 1 ? "it" : "them"} in Settings > Feature flags would.`,
+    },
+  };
+}
+
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-mcp-trust": async (deps) => deps.mcpTrust?.("claude") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
   "codex-mcp-trust": async (deps) => deps.mcpTrust?.("codex") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
@@ -503,6 +586,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-skills": skillStatus,
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
+  [MACOS_TERMINAL_ID]: (deps) => terminalStatus(MACOS_TERMINAL_ID, deps),
   "node-runtime": nodeRuntimeStatus,
   // Installed, answered from the filesystem alone. No `--version` run: every acli subprocess
   // is one an operator's audit of "what did it ask Jira" has to account for, and the sign-in
@@ -510,6 +594,21 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "acli-cli": (deps) => present(acliBin(), deps, "acli"),
   "acli-auth": acliAuthStatus,
   "coderabbit-auth": codeRabbitAuthStatus,
+  "voice-previews": async (deps) => voicePreviewsStatus(deps.flagEnabled ?? featureEnabled),
+  "voice-model": async (deps) => voiceModelSetupStatus((deps.voiceModel ?? (() => voiceModelManager.state()))()),
+  "voice-microphone": async (deps) => {
+    const reading = (deps.voiceMicrophone ?? (() => voiceStateStore.microphoneReading()))();
+    const status = voiceMicrophoneSetupStatus(reading);
+    const remedy = SETUP_DEPENDENCY_INFO["voice-microphone"].remedy;
+    if (remedy.kind !== "microphone-access") return status;
+    if (reading?.permission === "denied" || reading?.permission === "restricted") {
+      return { status, remedy: { ...remedy, action: "settings" } };
+    }
+    if (!reading || reading.permission === "not-determined") {
+      return { status, remedy: { ...remedy, action: "ask" } };
+    }
+    return status;
+  },
 };
 
 function reasonOf(error: unknown): string {
@@ -618,6 +717,8 @@ export function defaultSetupDeps(): SetupDeps {
     herdrServer: () => herdrServerProbe(),
     cmuxControl: () => cmuxControlProbe(),
     ghBin,
+    processEnv: () => process.env,
+    loginShellVariableNames: async (names) => Object.keys(await loginShellVariables(names)),
     acliSourceSites: configuredAcliSites,
     resolveBinPath,
     runCommand: async (bin, argv, managedEnv, timeoutMs) => {
@@ -666,17 +767,31 @@ export function defaultSetupDeps(): SetupDeps {
   };
 }
 
+/** Every flag Setup reads (`SETUP_FLAG_INPUTS`), resolved now, as a reader that does not change. */
+function flagsAsOfNow(flagOn: (id: FeatureFlagId) => boolean): (id: FeatureFlagId) => boolean {
+  const resolved = new Map(SETUP_FLAG_INPUTS.map((id) => [id, flagOn(id)] as const));
+  return (id) => resolved.get(id) ?? flagOn(id);
+}
+
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
-  const scoped: SetupDeps = { ...deps };
+  // The flags are read once, before anything is probed, and that one reading decides which
+  // families are listed, what the `voice-previews` probe reports and the stamp the reading
+  // carries. Read live at each of those, a switch made while the probes run could list no Voice
+  // rows under a stamp that says Voice is on, and the dashboard would never read it again.
+  const flagEnabled = flagsAsOfNow(deps.flagEnabled ?? featureEnabled);
+  const scoped: SetupDeps = { ...deps, flagEnabled };
   await deps.refreshPath?.();
   // Hidden dependencies are neither probed nor listed, so they cannot raise the banner or
   // count toward any family. See `shared/conductor-integration.ts`.
-  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled());
-  const [probed, targets, environment, repositories] = await Promise.all([
+  const targets = deps.terminalTargets();
+  const showMacosTerminal = targets.some(({ id }) => id === MACOS_TERMINAL_ID);
+  const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
+    .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled))
+    .filter((id) => id !== MACOS_TERMINAL_ID || showMacosTerminal);
+  const [probed, environment, repositories] = await Promise.all([
     // A fresh object per check: per-check readings shared between rows key on it.
     Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
-    Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
     indexedRepositoriesRow(deps),
   ]);
@@ -713,6 +828,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
     if (family === "repositories") rows.push(repositories);
     rows.push(...environmentRows.filter((row) => row.family === family));
   }
+  const readingFlags = setupReadingFlags(flagEnabled);
   const pruned = pruneSetupBannerDismissal(rows, deps.readBannerDismissal());
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
@@ -724,5 +840,6 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
+    ...(readingFlags !== undefined ? { flagsKey: readingFlags } : {}),
   };
 }

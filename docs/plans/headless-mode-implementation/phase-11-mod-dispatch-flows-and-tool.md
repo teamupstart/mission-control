@@ -1,6 +1,6 @@
 # Phase 11: Mod dispatch flows and the tool (WP14, minimal)
 
-Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v20 (sha256 `00677497ade4bb65c93457c3443849ac9b350b497b1efa82378d47d55d315ee2`). Branch from `main`; start only after P8 has merged, then `git rebase --onto origin/main <old base>`.
+Source: `plan.md` (section 0), `phased-plan.md`. Common rules: `phased-plan.md` section 4. Spec v21 (sha256 `1fd49cff22923784a63151d622d0bcc3b83729f912dce2b6530d059821f661c3`). Branch from `main`; start only after P8 has merged, then `git rebase --onto origin/main <old base>`.
 
 **1. Outcome.** From Claude Code the person can dispatch a task: `/mission-dispatch` (fast path, or a described task, then a confirm), or mid-conversation through the `start_dispatch` tool. `/mission-dispatch inbox`, `check` and `pane` open the Mission Control pane (on Needs you, on Tasks, or as it was). A dismissed dialog counts as Cancel. The launcher on session start is offered only if S10 or S11 passed and was recorded.
 

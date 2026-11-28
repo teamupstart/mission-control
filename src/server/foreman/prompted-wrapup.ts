@@ -7,7 +7,7 @@ import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { VERIFY_FAILURE_CAP, hasPane } from "./queue-machine.ts";
-import { hasBlocker, settledIdle } from "@shared/session.ts";
+import { hasBlocker, isAwaiting, settledIdle } from "@shared/session.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 
@@ -71,8 +71,12 @@ export interface PromptedInput {
 
 /** Step 1's answer: spend a model call on this session, or say why not. */
 export type PromptedCandidate =
-  /** Not a candidate. `why` is for the log - every skip is explicable. */
-  | { kind: "skip"; why: string }
+  /**
+   * Not a candidate. `why` is for the log - every skip is explicable. `operatorHold` marks the
+   * one skip that never heals on its own: the generation stays armed until the operator sends
+   * a release, so the worker records it once rather than leaving the session silent (#1807).
+   */
+  | { kind: "skip"; why: string; operatorHold?: true }
   /** A finished non-shipping generation to consume without verification or a wrap-up action. */
   | {
       kind: "retire";
@@ -198,6 +202,10 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   // 4b. The session reported a durable blocker: it is waiting on someone else, not finished.
   //     A skip consumes nothing, so the generation is still there to complete once cleared.
   if (hasBlocker(session)) return { kind: "skip", why: "the session is blocked" };
+  // 4c. The session declared a wait on a background process (CI, a build, a monitor) and is
+  //     inside its deadline: it is idle on purpose and will resume on its own. Also a skip, so
+  //     the generation survives the wait. Past the deadline it is judged like any other.
+  if (isAwaiting(session, now)) return { kind: "skip", why: "the session is awaiting a background process" };
   if (isPaused(session)) return { kind: "skip", why: "the session is paused" };
 
   // 5. No hooks, ever: no completion signal exists for this session, so its `idle` is
@@ -316,6 +324,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     skipScoutWrapup: cfg.skipScoutWrapup,
     skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
+  if (block?.kind === "operator_hold") return { kind: "skip", why: block.reason, operatorHold: true };
   if (block) {
     return {
       kind: "retire",
@@ -452,5 +461,42 @@ export class PromptedFailureTracker {
    */
   gaveUp(logicalKey: string, generation: number): boolean {
     return this.strikes(logicalKey, generation) >= VERIFY_FAILURE_CAP;
+  }
+}
+
+/**
+ * Which generation of each logical session already logged its operator-hold skip.
+ *
+ * A held generation is re-decided every tick and stays armed until the operator sends a
+ * release, so logging every skip would flood the log, and logging none is what left #1807's
+ * stuck mission run with no trace. One line per generation sits between the two.
+ *
+ * Bounded by the live fleet: `retainOnly` drops every key no live session holds, and `forget`
+ * drops a session's key once it is decided anything but a hold, so an entry never outlives the
+ * hold it describes. In memory, like `PromptedFailureTracker`: a restarted worker logging each
+ * standing hold once more is the cheap, correct answer.
+ */
+export class PromptedHoldLog {
+  private bySession = new Map<string, number>();
+
+  /** True exactly once per held generation: the caller logs on true. */
+  shouldLog(logicalKey: string, generation: number): boolean {
+    if (this.bySession.get(logicalKey) === generation) return false;
+    this.bySession.set(logicalKey, generation);
+    return true;
+  }
+
+  /** The session is no longer held. */
+  forget(logicalKey: string): void {
+    this.bySession.delete(logicalKey);
+  }
+
+  /** Drop every session that left the fleet. */
+  retainOnly(liveKeys: ReadonlySet<string>): void {
+    for (const key of this.bySession.keys()) if (!liveKeys.has(key)) this.bySession.delete(key);
+  }
+
+  get size(): number {
+    return this.bySession.size;
   }
 }

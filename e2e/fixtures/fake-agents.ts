@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeNativeTerminalProbe } from "./native-terminal-probes.ts";
@@ -143,12 +143,44 @@ export interface FakePullRequest {
    * failure. Omitted means that read finds no pull request, and the failure stands.
    */
   checkContexts?: unknown[];
+  checkRollupState?: "SUCCESS" | "PENDING" | "FAILURE";
   branchUpdate?: { mergeStateStatus: string; baseRefOid: string; isDraft?: boolean; reviewDecision?: string | null; refusal?: string };
+  /**
+   * What the Inspector's pull request read reports to Shipping's merge gate: the head commit's
+   * check rollup state (`SUCCESS`, `PENDING`, `FAILURE`) and GitHub's mergeability. Omitted means
+   * neither is reported, so no checks ran and mergeability is unknown, and nothing merges.
+   */
+  mergeGate?: { checks: string; mergeable?: string };
+  /**
+   * The repository's default branch as the Inspector's pull request read reports it. Defaults to
+   * `main`; a spec sets it to move the default branch along with a retargeted base.
+   */
+  defaultBranch?: string;
 }
 
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
 export function ghPullRequestsPath(home: string): string {
   return join(home, "gh-prs.json");
+}
+
+/** One CI run the fake GitHub started for a pull request: on open, then once per new head. */
+export interface FakeCiRun {
+  number: number;
+  headSha: string;
+  event: "opened" | "synchronize";
+}
+
+/**
+ * The CI runs the fake GitHub has started, in order. A run starts the first time GitHub reports a
+ * scripted open pull request at a head it has not reported before, which is when GitHub's own
+ * `pull_request` workflows would run.
+ */
+export function readGhCiRuns(home: string): FakeCiRun[] {
+  try {
+    return JSON.parse(readFileSync(join(home, "gh-prs-ci-runs.json"), "utf8")) as FakeCiRun[];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -734,13 +766,33 @@ if (argv[0] === "--version") {
 } else if (command.startsWith("api graphql") && argv.some((a) => a.includes("reviewThreads"))) {
   const numberArg = argv.find((a) => a.startsWith("number="));
   const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  // GitHub's CI trigger for a pull request: one run when it opens and one per new head
+  // (pull_request opened / synchronize). The ledger keys a run by pull request and head, so
+  // reading the same head again starts nothing. See \`readGhCiRuns\`.
+  if (pr && pr.state === "OPEN" && !pr.reviewError) {
+    const fs = require("node:fs");
+    const ledger = process.env.MC_E2E_GH_PRS.slice(0, -".json".length) + "-ci-runs.json";
+    let runs = [];
+    try { runs = JSON.parse(fs.readFileSync(ledger, "utf8")); } catch {}
+    if (!runs.some((run) => run.number === pr.number && run.headSha === pr.headRefOid)) {
+      runs.push({ number: pr.number, headSha: pr.headRefOid, event: runs.some((run) => run.number === pr.number) ? "synchronize" : "opened" });
+      fs.writeFileSync(ledger + ".tmp", JSON.stringify(runs));
+      fs.renameSync(ledger + ".tmp", ledger);
+    }
+  }
   if (pr?.reviewError) process.stdout.write(JSON.stringify({ errors: [{ message: "scripted provider unavailable" }] }));
   else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
     mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null, mergedAt: pr.mergedAt ?? null,
-    repository: { defaultBranchRef: { name: "main" } },
+    repository: { defaultBranchRef: { name: pr.defaultBranch ?? "main" } },
+    ...(pr.checkRollupState ? { reviewDecision: null, commits: { nodes: [{ commit: {
+      oid: pr.headRefOid, statusCheckRollup: { state: pr.checkRollupState,
+        contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts } },
+    } }] } } : {}),
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
+    ...(pr.mergeGate ? { mergeable: pr.mergeGate.mergeable ?? "MERGEABLE", reviewDecision: null,
+      commits: { nodes: [{ commit: { statusCheckRollup: { state: pr.mergeGate.checks } } }] } } : {}),
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     comments: pr.issueComments ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
@@ -767,6 +819,30 @@ if (argv[0] === "--version") {
     commits: { nodes: [{ commit: { oid: pr.headRefOid,
       statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checkContexts ?? [] } } } }] },
   } : null } } }));
+} else if (argv[0] === "api" && argv[2] === "PUT" && (argv[3] || "").includes("/pulls/") && (argv[3] || "").endsWith("/merge")) {
+  // YOLO mode's merge: a compare-and-swap on the head it evaluated. GitHub refuses a stale head
+  // (409); otherwise the scripted pull request reads as merged from now on. The body is recorded
+  // beside the argv so a spec can read which head the daemon asked to land.
+  let input = "";
+  try { input = require("node:fs").readFileSync(0, "utf8"); } catch {}
+  if (dir) writeFileSync(join(dir, \`gh-merge-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv, input }, null, 2));
+  // Scoped to the endpoint's repository as well as its number: two repositories can both have a
+  // pull request with the same number, and only the addressed one may be read or merged.
+  const [, owner, repo, , number] = (argv[3] || "").split("/");
+  const path = process.env.MC_E2E_GH_PRS;
+  const addressed = (p) => p.url === "https://github.com/" + owner + "/" + repo + "/pull/" + number;
+  const pr = scriptedPrs().find(addressed);
+  let sha = null;
+  try { sha = JSON.parse(input).sha; } catch {}
+  if (!pr || pr.headRefOid !== sha || !path) {
+    process.stderr.write("HTTP 409: Head branch was modified (fake)\\n");
+    process.exitCode = 1;
+  } else {
+    const now = new Date().toISOString();
+    writeFileSync(path, JSON.stringify(scriptedPrs().map((p) => (addressed(p)
+      ? { ...p, state: "MERGED", mergedAt: now, mergeCommit: "f".repeat(40) } : p)), null, 2));
+    process.stdout.write(JSON.stringify({ merged: true, sha: "f".repeat(40) }) + "\\n");
+  }
 } else if (argv[0] === "api" && argv[2] === "PUT" && (argv[3] || "").endsWith("/update-branch")) {
   const number = argv[3].split("/").at(-2);
   const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === number);
@@ -988,6 +1064,13 @@ setInterval(() => {
 }, 250);
 `;
 
+/** Install Codex and the local module its one-shot Voice fixture imports beside it. */
+export function writeFakeCodex(path: string): void {
+  copyFileSync(fileURLToPath(new URL("./voice-split-answer.ts", import.meta.url)), join(dirname(path), "voice-split-answer.ts"));
+  copyFileSync(fileURLToPath(new URL("./fake-codex.mjs", import.meta.url)), path);
+  chmodSync(path, 0o755);
+}
+
 /**
  * Write the recording fakes into `home` and return their paths.
  *
@@ -1002,6 +1085,7 @@ export function writeFakeAgents(home: string): FakeAgents {
   mkdirSync(binDir, { recursive: true });
   mkdirSync(recordDir, { recursive: true });
 
+  copyFileSync(fileURLToPath(new URL("./fake-repository-review.mjs", import.meta.url)), join(binDir, "fake-repository-review.mjs"));
   const claude = join(binDir, "fake-claude");
   copyFileSync(fileURLToPath(new URL("./fake-claude.mjs", import.meta.url)), claude);
   chmodSync(claude, 0o755);
@@ -1010,8 +1094,7 @@ export function writeFakeAgents(home: string): FakeAgents {
   // Claude's vendored SDK actually sniffs the extension: `spawnAppServer` execs the resolved
   // path directly, so the shebang is what picks the interpreter either way.
   const codex = join(binDir, "fake-codex");
-  copyFileSync(fileURLToPath(new URL("./fake-codex.mjs", import.meta.url)), codex);
-  chmodSync(codex, 0o755);
+  writeFakeCodex(codex);
   writeCodexCatalogMode(home, "success");
 
   const pi = join(binDir, "fake-pi");

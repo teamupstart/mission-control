@@ -1,5 +1,23 @@
+import { markReportRead, type ReportItem } from "@shared/reports.ts";
+import type { InboxMessageKind } from "@shared/inbox.ts";
+import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import { SHAPING_WRITE_ORDER_HEADER, type ShapingConfigView, type ShapingIntent, type ShapingReply, type ShapingRun, type ShapingTestRequest } from "@shared/shaping.ts";
+import type { HeardEntry, VoiceCard } from "@shared/voice-routing.ts";
+import { VOICE_DASHBOARD_CONFIRM_MS } from "@shared/voice-answers.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceRevision, VoiceState } from "@shared/voice.ts";
+import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
+import {
+  SHAPING_WRITE_ORDER_HEADER,
+  type ShaperSignInReply,
+  type ShaperSignOutReply,
+  type ShapingConfigView,
+  type ShapingIntent,
+  type ShapingReply,
+  type ShapingRun,
+  type ShapingTestRequest,
+  type TaskShaping,
+  type TaskSkillPrompt,
+} from "@shared/shaping.ts";
 import { readShapingRun } from "./shaping-settings.ts";
 import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionPauseMode } from "@shared/pause.ts";
@@ -81,6 +99,7 @@ import type {
   ShippingConfigPatch,
   SetNote,
   SkillsConfigPatch,
+  UiConfig,
   UiConfigPatch,
   UiConfigView,
   PipelinesConfigPatch,
@@ -102,9 +121,11 @@ import type {
   AttentionDismissal,
   AttentionDismissalWrite,
   InspectorFindingsResponse,
+  ReportGuidanceView,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
+  ReportGuidanceViewSchema,
   InspectorFindingsResponseSchema,
   StandingInstructionsConflictSchema,
   StandingInstructionsViewSchema,
@@ -171,6 +192,7 @@ import type {
   PipelineRepoRegistrationResponse,
   PipelineReposView,
   PipelineRunDetail,
+  PipelineLaunchRuntime,
   PipelinesView,
 } from "@shared/pipeline.ts";
 import type { Attachment } from "@shared/attachments.ts";
@@ -259,10 +281,28 @@ export interface CompleteTaskResult extends ActionResult {
   problems?: string[];
 }
 
-/** GET a JSON endpoint, returning null on any failure (for optional UI data). */
-async function fetchJson<T>(path: string): Promise<T | null> {
+/**
+ * How a GET that may be retried came out: its value, or a failure that is `definite` when the
+ * server answered with a 4xx (asking again will not change it) and transient otherwise (a network
+ * error or a 5xx).
+ */
+export type JsonRead<T> = { ok: true; value: T } | { ok: false; definite: boolean };
+
+/** GET a JSON endpoint, saying whether a failure is worth retrying. */
+async function readJson<T>(path: string): Promise<JsonRead<T>> {
   try {
     const res = await actionFetch(path);
+    if (!res.ok) return { ok: false, definite: res.status >= 400 && res.status < 500 };
+    return { ok: true, value: (await res.json()) as T };
+  } catch {
+    return { ok: false, definite: false };
+  }
+}
+
+/** GET a JSON endpoint, returning null on any failure (for optional UI data). */
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T | null> {
+  try {
+    const res = await actionFetch(path, init);
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -412,7 +452,10 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
-export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
+export const fetchSessionSettingsAccess = (signal?: AbortSignal) =>
+  fetchJsonWithSignal<import("@shared/settings-mcp.ts").SessionSettingsAccess>("/api/session-settings-access", signal);
+export const fetchUiSkin = (signal?: AbortSignal) => fetchJsonWithSignal<{ skin: UiConfigView["config"]["skin"] }>("/api/ui/skin", signal);
+export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
  * Both, because they diverge for real reasons (a hand-edited file, an install from
@@ -462,7 +505,63 @@ export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+interface AgentEnvironmentSettingsView {
+  names: string[];
+  revision: string;
+  variables: import("@shared/worktrees.ts").WorktreeClaimVariableView[];
+}
+export async function fetchAgentEnvironment(): Promise<AgentEnvironmentSettingsView | null> {
+  const path = "/api/agent-environment";
+  try {
+    const response = await actionFetch(path);
+    // The names changed while the shell probe was running. Read the committed revision
+    // once more, both for an initial load and for recovery from a superseded save.
+    if (response.status === 409) return fetchJson<AgentEnvironmentSettingsView>(path);
+    return response.ok ? await response.json() as AgentEnvironmentSettingsView : null;
+  } catch {
+    return null;
+  }
+}
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+type VoiceUiWriteResult = ActionResult & Partial<UiConfig["voice"]> & { voiceIndicatorVersion?: VoiceRevision };
+export interface VoiceDashboardSnapshot {
+  providerRevision: string;
+  snapshotOrder: number;
+  serverTime: number;
+  intentReceipt?: string;
+}
+
+export interface VoiceKeyWriteOptions {
+  revision: string;
+  expiresAt: number;
+  signal: AbortSignal;
+}
+
+function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) {
+  return { signal, headers: { "x-voice-key-revision": revision, "x-voice-key-expires-at": String(expiresAt) } };
+}
+
+/** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
+export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
+  { signal, headers: { "x-voice-provider-revision": "read" } });
+/** A card with an uncertain countdown only needs the daemon clock. Voice settings stay lazy. */
+export async function fetchVoiceCardTime(signal: AbortSignal, header = "X-Voice-Server-Time-Ms"): Promise<number | null> {
+  try {
+    const res = await fetch("/api/voice/config", { method: "HEAD", signal, cache: "no-store" });
+    const stamp = res.headers.get(header);
+    return res.ok && stamp && Number.isFinite(Number(stamp)) ? Number(stamp) : null;
+  } catch {
+    return null;
+  }
+}
+export const fetchRecentlyHeard = (signal: AbortSignal) =>
+  fetchJsonWithSignal<{ entries: HeardEntry[] }>("/api/voice/heard", signal);
+/** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
+export const fetchVoiceDevices = (signal?: AbortSignal) => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices", { signal });
+/** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
+export const fetchVoiceDecisionKey = (signal?: AbortSignal) =>
+  fetchJson<VoiceDashboardSnapshot & VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"]; keyRevisions: Record<VoiceKeyProvider, string> }>("/api/voice/decision-key",
+    { signal, headers: { "x-voice-provider-revision": "read" } });
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");
@@ -489,20 +588,21 @@ export const fetchPipelines = (refresh = false) =>
   fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
 
 /**
- * Replace observation consent and keep the returned pipeline status array intact.
+ * Save pipeline config and keep the returned repository status array intact.
  *
  * This cannot use the generic mutation helper: that helper adds the HTTP `status` number to
  * every answer, while `PipelinesView.status` is the repository health array. Flattening both
  * shapes would replace the array with `200` precisely when a consent write succeeds.
  */
-export async function setPipelinesConfig(
-  config: PipelinesConfigPatch,
+async function writePipelinesConfig(
+  request: { method: "PUT"; config: PipelinesConfigPatch }
+    | { method: "PATCH"; config: { launchRuntime: PipelineLaunchRuntime } },
 ): Promise<{ ok: true; view: PipelinesView } | { ok: false; error: string }> {
   try {
     const res = await actionFetch("/api/pipelines/config", {
-      method: "PUT",
+      method: request.method,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(config),
+      body: JSON.stringify(request.config),
     });
     const data = (await res.json().catch(() => ({}))) as Partial<PipelinesView> & {
       error?: string;
@@ -517,6 +617,10 @@ export async function setPipelinesConfig(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export function setPipelinesConfig(config: PipelinesConfigPatch) {
+  return writePipelinesConfig({ method: "PUT", config });
 }
 // ---- Repository standing instructions ----
 //
@@ -603,6 +707,19 @@ export const fetchResolvedStandingInstructions = (
   if (launch.kind) q.set("kind", launch.kind);
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
+
+/** `GET /api/tasks/:id/shaping`: what the task's current session received from task shaping. */
+export interface TaskShapingView {
+  summary: TaskShaping;
+  /** The section delivered in turn one, or null when nothing was kept. */
+  text: string | null;
+  /** The launch's after-work prompt, null until one was written. Absent from an older daemon. */
+  afterWork?: TaskSkillPrompt | null;
+}
+
+/** Null on the route's 404, which is the ordinary answer for a task nothing shaped. */
+export const fetchTaskShaping = (taskId: string, signal?: AbortSignal) =>
+  fetchJsonWithSignal<TaskShapingView>(`/api/tasks/${encodeURIComponent(taskId)}/shaping`, signal);
 
 /** What THIS session was actually sent at launch. `null` covers the route's 404. */
 export const fetchSessionStandingInstructions = (id: string, signal?: AbortSignal) =>
@@ -733,6 +850,12 @@ export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
  * you are back at the desk, so it can never source a figure shown while you are away.
  */
 export const fetchAwayBuffer = () => fetchJson<AwayBufferSummary>("/api/away/buffer");
+/**
+ * One agent report, read or not, and the latest of its chain when it was replaced. What a report
+ * notification opens when this window no longer holds the report. Null on any failure.
+ */
+export const fetchReport = (id: string) =>
+  fetchJson<{ report: ReportItem; latest: ReportItem | null }>(`/api/reports/${encodeURIComponent(id)}`);
 /**
  * The sessions the daemon currently reads as stuck. Fetched rather than derived:
  * a stall is elapsed silence, and `sessionEqual` keeps `lastActivity` out of the
@@ -1077,7 +1200,7 @@ export function forgetCachedRepos(): void {
   lastRepos = null;
   announcedIdentity = null;
   repoCacheGeneration += 1;
-  for (const listener of [...repoListDropListeners]) listener();
+  for (const listener of Array.from(repoListDropListeners)) listener();
 }
 
 /**
@@ -1236,6 +1359,7 @@ async function request<T extends ActionResult = ActionResult>(
       signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
+    options.signal?.throwIfAborted();
     if (!res.ok) {
       return { ...data, ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
@@ -1247,12 +1371,17 @@ async function request<T extends ActionResult = ActionResult>(
   }
 }
 
-const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
-  request<T>("POST", path, body);
+const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
+  request<T>("POST", path, body, options);
 const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown, options?: { signal?: AbortSignal; headers?: Record<string, string> }) =>
   request<T>("PUT", path, body, options);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
+
+function voiceSpeechRequestOptions(cancel?: AbortSignal): { signal: AbortSignal } {
+  const deadline = AbortSignal.timeout(5000);
+  return { signal: cancel ? AbortSignal.any([cancel, deadline]) : deadline };
+}
 
 // ---- Recurring Missions ----
 //
@@ -1423,7 +1552,7 @@ export async function fetchTranscriptBefore(
   before: number,
   signal?: AbortSignal,
 ): Promise<
-  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean }
+  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean; spokenDeferred?: true }
   | { ok: false; error: string }
 > {
   try {
@@ -1435,6 +1564,7 @@ export async function fetchTranscriptBefore(
       messages?: TranscriptMessage[];
       start?: number;
       end?: number;
+      spokenDeferred?: true;
       atStart?: boolean;
       error?: string;
     };
@@ -1446,6 +1576,7 @@ export async function fetchTranscriptBefore(
       messages: data.messages,
       start: data.start,
       end: data.end,
+      ...(data.spokenDeferred && { spokenDeferred: true }),
       // A response that omits the flag is treated as "nothing older", which stops the
       // scroll-back rather than looping on an anchor the server never moved.
       atStart: data.atStart ?? true,
@@ -1743,7 +1874,8 @@ export async function submitProductIssue(
 }
 
 /**
- * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
+ * Turn the Keep Awake mode on or off: `PUT /api/keep-awake`. The daemon remembers the choice
+ * across restarts and upgrades.
  *
  * Resolves with the daemon's OBSERVED status - never an echo of the request - and never
  * throws into React, like the other mutators here. On a refusal (unsupported host, failed
@@ -1810,6 +1942,8 @@ export interface DispatchInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** Library Persona the agent launches with; omitted launches with none. */
   personaId?: string;
+  /** A short spoken name that addresses the session by voice; omitted is none. */
+  callSign?: string;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   planStorage?: "repository" | "local" | null;
@@ -1848,7 +1982,7 @@ export type ArchiveRead<T> =
  */
 async function archiveJson<T>(path: string, signal?: AbortSignal): Promise<ArchiveRead<T>> {
   try {
-    const res = await actionFetch(path, { ...(signal ? { signal } : {}) });
+    const res = await actionFetch(path, signal ? { signal } : {});
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       return { ok: false, error: body.error ?? `HTTP ${res.status}`, status: res.status };
@@ -1921,6 +2055,18 @@ export const api = {
     ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  /** Queue a Stuck row's fixed Nudge, Continue or push message (`inbox` flag). */
+  sendInboxMessage: (id: string, kind: InboxMessageKind) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inbox-message`, { kind }),
+  /**
+   * Open a parked run's next repair round, as the Runs page's Resubmit does with a fresh
+   * request id.
+   */
+  resubmitWorkflowRun: (runId: string) =>
+    post(`/api/workflow-runs/${encodeURIComponent(runId)}/resubmit`, {
+      requestId: crypto.randomUUID(),
+      resubmitUnchanged: false,
+    }),
   deliverPendingTurn: (id: string, turnId: string, revision: number, action: "steer" | "interrupt") =>
     post(`/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/deliver`, { revision, action }),
   reportComposerActivity: (
@@ -1933,10 +2079,10 @@ export const api = {
     focused,
     typed,
   }),
-  recallPendingTurn: (id: string, turnId: string, revision: number) =>
+  recallPendingTurn: (id: string, turnId: string, revision: number, signal?: AbortSignal) =>
     post<ActionResult & { text?: string }>(
       `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/recall`,
-      { revision },
+      { revision }, { signal },
     ),
   retryPendingTurn: (id: string, turnId: string, revision: number) =>
     post(
@@ -1984,6 +2130,9 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/reply`, input),
   clearBlocker: (id: string, blockerId: string, resolution?: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, { blockerId, ...(resolution ? { resolution } : {}) }),
+  /** End a session's declared wait. `awaitingId` refuses a wait the session re-declared since. */
+  clearAwaiting: (id: string, awaitingId: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/awaiting/clear`, { awaitingId }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   /** Pause one session: freeze it now, or once its current turn ends. */
   pauseSession: (id: string, mode: SessionPauseMode = "now") =>
@@ -2104,6 +2253,62 @@ export const api = {
     id: string,
   ): Promise<ActionResult & { homeName?: string; sessionId?: string | null; transfer?: SessionTransferSummary }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
+  /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
+  openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
+  /** Mark an agent report read. Idempotent; the first time and way are kept. */
+  markReportRead: (id: string) => markReportRead(id, post),
+  /** Reply to an agent report: delivered as the operator's message, and marks it read. */
+  replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
+  /**
+   * Start a report's follow-up task, or dispatch the one an earlier press created. A failure
+   * after the task was created still names it (`taskId`).
+   */
+  followUpReport: (id: string, text: string) =>
+    post<ActionResult & { taskId?: string | null }>(`/api/reports/${encodeURIComponent(id)}/follow-up`, { text }),
+  /**
+   * Mark all read: exactly the reports the Reports section listed when it was pressed, so one
+   * that arrived after the click stays. Answers the reports it cleared.
+   */
+  markAllReportsRead: (ids: readonly string[]) =>
+    post<ActionResult & { reports?: ReportItem[] }>("/api/reports/read-all", { ids }),
+  /** Mute an author's reports from now on. Its reports are hidden, never marked read. */
+  muteReports: (authorKey: string) => post("/api/reports/mutes", { authorKey }),
+  /** Unmute an author: its reports still waiting to be read are listed again. */
+  unmuteReports: (authorKey: string) => del(`/api/reports/mutes/${encodeURIComponent(authorKey)}`),
+  /**
+   * Settings > Reports' guidance: the saved text, the text in force, the default and the limit.
+   * An answer missing any of them is a failed read, never filled in.
+   */
+  reportGuidance: async (): Promise<JsonRead<ReportGuidanceView>> => {
+    const read = await readJson<unknown>("/api/reports/guidance");
+    if (!read.ok) return read;
+    const view = ReportGuidanceViewSchema.safeParse(read.value);
+    return view.success ? { ok: true, value: view.data } : { ok: false, definite: true };
+  },
+  /**
+   * Save the guidance new sessions' `post_report` carries, or null to reset it to the default.
+   * Resolves to the stored view, or to why it failed; an accepted save whose answer is not a
+   * whole view is a failure, never filled in.
+   */
+  saveReportGuidance: async (guidance: string | null): Promise<{ ok: true; view: ReportGuidanceView } | { ok: false; error: string }> => {
+    const result = await put("/api/reports/guidance", { guidance });
+    if (!result.ok) return { ok: false, error: result.error ?? "Could not save the report guidance" };
+    const view = ReportGuidanceViewSchema.safeParse(result);
+    return view.success
+      ? { ok: true, view: view.data }
+      : { ok: false, error: "Mission Control saved the guidance but did not answer with it. Reload to see what is stored" };
+  },
+  /**
+   * Publish as scout: archive the report's stored document. Sends no page: the daemon builds it.
+   * A page the archive's checker refused answers with every problem in `problems`.
+   */
+  publishReport: (id: string) =>
+    post<ActionResult & { archiveKey?: string; problems?: string[] }>(`/api/reports/${encodeURIComponent(id)}/publish`),
+  /** The stored copy of a report's attached document, as text. */
+  reportDocumentUrl: (id: string) => `/api/reports/${encodeURIComponent(id)}/document`,
+  /** Every report a session posted, every version, read or not, for its conversation. */
+  sessionReports: (id: string) =>
+    readJson<{ reports: ReportItem[] }>(`/api/sessions/${encodeURIComponent(id)}/reports`),
   /**
    * `selections` rides along only when a decision form was filled in. It is what the
    * conversation replays afterwards - `response` is the flattened string the agent reads,
@@ -2116,8 +2321,9 @@ export const api = {
     response?: string | null,
     selections?: PlanDecisionAnswer[] | null,
     approveFutureBundles = false,
+    voiceSubmitId?: string,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles, voiceSubmitId }),
   /**
    * "Remind me later" on a `request_input` question: park it for `delay` and release the agent
    * with what to do meanwhile. The daemon adds the delay to its own clock.
@@ -2126,6 +2332,8 @@ export const api = {
     post(`/api/reviews/${encodeURIComponent(id)}/snooze`, { delay, meanwhile }),
   /** Answer now: bring a snoozed question back before its time. */
   wakeReview: (id: string) => post(`/api/reviews/${encodeURIComponent(id)}/wake`),
+  /** One review by id, settled or not: the earlier version a revised plan form links to. */
+  review: (id: string) => readJson<ReviewItem>(`/api/reviews/${encodeURIComponent(id)}`),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**
@@ -2180,6 +2388,11 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/abandon`, input),
   cancelPipelineCommission: (id: string, input: PipelineRetry) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
+  /** Validate a pinned revision change and return both task snapshots without saving. */
+  previewPlanChange: (id: string, planInputChange: TaskPlanInputChange, signal?: AbortSignal) =>
+    post<ActionResult & { task?: Task; before?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, { planInputChange, previewOnly: true }, { signal }),
+  taskPlanDependencies: (id: string) =>
+    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.
@@ -2188,10 +2401,8 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
-  taskPlanDependencies: (id: string) =>
-    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
+    post<DispatchResult & { task?: Task }>(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
    * Move a backlog task in the operator's order - the ONLY client entry point for a rank,
    * which is not writable through `updateTask` or any create body.
@@ -2363,12 +2574,75 @@ export const api = {
   /** Back up now: a `manual` database copy. A failure carries the capture's own message. */
   backUpDatabase: () => post<ActionResult & { message?: string }>(`/api/storage/backups`),
   /** `signal` lets a caller bound the write; an abort settles as `{ ok: false }`. */
+  setAgentEnvironment: (names: string[], expectedRevision: string) =>
+    put<ActionResult & Partial<AgentEnvironmentSettingsView>>("/api/agent-environment", { names, expectedRevision }),
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
+  // --- Voice, behind its preview flag (404 while it is off) ---
+  reserveVoiceProviderWrite: (intent: VoiceProviderIntent, signal: AbortSignal) =>
+    post<ActionResult & { ticket?: string; intentReceipt?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; receipt: string; quietForMs: number; pendingSelection: boolean } }>(
+      "/api/voice/config/provider-intent", intent, { signal }),
+  setVoiceConfig: (patch: VoiceConfigPatch, ticket: string | undefined, signal: AbortSignal, settingsExpiry?: number) =>
+    put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
+      { signal, headers: { ...(ticket && { "x-voice-provider-ticket": ticket }),
+        ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
+  voiceFollowUpRepository: (id: string) => request<ActionResult & { repoRoot?: string }>(
+    "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
+  setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, writeId: string, signal: AbortSignal) =>
+    put<VoiceUiWriteResult & { writeId?: string }>("/api/voice/confirmation", { confirmation, expectedVersion, writeId }, { signal }),
+  voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string, editedReview?: string) =>
+    request<ActionResult>("POST", `/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : ""),
+      undefined, { signal: AbortSignal.timeout(10_000), ...(editedReview && { headers: { "x-voice-edit-review": editedReview } }) }),
+  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: {
+    candidate?: VoiceCard["candidates"][number]; deadline?: number | null; answerCompanion?: boolean;
+  } = {}) => {
+    // Leave the transport alive through the possible delivery window, plus a short
+    // grace period for the reply. The card can offer a retry independently.
+    const remaining = options.deadline == null ? 0 : Math.max(0, options.deadline - performance.now());
+    const confirmation = options.candidate?.kind === "question" ? VOICE_DASHBOARD_CONFIRM_MS : 0;
+    const signal = AbortSignal.timeout(Math.max(Math.ceil(remaining), confirmation) + 2000);
+    const source = options.answerCompanion && action === "send-now" ? "?source=card" : "";
+    const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}${source}`,
+      options.candidate ? { id: options.candidate.id } : undefined, { signal });
+    return signal.aborted ? { ok: false, error: "The request timed out." } : result;
+  },
+  clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
+  setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
+    put<VoiceUiWriteResult>("/api/voice/indicators", { id, enabled }, { signal }),
+  setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
+    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
+  /** A 409 carries `reason` when there is no model to download. */
+  startVoiceModelDownload: () =>
+    post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
+  cancelVoiceModelDownload: () =>
+    request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
+  auditionVoiceSpeech: (cancel: AbortSignal) =>
+    post<ActionResult & { id?: string; reason?: string }>("/api/voice/speech/audition", undefined, voiceSpeechRequestOptions(cancel)),
+  startVoiceSpeechDownload: () =>
+    post<ActionResult & { reason?: string }>("/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  cancelVoiceSpeechDownload: () => request("DELETE", "/api/voice/speech/model/download", undefined, voiceSpeechRequestOptions()),
+  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, voiceSpeechRequestOptions()),
+  /** Save one provider's decision-model key. The answer is the report, never the key. */
+  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
+    put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },
+      keyWriteRequest(options)),
+  removeVoiceDecisionKey: (provider: VoiceKeyProvider, options: VoiceKeyWriteOptions) =>
+    request<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>(
+      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`, undefined, keyWriteRequest(options)),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>
     request<ActionResult & Partial<ShapingReply> & { reason?: string }>("GET", "/api/shaping"),
+  /**
+   * Start a sign-in for a shaper that carries the `auth` marker (404 while `shaper-sign-in` is
+   * off). The reply's `authorizationUrl` is the one place the link appears: the sign-in list
+   * never carries it. A refusal carries the daemon's fixed `reason`.
+   */
+  signInShaper: (shaper: string) =>
+    post<ActionResult & Partial<ShaperSignInReply> & { reason?: string }>("/api/shaping/sign-in", { shaper }),
+  /** End a connection's sign-in, pending or held. A refusal carries the daemon's fixed `reason`. */
+  signOutShaper: (connection: string) =>
+    post<ActionResult & Partial<ShaperSignOutReply> & { reason?: string }>("/api/shaping/sign-out", { connection }),
   /** Apply one intent. A refusal carries the daemon's `reason`. */
   setShaping: (intent: ShapingIntent, options?: { signal?: AbortSignal; order?: string }) =>
     put<ActionResult & { config?: ShapingConfigView; reason?: string; floor?: number }>("/api/shaping", intent, {
@@ -2413,8 +2687,8 @@ export const api = {
   // drops reads sent before the save, and clears the announced identity so this window takes
   // its new index before its own announcement arrives. A rescan keeps the list - same
   // directories, and a list that is a few seconds old beats none.
-  setRepoIndex: async (cfg: RepoIndexConfigPatch) => {
-    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+  setRepoIndex: async (cfg: RepoIndexConfigPatch, revision: string) => {
+    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, { ...cfg, revision });
     if (saved.ok) forgetCachedRepos();
     return saved;
   },
@@ -2422,6 +2696,8 @@ export const api = {
 
   // --- Pipelines (observing an external SDLC engine) ---
   setPipelines: setPipelinesConfig,
+  setPipelineRuntime: (launchRuntime: PipelineLaunchRuntime) =>
+    writePipelinesConfig({ method: "PATCH", config: { launchRuntime } }),
   registerPipelineRepo: (provider: PipelineProviderId, repoRoot: string) =>
     post<ActionResult & PipelineRepoRegistrationResponse>(`/api/pipelines/register`, {
       provider,
@@ -2429,7 +2705,8 @@ export const api = {
     }),
 
   // --- Task sources (pulling work into the backlog) ---
-  setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),
+  setTaskSources: (cfg: TaskSourcesConfigPatch, revision: string) =>
+    put<ActionResult & Pick<TaskSourcesView, "revision">>(`/api/task-sources/config`, { ...cfg, revision }),
   /** Sweep one source now. The report says what it filed, skipped and dropped. */
   sweepTaskSource: (id: string) =>
     post<ActionResult & SweepReport>(`/api/task-sources/${encodeURIComponent(id)}/sweep`),
@@ -2467,7 +2744,9 @@ export const api = {
     ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
-  setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
+  setSessionSettingsAccess: (input: import("@shared/session-control-authorization.ts").SessionSettingsAuthorization, signal: AbortSignal) =>
+    put("/api/session-settings-access", input, { signal }),
+  setUiConfig: (cfg: UiConfigPatch, signal?: AbortSignal) => put(`/api/ui/config`, cfg, { signal }),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 
   // --- First-run setup reminder ---
@@ -2520,7 +2799,13 @@ export const api = {
    * top of these for immediacy (see `useTimelineReviews`).
    */
   resolvedReviews: (id: string) =>
-    fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
+  /**
+   * The same history for the sessions this conversation was runtime-transferred from. Read only
+   * to draw an answer delivered here whose question a predecessor asked.
+   */
+  lineageReviews: (id: string) =>
+    readJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews?lineage=1`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>
@@ -2586,7 +2871,7 @@ export const api = {
     try {
       const res = await actionFetch(
         `/api/archives/${encodeURIComponent(archiveKey)}/artifacts/${encodeURIComponent(artifactId)}`,
-        { ...(signal ? { signal } : {}) },
+        signal ? { signal } : {},
       );
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };

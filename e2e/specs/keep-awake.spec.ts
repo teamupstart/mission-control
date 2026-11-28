@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * Keep Awake, driven the way an operator meets it: the fleet pulse's live segment opens
@@ -31,6 +32,18 @@ function records(daemon: DaemonHandle, kind: "start" | "exit"): { argv?: string[
 async function daemonPid(daemon: DaemonHandle): Promise<number> {
   const res = await fetch(`${daemon.baseURL}/api/health`);
   return ((await res.json()) as { pid: number }).pid;
+}
+
+/**
+ * The review artifact for a restored state: the open dropdown beside the pulse, captured only
+ * when asked for (`MC_E2E_EVIDENCE`) so an ordinary run writes nothing.
+ */
+async function captureRestored(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0); // Tooltip portals a bubble under a resting pointer.
+  await page.screenshot({ path: `${EVIDENCE}${name}.png`, clip: { x: 0, y: 0, width: 900, height: 330 } });
+  console.log(`CAPTURED ${EVIDENCE}${name}.png`);
 }
 
 /** The live segment: located by role and its stateful accessible name, never a test id. */
@@ -61,7 +74,9 @@ test("the live segment drives the explicit command fixture and every window conv
   await expect(dialog(dashboard)).toContainText(
     "Lid close and manual Sleep still work. Uses more battery power.",
   );
-  await expect(dialog(dashboard)).toContainText("On until Mission Control quits or restarts.");
+  await expect(dialog(dashboard)).toContainText(
+    "Stays on across restarts and upgrades until you switch it off.",
+  );
 
   // A second window, opened BEFORE the toggle, so the on state it later shows can only
   // have arrived over the live channel - no reload, no poll.
@@ -110,7 +125,7 @@ test("the live segment drives the explicit command fixture and every window conv
   await expect.poll(() => records(daemon, "exit").length).toBe(1);
 });
 
-test("a daemon crash never leaves a stale awake claim, and a restart returns off", async ({
+test("a daemon crash never leaves a stale awake claim, and the restart takes the assertion back", async ({
   dashboard,
   daemon,
 }) => {
@@ -137,16 +152,126 @@ test("a daemon crash never leaves a stale awake claim, and a restart returns off
   // manager's orderly stop, so its `-w <daemon PID>` watch releases the assertion.
   await expect.poll(() => records(daemon, "exit").length, { timeout: 5_000 }).toBe(1);
 
-  // And the approved restart lifecycle: the successor daemon starts with the mode OFF -
-  // nothing persists it, nothing reacquires it - and the reconnecting dashboard
-  // converges on that truth by itself, with no reload.
+  // And the restart: the operator's choice survived the crash, so the successor acquires
+  // its OWN assertion - bound to its own PID, not the dead daemon's - with nobody clicking,
+  // and the reconnecting dashboard converges on it by itself, with no reload.
+  await daemon.restart();
+  await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - on", {
+    timeout: 30_000,
+  });
+  await expect(trigger(dashboard)).toContainText("live · awake");
+  await expect(switchIn(dashboard)).toBeEnabled();
+  await expect(switchIn(dashboard)).toHaveAttribute("aria-checked", "true");
+  const successor = await daemonPid(daemon);
+  await expect.poll(() => records(daemon, "start").length).toBe(2);
+  expect(
+    records(daemon, "start").map((r) => r.argv),
+    "the successor must hold its own assertion, bound to its own PID",
+  ).toContainEqual(["-i", "-w", String(successor)]);
+});
+
+test("an orderly shutdown, as an upgrade does, keeps the choice - and so does switching it off", async ({
+  dashboard,
+  daemon,
+}) => {
+  await trigger(dashboard).click();
+  await switchIn(dashboard).click();
+  await expect(trigger(dashboard)).toContainText("live · awake");
+  await expect.poll(() => records(daemon, "start").length).toBe(1);
+
+  // The upgrade path: the old daemon is asked to quit and runs its orderly shutdown, which
+  // releases the assertion. Releasing it must not be mistaken for the operator switching the
+  // mode off - the exact way a restart used to lose the choice.
+  await daemon.shutdown();
+  await expect.poll(() => records(daemon, "exit").length).toBe(1);
+  await expect(trigger(dashboard)).toContainText("reconnecting");
+
+  await daemon.restart();
+  await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - on", {
+    timeout: 30_000,
+  });
+  await expect(switchIn(dashboard)).toHaveAttribute("aria-checked", "true");
+  await expect.poll(() => records(daemon, "start").length).toBe(2);
+  await captureRestored(dashboard, "keep-awake-restored-on-after-restart");
+
+  // Switching it off is a choice too, and it is the one that must outlast the next restart:
+  // the successor takes no assertion at all.
+  await switchIn(dashboard).click();
+  await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - off");
+  await expect.poll(() => records(daemon, "exit").length).toBe(2);
+
+  await daemon.shutdown();
   await daemon.restart();
   await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - off", {
     timeout: 30_000,
   });
   await expect(trigger(dashboard)).not.toContainText("awake");
-  await expect(switchIn(dashboard)).toBeEnabled();
   await expect(switchIn(dashboard)).toHaveAttribute("aria-checked", "false");
+  await captureRestored(dashboard, "keep-awake-restored-off-after-restart");
+  // Nothing was started by the third daemon: the two starts on record are the first two.
+  expect(records(daemon, "start")).toHaveLength(2);
+});
+
+/**
+ * Make the daemon's own write of the saved choice fail, the way a locked or full database
+ * would. A trigger rather than a mock: the route, the manager and the real `app_config` write
+ * all run, and only SQLite refuses the one key.
+ */
+function refuseSavedChoice(daemon: DaemonHandle, refuse: boolean): void {
+  withDaemonDb(daemon, (db) => {
+    db.exec("DROP TRIGGER IF EXISTS refuse_keep_awake_insert; DROP TRIGGER IF EXISTS refuse_keep_awake_update;");
+    if (!refuse) return;
+    for (const event of ["INSERT", "UPDATE"]) {
+      db.exec(
+        `CREATE TRIGGER refuse_keep_awake_${event.toLowerCase()} BEFORE ${event} ON app_config
+         WHEN NEW.key = 'keepAwake'
+         BEGIN SELECT RAISE(ABORT, 'keep awake storage is read-only'); END;`,
+      );
+    }
+  });
+}
+
+test("a choice the daemon cannot save is refused in the dropdown, and the switch shows what a restart brings back", async ({
+  dashboard,
+  daemon,
+}) => {
+  const refusal = dialog(dashboard).getByRole("status").filter({
+    hasText: "could not save the Keep awake choice",
+  });
+  await trigger(dashboard).click();
+
+  // Switching on while the choice cannot be saved: the OS would accept the assertion, but a
+  // restart would take it away, so the daemon releases it again and says why. The switch
+  // must not be left drawing `on`.
+  refuseSavedChoice(daemon, true);
+  await switchIn(dashboard).click();
+  await expect(refusal).toBeVisible();
+  await expect(refusal).toContainText("keep awake storage is read-only");
+  await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - off");
+  await expect(switchIn(dashboard)).toHaveAttribute("aria-checked", "false");
+  await expect(switchIn(dashboard)).toBeEnabled();
+  // (That the fake provider was SIGTERMed again is proven in `test/keep-awake.test.ts`: the
+  // fixture process is killed before its own script has written a record, so none is counted
+  // here.)
+
+  // The fault clears and the same click now sticks; the refusal is gone with the next attempt.
+  refuseSavedChoice(daemon, false);
+  await switchIn(dashboard).click();
+  await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - on");
+  await expect(refusal).toBeHidden();
+
+  // Switching off while the choice cannot be saved changes nothing: it is still on, and the
+  // saved choice still says on, so the switch still agrees with a restart.
+  refuseSavedChoice(daemon, true);
+  await switchIn(dashboard).click();
+  await expect(refusal).toBeVisible();
+  await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - on");
+  await expect(switchIn(dashboard)).toHaveAttribute("aria-checked", "true");
+
+  refuseSavedChoice(daemon, false);
+  await daemon.shutdown();
+  await daemon.restart();
+  await expect(trigger(dashboard)).toHaveAccessibleName("Keep awake - on", { timeout: 30_000 });
 });
 
 test("the awake label never wraps the title bar, and compaction never hides the control", async ({

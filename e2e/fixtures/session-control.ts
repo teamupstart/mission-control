@@ -18,9 +18,9 @@ export async function api(daemon: DaemonHandle, path: string, body?: unknown, me
   return response.json();
 }
 
-export async function dispatch(daemon: DaemonHandle, name: string): Promise<Session> {
+export async function dispatch(daemon: DaemonHandle, name: string, repoRoot = daemon.repo): Promise<Session> {
   const before: Session[] = await api(daemon, "/api/sessions");
-  await api(daemon, "/api/tasks", { repoRoot: daemon.repo, intent: `write a haiku about ${name}`, title: name, kind: "ship", agent: "claude", workflowId: null });
+  await api(daemon, "/api/tasks", { repoRoot, intent: `write a haiku about ${name}`, title: name, kind: "ship", agent: "claude", workflowId: null });
   let session: Session | undefined;
   await expect.poll(async () => {
     const all: Session[] = await api(daemon, "/api/sessions");

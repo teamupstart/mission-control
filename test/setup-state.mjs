@@ -21,10 +21,11 @@
 // module whose behavior we are trying to arrange. It writes environment - plus the private git
 // prefix `git-environment.mjs` describes - and never opens SQLite.
 
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { bypassXcrunGitShim, disableAutoMaintenance } from "./git-environment.mjs";
+import { installTempRoot } from "./temp-root.mjs";
 
 // `node --test` sets this in each test process it spawns, which is the scope wanted: the
 // runner's PARENT process gets `--import` too (it propagates through `execArgv`) and has no
@@ -33,7 +34,16 @@ import { bypassXcrunGitShim, disableAutoMaintenance } from "./git-environment.mj
 // child they spawn - `test/db-isolation.test.ts` does, to simulate a worker from the
 // outside - so "the runner set it" is the normal case rather than the only one.
 if (process.env.NODE_TEST_CONTEXT) {
-  const root = mkdtempSync(join(tmpdir(), "mission-test-state-"));
+  // Read before `installTempRoot` moves `TMPDIR`: the temp roots below describe the machine's
+  // temp dir, which is what `db.ts` judges "disposable" against, and the private root made
+  // next is inside it.
+  const machineTemp = resolve(tmpdir());
+
+  // This worker's private temp root, with `TMPDIR` pointed into it for the worker and every
+  // child that inherits the environment. Removed on exit, and swept after a kill. See
+  // docs/test-temp-dirs.md.
+  const tempRoot = installTempRoot({ kind: "node-test" });
+  const root = mkdtempSync(join(tempRoot, "mission-test-state-"));
 
   // A marker `db.ts` can trust for the life of this process, because the environment cannot
   // be trusted for it: `NODE_TEST_CONTEXT` is an ordinary env var, and a test that runs
@@ -59,7 +69,7 @@ if (process.env.NODE_TEST_CONTEXT) {
   //
   // Captured at preload, these describe the machine as it was before any test module ran,
   // which is the only moment the answer is trustworthy.
-  const temp = resolve(tmpdir());
+  const temp = machineTemp;
   const tempRoots = new Set([temp]);
   try {
     tempRoots.add(resolve(realpathSync(temp)));
@@ -131,18 +141,17 @@ if (process.env.NODE_TEST_CONTEXT) {
   delete process.env.FLEET_HOME;
   process.env.HARNESS_HOME = root;
 
-  // The captured path, never `process.env.HARNESS_HOME` re-read at exit: a test file is
-  // free to replace that value, and cleanup that resolved the variable here would delete a
-  // fixture directory the test built instead of the one this file made.
-  //
-  // `exit` covers a normal finish and an uncaught throw, and by construction cannot cover a
-  // worker killed with SIGKILL - no handler runs there. What that leaks is one empty
-  // directory in the OS temp dir, which is the right place for it and is why this does not
-  // sweep for strays on startup: a `readdir` of the temp dir on each of 596 worker launches
-  // would cost more, every run, than the rare leak it tidies.
-  process.on("exit", () => {
-    rmSync(root, { recursive: true, force: true });
-  });
+  // A decision-model key alone switches voice routing's provider on (voice Phase 4), so a key
+  // the developer has exported for other tools would let a test that routes an ambiguous
+  // sentence reach OpenAI or Jev. No test may: a test that needs a key sets one itself.
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  // Voice fixtures select their own backend. An operator override would supersede even an explicit selection.
+  delete process.env.MISSION_VOICE_BACKEND;
+
+  // No exit handler of its own: the state dir is inside the temp root, and the root's removal
+  // takes it along. That removal is tied to the captured root, never to `HARNESS_HOME`
+  // re-read at exit - a test file is free to replace that value.
 
   // Not isolation, but the one preload every worker loads is the place that reaches all of
   // them: fewer git processes per git operation. See `test/git-environment.mjs`.

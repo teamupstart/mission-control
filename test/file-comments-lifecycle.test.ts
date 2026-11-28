@@ -1,8 +1,7 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the phase plan names this as one of the two things that fail SILENTLY.
 // Cleanup keyed on the wrong signal - `state === "exited"` - settles a live agent's review
@@ -11,7 +10,7 @@ import { join } from "node:path";
 // map at all until discovery rebuilds it, so `session_remove` never fires for it and its
 // threads survive for ever.
 
-const home = mkdtempSync(join(tmpdir(), "mission-file-comments-lifecycle-"));
+const home = tempDir("mission-file-comments-lifecycle-");
 process.env.MISSION_HOME = home;
 
 const { FileCommentManager } = await import("../src/server/file-comments.ts");
@@ -236,10 +235,11 @@ test("a manager that was never started leaves no timer behind", () => {
   // The accommodation every optional service in `buildApp` documents: ~50 focused route
   // tests construct one, and a constructor-armed interval would keep the runner alive.
   const h = harness();
-  h.manager.stop();
-  h.manager.start();
-  h.manager.stop();
-  assert.ok(true);
+  assert.doesNotThrow(() => {
+    h.manager.stop();
+    h.manager.start();
+    h.manager.stop();
+  });
 });
 
 test("a person putting a thread in the queue is announced once; a draft edit is not", () => {

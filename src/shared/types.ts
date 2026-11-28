@@ -1,5 +1,5 @@
 import type { FeatureFlagsConfig } from "./feature-flags.ts";
-import type { ShapingConfigView } from "./shaping.ts";
+import type { ShapingConfigView, ShapingSignInView } from "./shaping.ts";
 import type { ManagedPlanPolicy, TaskPlanInput, PlanIdentity } from "./managed-plans.ts";
 // Shared contract between the daemon (src/server), the MCP bridge (src/mcp),
 // and the web UI (src/web). Keep this the single source of truth for anything
@@ -14,6 +14,7 @@ import type { MissionSchedule } from "./schedules.ts";
 import type { PauseState, SessionPause } from "./pause.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { TaskLaunchFailure } from "./launch-failure.ts";
+import type { TaskShaping } from "./shaping.ts";
 import type { TaskHibernation } from "./hibernation.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
@@ -190,6 +191,7 @@ export type PendingTurnState = (typeof PENDING_TURN_STATES)[number];
  * handoff may have crossed its runtime boundary but its outcome cannot be proven.
  */
 export interface PendingTurn {
+  spokenWords?: string;
   id: string;
   /** Stable conversation key (`agentSessionId ?? session.id`), never a transient pane id. */
   noteKey: string;
@@ -611,6 +613,58 @@ export interface SessionBlocker {
   reply: SessionBlockerReply | null;
 }
 
+/**
+ * How a session that declared a wait expects to be woken: a background command's completion
+ * notification, a monitor, a scheduled wakeup it set for itself, or something else. Recorded so
+ * the dashboard and residents can judge whether the wait is plausible.
+ */
+export const SESSION_AWAITING_WAKE_SOURCES = ["command", "monitor", "wakeup", "other"] as const;
+export type SessionAwaitingWakeSource = (typeof SESSION_AWAITING_WAKE_SOURCES)[number];
+
+/** Field limits a declared wait is validated against, shared by the MCP tool and the daemon. */
+export const SESSION_AWAITING_LIMITS = {
+  what: 160,
+  details: 4000,
+  url: 2048,
+  resolution: 200,
+  /**
+   * How far past the declaration `expectedBy` may be, in minutes. A wait silences the
+   * stuck-session alerts, so it must be bounded: a dead watcher must not hide a stalled session
+   * for longer than this. The other bound is the present: `expectedBy` must be in the future.
+   */
+  maxMinutes: 240,
+} as const;
+
+/**
+ * A session idle on purpose: it handed work to a background process (CI checks, a long build,
+ * a monitor, a scheduled wakeup) and will resume on its own when that process reports back.
+ *
+ * Durable session state keyed by the note key, like `SessionBlocker`, but deliberately not a
+ * blocker kind: nobody is asked to do anything. It ends on the session's own next turn, on a
+ * clear, when its task reaches a terminal status, or when the agent process exits. While it
+ * stands and `expectedBy` is in the future, idle-triggered automation holds the session
+ * (`isAwaiting` in `session.ts`). Past `expectedBy` the hold lifts and the session reads as
+ * overdue until it wakes or is cleared.
+ */
+export interface SessionAwaiting {
+  /**
+   * This declaration's identity: a new one for every declaration, re-declarations included, so
+   * a Clear sent from a view of an earlier one (an older reason or deadline) is refused.
+   */
+  id: string;
+  /** One line: what the session is waiting for, for example "CI checks on PR #1612". */
+  what: string;
+  wakeSource: SessionAwaitingWakeSource;
+  /** Epoch ms: when the session said the process should be done. The safety net. */
+  expectedBy: number;
+  referenceUrl: string | null;
+  details: string | null;
+  /** First declaration; kept across re-declarations. */
+  startedAt: number;
+  /** Last declaration. */
+  updatedAt: number;
+}
+
 /** A session's pending ask for Control other sessions, as the dashboard card draws it. */
 export interface SessionControlRequestView {
   id: string;
@@ -662,8 +716,25 @@ export interface Session {
    * human review resolution never consult it; it governs the background loop only.
    */
   foremanInvite: ForemanInvite | null;
+  /**
+   * The work unit this session's agent was started with: the `WORK_UNIT_ID` in its
+   * environment, from the launch record (`session_launch_work_units`). Null or absent when the
+   * agent was started with none - a discovered session, a resident run, a launch with the
+   * `work-unit-id` preview off, or a session that was running before the record existed.
+   *
+   * RESOLVED by the registry from the record, never from the flag or the task: an agent's
+   * environment is fixed when it starts, so this changes only when a launch of this session
+   * succeeds. READ AS POLICY by the reuse guard - `TaskManager.assign` and the backlog's
+   * selection - which never hands such an agent a task of another work unit (decision D7). The
+   * id a session EMITS for its task is `task.workUnitId`, which is this value only while the
+   * task has the same one. Optional so an older snapshot parses.
+   */
+  launchWorkUnitId?: string | null;
+  /** Configured names unavailable when this process started. */
+  missingEnvironment?: string[];
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  sessionInspectionOnly?: boolean;
   /**
    * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
    * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the
@@ -812,12 +883,14 @@ export interface Session {
    */
   workCycle?: WorkCycleSummary;
   /**
-   * Count of pending review items this session's agent is waiting on inside a tool call
-   * (denormalized for the card). Excludes message-mode questions, which `openQuestions` counts.
+   * Count of pending review items this session's agent has stopped on (denormalized for the
+   * card): a review it waits on inside a tool call, or a filed plan form (`isFiledGate`), which
+   * is a gate though no call is held. Excludes message-mode questions, which `openQuestions`
+   * counts.
    */
   pendingReviews: number;
   /**
-   * Count of pending message-mode `request_input` questions (`ReviewItem.waitMode`): filed by an
+   * Count of pending message-mode `request_input` questions (`agentKeepsWorking`): filed by an
    * agent that kept working rather than waiting in the call. A snoozed question is in neither
    * count. A snapshot from an older daemon may lack it; read it as zero.
    */
@@ -915,6 +988,12 @@ export interface Session {
    * the session alone (`hasBlocker` in `session.ts`).
    */
   blocker: SessionBlocker | null;
+  /**
+   * The wait this session declared on a background process, or null. Denormalized like
+   * `blocker` and keyed on the same note key. While it stands and is not overdue every
+   * idle-triggered automation leaves the session alone (`isAwaiting` in `session.ts`).
+   */
+  awaiting: SessionAwaiting | null;
   /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
   pendingTurns: PendingTurn[];
   /**
@@ -1413,6 +1492,12 @@ export interface SessionGoal {
    * never denormalized onto session cards.
    */
   pendingPrompts: GoalPromptRevision[];
+  /** Acceptance time for the latest prompt, retained if an unclear verdict is replayed. */
+  latestPromptAcceptedAt?: number;
+  /** Accepted standalone release timestamp. Queue instructions started later still apply. */
+  handoffReleasedAt?: number;
+  /** When the actual deliverable last changed, excluding handoff restrictions. */
+  deliverableUpdatedAt?: number;
   updatedAt: number;
 }
 
@@ -1425,6 +1510,8 @@ export interface SessionIntentGuard {
 
 export interface GoalPromptRevision {
   revision: number;
+  /** Accepted operator time. Older captured revisions may lack this provenance. */
+  acceptedAt?: number;
   /** Null only for a legacy unresolved revision whose text was already lost before migration. */
   prompt: string | null;
 }
@@ -1545,6 +1632,8 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   sentAt: number | null;
+  /** First accepted delivery. Later retries do not renew the item's handoff authority. */
+  firstDeliveredAt?: number;
   /** Runtime captured for this delivery attempt; absent on rows predating this field. */
   deliveryRuntime?: SessionRuntime | null;
   completedAt: number | null;
@@ -2444,6 +2533,14 @@ export interface Task {
   /** Null or absent on historical tasks means a Git checkout. */
   workspaceKind?: "resident-workspace" | null;
   id: string;
+  /**
+   * The work unit this task belongs to, `wu_<ULID>` (`isWorkUnitId`, @shared/work-unit.ts), or
+   * null. A plan task and the phase tasks its session creates share one; a standalone task has
+   * its own. Null for a resident run, which is not a piece of work, and for a row that predates
+   * the column until its next dispatch or assign gives it one. Written once: no later write
+   * changes it. Only `TaskManager` mints or copies it. See `docs/work-units.md`.
+   */
+  workUnitId: string | null;
   /** Short label - source of the terminal home name slug and the card title. */
   title: string;
   /** The full task prompt delivered as the agent's first message. */
@@ -2548,6 +2645,15 @@ export interface Task {
    * because it takes its Persona from its resident profile (`taskKindPersonaRefusal`).
    */
   personaId: string | null;
+  /**
+   * The call sign: a short name the operator can say to address this task's session by voice
+   * (`@shared/voice-names.ts`), or null for none. Absent on a row read before the column existed,
+   * which means the same. A spoken name, not a launch setting: nothing is provisioned from it, so
+   * it may change while the agent runs (`isAnnotationOnlyUpdate`). It is also the first rank of
+   * `agentDisplayName`. A resident's task takes none (`taskKindTakesCallSign`): a resident is
+   * addressed by its profile's names.
+   */
+  callSign?: string | null;
   /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
@@ -2756,6 +2862,31 @@ export interface Task {
    * failures. Missing or empty when every claim succeeded or none ran; a new dispatch clears it.
    */
   claimWarnings?: TaskClaimWarning[];
+  /**
+   * What task shaping added to the latest launch of this task that reached a worker, naming
+   * the session it was delivered to. Absent or null when no shaper applied to that launch, the
+   * `task-shaping` flag was off, or the task has never launched. Read it only through
+   * `currentShaping`, which shows it while it names the task's current session and carries
+   * `shapingDelivery`.
+   */
+  shaping?: TaskShaping | null;
+  /**
+   * The turn-one delivery the task's binding was last written with: a fresh id per launch or
+   * handover, written in the same transaction as the record it stamps (`TaskShaping.deliveryId`)
+   * and the row naming the receiving session. A delivery that recorded nothing binds under its
+   * own id. So does one whose commit failed, through a fallback write of the binding alone, so an
+   * earlier record stops counting even when it names the same session. If that write fails too,
+   * the task keeps its previous id, live and durable alike. Absent on a task no delivery has bound since this existed, and from task
+   * reads except beside a record they show. Owned by the registry like `shaping`: a writer never
+   * sets it.
+   */
+  shapingDelivery?: string;
+  /**
+   * Set while this task's dispatch or handover is shaping context, never persisted: the pending
+   * tile reads "Shaping context", and `shapingView` reports `shaping`. A projection like
+   * `provisioning`, derived on every publish and carried on `task_upsert`.
+   */
+  shapingContext?: { startedAt: number } | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2859,6 +2990,32 @@ export interface TaskSummary {
    * failed, so every other card's payload is what it was before claims existed.
    */
   claimWarnings?: TaskClaimWarning[];
+  /**
+   * The work unit this session emits for this task: the id its agent was started with
+   * (`Session.launchWorkUnitId`), while the task has that same id, and null otherwise - also
+   * when the task has an id but the agent was started without the variable. Never the task's
+   * id on its own, so the session detail never shows an id the agent's MCP calls do not carry.
+   * Optional so an older snapshot parses.
+   */
+  workUnitId?: string | null;
+  /**
+   * `Task.shaping`, carried to the session card only while `currentShaping` shows it. Absent
+   * otherwise, so every unshaped card's payload is what it was before shaping existed. Readers
+   * still compare its `sessionId` with the session they draw.
+   */
+  shaping?: TaskShaping;
+  /**
+   * `Task.shapingDelivery`, the delivery id the task's binding was written with, carried beside
+   * `shaping` and only with it. The card's readers hand it to `currentShaping` with the record,
+   * so the chip applies the whole rule to the task's own binding rather than trusting the card.
+   */
+  shapingDelivery?: string;
+  /**
+   * `Task.callSign`, carried to the session card while the task has one. Absent otherwise, so
+   * every other card's payload is what it was before call signs existed. The display-name
+   * resolver reads it as its first rank.
+   */
+  callSign?: string;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */
@@ -2981,6 +3138,14 @@ export interface ReviewSnooze {
   optionId: string | null;
   /** When it last came back to the operator, or null while it has not yet. */
   remindedAt: number | null;
+  /**
+   * False when no snooze of this question has told its agent anything yet: a message-mode
+   * question (`async-input`) snoozed only on "Keep doing what it said", which sends nothing and
+   * leaves `mode` unrecorded (it reads as `judgment`). Its next snooze may still choose what the
+   * agent does meanwhile. Absent once a mode was recorded, which is every other snooze, and on a
+   * row from an older daemon; absent reads as told.
+   */
+  instructed?: boolean;
 }
 
 /**
@@ -3119,13 +3284,16 @@ export interface ReviewItem {
   /** The operator's "Remind me later", while snoozed and after it comes back. Absent if never. */
   snooze?: ReviewSnooze | null;
   /**
-   * How the agent waits for this question's answer. `"message"`: `request_input` returned at
-   * once with a receipt (the `async-input` preview flag) and the answer reaches the agent later
-   * as a message in its conversation. Absent: the agent waits inside its tool call, which is
-   * every other review and every question asked with the flag off. Persisted
-   * (`reviews.wait_mode`).
+   * How the agent waits for this review's answer. `"message"`: the tool returned at once with a
+   * receipt and the answer reaches the agent later as a message in its conversation - a
+   * `request_input` question (the `async-input` preview flag), which its agent works past, or a
+   * `request_plan_decisions` form (`filed-plan-decisions` as well), which is still a gate its
+   * agent stops on (`isFiledGate`). Absent: the agent waits inside its tool call, which is every
+   * other review and every ask made with the flags off. Persisted (`reviews.wait_mode`).
    */
   waitMode?: "message";
+  /** A pending voice-filed ask replays its receipt to a convertible wait poll. */
+  filedByVoiceAt?: number;
   /**
    * The agent's own line on what it does while a message-mode question is open: the assumption
    * it proceeds on, or what it holds back. At most 300 characters. Persisted
@@ -3138,8 +3306,22 @@ export interface ReviewItem {
    * the question `orphaned`. Persisted (`reviews.closed_reason`); absent on every other row.
    */
   closedReason?: ReviewClosedReason | null;
+  /**
+   * The plan form this one revises (`request_plan_decisions` with `revises`): `number` is this
+   * form's place in the chain, 2 for the first revision, and `previousId` is the form it
+   * replaced, which its agent withdrew. Persisted (`reviews.revision`, `revises_review_id`);
+   * absent on every form that revises nothing. Links the cards only: no approval or answer is
+   * ever carried from the earlier form.
+   */
+  revision?: ReviewRevision;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
+}
+
+/** Where a revised plan form sits in its chain (`ReviewItem.revision`). */
+export interface ReviewRevision {
+  number: number;
+  previousId: string;
 }
 
 // ---- roundup report (/bearings) ----
@@ -3263,6 +3445,11 @@ export interface InspectorPr {
   reviewComplete?: boolean | null;
   /** Exact head whose final clean review was confirmed on GitHub. */
   cleanReviewHeadSha?: string | null;
+  /**
+   * The head the worker matched to a passed Local Inspector review, recorded in any posture.
+   * No GitHub review ran for it. Null for a head reviewed on GitHub and for older rows.
+   */
+  localReviewHeadSha?: string | null;
   /** Completed review rounds. Also the runaway guard. */
   round: number;
   lastReviewedAt: number | null;
@@ -3509,6 +3696,8 @@ export interface InspectorSummary {
   reviewedHeadSha?: string | null;
   observedHeadSha?: string | null;
   cleanReviewHeadSha?: string | null;
+  /** The head matched to a passed Local Inspector review; see `InspectorPr`. */
+  localReviewHeadSha?: string | null;
 }
 
 /**
@@ -3619,7 +3808,8 @@ export interface LlmStatus {
   claudeTransport: ClaudeTransport;
   /** The same, for Codex. `exec` spawns the CLI; `sdk` drives it through the typed SDK. */
   codexTransport: CodexTransport;
-  models: Record<LlmJobId, ResolvedLlmJobModel>;
+  /** Every live job (`liveLlmJobIds`): a job behind a preview flag that is off is absent. */
+  models: Partial<Record<LlmJobId, ResolvedLlmJobModel>>;
   /**
    * Which provider each background job resolved to, and which layer chose it.
    *
@@ -3629,7 +3819,9 @@ export interface LlmStatus {
    * another process. This is the per-job axis, and a job with no override simply repeats
    * the app-wide value.
    */
-  jobRunners: Record<LlmJobId, ResolvedLlmRunner>;
+  jobRunners: Partial<Record<LlmJobId, ResolvedLlmRunner>>;
+  /** Foreman reads this live gate over HTTP. Present only while the preview is on. */
+  backgroundReasoningEffort?: true;
   /** Every provider this build has, in declaration order. */
   runners: LlmProviderView[];
 }
@@ -3719,11 +3911,12 @@ export interface SettingsStatus {
 // ---- Keep Awake (transient idle-sleep inhibition) ----
 
 /**
- * The daemon's observed Keep Awake state - never a saved preference. There is nothing
- * durable behind this on purpose: the mode applies only to the current daemon run, so a
- * quit, crash, or restart returns the next snapshot to `off` and nothing reacquires the
- * assertion. The one writer is the daemon's `KeepAwakeManager`; the browser's one source
- * is the snapshot plus `keep_awake_status` below.
+ * The daemon's observed Keep Awake state - never the saved choice. The assertion belongs to
+ * one daemon process, so this is `off` in every new daemon's first snapshot and becomes `on`
+ * only once that daemon has acquired its own; the operator's choice lives apart from it, in
+ * `app_config.keepAwake`, and is what the daemon re-applies after a restart or upgrade. The
+ * one writer is the daemon's `KeepAwakeManager`; the browser's one source is the snapshot
+ * plus `keep_awake_status` below.
  *
  * `state` reports what was OBSERVED of the OS assertion, not what was requested: `on` is
  * reachable only after the provider confirms the assertion, and a provider failure lands
@@ -3768,6 +3961,19 @@ export type ServerEvent =
        */
       restoringSessions: RestoringSession[];
       reviews: ReviewItem[];
+      /**
+       * Agent reports waiting to be read: unread, and the latest of each chain
+       * (`@shared/reports.ts`). Present only while the `inbox` flag is on. Bounded by what the
+       * operator has not read yet: a report leaves it when it is read or replaced, and a
+       * session's whole history is read per session from `GET /api/sessions/:id/reports`.
+       */
+      reports?: import("./reports.ts").ReportItem[];
+      /**
+       * Authors whose reports are muted (`report_mutes`). Present only while the `inbox` flag is
+       * on. `reports` still carries a muted author's reports: the dashboard's fold leaves them
+       * out, so unmuting brings them back without a fetch.
+       */
+      reportMutes?: import("./reports.ts").ReportMute[];
       tasks: Task[];
       personas: PersonaView[];
       /**
@@ -3891,6 +4097,32 @@ export type ServerEvent =
        */
       shaping?: ShapingConfigView;
       /**
+       * Shaper sign-in's list at connect time. Present only while `task-shaping` and
+       * `shaper-sign-in` are both on; absent reads as an empty list. It never holds a token, a
+       * code, the OAuth `state` parameter (its own `state` is the connection's status), a verifier or
+       * an authorization URL. One entry per connection the known
+       * shapers name or the store holds, so it is bounded by the shapers and the store.
+       */
+      shapingSignIns?: ShapingSignInView[];
+      /**
+       * The voice state at connect time (contract B of the voice plan). Present only while the
+       * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
+       * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
+       */
+      voice?: import("./voice.ts").VoiceState;
+      /** Current indicator selection on connect or reconnect, only while voice is enabled. */
+      voiceConfirmation?: import("./voice.ts").VoiceConfirmationPlacement;
+      voiceIndicators?: string[];
+      voiceIndicatorVersion?: import("./voice.ts").VoiceRevision;
+      /** Cards still awaiting delivery or a pick when this window connects. */
+      windowId?: string;
+      voiceAnswers?: import("./voice-answers.ts").VoiceAnswer[];
+      voiceCards?: import("./voice-routing.ts").VoiceCard[];
+      /** When this SSE connection reached the daemon, paired with the browser request start. */
+      voiceStreamStartedAt?: number;
+      /** Daemon wall time at transmission, used to translate cancel windows into local time. */
+      voiceServerTime?: number;
+      /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
        * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
@@ -3929,6 +4161,16 @@ export type ServerEvent =
   | { type: "restoring_session_remove"; id: string }
   | { type: "review_upsert"; review: ReviewItem }
   | { type: "review_remove"; id: string }
+  /**
+   * An agent report was posted, opened, read or replaced. No remove twin: a report outlives its
+   * session and is never deleted, so a read or replaced one is upserted with its new state.
+   */
+  | { type: "report_upsert"; report: import("./reports.ts").ReportItem }
+  /**
+   * The whole list of muted report authors, after a mute or an unmute (`inbox` flag). Sent whole
+   * because it is small and a window that applies it twice ends in the same state.
+   */
+  | { type: "report_mutes"; mutes: import("./reports.ts").ReportMute[] }
   | { type: "task_upsert"; task: Task }
   | { type: "task_remove"; id: string }
   | { type: "persona_upsert"; persona: PersonaView }
@@ -4055,6 +4297,47 @@ export type ServerEvent =
    */
   | { type: "shaping_config"; config: ShapingConfigView | null }
   /**
+   * Shaper sign-in's list (`ShapingSignInView[]`), sent only while `task-shaping` and
+   * `shaper-sign-in` are both on: on every change to the list, and on a flag change only when it
+   * differs from the last list sent, the empty list counting as already sent. So when either
+   * turns off it sends an empty list, which clears it in every window, unless the last list sent
+   * was already empty and every window holds one. It never holds a token, a
+   * code, the OAuth `state` parameter (its own `state` is each connection's status), a verifier
+   * or an authorization URL, so a pending sign-in in it has no link.
+   */
+  | { type: "shaping_sign_ins"; signIns: ShapingSignInView[] }
+  /**
+   * The voice state moved: a flag or the voice config changed, a listener's hello arrived or
+   * lapsed, or a shell report arrived or lapsed. Carries the whole state, so every follower - each
+   * dashboard and the desktop shell - converges without a fetch. Sent only while the `voice` flag
+   * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
+   * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
+   */
+  | import("./voice-answers.ts").VoiceInboxEvent
+  | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null; voiceServerTime?: number; voiceStreamStartedAt?: number }
+  | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
+  | { type: "voice_dictation"; windowId: string; target: string; text: string; capture: string; interim: boolean }
+  | { type: "voice_dictation_probe"; windowId: string; sequence: number }
+  | { type: "voice_confirm_focus"; windowId: string; sequence: number }
+  | { type: "voice_card_remove"; id: string }
+  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }
+  | { type: "voice_state"; state: import("./voice.ts").VoiceState }
+  /** Bounded invalidation for the shared dashboard skin, with no config values on the stream. */
+  | { type: "ui_skin_changed" }
+  | { type: "settings_config_changed"; domain: import("./session-settings-metadata.ts").SettingsRefreshDomain }
+  | { type: "session_settings_access_changed" }
+  | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
+  /**
+   * Who can be addressed changed: a resident profile or run, a task's call sign, or a session
+   * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces
+   * `VoiceState.roster`; a change to the roster alone sends this and no `voice_state` frame. Sent
+   * only while the `voice` flag is on, and only when the roster changed. Bounded by the live
+   * resident profiles (at most 200) and the launched tasks with a call sign that are running,
+   * hibernated, or recently stopped and still kept by the roster's retention rules
+   * (`computeVoiceRoster`; docs/voice.md, "Who can be addressed").
+   */
+  | { type: "voice_roster"; roster: import("./voice-names.ts").SpokenName[] }
+  /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.
    *
@@ -4165,6 +4448,8 @@ export interface ToolCall {
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */
 export interface TranscriptMessage {
+  /** Client-supplied user message identity when the runtime stores it separately from its native id. */
+  clientMessageId?: string;
   /** Stable id (the record uuid) - used to de-dupe across init/append. */
   id: string;
   role: "user" | "assistant";
@@ -4245,11 +4530,21 @@ export interface TranscriptAdvisor {
  * what the conversation window draws in place of the whole payload. `null` means this
  * launch had no distinct human-authored request, and the turn is omitted from the visible
  * log rather than drawn as platform instructions or invented prose.
+ *
+ * `review-message` is a message the daemon wrote into the outbox about a review
+ * (`async-input`): one or more answers, or a snoozed question's "carry on" instruction. It is
+ * set on every turn bound to a delivery the daemon recorded, and only on such a turn, whatever
+ * has since become of the reviews it names. `reviewIds` come from that record, in delivery
+ * order, never from the turn's text. The dashboard draws each as the answer card (or the snoozed
+ * line) at this turn. A review it cannot find is still a card, never the raw text: loading while
+ * the review history is in flight, "Couldn't load the question" when its reads were refused or
+ * failed through every retry, and "no longer available" only once a read answered without it. Every form keeps
+ * the native text for "What the agent received".
  */
-export type TranscriptPresentation = {
-  kind: "launch" | "resident";
-  displayText: string | null;
-};
+export type TranscriptPresentation =
+  | { kind: "launch" | "resident"; displayText: string | null }
+  | { kind: "spoken"; displayText: string; received: string }
+  | { kind: "review-message"; envelope: "answer" | "remind-later"; reviewIds: string[] };
 
 /**
  * The non-human authors of a "user" turn.
@@ -4286,10 +4581,16 @@ export interface TurnOriginSession {
  * A session that is actively working writes turns constantly, which made "you lost your
  * place" the normal outcome of a dropped connection rather than a rare one.
  */
-export type TranscriptStreamMsg =
+type NativeTranscriptFrame =
   | {
       type: "init";
       messages: TranscriptMessage[];
+      /** The latest confirmed text-only spoken handoff included in this reading. */
+      spokenReceipt?: string | null;
+      /** Identifies the native file and its bytes through pos for a spoken conversation. */
+      spokenCursor?: string;
+      /** Previously read bytes may have acquired a spoken disclosure. Refresh held pages too. */
+      refreshSpoken?: true;
       /** Byte offset of the first turn in `messages` - the back-paging anchor. */
       start: number;
       /** True when `start` is the top of the file, so nothing older exists. */
@@ -4308,8 +4609,15 @@ export type TranscriptStreamMsg =
       type: "resume";
       messages: TranscriptMessage[];
       pos: number;
+      spokenCursor?: string;
     }
-  | { type: "append"; messages: TranscriptMessage[]; pos: number }
+  | { type: "append"; messages: TranscriptMessage[]; pos: number; spokenCursor?: string };
+
+export type TranscriptStreamMsg =
+  | (NativeTranscriptFrame & {
+      /** Native turns are readable while the dashboard retries their spoken attribution. */
+      spokenDeferred?: true;
+    })
   | { type: "unavailable"; reason: string };
 
 // ---- session diff (changes vs the source branch) ----

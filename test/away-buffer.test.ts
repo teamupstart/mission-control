@@ -10,9 +10,11 @@ import {
   hasAnything,
   mergeBuffers,
   refreshAlerts,
+  reconcileReports,
   rollupLine,
   tally,
 } from "../src/shared/away-buffer.ts";
+import { mkReport } from "./helpers/report-fixture.ts";
 import type { Alert, AlertKind } from "../src/shared/alerts.ts";
 
 function mkAlert(over: Partial<Alert> = {}): Alert {
@@ -327,4 +329,110 @@ test("merging respects the buffer cap rather than growing without bound", () => 
 test("the window the buffer covers survives folding", () => {
   const buf = foldAlerts(emptyBuffer(42), [mkAlert()], 100);
   assert.equal(buf.since, 42);
+});
+
+// ---- Agent reports in the digest (`inbox` flag) ----
+//
+// While away a report does not interrupt; the return digest says how many are waiting and from
+// whom, each name once, in the order its first report arrived.
+
+const reportAlert = (id: string, agentName: string): Alert => mkAlert({
+  id: `report:${id}`, kind: "report", title: `${agentName}'s back: ${id}`, body: "", agentName,
+});
+
+test("the reports rollup names who posted: one, two, three, and many", () => {
+  let buf = foldAlerts(emptyBuffer(0), [reportAlert("r-1", "Steve")], 10);
+  assert.equal(rollupLine(buf), "1 report waiting: Steve");
+  buf = foldAlerts(buf, [reportAlert("r-2", "Carol")], 20);
+  assert.equal(rollupLine(buf), "2 reports waiting: Steve and Carol");
+  // A second report from the same agent counts, and names it once.
+  buf = foldAlerts(buf, [reportAlert("r-3", "Steve")], 30);
+  assert.equal(rollupLine(buf), "3 reports waiting: Steve and Carol");
+  buf = foldAlerts(buf, [reportAlert("r-4", "Dana")], 40);
+  assert.equal(rollupLine(buf), "4 reports waiting: Steve, Carol and Dana");
+  buf = foldAlerts(buf, [reportAlert("r-5", "Eve"), reportAlert("r-6", "Finn")], 50);
+  assert.equal(rollupLine(buf), "6 reports waiting: Steve, Carol and 3 others");
+});
+
+test("a waiting report changes its buffered attribution without counting another announcement", () => {
+  const before = foldAlerts(emptyBuffer(0), [reportAlert("r-1", "Alice")], 10);
+  const report = mkReport({ id: "r-1", author: { key: "session:a", name: "Check the parser", residentProfileId: null } });
+  const updated = reconcileReports(before, [report], 20, false);
+  assert.equal(rollupLine(updated), "1 report waiting: Check the parser");
+  assert.equal(updated.events[0]?.lastAt, 10);
+  assert.equal(updated.events[0]?.count, 1);
+});
+
+test("reports take their place in the rollup beside everything else, and keep their names across a merge", () => {
+  const first = foldAlerts(emptyBuffer(0), [reportAlert("r-1", "Steve"), mkAlert({ id: "stuck:a", kind: "stuck", title: "a looks stuck", severity: "attention" })], 10);
+  const second = foldAlerts(emptyBuffer(100), [reportAlert("r-2", "Carol"), mkAlert()], 110);
+  assert.equal(rollupLine(mergeBuffers(closeBuffer(first, 50), second)), "1 stuck · 2 reports waiting: Steve and Carol · 1 finished");
+});
+
+test("the digest's reports are the reports waiting: read and replaced ones leave, unannounced ones join on close", () => {
+  const author = (name: string) => ({ key: `session:${name}`, name, residentProfileId: null });
+  // Buffered while away: Steve's and Carol's announcements.
+  let buf = foldAlerts(emptyBuffer(1_000), [reportAlert("r-1", "Steve"), reportAlert("r-2", "Carol"), mkAlert()], 2_000);
+  const steve = mkReport({ id: "r-1", createdAt: 1_500, author: author("Steve") });
+  // Carol's was replaced by r-3, still in its grace period; Dana posted r-4 a moment ago; Erin's
+  // r-5 was posted before you left and never announced, so it is not this window's.
+  const carolNext = mkReport({ id: "r-3", createdAt: 2_500, rootId: "r-2", version: 2, author: author("Carol") });
+  const dana = mkReport({ id: "r-4", createdAt: 2_800, title: "Late finding", author: author("Dana") });
+  const erin = mkReport({ id: "r-5", createdAt: 500, author: author("Erin") });
+  const waiting = [steve, carolNext, dana, erin];
+
+  // While the window is open, only what left is pruned.
+  const open = reconcileReports(buf, waiting, 3_000, false);
+  assert.equal(rollupLine(open), "1 report waiting: Steve · 1 finished");
+  // On close, what is waiting and was posted during the window joins, worded as posted.
+  buf = reconcileReports(buf, waiting, 3_000, true);
+  assert.equal(rollupLine(buf), "3 reports waiting: Steve, Carol and Dana · 1 finished");
+  assert.ok(digestLines(buf).includes("Dana posted a report: Late finding - What I found."));
+  // A report read since leaves.
+  assert.equal(rollupLine(reconcileReports(buf, [carolNext, dana], 3_100, true)), "2 reports waiting: Carol and Dana · 1 finished");
+  // The flag off: no reports at all, so every report event leaves and every other event stays.
+  const off = reconcileReports(buf, [], 3_100, true);
+  assert.equal(rollupLine(off), "1 finished");
+  assert.deepEqual(off.events.map((e) => e.kind), ["idle"]);
+});
+
+test("a full buffer still counts every report waiting, and names who posted", () => {
+  // Fill the buffer to its cap with other events before any report arrives.
+  const others = Array.from({ length: AWAY_BUFFER_CAP }, (_, i) => mkAlert({ id: `idle:s${i}`, sessionId: `s${i}` }));
+  let buf = foldAlerts(emptyBuffer(1_000), others, 2_000);
+  assert.equal(buf.events.length, AWAY_BUFFER_CAP);
+  // Another ordinary event is still turned away and counted as dropped.
+  buf = foldAlerts(buf, [mkAlert({ id: "idle:extra", sessionId: "extra" })], 2_100);
+  assert.equal(buf.dropped, 1);
+  // A report announced into the full buffer is kept.
+  buf = foldAlerts(buf, [reportAlert("r-1", "Steve")], 2_200);
+  // One still in its grace period on return joins through reconciliation.
+  const author = (name: string) => ({ key: `session:${name}`, name, residentProfileId: null });
+  const waiting = [
+    mkReport({ id: "r-1", createdAt: 1_500, author: author("Steve") }),
+    mkReport({ id: "r-2", createdAt: 2_900, author: author("Carol") }),
+  ];
+  buf = reconcileReports(buf, waiting, 3_000, true);
+  assert.equal(buf.dropped, 1, "reports took nothing from the dropped count");
+  assert.match(rollupLine(buf), /^2 reports waiting: Steve and Carol · 200 finished · \+1 more$/);
+  // A merge into another full window keeps them too.
+  const full = foldAlerts(emptyBuffer(0), others.map((a) => ({ ...a, id: `${a.id}:older` })), 500);
+  assert.match(rollupLine(mergeBuffers(closeBuffer(full, 900), buf)), /^2 reports waiting: Steve and Carol · /);
+});
+
+test("reports buffered first take no place from other events: the 200 others are all kept", () => {
+  const reports = Array.from({ length: 5 }, (_, i) => reportAlert(`r-${i + 1}`, `Agent ${i + 1}`));
+  const others = Array.from({ length: AWAY_BUFFER_CAP }, (_, i) => mkAlert({ id: `idle:s${i}`, sessionId: `s${i}` }));
+  let buf = foldAlerts(emptyBuffer(0), reports, 100);
+  buf = foldAlerts(buf, others, 200);
+  assert.equal(buf.events.length, AWAY_BUFFER_CAP + 5);
+  assert.equal(buf.dropped, 0, "every ordinary event fits, exactly as before reports existed");
+  // The 201st ordinary event is the first turned away.
+  buf = foldAlerts(buf, [mkAlert({ id: "idle:extra", sessionId: "extra" })], 300);
+  assert.equal(buf.dropped, 1);
+  // The same allowance across a merge: a window of reports alone does not shrink the other's room.
+  const reportsOnly = foldAlerts(emptyBuffer(0), reports.map((r) => ({ ...r, id: `${r.id}-old` })), 50);
+  const merged = mergeBuffers(closeBuffer(reportsOnly, 60), foldAlerts(emptyBuffer(100), others, 200));
+  assert.equal(merged.dropped, 0);
+  assert.equal(merged.events.length, AWAY_BUFFER_CAP + 5);
 });

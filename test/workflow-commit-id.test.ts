@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { FULL_SHA, resolveCapturedCommit, resolveCommitTree } from "../src/server/workflows/commit-id.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this resolver decides which commit a Check's worktree is pinned to, and
@@ -20,7 +20,7 @@ import { FULL_SHA, resolveCapturedCommit, resolveCommitTree } from "../src/serve
  * belief written down as a comment.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-commit-id-"));
+const home = tempDir("mission-commit-id-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function git(repo: string, ...args: string[]): string {

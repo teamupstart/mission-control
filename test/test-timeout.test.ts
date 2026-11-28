@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 const { scripts } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   scripts: Record<string, string>;
@@ -17,7 +17,7 @@ test("Node test commands bound a hung test instead of waiting for the workflow d
     assert.equal(timeout, "--test-timeout=120000", `${name} needs the two-minute default`);
   }
 
-  const root = mkdtempSync(join(tmpdir(), "mission-test-timeout-"));
+  const root = tempDir("mission-test-timeout-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const file = join(root, "hang.test.mjs");
   writeFileSync(file, `

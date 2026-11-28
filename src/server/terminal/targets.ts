@@ -1,3 +1,4 @@
+import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
 /**
  * Which terminal backends can open a window on a checkout RIGHT NOW, and doing it.
  *
@@ -184,7 +185,7 @@ function emulatorView(
     blurb: "New window in the worktree.",
     detail: null,
     unavailable: null,
-    dispatchUnavailable: null,
+    dispatchUnavailable: emulator.dispatchUnavailable ?? null,
   };
 }
 
@@ -210,7 +211,7 @@ export function terminalTargetViews(
   }
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
-    if (emulator) views.push({ id, ...emulatorView(emulator, deps) });
+    if (emulator && emulator.bin.enabled?.() !== false) views.push({ id, ...emulatorView(emulator, deps) });
   }
   return views;
 }
@@ -351,6 +352,8 @@ export async function launchTerminal(
   spec: TerminalLaunchSpec,
   deps: TerminalTargetDeps = defaultTerminalTargetDeps,
 ): Promise<TerminalLaunchOutcome> {
+  using reservation = reserveWorktreeUse([spec.cwd]);
+  if (!reservation) return { ok: false, label: backend, error: "automatic cleanup currently owns this checkout", status: 409 };
   const view = terminalTargetViews(deps).find((v) => v.id === backend);
   if (!view) return { ok: false, label: backend, error: "no such terminal", status: 404 };
   if (view.unavailable) {

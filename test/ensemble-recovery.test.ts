@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: the daemon can die at any instant - mid-wave, mid-capture, between a stage
@@ -13,7 +13,7 @@ import { join } from "node:path";
  * durable store, exactly as a restarted daemon rebuilds itself.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-recovery-"));
+const home = tempDir("mission-ensemble-recovery-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -482,4 +482,20 @@ test("restoreArtifact refuses a historical path no longer owned by the member Ta
   const result = await engine.restoreArtifact(run.id, artifact.id);
   assert.equal(result.ok, false);
   assert.match(result.detail ?? "", /no live worktree/);
+});
+
+test("each member Task a wave creates names the run's other member Tasks as its work unit source", async () => {
+  const store = new EnsembleStore(db);
+  const { run } = store.createRun(runInsert(singleWavePlan(3)));
+  const gateway = new FakeGateway();
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters: stubAdapters() });
+  await engine.recover(run.id);
+  assert.equal(gateway.created.length, 3);
+  const ids = gateway.created.map((request) => request.taskId);
+  // The first member mints, so it may name none yet; every later one names those before it,
+  // and never itself. TaskManager then copies from the first that exists.
+  gateway.created.forEach((request, index) => {
+    assert.equal(request.workUnitFrom.includes(request.taskId), false);
+    for (const earlier of ids.slice(0, index)) assert.ok(request.workUnitFrom.includes(earlier), `member ${index} names ${earlier}`);
+  });
 });

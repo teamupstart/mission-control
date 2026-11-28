@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * Every member of a run's stage, and the stage itself, says how long it ran.
@@ -133,7 +133,7 @@ test("each member and its stage show a live clock that freezes when it finishes"
   dashboard,
   daemon,
 }) => {
-  const scratch = mkdtempSync(join(tmpdir(), "mc-e2e-clock-"));
+  const scratch = tempDir("mc-e2e-clock-");
   const gate = join(scratch, "release");
   try {
     const runId = await seedRun(dashboard, daemon, gate);
@@ -173,7 +173,6 @@ test("each member and its stage show a live clock that freezes when it finishes"
       mkdirSync(EVIDENCE, { recursive: true });
       await dashboard.mouse.move(0, 0);
       await strip.locator(".wf-pipeline-stage").screenshot({ path: `${EVIDENCE}01-running.png` });
-      // eslint-disable-next-line no-console
       console.log(`CAPTURED ${EVIDENCE}01-running.png`);
     }
 
@@ -199,7 +198,6 @@ test("each member and its stage show a live clock that freezes when it finishes"
     if (process.env.MC_E2E_EVIDENCE === "1") {
       await dashboard.mouse.move(0, 0);
       await strip.locator(".wf-pipeline-stage").screenshot({ path: `${EVIDENCE}02-finished.png` });
-      // eslint-disable-next-line no-console
       console.log(`CAPTURED ${EVIDENCE}02-finished.png`);
     }
   } finally {
@@ -292,7 +290,6 @@ test("a session action's clock ticks while it waits and freezes when it complete
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.mouse.move(0, 0);
     await actionStage.screenshot({ path: `${EVIDENCE}03-action-waiting.png` });
-    // eslint-disable-next-line no-console
     console.log(`CAPTURED ${EVIDENCE}03-action-waiting.png`);
   }
 
@@ -312,7 +309,6 @@ test("a session action's clock ticks while it waits and freezes when it complete
   if (process.env.MC_E2E_EVIDENCE === "1") {
     await dashboard.mouse.move(0, 0);
     await actionStage.screenshot({ path: `${EVIDENCE}04-action-complete.png` });
-    // eslint-disable-next-line no-console
     console.log(`CAPTURED ${EVIDENCE}04-action-complete.png`);
   }
 });

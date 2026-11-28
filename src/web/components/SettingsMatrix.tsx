@@ -1,8 +1,9 @@
-import { LLM_RUNNER_IDS } from "@shared/llm.ts";
+import { LLM_RUNNER_IDS, resolveLlmEffort } from "@shared/llm.ts";
+import { launchEffortLevels } from "@shared/harness-capabilities.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
 import { guardProviderModel } from "@shared/model.ts";
-import type { LlmProviderView } from "@shared/types.ts";
+import type { LlmProviderView, ThinkingLevel } from "@shared/types.ts";
 import { ModelField } from "./ModelField.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -29,6 +30,14 @@ export interface SettingsMatrixColumn {
   key: string;
   /** The column heading, as read. */
   label: string;
+}
+
+export function modelSlotColumns(showEffort: boolean): SettingsMatrixColumn[] {
+  return [
+    { key: "provider", label: "Provider" },
+    { key: "model", label: "Model" },
+    ...(showEffort ? [{ key: "effort", label: "Reasoning effort" }] : []),
+  ];
 }
 
 /** One slot, rendered as a row. */
@@ -264,9 +273,11 @@ export function modelSlotRow({
   runnerResolved,
   inheritedRunner,
   modelValue,
+  fixedModels,
   modelResolved,
   disabled,
   reset,
+  effort,
   onCommit,
 }: {
   key: string;
@@ -301,10 +312,15 @@ export function modelSlotRow({
   inheritedRunner: ResolvedLlmRunner | undefined;
   /** The stored model override, or "" for the ladder. */
   modelValue: string;
+  fixedModels?: Record<LlmRunnerId, string>;
   modelResolved: (ResolvedModel & { unsupported?: string | null }) | undefined;
   disabled: boolean;
   /** What this row reset, and why - shown until the operator's next edit to it. */
   reset: string | null;
+  effort?: {
+    value: ThinkingLevel | null;
+    onCommit: (value: ThinkingLevel | null) => void;
+  };
   /** Both halves of one write. A provider change may carry its model back to Inherit. */
   onCommit: (patch: { runner?: LlmRunnerId | ""; model?: string }) => void;
 }): SettingsMatrixRow {
@@ -347,7 +363,7 @@ export function modelSlotRow({
           }}
         />
       ),
-      model: (
+      model: fixedModels ? <code>{fixedModels[runnerForCatalog]}</code> : (
         <ModelField
           id={`${key}-model`}
           anchor={null}
@@ -380,6 +396,15 @@ export function modelSlotRow({
           }
         />
       ),
+      effort: effort && (
+        <ModelSlotEffort
+          name={name}
+          runner={runnerResolved?.id}
+          model={modelResolved?.id}
+          disabled={disabled}
+          {...effort}
+        />
+      ),
     },
     note: reset || dropped || unreadableProvider
       ? (
@@ -406,6 +431,53 @@ export function modelSlotRow({
 }
 
 /** A stored provider string this build can actually resolve, or null. */
+function ModelSlotEffort({
+  name,
+  runner,
+  model,
+  value,
+  disabled,
+  onCommit,
+}: {
+  name: string;
+  runner: LlmRunnerId | undefined;
+  model: string | undefined;
+  value: ThinkingLevel | null;
+  disabled: boolean;
+  onCommit: (value: ThinkingLevel | null) => void;
+}): React.JSX.Element {
+  const ready = runner !== undefined && model !== undefined;
+  const levels = ready ? launchEffortLevels(runner, model) : [];
+  const unsupported = ready ? resolveLlmEffort(runner, model, value).unsupported : null;
+  return (
+    <>
+      <Tooltip label="How much reasoning the selected model uses for this work.">
+        <select
+          aria-label={`${name} effort`}
+          className="field-input"
+          disabled={disabled || !ready}
+          value={value ?? ""}
+          onChange={(event) => {
+            const selected = levels.find((level) => level === event.target.value);
+            onCommit(selected ?? null);
+          }}
+        >
+          <option value="">Provider default</option>
+          {value && !levels.includes(value) && (
+            <option value={value} disabled>{value}{unsupported && " (unsupported)"}</option>
+          )}
+          {levels.map((level) => <option key={level} value={level}>{level}</option>)}
+        </select>
+      </Tooltip>
+      {unsupported && (
+        <p className="foreman-model-source" role="status">
+          This model uses provider default because it does not support {unsupported} effort.
+        </p>
+      )}
+    </>
+  );
+}
+
 function knownRunner(value: string): LlmRunnerId | null {
   const asked = value.trim();
   return (LLM_RUNNER_IDS as readonly string[]).includes(asked) ? (asked as LlmRunnerId) : null;

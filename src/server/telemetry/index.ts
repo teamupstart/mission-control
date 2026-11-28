@@ -44,6 +44,7 @@ export {
   recordTelemetryPrMerges,
   registerPrTelemetrySource,
   repoKeyFor,
+  attachPrObservationTelemetry,
   retainPrObservation,
   telemetryPrCohortInputs,
   telemetryPrPollTargets,

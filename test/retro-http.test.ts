@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-retro-http-home-"));
-const repos = mkdtempSync(join(tmpdir(), "mission-retro-http-repos-"));
+const home = tempDir("mission-retro-http-home-");
+const repos = tempDir("mission-retro-http-repos-");
 process.env.MISSION_HOME = home;
 
 const {
@@ -510,7 +510,7 @@ test("a paneless session outside any repository is refused rather than filed now
   installRetroSkill();
   enableSkills(true);
   const f = fixture();
-  const outside = mkdtempSync(join(tmpdir(), "mission-retro-not-a-repo-"));
+  const outside = tempDir("mission-retro-not-a-repo-");
   const session = paneless(f, realpathSync(outside), "main");
   const before = f.tasks.list().length;
 

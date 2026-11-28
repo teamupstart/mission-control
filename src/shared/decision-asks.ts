@@ -22,7 +22,8 @@ export const DECISION_CONTEXT_RULE =
   "A decision must carry what the operator needs to make it without reconstructing your " +
   "context: keep `question` to the decision itself, put the background in `context` (what " +
   "is being decided, why it came up, and what you found), give each option a `detail` that " +
-  "states its tradeoff, and mark the option you would pick as `recommended`.";
+  "states its tradeoff, and mark the option you would pick as `recommended`. Write context " +
+  "as markdown.";
 
 /** The most text `context` may carry. Generous for a few paragraphs, bounded for the card. */
 export const DECISION_CONTEXT_MAX_CHARS = 4000;

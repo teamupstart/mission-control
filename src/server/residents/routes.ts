@@ -9,7 +9,7 @@ import type { Registry } from "../registry.ts";
 import type { ResidentManager } from "./manager.ts";
 import type { ResidentLoop } from "./loop.ts";
 import { ResidentLoopRefusal, liveRun } from "./loop-store.ts";
-import { getResidentProfile, getResidentRun, residentRunIdentityByRequest } from "./store.ts";
+import { getAvailableResidentProfile, getResidentRun, residentRunIdentityByRequest } from "./store.ts";
 import { ProposeResidentInstructionChangesSchema } from "@shared/resident-instructions.ts";
 import type { ResidentInstructionChanges } from "./instruction-changes.ts";
 
@@ -43,6 +43,7 @@ export function registerResidentInstructionRoutes(app: Hono, deps: {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const session = caller(c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
     if (!session) return c.json({ error: NO_CALLER }, 409);
+    // oxlint-disable-next-line repository/parse-request-body -- Resident tools preserve their custom refusal schema and status.
     const body: unknown = await c.req.json().catch(() => null);
     const parsed = ProposeResidentInstructionChangesSchema.safeParse(body);
     if (!parsed.success) {
@@ -70,6 +71,7 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
     const caller = sessionControlCaller(deps.registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
     const session = caller && deps.registry.getSession(caller);
     if (!session || session.runtime !== "sdk") return refused("No matching signed resident session.");
+    // oxlint-disable-next-line repository/parse-request-body -- Resident tools preserve their custom refusal schema and status.
     const body: unknown = await c.req.json().catch(() => null);
     const parsed = ScheduleNextIterationRequestSchema.safeParse(body);
     if (!parsed.success) return refused(parsed.error.message);
@@ -107,7 +109,7 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
           // left the same proof, so their interrupted restarts finish too.
           const endedByRestart = stored.run.endedAt !== null && stored.run.pauseReason === RESIDENT_RESTART_PAUSE_REASON;
           if (!endedByRestart) liveRun(id);
-          const profile = getResidentProfile(stored.run.profileId);
+          const profile = getAvailableResidentProfile(stored.run.profileId);
           if (!profile || profile.archivedAt !== null || profile.revision <= stored.run.profileRevision) throw new ResidentLoopRefusal("No newer live profile revision is available.");
           const problem = deps.residents.settingsProblem(profile.settings);
           if (problem) throw new ResidentLoopRefusal(problem);

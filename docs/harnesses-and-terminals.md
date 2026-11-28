@@ -10,6 +10,19 @@ Each ready executable row shows the absolute path and where Mission Control foun
 resolved path and child environment are then used for detection, model discovery, installation
 probes, and launch. The panel only links to or copies remedies; it never installs them itself.
 
+## Linux process discovery
+
+On Linux, passive session discovery recognizes Claude Code's `claude` command, its native
+version-manager path under `~/.local/share/claude/versions/`, and the npm CLI path. A process
+must have a controlling terminal, typically `pts/N`, to appear as an interactive session; a
+headless CLI process is not a terminal session. This is separate from **Settings > Setup**, which
+can report that Claude Code is installed even when no interactive session is running.
+
+A terminal backend is not required for a discovered process to appear. Without a correlated pane,
+Mission Control names the session from the agent and PID and records no terminal handle, so
+terminal actions that need a pane remain unavailable. This also keeps a headless Linux host's
+missing GUI terminal app from hiding an otherwise detectable Claude Code session.
+
 The daemon initializes one executable environment before it opens state or starts discovery. This
 happens for direct CLI and LaunchAgent starts, Electron-spawned daemons, Electron-adopted compatible
 daemons, and the separate Foreman worker. Resolution has a fixed order:
@@ -237,6 +250,24 @@ Which rows carry a chooser is the adapter's answer, not the panel's: a multiplex
 its own window declares no attach argv, and its row reads **Needs no terminal** instead. cmux is
 the shipped example. A multiplexer that is not installed keeps the control, disabled, since
 there is nothing to set a preference for yet.
+
+## macOS Terminal preview
+
+Enable **macOS Terminal** under **Settings > Feature flags > Preview**. The Terminal app built into
+macOS then appears in terminal launch menus and in the **Opens in** chooser for detached
+multiplexers. It opens a new window for each launch and can find and focus existing tabs by
+their TTY. Use the Terminal window itself to type or read the screen for a directly hosted
+session. For task dispatch, choose a multiplexer in **Settings > Harnesses** and set that
+multiplexer to open in macOS Terminal under **Settings > Setup**. The multiplexer delivers the
+initial prompt and retains its pane controls.
+
+macOS may ask permission for Mission Control to control Terminal. Allow it in **System
+Settings > Privacy & Security > Automation** if prompted. Passive discovery checks for a
+running Terminal before sending Apple Events.
+
+Turning off the preview leaves existing windows and saved choices in place. It pauses Terminal
+discovery and prevents new launches to Terminal. A multiplexer with Terminal saved as its
+focus preference falls back to another available terminal app.
 
 ## Sessions started outside Mission Control
 
@@ -590,7 +621,7 @@ connectors at every start. That is the MCP launch every other Agent SDK session 
 no isolation to probe. The post-start `mcpServerStatus` check still requires Mission's server and
 every snapshot server to connect, and no longer refuses a server outside the snapshot.
 
-Codex uses `codex-native-home` when the preview is enabled and the profile opts in. The app-server
+Codex uses `codex-native-home` for profiles on all native sources. The app-server
 stays on the normal Codex home, so native MCP configuration and OAuth remain owned by Codex.
 Mission Control's server and the snapshot's custom servers ride launch-only overrides and are marked
 required. Custom definitions use a TOML table with quoted names so dotted names stay intact.

@@ -19,9 +19,8 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InspectorComment, InspectorPr, Session } from "../src/shared/types.ts";
@@ -39,10 +38,11 @@ import {
 } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // MISSION_HOME *is* the state dir. Set before anything that resolves it is imported, which is
 // why every server import below is dynamic - a static import would be hoisted above this line.
-const home = mkdtempSync(join(tmpdir(), "workflow-resumption-"));
+const home = tempDir("workflow-resumption-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -689,6 +689,43 @@ test("a blocked session is not handed the next round until its blocker clears", 
   await h.manager.stop();
 });
 
+test("a session awaiting its own background process is not handed the next round until its deadline passes", async () => {
+  const h = await personaFeedbackRun("awaiting-persona", "v-awaiting-persona", "auto");
+  h.head.sha = "head-2";
+  reportIdle(h, "awaiting-persona", h.agentSessionId, h.paneId);
+  // Further out than the sweep's settled clock, so the first sweep falls inside the deadline.
+  const expectedBy = Date.now() + 20 * 60_000;
+  const declared = h.registry.reportAwaiting("awaiting-persona", {
+    what: "CI checks on PR #7", wakeSource: "command", expectedBy, referenceUrl: null, details: null,
+  });
+  assert.equal(declared.ok, true);
+  await h.manager.sweepResumptions(SETTLED());
+  assert.equal(h.store.listSubmissions(h.runId).length, 1, "a session awaiting its CI was resubmitted");
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+
+  // No wake came and the deadline passed: the hold lifts and the round is handed over.
+  await h.manager.sweepResumptions(expectedBy + 1);
+  assert.equal(h.store.listSubmissions(h.runId).length, 2, "the deadline passing did not release the round");
+  await h.manager.stop();
+});
+
+test("a wait declared while the repository is read holds the run, on the unchanged branch too", async () => {
+  const h = await personaFeedbackRun("probe-awaiting", "v-probe-awaiting", "auto");
+  reportIdle(h, "probe-awaiting", h.agentSessionId, h.paneId);
+  h.duringProbe.fn = () => {
+    h.registry.reportAwaiting("probe-awaiting", {
+      what: "CI checks on PR #7", wakeSource: "command", expectedBy: Date.now() + 20 * 60_000,
+      referenceUrl: null, details: null,
+    });
+  };
+  await h.manager.sweepResumptions(SETTLED());
+  h.duringProbe.fn = null;
+  assert.equal(h.store.listSubmissions(h.runId).length, 1);
+  assert.equal(withheldReasons(h, h.runId).at(-1), "session_awaiting");
+  assert.ok(!withheldReasons(h, h.runId).includes("repository_unchanged"), "the unchanged branch ran for an awaiting session");
+  await h.manager.stop();
+});
+
 test("an outstanding request_input question holds the next round, snoozed or not, until it is answered (async-input)", async () => {
   const h = await personaFeedbackRun("asked-persona", "v-asked-persona", "auto");
   h.head.sha = "head-2";
@@ -1110,7 +1147,7 @@ test("a transcript that grew but no work that changed does not spend a round", a
 });
 
 test("new staged text evidence re-arms an auto repair without a commit", async () => {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "workflow-evidence-resumption-")));
+  const repo = realpathSync(tempDir("workflow-evidence-resumption-"));
   try {
     execFileSync("git", ["init", "-q", repo]);
     writeFileSync(join(repo, ".gitignore"), "evidence/\n");

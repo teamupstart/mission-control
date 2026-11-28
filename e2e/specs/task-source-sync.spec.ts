@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { Locator, Page } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -22,7 +23,7 @@ async function tasks(page: Page, daemon: DaemonHandle): Promise<Task[]> {
 }
 async function configure(page: Page, daemon: DaemonHandle) {
   upstream(daemon);
-  const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`,{data:{sources:[{
+  const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`,{data:{revision: await taskSourcesRevision(page, daemon), sources:[{
     id:"s",kind:"github-issues",label:"Sync test issues",repoRoot:daemon.repo,enabled:false,config:{repo:"acme/demo"},
   }]}});
   expect(res.ok()).toBe(true);
@@ -141,7 +142,9 @@ test("scheduled refresh resumes after daemon restart without losing its baseline
   const [before]=await tasks(page,daemon);
   upstream(daemon,{title:"Updated after restart",body:"A later revision",discoverable:false});
   const cfg=await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json();
-  await page.request.put(`${daemon.baseURL}/api/task-sources/config`,{data:{sources:cfg.sources.map((s:Record<string,unknown>)=>({...s,enabled:true}))}});
+  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+    data: { revision: cfg.revision, sources: cfg.sources.map((source: Record<string, unknown>) => ({ ...source, enabled: true })) },
+  })).ok()).toBe(true);
   await daemon.crash(); await daemon.restart();
   await expect.poll(async()=> (await tasks(page,daemon))[0]?.title).toBe("Updated after restart");
   expect((await tasks(page,daemon))[0]!.id).toBe(before!.id);
@@ -176,7 +179,7 @@ test("older imports need adoption and missing source items leave a visible error
 test("Jira link failures render per task instead of poisoning the batch", async ({ page, daemon }) => {
   const source = { id: "s", kind: "jira", repoRoot: daemon.repo, enabled: false, keepUpdated: true,
     config: { site: "acme.atlassian.net", jql: "project = MC" } };
-  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: { sources: [source] } })).ok()).toBe(true);
+  expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: { revision: await taskSourcesRevision(page, daemon), sources: [source] } })).ok()).toBe(true);
   for (const [key, url] of [
     ["MC-1", "https://another.atlassian.net/browse/MC-1"],
     ["MC-2", null],
@@ -217,10 +220,10 @@ test.describe("scheduled review visibility", () => {
       data: { intent: "Local notes before scheduled refresh" },
     })).ok()).toBe(true);
     upstream(daemon, { title: "Scheduled remote title", body: "Scheduled remote notes", discoverable: false });
-    const cfg = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json();
     const schedule = async (enabled: boolean) => {
+      const cfg = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json();
       expect((await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
-        data: { sources: cfg.sources.map((source: Record<string, unknown>) => ({ ...source, enabled })) },
+        data: { revision: cfg.revision, sources: cfg.sources.map((source: Record<string, unknown>) => ({ ...source, enabled })) },
       })).ok()).toBe(true);
     };
     // The setup's manual sweep is still recent. Pause an enabled schedule to clear its

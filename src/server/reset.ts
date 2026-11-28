@@ -80,6 +80,8 @@ export async function resetSession(
 ): Promise<ResetResult> {
   const transferBlock = transferHold(session);
   if (transferBlock) return { ok: false, error: transferBlock, root: session.cwd, cleared: false, detached: false };
+  const workflowBlock = registry.workflowResetBlocker(noteKeyFor(session));
+  if (workflowBlock) return { ok: false, error: workflowBlock, root: session.cwd, cleared: false, detached: false };
   if (session.pause && pause) {
     // A reset types into the agent and waits for it; a frozen one would never answer. Resetting
     // is a person deciding what the session does next, so it resumes the session too - and does
@@ -98,6 +100,8 @@ export async function resetSession(
       ? await pendingTurns.invalidateForReset(session.id)
       : [];
     return await withPaneLockWait(session, async (lockOwner) => {
+      const blocker = registry.workflowResetBlocker(noteKeyFor(session));
+      if (blocker) return { ok: false, error: blocker, root: session.cwd, cleared: false, detached: false };
       const r = reset
         ? await reset(session, clear, lockOwner, driverClear)
         : await resetToOrigin(session, clear, undefined, lockOwner, driverClear);
@@ -149,6 +153,9 @@ export async function resetSession(
         registry.moveStandingInstructionsKey(pendingTurnKey, currentPendingTurnKey);
         // A blocker belongs to the task, not the conversation: the reset does not answer it.
         registry.moveBlockerKey(pendingTurnKey, currentPendingTurnKey);
+        // A declared wait moves too, so nothing strands under the old key. The reset's own next
+        // turn is a wake like any other, and ends it there.
+        registry.moveAwaitingKey(pendingTurnKey, currentPendingTurnKey);
         registry.clearQueue(noteKeyFor(session));
         registry.clearWorkflowState(noteKeyFor(session));
       }

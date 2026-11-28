@@ -2,9 +2,9 @@ import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: an embedded session is the one kind of session the OS cannot rebuild.
 // Its row is the ONLY record that its harness-native thread id, its checkout and the task it
@@ -21,7 +21,7 @@ import { join } from "node:path";
 // back `null`, never the nearest thing we do know, and the restore sweep must leave such a
 // row alone rather than failing a session a newer daemon could resume.
 
-const home = mkdtempSync(join(tmpdir(), "mission-sdk-db-"));
+const home = tempDir("mission-sdk-db-");
 // MISSION_HOME *is* the state dir, so the db lands at <home>/harness.db - the file db.ts
 // opens below. Set before importing anything that resolves it.
 process.env.MISSION_HOME = home;
@@ -108,6 +108,7 @@ test("the table reaches a database that already had rows", () => {
       "resident_compaction_token_limit",
       "advisor_model",
       "resume_deferrals",
+      "extra_dirs_json",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a
@@ -124,6 +125,7 @@ test("the table reaches a database that already had rows", () => {
     1,
   );
   assert.equal(getSdkSession("sdk:pre-continuation")?.turnInProgress, false);
+  assert.equal(getSdkSession("sdk:pre-continuation")?.extraDirs, undefined);
   // Null, not "": a row written before the column existed was named by derivation, and that is
   // exactly what null means here - so an upgraded database keeps deriving rather than coming
   // back with every card blank-titled.

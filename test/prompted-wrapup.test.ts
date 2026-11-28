@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   PromptedFailureTracker,
+  PromptedHoldLog,
   decidePromptedWrapup,
   planPromptedWrapup,
   promptedVerificationHistory,
@@ -65,6 +66,7 @@ const CFG: PromptedConfig = {
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s1",
     agent: "claude",
     name: "work",
@@ -291,6 +293,23 @@ test("a prompted mockup output retires without a Workflow or PR action", () => {
   const r = decide({ intent: mkIntent({ objective }) });
   assert.equal(r.kind, "retire");
   assert.match(r.kind === "retire" ? r.why : "", /review artifact/);
+});
+
+test("a report the operator kept off a PR still retires, so a recurring mission can conclude", () => {
+  // #1807. The reconciled objective of a weekday report mission carried the operator's
+  // "Do not open a PR." as an operator-only handoff. A skip leaves the generation armed and
+  // records nothing, so the mission task stayed running and blocked its next occurrence.
+  // Retiring sends nothing to the agent, which is all the hold reserves.
+  const objective = "Write the weekly dependency report. Do not open a PR.\nAutomatic handoff: operator only";
+  const r = decide({ session: mkSession({ task: mkTaskSummary({ kind: "ship" }) }), intent: mkIntent({ objective }) });
+  assert.equal(r.kind, "retire");
+  assert.match(r.kind === "retire" ? r.why : "", /review artifact/);
+
+  const shippable = decide({
+    session: mkSession({ task: mkTaskSummary({ kind: "ship" }) }),
+    intent: mkIntent({ objective: "Add retry handling to the uploader. Do not open a PR." }),
+  });
+  assert.deepEqual(shippable, { kind: "skip", why: "the operator reserved the completion handoff", operatorHold: true });
 });
 
 test("disabled completion safeguards let prompted work reach verification", () => {
@@ -947,3 +966,34 @@ test("a blocked session is skipped, and the same session is a candidate once the
   // A skip consumes nothing, so clearing it leaves the generation to complete normally.
   assert.equal(decide({ session: mkSession({ blocker: null }) }).kind, "check");
 });
+
+test("a session awaiting its own background process is skipped until its deadline, then is a candidate", () => {
+  const awaiting = { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW + 60_000, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 };
+  assert.deepEqual(decide({ session: mkSession({ awaiting }) }), { kind: "skip", why: "the session is awaiting a background process" });
+  // A skip consumes nothing: once the deadline passes the same generation is judged as usual.
+  assert.equal(decide({ session: mkSession({ awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }) }).kind, "check");
+});
+
+test("PromptedHoldLog: one line per held generation, and no entry outlives its hold or its session", () => {
+  const holds = new PromptedHoldLog();
+  assert.equal(holds.shouldLog("a", 1), true);
+  assert.equal(holds.shouldLog("a", 1), false, "the same held generation logs once");
+  assert.equal(holds.shouldLog("a", 2), true, "a later held generation logs again");
+  assert.equal(holds.size, 1, "a session holds one entry, not one per generation");
+
+  // A hold that was released, or a generation that was consumed, is no longer a hold.
+  holds.forget("a");
+  assert.equal(holds.size, 0);
+  assert.equal(holds.shouldLog("a", 2), true, "a hold re-armed after release is logged again");
+
+  // Sessions that leave the fleet are dropped, so a worker that sees held sessions come and
+  // go for weeks holds only the ones still live.
+  for (let i = 0; i < 100; i++) assert.equal(holds.shouldLog(`departed-${i}`, 1), true);
+  assert.equal(holds.size, 101);
+  holds.retainOnly(new Set(["a", "never-held"]));
+  assert.equal(holds.size, 1, "only the live held session remains");
+  assert.equal(holds.shouldLog("a", 2), false, "and it keeps its once-per-generation memory");
+  holds.retainOnly(new Set());
+  assert.equal(holds.size, 0, "an empty fleet holds nothing");
+});
+

@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LlmConfig, LlmConfigPatch } from "@shared/protocol.ts";
 import type { LlmStatus } from "@shared/types.ts";
@@ -54,6 +55,7 @@ export function useLlm(): LlmState {
     setConfigState(c);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("llm");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -77,7 +79,7 @@ export function useLlm(): LlmState {
       alive = false;
       clearInterval(id);
     };
-  }, [setConfig]);
+  }, [setConfig, settingsRevision]);
 
   /**
    * Apply a change optimistically, and take it back if the daemon refuses.
@@ -101,6 +103,7 @@ export function useLlm(): LlmState {
         ...before,
         ...patch,
         models: { ...before.models, ...patch.models },
+        ...(patch.efforts && { efforts: { ...before.efforts, ...patch.efforts } }),
         runners: { ...before.runners, ...patch.runners },
       });
       const res = await api.setLlmConfig(patch);

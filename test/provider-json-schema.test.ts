@@ -1,7 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -9,6 +8,7 @@ import {
   nullOptionalsPayload,
   permitsNull,
 } from "./helpers/strict-json-schema.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The provider-facing schema contract, in one place.
 //
@@ -24,7 +24,7 @@ import {
 // Half 1 alone would let a fix trade a provider error for a parse miss, which is worse -
 // `invalid_json_schema` is loud, and a parse miss burns a retry and then degrades quietly.
 
-const home = mkdtempSync(join(tmpdir(), "provider-json-schema-"));
+const home = tempDir("provider-json-schema-");
 process.env.HARNESS_HOME = join(home, "state");
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -48,6 +48,8 @@ const { ConsensusResultSchema } = await import("../src/shared/ensemble-strategie
 const { BestOfNComparisonResultSchema } = await import(
   "../src/shared/ensemble-strategies/best-of-n.ts"
 );
+const { InspectorWorkloadProviderResultSchema, PersonaWorkloadProviderResultSchema } =
+  await import("../src/shared/repository-access.ts");
 const { PanelBallotSchema } = await import("../src/shared/ensemble-strategies/panel-vote.ts");
 
 /**
@@ -62,6 +64,8 @@ const { PanelBallotSchema } = await import("../src/shared/ensemble-strategies/pa
  * thing a hand-maintained list quietly stops covering.
  */
 const SCHEMAS = [
+  { identifier: "PersonaWorkloadProviderResultSchema", schema: PersonaWorkloadProviderResultSchema },
+  { identifier: "InspectorWorkloadProviderResultSchema", schema: InspectorWorkloadProviderResultSchema },
   { identifier: "InspectorVerdictSchema", schema: InspectorVerdictSchema },
   { identifier: "InspectorReplySchema", schema: InspectorReplySchema },
   { identifier: "BacklogReportSchema", schema: BacklogReportSchema },

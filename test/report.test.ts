@@ -9,6 +9,7 @@ import type { Session, SessionState, Task, TaskSummary } from "../src/shared/typ
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s",
     agent: "claude",
     name: "sess",

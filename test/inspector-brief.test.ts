@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BRIEF_PATHS, DEFAULT_BRIEF, readBrief } from "../src/server/inspector/brief.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 // Where the Inspector's brief comes from, which is a question about a repository that is not
 // this one: `readBrief` resolves against the root of the pull request under review.
@@ -22,7 +22,7 @@ import { BRIEF_PATHS, DEFAULT_BRIEF, readBrief } from "../src/server/inspector/b
 // request comment.
 
 function repo(): string {
-  return mkdtempSync(join(tmpdir(), "inspector-brief-"));
+  return tempDir("inspector-brief-");
 }
 
 /** Write `personas/INSPECTOR.md`, creating the directory the way a repo would have it. */
@@ -87,7 +87,7 @@ test("a repo with neither is reviewed against the default brief", () => {
 });
 
 test("a missing repo root, or none at all, is the default brief rather than a throw", () => {
-  for (const root of [null, join(tmpdir(), "inspector-brief-gone-a1b2c3")]) {
+  for (const root of [null, join(testTempRoot(), "inspector-brief-gone-a1b2c3")]) {
     const brief = readBrief(root);
     assert.equal(brief.source, "default");
     assert.equal(brief.text, DEFAULT_BRIEF);
@@ -104,7 +104,7 @@ test("a blank brief in both locations is not a brief", () => {
 
 test("a personas/INSPECTOR.md symlinked out of the repo is refused, not read", () => {
   const root = repo();
-  const secrets = mkdtempSync(join(tmpdir(), "inspector-brief-secrets-"));
+  const secrets = tempDir("inspector-brief-secrets-");
   writeFileSync(join(secrets, "id_rsa"), "PRIVATE KEY");
   mkdirSync(join(root, "personas"), { recursive: true });
   symlinkSync(join(secrets, "id_rsa"), join(root, "personas", "INSPECTOR.md"));
@@ -116,7 +116,7 @@ test("a personas/INSPECTOR.md symlinked out of the repo is refused, not read", (
 
 test("a symlinked personas directory pointing out of the repo is refused too", () => {
   const root = repo();
-  const outside = mkdtempSync(join(tmpdir(), "inspector-brief-outside-"));
+  const outside = tempDir("inspector-brief-outside-");
   writeFileSync(join(outside, "INSPECTOR.md"), "# Brief\n\nSomebody else's rules.");
   // The escape the nested candidate newly makes reachable: the FILE at the end of the path
   // is an ordinary file inside an ordinary directory, and only resolving the whole path

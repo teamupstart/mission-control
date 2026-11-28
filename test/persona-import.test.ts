@@ -2,9 +2,9 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this is the one path where a Persona's review authority comes from a file
@@ -19,7 +19,7 @@ import { join } from "node:path";
  * `personas-http.test.ts` does for the rest of the Persona catalog.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-persona-import-"));
+const home = tempDir("mission-persona-import-");
 process.env.HARNESS_HOME = join(home, "state");
 for (const prefix of ["MISSION_", "FLEET_", "HARNESS_"]) {
   delete process.env[`${prefix}WORKFLOW_PERSONA_MODEL`];
@@ -47,6 +47,7 @@ interface ImportedPersona {
   description: string;
   guidanceMarkdown: string;
   revision: number;
+  repositoryAccess: "none" | "read";
   provenance: {
     sourcePath: string;
     sourceRepo: string | null;
@@ -387,17 +388,20 @@ test("re-import adopts the new text as a new revision and clears the drift", asy
   const { request } = fixture();
   const path = writeRole("adopted.md", "# Adopted\n\nFirst edition.\n");
   const persona = (await (await importRole(request, path)).json()) as ImportedPersona;
+  assert.equal(persona.repositoryAccess, "none");
+  assert.ok(new WorkflowStore(db).setPersonaRepositoryAccess(persona.id, persona.revision, "read", Date.now()).ok);
   const firstHash = persona.provenance!.contentSha256;
 
   writeFileSync(path, "# Adopted\r\n\r\nSecond edition, with CRLF.  \r\n", "utf8");
   const reimported = await request(`/api/personas/${persona.id}/reimport`, {
     method: "POST",
-    body: JSON.stringify({ expectedRevision: 1 }),
+    body: JSON.stringify({ expectedRevision: 2 }),
   });
   assert.equal(reimported.status, 200);
   const updated = (await reimported.json()) as ImportedPersona;
   assert.equal(updated.guidanceMarkdown, "# Adopted\r\n\r\nSecond edition, with CRLF.  \r\n");
-  assert.equal(updated.revision, 2);
+  assert.equal(updated.revision, 3);
+  assert.equal(updated.repositoryAccess, "read");
   assert.notEqual(updated.provenance?.contentSha256, firstHash);
   assert.equal(updated.provenance?.sourcePath, path);
 

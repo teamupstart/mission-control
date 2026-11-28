@@ -5,6 +5,7 @@ interface NativePlanFilesBinding {
   openPlanEntry(parent: number, name: string, flags: number): number;
   makePlanDirectory(parent: number, name: string): void;
   renamePlanEntry(parent: number, source: string, destination: string, exchange: boolean): void;
+  replaceFileEntry(parent: number, source: string, destination: string): void;
   unlinkPlanEntry(parent: number, name: string, directory: boolean): void;
   readPlanDirectory(parent: number): string[];
   readPlanDirectoryEntries(parent: number, limit: number, timeoutMs: number): Promise<Array<{ name: string; directory: boolean }>>;
@@ -12,7 +13,7 @@ interface NativePlanFilesBinding {
 }
 
 export function validateNativePlanFilesBinding(value: unknown): NativePlanFilesBinding {
-  for (const name of ["openPlanEntry", "makePlanDirectory", "renamePlanEntry", "unlinkPlanEntry", "readPlanDirectory", "readPlanDirectoryEntries", "removePlanDirectory"] as const) {
+  for (const name of ["openPlanEntry", "makePlanDirectory", "renamePlanEntry", "replaceFileEntry", "unlinkPlanEntry", "readPlanDirectory", "readPlanDirectoryEntries", "removePlanDirectory"] as const) {
     if (typeof value !== "object" || value === null || !(name in value)
       || typeof (value as Record<string, unknown>)[name] !== "function") {
       throw new Error(`native filesystem addon must export ${name}`);
@@ -21,7 +22,7 @@ export function validateNativePlanFilesBinding(value: unknown): NativePlanFilesB
   return value as NativePlanFilesBinding;
 }
 
-const require = createRequire(import.meta.url);
+const require = createRequire(nativeStateLockAddonPath());
 export function nativePlanFiles(): NativePlanFilesBinding {
   return validateNativePlanFilesBinding(require(nativeStateLockAddonPath()));
 }

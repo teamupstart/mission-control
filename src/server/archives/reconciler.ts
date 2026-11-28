@@ -1,7 +1,8 @@
 import { watch, type FSWatcher } from "node:fs";
-import { readdir, realpath, rm } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { isArchiveId, archiveKey, type ArchiveIdentity } from "@shared/archives.ts";
+import { removeTree } from "../util/remove-tree.ts";
 import { unref } from "../util/timers.ts";
 import {
   readBundleFingerprint,
@@ -98,6 +99,11 @@ export interface ArchiveReconcilerOptions {
   titleFor?: (key: string) => string | null;
   /** Called once after a pass that changed derived state. Never once per file. */
   onChanged?: () => void;
+  /**
+   * Called once after a complete pass that pruned bundles which are no longer in the library,
+   * with exactly those keys, so a holder of an archive key re-checks only what disappeared.
+   */
+  onPruned?: (keys: readonly string[]) => void;
   /** Recurring cadence in ms, or null to run only when triggered. */
   intervalMs?: number | null;
   /** Whether to install a filesystem watcher. Off in tests that drive passes directly. */
@@ -136,6 +142,7 @@ export class ArchiveReconciler {
   private readonly roots: readonly string[];
   private readonly store: ArchiveStore;
   private readonly onChanged: () => void;
+  private readonly onPruned: (keys: readonly string[]) => void;
   private readonly titleFor: (key: string) => string | null;
   private readonly intervalMs: number | null;
   private readonly wantsWatch: boolean;
@@ -178,6 +185,7 @@ export class ArchiveReconciler {
     this.roots = [...options.roots];
     this.store = options.store;
     this.onChanged = options.onChanged ?? ((): void => {});
+    this.onPruned = options.onPruned ?? ((): void => {});
     this.titleFor = options.titleFor ?? (() => null);
     this.intervalMs = options.intervalMs ?? null;
     this.wantsWatch = options.watch ?? false;
@@ -379,6 +387,7 @@ export class ArchiveReconciler {
     if (pruned.length > 0) result.changed = true;
     for (const key of pruned) this.forget(key);
 
+    if (pruned.length > 0) this.onPruned(pruned);
     if (result.changed) this.onChanged();
     return result;
   }
@@ -705,7 +714,7 @@ export class ArchiveReconciler {
         continue;
       }
       for (const entry of entries) {
-        await rm(join(trash, entry), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+        await removeTree(join(trash, entry)).catch(() => {});
       }
     }
   }

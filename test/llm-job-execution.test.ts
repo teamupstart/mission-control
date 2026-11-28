@@ -1,7 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -19,25 +18,30 @@ import { z } from "zod";
 // override SET, because with none set the wrong answer and the right one coincide and a test
 // that only covers the default case cannot see the bug at all.
 
-const home = mkdtempSync(join(tmpdir(), "mission-llm-exec-"));
+const home = tempDir("mission-llm-exec-");
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { setLlmConfig } = await import("../src/server/llm/config.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { BACKGROUND_REASONING_EFFORT_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
 const { LLM_RUNNERS } = await import("../src/server/llm/index.ts");
 const { runJob, runJobStructured } = await import("../src/server/llm/jobs.ts");
 const { LLM_JOB_SPECS } = await import("../src/shared/llm-jobs.ts");
 const { LLM_RUNNER_IDS } = await import("../src/shared/llm.ts");
 const { compactWorkflowContext } = await import("../src/server/workflows/context.ts");
+import type { ThinkingLevel } from "../src/shared/types.ts";
 import type { LlmRunnerId } from "../src/shared/llm.ts";
 import type { RawWorkflowContext } from "../src/server/workflows/context.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /** What each runner was actually asked to spawn, in call order. */
 let spawned: { runner: LlmRunnerId; model: string | undefined }[] = [];
 let timeouts: (number | undefined)[] = [];
+let efforts: (ThinkingLevel | undefined)[] = [];
 /** What the next `run` on any runner replies with. */
 let reply = "";
 
@@ -49,13 +53,16 @@ beforeEach(() => {
   delete process.env.MISSION_LLM_RUNNER;
   spawned = [];
   timeouts = [];
+  efforts = [];
   reply = "";
+  applyFeatureFlagIntent({ kind: "flag", id: BACKGROUND_REASONING_EFFORT_FLAG_ID, enabled: false });
   // Stubbed per runner rather than through one shared fake, because the whole question here
   // is WHICH runner was reached, and a single fake standing in for both cannot answer it.
   for (const id of LLM_RUNNER_IDS) {
     LLM_RUNNERS[id].run = async (_prompt, opts) => {
       spawned.push({ runner: id, model: opts?.model });
       timeouts.push(opts?.timeoutMs);
+      efforts.push(opts?.effort);
       return reply;
     };
   }
@@ -87,6 +94,40 @@ test("the reported pair is the POST-GUARD one when a fallback was substituted", 
 
   assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-6-luna" }]);
   assert.deepEqual(result.execution, { runner: "codex", model: "gpt-6-luna" });
+});
+
+test("background effort uses the provider default until enabled and when unsupported", async () => {
+  setLlmConfig({
+    runners: { goal: "codex" },
+    models: { goal: "gpt-5.6-test" },
+    efforts: { goal: "max" },
+  });
+  await runJob("goal", "flag off");
+  applyFeatureFlagIntent({ kind: "flag", id: BACKGROUND_REASONING_EFFORT_FLAG_ID, enabled: true });
+  await runJob("goal", "unsupported");
+  assert.deepEqual(efforts, [undefined, undefined]);
+
+  setLlmConfig({ models: { goal: "gpt-6-luna" } });
+  const result = await runJob("goal", "supported");
+  assert.equal(efforts.at(-1), "max");
+  assert.equal(result.execution.effort, "max");
+
+  setLlmConfig({ efforts: { goal: null } });
+  await runJob("goal", "provider default");
+  assert.equal(efforts.at(-1), undefined);
+});
+
+test("structured-job retries reuse the effort chosen on the first attempt", async () => {
+  applyFeatureFlagIntent({ kind: "flag", id: BACKGROUND_REASONING_EFFORT_FLAG_ID, enabled: true });
+  setLlmConfig({ runners: { "task-title": "codex" }, efforts: { "task-title": "low" } });
+  await runJobStructured("task-title", "prompt", () => {
+    setLlmConfig({ efforts: { "task-title": "high" } });
+    return null;
+  }, "Title");
+  assert.deepEqual(efforts, ["low", "low"]);
+
+  await runJob("task-title", "new call");
+  assert.equal(efforts.at(-1), "high");
 });
 
 const TitleSchema = z.object({ title: z.string() });

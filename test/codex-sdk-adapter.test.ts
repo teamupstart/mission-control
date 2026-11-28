@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -21,6 +20,7 @@ import type { AppServerTransport } from "../src/server/harness/codex/app-server/
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
 import { CodexSubagents } from "../src/server/harness/codex/subagents.ts";
 import { CompactionError } from "../src/server/harness/compaction.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: this adapter is the only thing standing between `codex app-server` and
 // every surface in the app, and three of its decisions are the difference between an
@@ -98,24 +98,23 @@ class FakeServer implements AppServerTransport {
   }
 
   get frames(): AsyncIterable<unknown> {
-    const self = this;
-    return {
-      async *[Symbol.asyncIterator]() {
-        for (;;) {
-          const next = self.queued.shift();
-          if (next !== undefined) {
-            yield next;
-            continue;
-          }
-          if (self.ended) return;
-          const m = await new Promise<IteratorResult<unknown>>((r) => {
-            self.waiting = r;
-          });
-          if (m.done) return;
-          yield m.value;
-        }
-      },
-    };
+    return this.readFrames();
+  }
+
+  private async *readFrames(): AsyncIterableIterator<unknown> {
+    for (;;) {
+      const next = this.queued.shift();
+      if (next !== undefined) {
+        yield next;
+        continue;
+      }
+      if (this.ended) return;
+      const m = await new Promise<IteratorResult<unknown>>((r) => {
+        this.waiting = r;
+      });
+      if (m.done) return;
+      yield m.value;
+    }
   }
 
   async close(): Promise<void> {
@@ -202,7 +201,7 @@ async function launch(
 const settle = () => new Promise((r) => setTimeout(r, 5));
 
 test("a resumed resident retains its measured native backstop after the catalog disappears", async t => {
-  const home = mkdtempSync(join(tmpdir(), "codex-resident-backstop-"));
+  const home = tempDir("codex-resident-backstop-");
   const previous = process.env.CODEX_HOME;
   process.env.CODEX_HOME = home;
   t.after(() => { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; rmSync(home, { recursive: true, force: true }); });
@@ -306,7 +305,7 @@ test("a launch initializes, starts a thread, binds it, and delivers turn one", a
   });
 
   const turn = server.calls("turn/start")[0];
-  assert.deepEqual((turn?.params as { input: unknown[] }).input, [
+  assert.deepEqual((turn?.params as { input: unknown[] })?.input, [
     { type: "text", text: "do the thing", text_elements: [] },
   ]);
 
@@ -339,7 +338,7 @@ test("a launch preserves developer instructions and routes discrete choices thro
   const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
   assert.equal(
     String(start.developerInstructions),
-    "Keep this operator instruction.\n\nWhenever you need a decision, a clarification or a choice from the operator, call the Mission Control request_input MCP tool. Pass discrete choices through the tool's options field. Its result either carries the operator's answer, or says the question is filed and the answer will arrive later as a message; then keep working on what does not depend on it, and if nothing else remains, say what is waiting on the answer and end your turn. Never end a turn by asking for a numbered or prose reply when the MCP tool is available. A decision must carry what the operator needs to make it without reconstructing your context: keep `question` to the decision itself, put the background in `context` (what is being decided, why it came up, and what you found), give each option a `detail` that states its tradeoff, and mark the option you would pick as `recommended`. If you are waiting on someone or something other than the operator, call the Mission Control report_blocker MCP tool instead; for a decision the operator can make, call request_input. Ask your question where its owner will see it first (for example Commonroom), then report the blocker with a link to that question, and end your turn.",
+    "Keep this operator instruction.\n\nWhenever you need a decision, a clarification or a choice from the operator, call the Mission Control request_input MCP tool. Pass discrete choices through the tool's options field. Its result either carries the operator's answer, or says the question is filed and the answer will arrive later as a message; then keep working on what does not depend on it, and if nothing else remains, say what is waiting on the answer and end your turn. Never end a turn by asking for a numbered or prose reply when the MCP tool is available. A decision must carry what the operator needs to make it without reconstructing your context: keep `question` to the decision itself, put the background in `context` (what is being decided, why it came up, and what you found), give each option a `detail` that states its tradeoff, and mark the option you would pick as `recommended`. Write context as markdown. If you are waiting on someone or something other than the operator, call the Mission Control report_blocker MCP tool instead; for a decision the operator can make, call request_input. Ask your question where its owner will see it first (for example Commonroom), then report the blocker with a link to that question, and end your turn.",
   );
 });
 
@@ -454,7 +453,7 @@ test("an unusable config/read still tells the session to ask its decisions throu
     assert.equal(opened.developerInstructions, undefined, `${name}: the operator's own value is untouched`);
     const turns = server.calls("turn/start");
     assert.equal(turns.length, 1, `${name}: exactly one turn one`);
-    const text = String((turns[0]?.params as { input: { text?: string }[] }).input[0]?.text);
+    const text = String((turns[0]?.params as { input: { text?: string }[] })?.input[0]?.text);
     if (rest === null) {
       assert.match(text, ROUTING, `${name}: the routing is turn one by itself`);
     } else {
@@ -616,15 +615,18 @@ test("a second turn steers while one is running, and starts when the thread is i
   // Running: `turn/start` here would be accepted and then never run.
   assert.equal(await handle.sendIfIdle({ text: "keep this editable" }), null);
   assert.equal(server.calls("turn/steer").length, 0, "idle-only delivery must never steer");
-  assert.equal(await handle.send({ text: "also mention heapsort" }), "steered");
+  assert.equal(await handle.send({ text: "also mention heapsort", clientMessageId: "spoken-steer" }), "steered");
   const steer = server.calls("turn/steer")[0]?.params as Record<string, unknown>;
   assert.equal(steer.expectedTurnId, "turn-1", "a steer must name the turn it expects");
+  assert.equal(steer.clientUserMessageId, "spoken-steer");
   assert.equal(server.calls("turn/start").length, 1);
 
   server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
   await settle();
-  assert.equal(await handle.sendIfIdle({ text: "now do the next thing" }), "started");
+  assert.equal(await handle.sendIfIdle({ text: "now do the next thing", clientMessageId: "spoken-start" }), "started");
   assert.equal(server.calls("turn/start").length, 2, "an idle thread takes a new turn");
+  const started = server.calls("turn/start")[1]!.params as Record<string, unknown>;
+  assert.equal(started.clientUserMessageId, "spoken-start");
   await handle.stop();
   await drained;
 });
@@ -765,7 +767,7 @@ test("a request this build cannot answer is refused rather than left hanging", a
   await settle();
   assert.equal(events.some((e) => e.kind === "request"), false);
   const answered = server.responseTo(3);
-  assert.equal((answered?.error as { code: number }).code, -32601);
+  assert.equal((answered?.error as { code: number })?.code, -32601);
   await handle.stop();
   await drained;
 });
@@ -1077,7 +1079,7 @@ test("clearContext starts a new thread on the same connection and re-binds the c
   assert.equal(bounds[1]?.kind === "bound" && bounds[1].transcriptPath, SECOND_THREAD.path);
   // Codex's own word for the case, so its analytics do not read a second cold start.
   assert.equal(
-    (server.calls("thread/start")[1]?.params as Record<string, unknown>).sessionStartSource,
+    (server.calls("thread/start")[1]?.params as Record<string, unknown>)?.sessionStartSource,
     "clear",
   );
   assert.deepEqual(server.responseTo(9), {
@@ -1107,7 +1109,7 @@ test("clearContext starts a new thread on the same connection and re-binds the c
   await handle.send({ text: "new thread work" });
   assert.equal(server.calls("turn/steer").length, 0);
   assert.equal(
-    (server.calls("turn/start").at(-1)?.params as { threadId: string }).threadId,
+    (server.calls("turn/start").at(-1)?.params as { threadId: string })?.threadId,
     SECOND_THREAD.id,
   );
   server.notify("turn/completed", { threadId: SECOND_THREAD.id, turn: { id: "turn-2" } });
@@ -1124,7 +1126,7 @@ test("a resume continues the thread it names and never re-sends the intent", asy
   const { handle, events, drained } = await launch(server, { resume: THREAD.id, prompt: "" });
   await settle();
   assert.equal(server.calls("thread/start").length, 0);
-  assert.equal((server.calls("thread/resume")[0]?.params as { threadId: string }).threadId, THREAD.id);
+  assert.equal((server.calls("thread/resume")[0]?.params as { threadId: string })?.threadId, THREAD.id);
   // Re-sending the original intent would make the agent start the task over on top of
   // whatever it had already done.
   assert.equal(server.calls("turn/start").length, 0);
@@ -1732,7 +1734,7 @@ test("a rejected clear keeps the old thread bound and usable", async () => {
   assert.equal(server.calls("turn/steer").length, 0);
   assert.equal(server.calls("turn/start").length, 2);
   assert.equal(
-    (server.calls("turn/start")[1]?.params as Record<string, unknown>).threadId,
+    (server.calls("turn/start")[1]?.params as Record<string, unknown>)?.threadId,
     THREAD.id,
   );
   await handle.stop();
@@ -1774,8 +1776,8 @@ test("an unreadable request is answered with an error, not left blocking the tur
     params: { threadId: THREAD.id, reason: { not: "a string" } },
   });
   await settle();
-  assert.equal((server.responseTo(5)?.error as { code: number }).code, -32601);
-  assert.equal((server.responseTo(6)?.error as { code: number }).code, -32602);
+  assert.equal((server.responseTo(5)?.error as { code: number })?.code, -32601);
+  assert.equal((server.responseTo(6)?.error as { code: number })?.code, -32602);
   assert.equal(events.some((e) => e.kind === "request"), false);
   assert.equal(events.some((e) => e.kind === "exited"), false);
   await handle.stop();
@@ -1991,8 +1993,8 @@ test("two questions sharing a text are refused rather than silently collapsed", 
   // Codex can read and re-ask differently.
   assert.equal(events.some((event) => event.kind === "request"), false);
   const refusal = server.responseTo(13);
-  assert.equal((refusal?.error as { code: number }).code, -32602);
-  assert.match((refusal?.error as { message: string }).message, /share the text "Which branch\?"/);
+  assert.equal((refusal?.error as { code: number })?.code, -32602);
+  assert.match((refusal?.error as { message: string })?.message, /share the text "Which branch\?"/);
   await handle.stop();
   await drained;
 });
@@ -2024,9 +2026,9 @@ test("a secret question is refused explicitly instead of rendered as ordinary te
   await settle();
   assert.equal(events.some((event) => event.kind === "request"), false);
   const response = server.responseTo(12);
-  assert.equal((response?.error as { code: number }).code, -32602);
+  assert.equal((response?.error as { code: number })?.code, -32602);
   assert.match(
-    (response?.error as { message: string }).message,
+    (response?.error as { message: string })?.message,
     /secret question "Enter the deployment password" cannot be shown safely/,
   );
   await handle.stop();

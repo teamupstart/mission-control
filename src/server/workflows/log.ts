@@ -27,6 +27,15 @@ export type WorkflowLogFields = Partial<
 >;
 const WORKFLOW_LOG_FIELD_SET = new Set<string>(WORKFLOW_LOG_FIELDS);
 
+/** Select a diagnostic code or class without reading a potentially sensitive message. */
+export function workflowErrorCode(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown";
+  if ("code" in error && (typeof error.code === "string" || typeof error.code === "number")) {
+    return String(error.code);
+  }
+  return error.name;
+}
+
 function bounded(value: string): string {
   return value
     .replace(/[\u0000-\u001f\u007f]/g, " ")

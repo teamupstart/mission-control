@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitInfo, mainRepoRoot, worktreeRepositoryIdentity } from "../src/server/util/git.ts";
 import {
@@ -11,13 +10,14 @@ import {
   readWorktreePoolMarker,
 } from "../src/server/worktrees/marker.ts";
 import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Build a repo whose main checkout has a `.git` dir and a linked worktree whose
  * `.git` is a file - the treehouse/dispatch shape - and return both dirs.
  */
 function makeRepoWithWorktree(): { main: string; worktree: string } {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "git-wt-")));
+  const root = realpathSync(tempDir("git-wt-"));
   const main = join(root, "main");
   const gitDir = join(main, ".git");
   mkdirSync(gitDir, { recursive: true });
@@ -71,7 +71,7 @@ test("mainRepoRoot is the checkout itself for a normal clone, and null outside a
   const { main } = makeRepoWithWorktree();
   assert.equal(mainRepoRoot(main), main);
   assert.equal(mainRepoRoot(join(main, "packages", "app")), main);
-  assert.equal(mainRepoRoot(realpathSync(mkdtempSync(join(tmpdir(), "git-norepo-")))), null);
+  assert.equal(mainRepoRoot(realpathSync(tempDir("git-norepo-"))), null);
   assert.equal(mainRepoRoot(null), null);
 });
 
@@ -85,7 +85,7 @@ test("gitInfo reports the worktree root from a nested subdir", () => {
 });
 
 test("gitInfo reports a detached HEAD as being on no branch, but still in its repo", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "git-det-")));
+  const root = realpathSync(tempDir("git-det-"));
   const gitDir = join(root, ".git");
   mkdirSync(gitDir, { recursive: true });
   writeFileSync(join(gitDir, "HEAD"), "06a99e5b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f\n");
@@ -98,7 +98,7 @@ test("gitInfo reports a detached HEAD as being on no branch, but still in its re
 });
 
 test("gitInfo returns nulls for a non-repo dir", () => {
-  const root = mkdtempSync(join(tmpdir(), "git-none-"));
+  const root = tempDir("git-none-");
   assert.deepEqual(gitInfo(root), { branch: null, root: null, repoRoot: null });
 });
 
@@ -109,7 +109,7 @@ test("gitInfo returns nulls for a non-repo dir", () => {
  * Foreman's allowlist, that would silently clear every sibling repo sitting next to it.
  */
 test("gitInfo reports a bare repo as its own root, never its parent directory", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "git-bare-")));
+  const root = realpathSync(tempDir("git-bare-"));
   const bare = join(root, "demo.git");
   mkdirSync(bare, { recursive: true });
   writeFileSync(join(bare, "HEAD"), "ref: refs/heads/main\n");
@@ -157,14 +157,14 @@ test("two clones of one remote never share native pool identity", () => {
 });
 
 test("native identity uses a bare repository itself as its owner", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-bare-")));
+  const root = realpathSync(tempDir("mission-native-bare-"));
   const bare = join(root, "repo.git");
   execFileSync("git", ["init", "-q", "--bare", bare]);
   assert.equal(worktreeRepositoryIdentity(bare, join(root, "pools"))?.mainCheckoutRoot, bare);
 });
 
 test("the native pool marker is discoverable from a checkout path without SQLite", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-marker-")));
+  const root = realpathSync(tempDir("mission-native-marker-"));
   const pool = join(root, "pool");
   const checkout = join(pool, "1", "repo", "packages", "app");
   mkdirSync(checkout, { recursive: true });
@@ -180,7 +180,7 @@ test("the native pool marker is discoverable from a checkout path without SQLite
 });
 
 test("concurrent native pool marker creation never exposes incomplete marker bytes", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-marker-race-")));
+  const root = realpathSync(tempDir("mission-native-marker-race-"));
   const pool = join(root, "pool");
   const results = await Promise.allSettled(
     Array.from({ length: 256 }, () => ensureWorktreePoolMarker(pool, "pool-identity-race")),
@@ -196,7 +196,7 @@ test("concurrent native pool marker creation never exposes incomplete marker byt
 });
 
 test("the native pool marker refuses a symlinked pool root", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-native-marker-link-")));
+  const root = realpathSync(tempDir("mission-native-marker-link-"));
   const target = join(root, "somebody-elses-directory");
   const pool = join(root, "pool");
   mkdirSync(target);

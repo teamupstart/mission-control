@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A dispatch that never started, from the record the dispatcher writes to the routes that act
 // on it. What is at stake is the failure the operator could not see: the placeholder tile left
@@ -20,7 +20,7 @@ import type { QueueManager } from "../src/server/queue.ts";
 //  - the record is cleared by the next attempt and answered when the same work later starts;
 //  - one reason is one report, and the report's facts are built by the daemon.
 
-const home = mkdtempSync(join(tmpdir(), "mission-launch-failure-"));
+const home = tempDir("mission-launch-failure-");
 process.env.HARNESS_HOME = home;
 // A binary that exists, so bin resolution is not what fails the dispatches below.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
@@ -369,6 +369,10 @@ test("Retry dispatches a backlog kind as the same task, files a chat again, and 
   const ship = await post("/api/launch-failures/retry", { taskId: "ship-f" });
   assert.equal(ship.status, 200, JSON.stringify(ship.body));
   assert.equal((ship.body.task as Task).id, "ship-f");
+  // Both fixtures predate the work unit column. The retried ship is the same row, given its
+  // id by the dispatch; the chat is given one when its replacement inherits from it.
+  assert.ok(registry.getTask("ship-f")!.workUnitId);
+  assert.equal(registry.getTask("ship-f")!.workUnitId, db.getTask("ship-f")!.workUnitId);
 
   const chat = await post("/api/launch-failures/retry", { taskId: "chat-f" });
   assert.equal(chat.status, 200, JSON.stringify(chat.body));
@@ -377,6 +381,9 @@ test("Retry dispatches a backlog kind as the same task, files a chat again, and 
   assert.equal(clone.kind, "chat");
   assert.equal(clone.intent, "Talk it over");
   assert.equal(lf.launchWorkKey(clone), lf.launchWorkKey(registry.getTask("chat-f")!), "the same work, so its start answers the failure");
+  assert.ok(clone.workUnitId, "the replacement has a work unit");
+  assert.equal(clone.workUnitId, registry.getTask("chat-f")!.workUnitId, "the same work, so the same work unit");
+  assert.equal(db.getTask("chat-f")!.workUnitId, clone.workUnitId, "the source's id was saved, not only shown");
 
   assert.deepEqual(dispatched, ["ship-f", clone.id]);
   const resident = await post("/api/launch-failures/retry", { taskId: "w1" });

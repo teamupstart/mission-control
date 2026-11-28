@@ -2,11 +2,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AdvisorChoice, Session } from "@shared/types.ts";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../agent-subprocess-env.ts";
+import { workUnitEnv } from "../agent-work-unit.ts";
 import { STATE_DIR, resumeGuardPath } from "../config.ts";
 import { missionToolsAvailability } from "../mission-tools.ts";
 import { MISSION_MCP_TOOLS, missionMcpDescriptor, resolveMissionMcpRuntime, verifyMissionMcpTools,
   type MissionMcpDescriptor, type MissionMcpTool } from "../mission-mcp.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
+import type { NamedAgentEnvironment } from "../executables/named-variable.ts";
 import { shellCommand } from "../terminal/shell.ts";
 import { run } from "../util/exec.ts";
 import { LAUNCH_SCRIPT_FILE } from "../terminal/launch-process.ts";
@@ -16,6 +18,7 @@ import { harnessFor, resumeArgvFor } from "./index.ts";
 
 export interface ResumeContext {
   managed: boolean;
+  resolveNamedEnvironment?: (launchHome: string) => Promise<NamedAgentEnvironment | undefined>;
   requiredTools: readonly MissionMcpTool[];
   extraDirs: readonly string[];
   /**
@@ -24,6 +27,12 @@ export interface ResumeContext {
    * a terminal dispatch renders it. Omitted or null inherits.
    */
   advisorModel?: AdvisorChoice | null;
+  /**
+   * This resume's one work unit decision (`launchWorkUnitId`), made by the owner that resolved
+   * the task. The resumed agent gets it as `WORK_UNIT_ID`, and the registry records it when the
+   * agent appears. Omitted or null resumes with none.
+   */
+  workUnitId?: string | null;
 }
 /**
  * What a managed terminal resume reads of the conversation it reopens - and nothing else, so
@@ -33,7 +42,7 @@ export interface ResumeContext {
 export type ResumeSource = Pick<Session, "id" | "agent" | "agentSessionId" | "cwd" | "permissionMode" | "runtime">
   & { meta?: { modelId?: string | null } | null };
 
-export interface PreparedResume {
+export interface PreparedResume extends Pick<ResumeContext, "resolveNamedEnvironment"> {
   cwd: string;
   argv: string[];
   wrappedArgv: string[];
@@ -42,7 +51,11 @@ export interface PreparedResume {
   requiredTools: readonly MissionMcpTool[];
   descriptor: MissionMcpDescriptor | null;
   instrumented: boolean;
-  beginLaunch(): void;
+  /** The work unit the prepared environment carries, or null: the resume's one decision. */
+  workUnitId: string | null;
+  /** The note key the resumed agent binds to: the conversation's native id. */
+  conversationKey: string;
+  beginLaunch(startedAt?: number): void;
   dispose(): boolean;
 }
 const preparing = new Set<string>();
@@ -127,7 +140,9 @@ export async function prepareTerminalResume(session: ResumeSource, context: Resu
       ? { args: harness.advisor.launchArgs(context.advisorModel), env: harness.advisor.launchEnv(context.advisorModel) }
       : { args: [], env: {} };
     argv.push(...advisor.args);
-    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd, extraEnv: advisor.env });
+    const workUnitId = context.workUnitId ?? null;
+    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd,
+      extraEnv: { ...advisor.env, ...workUnitEnv(workUnitId) } });
     dropPaneIdentityEnv(env);
     delete env.MISSION_SESSION_ID;
     env.MISSION_AGENT_SESSION_ID = session.agentSessionId;
@@ -136,9 +151,10 @@ export async function prepareTerminalResume(session: ResumeSource, context: Resu
     // This tiny shell holds no config or credential. The guard claims before reading either.
     const command = resumeGuardArgv(runtime.command, guard, lease);
     writeFileSync(wrapper, `#!/bin/sh\n${runtime.env.ELECTRON_RUN_AS_NODE ? "export ELECTRON_RUN_AS_NODE=1\n" : ""}exec ${shellCommand(command)}\n`, { mode: 0o700 });
-    return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper], stateHome: lease.home,
-      lease, descriptor, requiredTools, instrumented, dispose,
-      beginLaunch: () => { beginResumeLaunch(lease); preparing.delete(lease.id); } };
+    return { cwd: session.cwd, argv, wrappedArgv: [FIXED_OS_EXECUTABLES.sh, wrapper],
+      resolveNamedEnvironment: context.resolveNamedEnvironment, stateHome: lease.home,
+      lease, descriptor, requiredTools, instrumented, workUnitId, conversationKey: session.agentSessionId, dispose,
+      beginLaunch: (startedAt) => { beginResumeLaunch(lease, startedAt); preparing.delete(lease.id); } };
   } catch (error) {
     dispose();
     throw error;

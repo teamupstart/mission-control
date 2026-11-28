@@ -12,7 +12,7 @@ import {
   workflowPublishBlocked,
   workflowSavePreflight,
 } from "../src/web/workflows/useWorkflowDraft.ts";
-import type { LlmState } from "../src/web/useLlm.ts";
+
 import type { WorkflowDefinition } from "../src/shared/workflow.ts";
 
 // What is at stake: an operator opening the shipped workflow has to be told why it will not
@@ -20,14 +20,6 @@ import type { WorkflowDefinition } from "../src/shared/workflow.ts";
 // still looks live is a button whose only outcome is an error banner - and a sentence naming
 // the wrong cause ("Archived", about a workflow nobody archived) sends them looking for a
 // control that would not have helped. Duplicate is the way forward and has to say so.
-
-const llm: LlmState = {
-  config: null,
-  status: null,
-  personaDefaults: null,
-  error: null,
-  update: async () => {},
-};
 
 const summary = (overrides: Partial<WorkflowSummary> = {}): WorkflowSummary => ({
   id: "builtin-workflow:no-mistakes-review",

@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-command-artifacts-"));
+const home = tempDir("mission-command-artifacts-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

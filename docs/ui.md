@@ -622,7 +622,7 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
    and node palette.
 10. **Draft and published** spotlights the Pipeline/Graph toggle, then the **disabled**
     Publish button - the draft-versus-published lesson without a draft existing.
-11. **No-Mistakes Review** walks the six stages on the authored pipeline strip, including optional CodeRabbit.
+11. **No-Mistakes Review** walks the seven stages on the authored pipeline strip, including optional CodeRabbit and the Local Inspector.
 12. **Binding it** spotlights **Bind to a session…** and names the postures version 10 ships.
 13. **A run, moving** opens `#/runs/:id` on one run that has already ended and spotlights its
     pipeline strip, then its review worklist.
@@ -1200,9 +1200,10 @@ available:
   its turn, and the run is off working checks, judges and reviewers before it sends the next
   round. The runtime reading is right - the agent really is doing nothing - but it is not
   *free*, and the column used to count it as capacity. It now sorts below a **held by a
-  workflow** rule, under its own count: the head reads **N free · M held** instead of one
-  number that means neither, and each held tile wears a purple spine and a **held** tag so it
-  stays legible once the rule has scrolled away. The tile's
+  workflow** rule. On the Board, the Free and Held sections each display their count. Each
+  held tile wears a purple spine and a **held** tag so it stays legible once the rule has
+  scrolled away. The session is exempt from stall detection while the workflow owns the next
+  move. The tile's
   [active-rung preview](workflows.md#watching-a-run) already says *which* run and *where
   it is*; the rule answers the question that preview cannot, which is whether you may give this
   agent anything. Held-ness is a join, not a session state - a run whose status has reached
@@ -1213,6 +1214,56 @@ available:
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
+- **Counts on Idle rail sections (preview).** Open an Idle session from the board to see
+  the session total in the sidebar header. Each status heading shows its own count and
+  expands or collapses its rows. The first section and the open session's section start
+  expanded. Collapsing a section keeps the conversation open and skips its hidden rows
+  in fleet keyboard navigation. Enable **Counts on Idle rail sections** under
+  **Settings > Feature flags**.
+- **The idle column groups agents awaiting a background process.** While the **Awaiting
+  background work** preview is on, a session that
+  [declared a wait](sessions.md#sessions-awaiting-a-background-process-preview) on its own CI, build,
+  monitor or wakeup sorts under an **awaiting background work** rule at the top of Idle, soonest
+  due first, after pinned residents and before free and held agents. The section keeps that
+  order with **Group by repository** on: its cards are not framed by repository or by run. The
+  Board's Free section shows its count, and the **Console** rail header shows the Awaiting and
+  Free counts. A pinned resident with a declared wait stays ahead of the other pinned residents
+  and counts as awaiting. In the Conversation tab, Tab from the conversation reaches the band's
+  **Open**, **Clear** and **Details** before the tab strip; a link
+  inside a closed Details is not on that path. Its card draws a deadline track: what it waits
+  for, the due time, and a bar from when it declared the wait to when it is due. Once the
+  deadline passes the card reads **Overdue** in amber and leaves the section for plain Idle; it
+  never moves to **needs you**. The **Console** rail draws the same rule and a short track beside
+  the row's state.
+- **The idle column has a Stalled section (preview).** While the **Stalled section in Idle**
+  preview (`idle-stalled`) is on, a session the daemon's
+  [stuck rules](attention-and-alerts.md#stuck-sessions) flag as **Idle with work open** or
+  **Workflow run parked** sorts under a **stalled** rule between the free agents and the held
+  ones, longest stalled first, and is no longer a row in the inbox. Free stays first because it is
+  what you dispatch to; stalled comes next because it is what you act on. The Board's Stalled
+  section shows its count, and the **Console** rail header shows it alongside Free and Held. Each
+  stalled card wears a yellow spine and a **stalled** tag, and a short fact sheet: the open
+  **Task** and any open **Queue** items, or for a parked run what it is **Waiting** on and the **Missing** step,
+  then the session's **Last** activity line and Foreman's note when it has one. Below it are the
+  actions for the open work. **Nudge** asks the agent for a status update. **Message…** opens
+  the task session's composer, **Mark done** opens the session's **Complete** dialog (the one its
+  own Complete button opens, so it takes an outcome note and offers **Unblock dependents** and a
+  retro when one is worth running, and completing it closes the session), and **Open queue** opens its work queue.
+  A parked run offers **Open run** and the available fix, such as **Resubmit**, **Tell it to push** or
+  **Continue**. When the run needs a new pushed head and no unpushed commit is reported,
+  **Open run** shows the waiting review, and **Message…** opens the reachable session’s composer
+  so you can ask the agent to prepare a commit. Older daemons that supply only a reason
+  still offer **Message…** for reachable sessions and **Open run** when they identify a parked run.
+  Every card offers **Dismiss**, which returns it to free or held until its stall changes. A dismissal here and on the inbox's
+  Stuck row is one dismissal. Stalled wins over held, as blocked does: a parked run's session is
+  stalled because its run did not move it. It also wins over a resident's pin: a pinned resident
+  with an idle stall leaves the top of the column for the Stalled section, and leaves the inbox.
+  It wins over a declared wait the same way: a stalled session leaves the Awaiting section for
+  Stalled, and its card still draws the wait's deadline track. A resident shown in the residents drawer is not in the Idle column, so its stall stays an inbox
+  row. The section is not framed by repository or by run. The Console
+  rail marks the row **stalled** and shows the first fact beneath the session name. Selecting that row or
+  opening the Board card shows the full fact sheet and actions in the session detail. **Silent while working** and **Foreman escalation unanswered** stay inbox
+  rows, because neither describes a quiet idle session. With the preview off, nothing changes.
 - **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
   has an outline and soft glow in its profile's color and a short label chip, and, when its
   profile pins it, it sorts first in its column ahead of free and held sessions. The Console rail
@@ -1235,16 +1286,19 @@ available:
   minimum width, so widening the Backlog never squeezes the column holding the live agents
   down to nothing. It's a gesture rather than a setting: it isn't persisted, and opening a
   session drills in exactly as it did before.
-- **The filter box (<kbd>/</kbd>) narrows the whole board, backlog included.** A query is a
+- **The filter box (<kbd>/</kbd>) narrows the fleet, including backlog and resident cards.** A query is a
   case-insensitive match against everything a card says: for a session, its title, goal,
   status, agent, runtime (such as **Agent SDK**), repository and checkout (by name and by full
   path), branch, model, reasoning effort, permission mode, context meter, cost, last-seen time,
   task kind, blocker and pull request; for a backlog task, its title, intent, labels,
   repositories, agent, kind, priority, model, effort, status, autopilot switch and
-  "autopilot will skip this" line, and added time. A fact is searched even while its card
-  item is hidden in **Settings → Display**. The one thing not searched is the live activity
-  line ("running Bash") - what the session is doing this second rather than what the card is
-  about. Every word of the query must appear, each in any field, so `codex mission-control`
+  "autopilot will skip this" line, and added time. Resident cards on the Board also match
+  their chip, activity, loop status, and the labels and alerts in Resident controls.
+  The [Residents drawer](residents.md#the-residents-drawer)
+  matches live cards by their text, including the latest message and pending questions. A fact is
+  searched even while its card item is hidden in **Settings → Display**. Other session cards
+  exclude the live activity ticker ("running Bash"). Every word of the query must appear, each in
+  any field, so `codex mission-control`
   finds Codex cards in that repository. Because the backlog is searched too, `ghostty` finds the
   queued *P5: Ghostty terminal emulator adapter* whether or not any live session matches, and
   the board stays on screen to show it. Console draws no tasks, so there a query
@@ -1405,6 +1459,23 @@ including in a conversation that was open while the agent launched. A descriptio
 of the tray leaves its call behind, so a description could land on another agent's launch. An agent no call in the transcript is
 recorded as launching reads **Launch not in transcript**. A search reads as far back as the
 transcript goes; it stops early only if loading older messages fails or stops moving back through the file.
+
+## Resident name with call sign
+
+With the **Resident names on cards** preview (`resident-card-names`) on, **Settings → Display →
+Board card** offers the **Resident name with call sign** checkboxes. What they do to a resident's
+card is described under [Finding a resident](residents.md#finding-a-resident). The section's
+preview card answers to the call sign "Scout" while the preview is on, so it redraws as you check
+a style; it draws Expanding chip already expanded, because a preview cannot be pointed at.
+
+## Call sign on Always-on cards
+
+**Settings → Display → Board card → Call sign** chooses how a session card shows the name voice
+answers to while Always-on is listening: **Subtitle line** (the default), **Trailing badge**,
+**Leading chip**, **Edge tab** or **Off**. The card keeps the session's title in every style. It is
+offered while the Voice addressing preview is on, and a second preview card redraws as you pick.
+Push-to-talk titles a card by its call sign whatever this says. See
+[Call signs on Always-on cards](voice.md#call-signs-on-always-on-cards).
 
 ## Chip and popover
 
@@ -2065,10 +2136,10 @@ names the layouts where a shortcut's target exists:
 | <kbd>1</kbd>…<kbd>9</kbd> | Take that position in Kind, Harness or After work. Digits type into the filter during Repo | Guided dispatch |
 | <kbd>Backspace</kbd> | Delete a Repo-filter character, or go back one question from a later step | Guided dispatch |
 | <kbd>Tab</kbd> | Leave the guided pass, keep every answer and focus the task box | Guided dispatch |
-| <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
+| <kbd>/</kbd> | Focus the filter box (sessions, resident cards, and the Board's backlog), or **Scouts** search while on that page | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions, live residents and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
-| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. With no fleet session asking, it addresses the first resident in the Residents drawer's **Needs you** group, including one that is also a row in the **Needs you** rail: its review queue, or its conversation with the cursor in the reply box when it needs you without a review. While the drawer is on screen, its residents count only in that second step, even when one is the selected session, so a fleet session's review always comes first. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge. With keycaps on, the Board's **Needs you** column prints it beside its name while a review is waiting there, and the drawer's **Needs you** group prints it whenever the group is shown | Any session with a pending review, or a resident in the drawer's Needs you group |
+| <kbd>e</kbd> | Open the [attention inbox](attention-and-alerts.md) from the Board when **to answer** is shown. From an open conversation, start at its first pending question in the inbox, or open the inbox at the top if that conversation has no question there. When the inbox shortcut is unavailable, the key still reaches the session review queue or a resident in the drawer that needs you. | Board with items to answer, a conversation with inbox items available, or a session or resident waiting for input |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the open conversation up or down, from either the session rail or the reader. Conversation claims <kbd>d</kbd> before the global Delete action | Console or Board drill-in with Conversation open |
@@ -2188,7 +2259,7 @@ editor's four rows above, the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</
 and the Diff reader's <kbd>m</kbd> are in-surface keys rather than fleet chords - they only exist while their surface is active - so
 they are fixed for the same reason. The Files tab's <kbd>e</kbd> does overlap the review chord, and
 wins while that tab is open: an in-surface key is claimed on the capture phase, so the surface you
-are looking at keeps its own letter. Rebind **Open reviews** if you would rather have it there.
+are looking at keeps its own letter. Rebind **Open attention inbox** to use a different key.
 Comment mode takes <kbd>m</kbd> and shadows nothing. The mnemonic letter was <kbd>c</kbd>, which
 completes the selected session's task - and while shadowing a fleet chord in a surface is exactly
 what <kbd>p</kbd> and <kbd>e</kbd> already do, both of those shadow actions you can take again a
@@ -2217,3 +2288,16 @@ are the first thing that row gives up to stay on one line, and the chords keep w
 them. Small icon-only controls (such as the ⚙ gear) never
 carry one - a keycap would be larger than the icon - and name their key in the tooltip
 instead.
+
+## Voice in the dashboard
+
+With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice lets you record a system-wide mute hotkey and enable Auto-mute on calls. If macOS refuses a shortcut, the warning names the previous shortcut that still works. If no shortcut was registered, the warning reads “No hotkey is in force.” Hold the shortcut during call auto-mute to talk. Under **Spoken replies**, the Voice picker names the voice that will speak or explains how to enable playback. Play sample auditions that voice. Selecting a Mission Control voice or pressing Download fetches the shared voice model. The panel also offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
+
+### Voice confirmation cards
+
+With the Voice preview enabled, routed speech appears in the selected confirmation placement. Browsers use the corner toast. Click a candidate
+row or say its name to resolve an ambiguous address. A stopped resident can be relaunched
+from its card. A finished session opens a follow-up dispatch on its repository. A held card
+opens the blocking question or recalls the queued words. Settings > Voice > Confirmation card
+previews all three placements. See [Voice addressing](voice.md) for the placement fallback
+and cancel window.

@@ -1,9 +1,9 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-telemetry-"));
+import { tempDir } from "./temp-root.mjs";
+const home = tempDir("mission-workflow-telemetry-");
 process.env.MISSION_HOME = home;
 const { openDb, closeDb } = await import("../src/server/db.ts");
 const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
@@ -242,6 +242,38 @@ test("author context freezes at submission and does not adopt later pending effo
     assert.equal(facts.reviewer_model, "other");
     assert.notEqual(facts.author_model, "new-default");
     assert.equal(events("workflow.node").findLast((e) => e.refs.attempt_id === "attributed")!.refs.session_id, "session-author");
+  } finally { detach(); resetSessionTelemetryForTesting(); }
+});
+
+test("a workflow span exports the author session's work unit raw in both lanes, and none without a launch record", async () => {
+  const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
+  resetSessionTelemetryForTesting();
+  let publish: (event: { type: string } & Record<string, unknown>) => void = () => {};
+  const detach = attachSessionTelemetry({ subscribe(listener) { publish = listener; return () => {}; }, getTask: () => undefined });
+  const WU = "wu_01JD00000000000000000000WF";
+  try {
+    // Two authors: one whose agent was started with a work unit, one started with none.
+    for (const [id, launchWorkUnitId] of [["wu-author", WU], ["no-record", null]] as const) {
+      publish({ type: "session_upsert", session: { id: "session-" + id, agent: "claude", runtime: "sdk", state: "idle",
+        terminals: [], agentSessionId: "conversation-" + id, pendingEffort: null, launchWorkUnitId,
+        meta: { modelId: "claude-opus-5", thinkingLevel: "medium", nativeEffort: null, source: "driver" } } });
+      seedTelemetryWorkflow(id);
+    }
+    runProjectionPass();
+    assert.deepEqual(events("workflow.submission").map((e) => [e.refs.session_id, e.refs.work_unit_id ?? null]), [
+      ["session-wu-author", WU],
+      ["session-no-record", null],
+    ]);
+    for (const profile of ["user", "product"] as const) {
+      const spans = (openDb().prepare("SELECT payload_json FROM telemetry_batches WHERE profile = ? AND signal = 'traces'")
+        .all(profile) as Array<{ payload_json: string }>)
+        .flatMap((row) => (JSON.parse(row.payload_json) as { spans: Array<{ name: string; attributes: Record<string, unknown> }> }).spans)
+        .filter((span) => span.name === "mission.workflow.submission");
+      assert.equal(spans.length, 2, profile + ": both submissions exported");
+      assert.deepEqual(spans.map((span) => span.attributes.work_unit_id ?? null).sort(), [WU, null].sort(),
+        profile + ": the raw id on the attributed author's span only");
+      for (const span of spans) assert.equal("mission.ref.work_unit_id" in span.attributes, false, profile + ": never hashed");
+    }
   } finally { detach(); resetSessionTelemetryForTesting(); }
 });
 

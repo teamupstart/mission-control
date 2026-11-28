@@ -13,6 +13,7 @@ import {
   grantFailureMessage,
   grantPatch,
   mergeBlindSpots,
+  mergeGrantTitle,
   planBatchAdd,
   trustRows,
   type ChecksArmedReading,
@@ -25,6 +26,7 @@ import { useTourTargetRef } from "../tour/target-context.tsx";
 import { filterRepos, repoOptionLabels } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { SessionSettingsAccessToggle } from "./SessionSettingsAccessToggle.tsx";
 
 // Trust: one repository x grant matrix over the four existing allowlists.
 //
@@ -100,7 +102,6 @@ const COLUMNS = [
     key: "merge",
     label: "YOLO merges",
     short: "YOLO merges",
-    title: "Clean, soaked PRs in this repo merge themselves to the base branch.",
   },
 ] as const;
 
@@ -229,6 +230,9 @@ export function TrustPanel({
     staged,
   });
   const blindSpots = mergeBlindSpots(rows, yolo);
+  const localReview = inspector.config?.localReview === true;
+  const columnTitle = (col: (typeof COLUMNS)[number]): string =>
+    col.key === "merge" ? mergeGrantTitle(localReview) : col.title;
   const blindRepos = blindSpots.map((r) => r.repo);
   const checkGrants = checkExecutionGrants(rows, checksArmed);
   const checkRepos = checkGrants.map((r) => r.repo);
@@ -260,7 +264,7 @@ export function TrustPanel({
     } else if (plan.subsystem === "workflows") {
       const config = workflowConfigRef.current;
       if (!config) return;
-      ok = await workflows.update({ ...config, repoAllowlist: plan.repoAllowlist });
+      ok = await workflows.update({ repoAllowlist: plan.repoAllowlist });
     } else if (plan.subsystem === "inspector") {
       if (!inspector.config) return;
       ok = await inspector.update({ repoAllowlist: plan.repoAllowlist });
@@ -283,7 +287,6 @@ export function TrustPanel({
     }
     if (row.workflows && workflowConfigRef.current) {
       void workflows.update({
-        ...workflowConfigRef.current,
         repoAllowlist: workflowsRef.current.filter((p) => p !== row.repo),
       });
     }
@@ -326,7 +329,7 @@ export function TrustPanel({
   function disarmChecks(): void {
     const config = workflowConfigRef.current;
     if (!config) return;
-    void workflows.update({ ...config, checksEnabled: false });
+    void workflows.update({ checksEnabled: false });
   }
 
   /**
@@ -363,7 +366,7 @@ export function TrustPanel({
       const written = await Promise.all([
         foreman.config ? foreman.update({ repoAllowlist: patch.foreman }) : false,
         workflowConfig
-          ? workflows.update({ ...workflowConfig, repoAllowlist: patch.workflows })
+          ? workflows.update({ repoAllowlist: patch.workflows })
           : false,
         inspector.config ? inspector.update({ repoAllowlist: patch.inspector }) : false,
       ]);
@@ -424,7 +427,7 @@ export function TrustPanel({
     const marker = trappedPill ? " †" : arms ? " ‡" : "";
     return (
       <div key={col.key} className={`trust-c${trapCell || arms ? " is-trap" : ""}`}>
-        <Tooltip label={col.title}>
+        <Tooltip label={columnTitle(col)}>
           <button
             type="button"
             className={`settings-grant ${on ? "is-on" : "is-off"}${
@@ -481,6 +484,7 @@ export function TrustPanel({
 
   return (
     <section className="settings-section trust-section">
+      <SessionSettingsAccessToggle />
       <p className="settings-hint">
         Every grant that lets Mission Control act outside this app, in one table. Each column
         is its subsystem's own allowlist - clicking a cell writes there, and the Foreman,
@@ -645,7 +649,7 @@ export function TrustPanel({
           <div className="trust-grid" role="table" aria-label="Repository trust grants">
             <div className="trust-h trust-h-repo">Repository</div>
             {COLUMNS.map((c) => (
-              <Tooltip key={c.key} label={`${c.label}: ${c.title}`}>
+              <Tooltip key={c.key} label={`${c.label}: ${columnTitle(c)}`}>
                 <div className="trust-h">{c.short}</div>
               </Tooltip>
             ))}

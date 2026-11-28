@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: a comparison is a long provider call, and a daemon that exits in the middle of
@@ -14,7 +14,7 @@ import { join } from "node:path";
  * completed untouched. Every effect is derived from SQLite plus current Task state.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-eval-recovery-"));
+const home = tempDir("mission-ensemble-eval-recovery-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -164,7 +164,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 /** Launch and submit every member. Does NOT wait for the review to settle. */
 async function submitMembers(engine: Engine, gateway: Gateway, store: Store, runId: string): Promise<void> {
   await engine.launch(runId);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     const memberId = store.listAttempts(runId).find((a) => a.taskId === dispatch.taskId)!.memberId;
     gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await engine.wake(runId);

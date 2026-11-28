@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import {
@@ -20,7 +19,7 @@ import type {
 // the token the daemon checks (config.ts -> shared/harness-runtime.mjs) must be
 // the same one a client reads from the same MISSION_HOME. If those two drifted,
 // every write below would 401.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-http-"));
+process.env.MISSION_HOME = tempDir("mission-http-");
 
 const {
   openDb,
@@ -41,6 +40,7 @@ const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/stor
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InspectorCommentStatus, Session, Task, WorkItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 openDb();
 const TOKEN = ensureToken();
@@ -461,6 +461,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
   // only the route can enforce it - hence the wiring check here.
   registry.upsertTask({
     id: "stale-xyzzy",
+    workUnitId: null,
     title: "T",
     intent: "done, awaiting reclaim",
     kind: "ship",
@@ -1770,7 +1771,7 @@ test("the standards route reads the repo's contract from the git TOPLEVEL, not t
   // package (the ordinary case) used to look for the root AGENTS.md one level down,
   // find nothing, and hand the verifier an empty bundle with `truncated: false`.
   // Nothing said so: it judged against the repo's main contract without it.
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-standards-")));
+  const repo = realpathSync(tempDir("mission-standards-"));
   const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
   git("init", "-q");
   mkdirSync(join(repo, "packages", "app", "src"), { recursive: true });
@@ -1815,7 +1816,7 @@ test("the standards request carries its paths in a BODY, so a big refactor still
   // bundle, and `truncated: false` means the prompt doesn't even print its "some
   // standards docs were omitted" line - so the verifier judges the item against the
   // repo's contract having read NONE of it, and nothing says so.
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-standards-big-")));
+  const repo = realpathSync(tempDir("mission-standards-big-"));
   execFileSync("git", ["-C", repo, "init", "-q"], { stdio: "pipe" });
   writeFileSync(join(repo, "AGENTS.md"), "# the repo's contract");
 
@@ -2050,7 +2051,7 @@ test("a /clear orphans the queue, and re-attaching it is offered where it can su
 
   // The session identifies itself as agent session "before-clear" and gets a queue.
   await hook("before-clear");
-  const item = await addItem("resume me");
+  await addItem("resume me");
   const stranded = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
   assert.equal(((await stranded.json()) as { noteKey: string }).noteKey, "before-clear");
 

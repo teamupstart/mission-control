@@ -1,10 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Provisioning a task that attaches more than one repository.
 //
@@ -17,7 +17,7 @@ import { seedGitRepo } from "./helpers/git-fixture.ts";
 // The other half is the promise that single-repo dispatch is untouched: slot 0's path is
 // asserted to be the exact legacy join, character for character.
 
-const home = mkdtempSync(join(tmpdir(), "mission-multirepo-provision-"));
+const home = tempDir("mission-multirepo-provision-");
 // Set before importing anything that resolves the state dir - WORKTREES_DIR hangs off it.
 process.env.HARNESS_HOME = join(home, "state");
 // A binary that exists, so bin resolution cannot be what fails. `resolveBinPath` runs at the
@@ -202,6 +202,7 @@ test("one tree failing to come back does not strand the others", async () => {
 
 const BASE_TASK = {
   id: "t1",
+  workUnitId: null,
   title: "Ship it",
   intent: "Rename the field everywhere.",
   kind: "ship" as const,

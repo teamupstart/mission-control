@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PaneDialog } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // How long a dialog nobody can read any more goes on being offered.
 //
@@ -20,7 +19,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // answers nobody. These pin the two ends of that: a pane still there but momentarily
 // unreadable keeps its dialog; a pane that is GONE loses it.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pane-staleness-"));
+const home = tempDir("mission-pane-staleness-");
 process.env.MISSION_HOME = home;
 
 // All value imports of server modules load AFTER the override: a static import above

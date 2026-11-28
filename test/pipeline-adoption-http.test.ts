@@ -9,14 +9,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { PipelineRun } from "../src/shared/pipeline.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-adoption-http-"));
+const home = tempDir("mission-pipeline-adoption-http-");
 process.env.MISSION_HOME = home;
 
 const { ensureToken } = await import("../src/server/auth.ts");

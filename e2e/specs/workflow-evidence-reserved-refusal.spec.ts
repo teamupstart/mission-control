@@ -154,7 +154,6 @@ async function capture(page: Page, name: string, target?: Locator): Promise<void
   await page.mouse.move(0, 0);
   if (target) await target.screenshot({ path: `${EVIDENCE}${name}.png`, animations: "disabled" });
   else await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-evidence-reserved-refusal/${name}.png`);
 }
 

@@ -1,8 +1,7 @@
 import { test, after } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-const home = mkdtempSync(join(tmpdir(), 'mission-dashboard-fixture-'));
+import { rmSync } from 'node:fs';
+import { tempDir } from "./temp-root.mjs";
+const home = tempDir('mission-dashboard-fixture-');
 process.env.MISSION_HOME = home;
 const { closeDb } = await import('../src/server/db.ts');
 const { seedDashboardFixture } = await import('./helpers/dashboard-telemetry.ts');

@@ -3,8 +3,7 @@
 // injected stand-ins, so nothing here starts a process or opens a socket.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
@@ -15,6 +14,7 @@ import {
   ShapingRequestSchema,
   ShapingResultSchema,
   SHAPING_SECTION_PREAMBLE,
+  SHAPING_SKILLS_RESERVE_BYTES,
   utf8Length,
   type Shaper,
   type ShapingConfig,
@@ -22,7 +22,9 @@ import {
 } from "../src/shared/shaping.ts";
 import { dryRunShaper, runScope, shapeTask, type ShapeTaskInput } from "../src/server/shaping/engine.ts";
 import { scrubResolved } from "../src/server/shaping/references.ts";
+import type { RoutedSkillResolver } from "../src/server/shaping/skills.ts";
 import { SHAPING_TRANSPORT_CALLS, type ShapingTransportCalls, type TransportContext, type TransportReply } from "../src/server/shaping/transports/index.ts";
+import { tempDir } from "./temp-root.mjs";
 
 type Handler = (request: ShapingRequest, shaper: Shaper, ctx: TransportContext) => Promise<TransportReply> | TransportReply;
 
@@ -65,14 +67,14 @@ test("with the flag off nothing is resolved or called", async () => {
     config: configWith([shaper("g", "gather")]), discovered: [], enabled: false,
     transports: transports(() => { calls++; return data({}); }),
   });
-  assert.deepEqual(result, { summary: null, section: "", entries: [] });
+  assert.deepEqual(result, { summary: null, section: "", entries: [], skills: [] });
   assert.equal(calls, 0);
 });
 
 test("with no shaper that applies the run is empty and nothing is called", async () => {
   let calls = 0;
   const off = ShapingConfigSchema.parse({ shapers: [shaper("g", "gather")] });
-  assert.deepEqual(await run(off, () => { calls++; return data({}); }), { summary: null, section: "", entries: [] });
+  assert.deepEqual(await run(off, () => { calls++; return data({}); }), { summary: null, section: "", entries: [], skills: [] });
   assert.equal(calls, 0);
 });
 
@@ -285,6 +287,22 @@ test("input.trace reaches every call of a run as ctx.trace unchanged, and appear
   const none: unknown[] = [];
   await run(config, (_request, _entry, ctx) => { none.push(ctx.trace); return data({ guidance: [] }); }, input(1));
   assert.deepEqual(none, [null, null], "no context is null, not undefined");
+});
+
+test("input.workUnitId reaches every call of a run as ctx.workUnitId, appears in no record, and an unsendable one is absent", async () => {
+  const config = configWith([shaper("g", "gather"), shaper("s", "select")]);
+  const seen: unknown[] = [];
+  const result = await run(config, (_request, _entry, ctx) => {
+    seen.push(ctx.workUnitId);
+    return data({ guidance: [{ id: "a", body: "b" }] });
+  }, input(2, { workUnitId: "wu_01JD5Z" }));
+  assert.deepEqual(seen, ["wu_01JD5Z", "wu_01JD5Z", "wu_01JD5Z", "wu_01JD5Z"], "two shapers, two repositories");
+  assert.equal(JSON.stringify(result).includes("wu_01JD5Z"), false);
+  for (const absent of [undefined, null, "", "two words", "line\nbreak", "x".repeat(257)]) {
+    const none: unknown[] = [];
+    await run(config, (_request, _entry, ctx) => { none.push(ctx.workUnitId); return data({ guidance: [] }); }, input(1, { workUnitId: absent }));
+    assert.deepEqual(none, [null, null], `${JSON.stringify(absent)} is absent`);
+  }
 });
 
 test("no NUL from a shaper reply reaches an entry, the section or a selector's request", async () => {
@@ -559,20 +577,23 @@ test("every outcome: ok, degraded, failed, timed_out, invalid and unavailable", 
   assert.equal(result.summary!.state, "degraded");
 });
 
-test("the placeholder transports answer unavailable, naming the transport, and the built-in needs a worktree", async (t) => {
-  const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "https://x.test/mcp" } } });
-  const http = remote("http");
+test("the built-in needs a worktree, and the remote shapers are reached through the real transports", async (t) => {
+  // Plain http to a host that is not loopback: the real transports refuse it before sending anything,
+  // so this reaches no network while still proving the registry routes to them.
+  const mcp = ShaperSchema.parse({ id: "mcp", label: "MCP", stage: "select", transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: "http://x.test/mcp" } } });
+  const http = ShaperSchema.parse({ id: "http", label: "HTTP", stage: "select", transport: { type: "http", url: "http://example.test/shape" } });
   const builtin = ShaperSchema.parse({ id: "files", label: "Files", stage: "gather", transport: { type: "builtin", builtin: "repository-files" } });
   // A worktree path this test controls and never creates, so the host's filesystem cannot answer for it.
-  const base = mkdtempSync(join(tmpdir(), "mission-shaping-absent-"));
+  const base = tempDir("mission-shaping-absent-");
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const absent = input(1);
   absent.context.repositories = absent.context.repositories.map((repo) => ({ ...repo, path: join(base, "billing-api") }));
   const result = await shapeTask(absent, { config: configWith([builtin, mcp, http]), discovered: [], enabled: true, transports: SHAPING_TRANSPORT_CALLS });
+  const refused = "The shaper's URL is plain http to a host that is not this machine, so no request was sent. Use https.";
   assert.deepEqual(result.summary!.shapers.map((entry) => [entry.id, entry.outcome, entry.reason]), [
     ["files", "unavailable", "The repository's worktree is not available on this machine."],
-    ["mcp", "unavailable", "The MCP transport is not available in this build yet."],
-    ["http", "unavailable", "The HTTP transport is not available in this build yet."],
+    ["mcp", "unavailable", refused],
+    ["http", "unavailable", refused],
   ]);
 });
 
@@ -638,7 +659,7 @@ test("every empty run is a fresh value, so a caller cannot change the next one",
   const first = await shapeTask(input(1), { config: configWith([]), discovered: [], enabled: false });
   first.entries.push({ shaperId: "x", label: "X", stage: "select", repo: "r", id: "leaked", title: null, path: null, body: "leaked", truncated: false, omittedBytes: 0 });
   const second = await shapeTask(input(1), { config: configWith([]), discovered: [], enabled: false });
-  assert.deepEqual(second, { summary: null, section: "", entries: [] });
+  assert.deepEqual(second, { summary: null, section: "", entries: [], skills: [] });
   assert.notEqual(second.entries, first.entries);
 });
 
@@ -802,4 +823,207 @@ test("a reply the transport produced in time is kept, though the engine reads it
   }, input(1));
   assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["ok"], "judged by when the transport produced it");
   assert.deepEqual(result.entries.map((entry) => entry.id), ["on-time"]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The route stage (FR-04 `route_skills`, D12 to D15)
+
+const router = (id: string, extra: Record<string, unknown> = {}) => ShaperSchema.parse({
+  id, label: id.toUpperCase(), stage: "route", transport: { type: "command", command: "/usr/bin/true" }, ...extra,
+});
+/** No name is in the catalog: every routed skill is announced as given, not verified (D15). */
+const noCatalog: RoutedSkillResolver = () => ({ catalog: false });
+const routeRun = (config: ShapingConfig, handler: Handler, taskInput = input(), resolveSkill: RoutedSkillResolver = noCatalog) =>
+  shapeTask(taskInput, { config, discovered: [], transports: transports(handler), enabled: true, resolveSkill });
+const skill = (name: string, point = "during", reason = `route/${name}`) => ({ name, lifecycle_point: point, reason_id: reason });
+
+test("route runs after select, and only a route request carries the selected guidance ids", async () => {
+  const config = configWith([shaper("g", "gather"), shaper("s", "select"), router("r")]);
+  const requests: ShapingRequest[] = [];
+  const result = await routeRun(config, (request) => {
+    requests.push(request);
+    if (request.stage === "select") {
+      return data({ guidance: [{ id: `idem-${request.context.target}`, body: "Charge once." }, { id: "shared", body: `In ${request.repo.name}.` }] });
+    }
+    if (request.stage === "route") return data({ skills: [skill("lint-fix")] });
+    return data({ repo: { facts: { language: "python" } } });
+  });
+  assert.deepEqual([...new Set(requests.map((request) => request.stage))], ["gather", "select", "route"]);
+  for (const request of requests.filter((entry) => entry.stage !== "route")) {
+    assert.equal("guidance" in request.context, false, `${request.stage} carries no guidance ids`);
+  }
+  const routes = requests.filter((request) => request.stage === "route");
+  assert.deepEqual(routes.map((request) => [request.context.target, request.context.guidance]), [
+    ["repo-01", [{ shaper: "s", id: "idem-repo-01" }, { shaper: "s", id: "shared" }]],
+    ["repo-02", [{ shaper: "s", id: "idem-repo-02" }, { shaper: "s", id: "shared" }]],
+  ], "each repository's own selected ids, ids only");
+  for (const request of routes) {
+    assert.equal(ShapingRequestSchema.safeParse(request).success, true);
+    assert.deepEqual(request.repo.facts, { language: "python" }, "a route request is the select request plus guidance");
+  }
+  // The task context first, then the skills, as one section.
+  assert.match(result.section, /^## Task context[\s\S]*\n\n## Skills for this task\n\n[\s\S]*- `\/lint-fix` - during the work: use this skill when it applies\.$/);
+  assert.deepEqual(result.skills, [{
+    name: "lint-fix", lifecyclePoint: "during", reasonId: "route/lint-fix", shaper: "r",
+    repositories: ["billing-api", "ledger"], state: "announced", verified: false, reason: null,
+  }]);
+  assert.deepEqual(result.summary?.skills, result.skills);
+  assert.equal(result.summary?.bytes, utf8Length(result.section));
+});
+
+test("a route request with nothing selected carries an empty guidance list", async () => {
+  const requests: ShapingRequest[] = [];
+  await routeRun(configWith([router("r")]), (request) => { requests.push(request); return data({ skills: [] }); }, input(1));
+  assert.deepEqual(requests.map((request) => request.context.guidance), [[]]);
+});
+
+test("a router with no time left is timed_out and never called", async () => {
+  const config = configWith([shaper("s", "select", { timeoutMs: 30_000 }), router("r")], { limits: { deadlineMs: 300 } });
+  const called: string[] = [];
+  const result = await routeRun(config, async (_request, entry, ctx) => {
+    called.push(entry.id);
+    await new Promise((done) => ctx.signal.addEventListener("abort", done, { once: true }));
+    return { kind: "timed_out", reason: "stopped" };
+  }, input(1));
+  assert.deepEqual(called, ["s"]);
+  assert.deepEqual(result.summary?.shapers.map((entry) => [entry.id, entry.outcome]), [["s", "timed_out"], ["r", "timed_out"]]);
+  assert.equal(result.summary?.state, "degraded");
+  assert.deepEqual(result.summary?.skills, [], "a router applied, so the record says it routed nothing");
+});
+
+test("a degraded router still contributes its skills, and marks the launch degraded", async () => {
+  const result = await routeRun(configWith([router("r")]), () => data({ degraded: true, notes: ["stale index"], skills: [skill("retro", "after-work")] }), input(1));
+  assert.equal(result.summary?.state, "degraded");
+  assert.deepEqual(result.summary?.shapers.map((entry) => [entry.outcome, entry.reason]), [["degraded", "stale index"]]);
+  assert.deepEqual(result.skills?.map((entry) => [entry.name, entry.state]), [["retro", "announced"]]);
+  assert.match(result.section, /- `\/retro` - after the work: do not use it yet\. Mission Control will\n {2}prompt you when the work is complete\.$/);
+});
+
+test("a router that sends guidance instead of skills is invalid, and one point it does not know leaves the rest", async () => {
+  const config = configWith([router("wrong"), router("later")]);
+  const result = await routeRun(config, (_request, entry) => entry.id === "wrong"
+    ? data({ guidance: [{ id: "x", body: "not a skill" }] })
+    : data({ skills: [skill("ship", "task-start"), skill("audit-log", "before-merge")], future: { kept: false } }), input(1));
+  assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["invalid", "ok"]);
+  assert.deepEqual(result.skills?.map((entry) => [entry.name, entry.state]), [["ship", "announced"], ["audit-log", "unsupported"]]);
+  assert.match(result.skills![1]!.reason!, /before-merge/);
+  assert.match(result.section, /- `\/ship` - at the start/);
+  assert.doesNotMatch(result.section, /audit-log/);
+});
+
+test("a catalog skill is checked: switched off it is unavailable, on it is verified under its catalog name", async () => {
+  const resolve: RoutedSkillResolver = (_agent, name) => name === "retro"
+    ? { catalog: true, ok: false, reason: "Enable Skills and the retro skill before sending this instruction." }
+    : name === "pull-request" ? { catalog: true, ok: true, name: "pull-request" } : { catalog: false };
+  const result = await routeRun(configWith([router("r")]),
+    () => data({ skills: [skill("retro", "after-work"), skill("pull-request", "after-work"), skill("house-style")] }), input(1), resolve);
+  assert.deepEqual(result.skills?.map((entry) => [entry.name, entry.state, entry.verified]), [
+    ["retro", "unavailable", false], ["pull-request", "announced", true], ["house-style", "announced", false],
+  ]);
+  assert.equal(result.skills![0]!.reason, "Enable Skills and the retro skill before sending this instruction.");
+  assert.doesNotMatch(result.section, /retro/, "a switched-off catalog skill is never announced");
+  assert.match(result.section, /`\/house-style`/, "a name outside the catalog is announced as given");
+});
+
+test("the harness decides each skill's spelling, and a dry run with no harness uses its preview agent", async () => {
+  const replies = () => data({ skills: [skill("lint-fix")] });
+  const codex = await routeRun(configWith([router("r")]), replies, { ...input(1), context: { ...input(1).context, harness: "codex" } });
+  assert.match(codex.section, /- `\$lint-fix` - during the work/);
+  const pi = await routeRun(configWith([router("r")]), replies, { ...input(1), context: { ...input(1).context, harness: "pi" } });
+  assert.match(pi.section, /- `\/skill:lint-fix` - during the work/);
+  const unnamed = await routeRun(configWith([router("r")]), replies, { ...input(1), context: { ...input(1).context, harness: null } });
+  assert.deepEqual(unnamed.skills?.map((entry) => entry.state), ["unavailable"]);
+  const preview = await routeRun(configWith([router("r")]), replies, {
+    ...input(1), context: { ...input(1).context, harness: null }, previewAgent: "claude",
+  });
+  assert.match(preview.section, /`\/lint-fix`/);
+});
+
+test("the repository's own task skill wins over a routed skill of the kind's name (D14)", async () => {
+  const replies = () => data({ skills: [skill("ship", "task-start"), skill("lint-fix")] });
+  const one = await routeRun(configWith([router("r")]), replies, input(1, { repositoryTaskSkillWorktrees: ["/work/billing-api"] }));
+  assert.deepEqual(one.skills?.map((entry) => [entry.name, entry.state]), [["ship", "superseded"], ["lint-fix", "announced"]]);
+  assert.doesNotMatch(one.section, /`\/ship`/);
+  // Two repositories, and only one has its own skill: the routed one stays for the other, by name.
+  const two = await routeRun(configWith([router("r")]), replies, input(2, { repositoryTaskSkillWorktrees: ["/work/billing-api"] }));
+  assert.deepEqual(two.skills?.map((entry) => [entry.name, entry.state, entry.repositories]), [
+    ["ship", "announced", ["ledger"]], ["lint-fix", "announced", ["billing-api", "ledger"]],
+  ]);
+  assert.match(two.section, /- `\/ship` - at the start: use this skill before you begin the work\. For ledger\./);
+  assert.match(two.section, /- `\/lint-fix` - during the work: use this skill when it applies\.$/, "routed for every repository, so no names");
+  const both = await routeRun(configWith([router("r")]), replies, input(2, { repositoryTaskSkillWorktrees: ["/work/billing-api", "/work/ledger"] }));
+  assert.deepEqual(both.skills?.map((entry) => entry.state), ["superseded", "announced"]);
+  // Absent, as for a caller that resolved no repository task skill: nothing is taken.
+  const none = await routeRun(configWith([router("r")]), replies, input(1));
+  assert.deepEqual(none.skills?.map((entry) => entry.state), ["announced", "announced"]);
+});
+
+test("D14 goes by worktree: of two worktrees of one repository, only the one with its own skill gives up the routed one", async () => {
+  // Two attached worktrees of the same repository, so one name, and only the second carries the
+  // repository's own task skill for the kind.
+  const twins: ShapeTaskInput = {
+    ...input(2),
+    context: {
+      ...input(2).context,
+      repositories: [
+        { name: "billing-api", role: "primary", branch: "task/retry", baseSha: "abc123", path: "/work/billing-api" },
+        { name: "billing-api", role: "additional", branch: "task/other", baseSha: "def456", path: "/work/billing-api-2" },
+      ],
+    },
+  };
+  const replies = () => data({ skills: [skill("ship", "task-start")] });
+  const one = await routeRun(configWith([router("r")]), replies, { ...twins, repositoryTaskSkillWorktrees: ["/work/billing-api-2"] });
+  assert.deepEqual(one.skills?.map((entry) => [entry.name, entry.state, entry.repositories]), [["ship", "announced", ["billing-api"]]],
+    "the worktree without its own skill keeps the routed one");
+  assert.match(one.section, /- `\/ship` - at the start: use this skill before you begin the work\. For billing-api\./,
+    "routed for one of the two worktrees, so the line names it");
+  const both = await routeRun(configWith([router("r")]), replies, { ...twins, repositoryTaskSkillWorktrees: ["/work/billing-api", "/work/billing-api-2"] });
+  assert.deepEqual(both.skills?.map((entry) => entry.state), ["superseded"]);
+  const neither = await routeRun(configWith([router("r")]), replies, twins);
+  assert.match(neither.section, /- `\/ship` - at the start: use this skill before you begin the work\.$/, "routed for both, so no names");
+});
+
+test("the reserve keeps room for skills under a full budget, and lines that still do not fit go from the end", async () => {
+  const full = "x".repeat(15_000);
+  const config = configWith([shaper("s", "select", { maxBytes: 16_384 }), router("r")], { limits: { totalBytes: 8_192 } });
+  const result = await routeRun(config, (request) => request.stage === "select"
+    ? data({ guidance: [{ id: "a", body: full }, { id: "b", body: full }] })
+    : data({ skills: Array.from({ length: 10 }, (_, at) => skill(`skill-${at}-${"n".repeat(50)}`, "after-work")) }), input(1));
+  assert.ok(utf8Length(result.section) <= 8_192, `the section fits the total (${utf8Length(result.section)})`);
+  const context = result.section.slice(0, result.section.indexOf("\n\n## Skills for this task"));
+  assert.ok(utf8Length(context) <= 8_192 - SHAPING_SKILLS_RESERVE_BYTES, "entries were allocated after the reserve");
+  assert.deepEqual(result.skills?.map((entry) => entry.state), Array(10).fill("announced"), "ten worst-case lines fit the reserve");
+  // A total smaller than the reserve reserves all of it, and lines that do not fit are dropped from the end.
+  const tight = await routeRun(configWith([router("r")], { limits: { totalBytes: 1_024 } }),
+    () => data({ skills: Array.from({ length: 10 }, (_, at) => skill(`skill-${at}-${"n".repeat(50)}`, "after-work")) }), input(1));
+  assert.ok(utf8Length(tight.section) <= 1_024);
+  const states = tight.skills!.map((entry) => entry.state);
+  assert.ok(states.includes("dropped") && states.indexOf("dropped") === states.lastIndexOf("announced") + 1, states.join(","));
+  assert.equal(tight.summary?.truncated, true, "a skill left out for room is truncation");
+  assert.equal(tight.summary?.state, "ok", "and never degradation");
+});
+
+test("with no router nothing is reserved: entries get the whole total, and the record has no skills", async () => {
+  const full = "x".repeat(15_000);
+  const config = configWith([shaper("s", "select", { maxBytes: 16_384 })], { limits: { totalBytes: 8_192 } });
+  const result = await routeRun(config, () => data({ guidance: [{ id: "a", body: full }] }), input(1));
+  assert.ok(utf8Length(result.section) > 8_192 - SHAPING_SKILLS_RESERVE_BYTES, "the reserve is not taken");
+  assert.equal(result.summary && "skills" in result.summary, false, "a launch no router applied to records what it always did");
+  assert.doesNotMatch(result.section, /Skills for this task/);
+});
+
+test("a router reply's name and reason id are checked: a name outside the pattern is an invalid reply", async () => {
+  const result = await routeRun(configWith([router("r")]), () => data({ skills: [skill("Run Everything!")] }), input(1));
+  assert.deepEqual(result.summary?.shapers.map((entry) => entry.outcome), ["invalid"]);
+  assert.equal(result.section, "");
+});
+
+test("a dry run of a router returns its skills and the section", async () => {
+  const config = ShapingConfigSchema.parse({ shapers: [router("r")] });
+  const result = await dryRunShaper("r", { ...input(1), context: { ...input(1).context, harness: null }, previewAgent: "codex" }, {
+    config, discovered: [], transports: transports(() => data({ skills: [skill("retro", "after-work")] })), resolveSkill: noCatalog,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.ok && result.run.skills?.map((entry) => entry.name), ["retro"]);
+  assert.match(result.ok ? result.run.section : "", /^## Skills for this task[\s\S]*`\$retro` - after the work/);
 });

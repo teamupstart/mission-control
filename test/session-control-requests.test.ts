@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { SessionControlRequestResult } from "../src/shared/protocol.ts";
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-control-requests-"));
+const home = tempDir("mission-session-control-requests-");
 process.env.MISSION_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");

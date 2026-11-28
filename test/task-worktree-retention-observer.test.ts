@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import type { Task } from "../src/shared/types.ts";
 import type { ActivityFingerprint } from "../src/server/git/worktree-activity.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-retention-observer-"));
+const home = tempDir("mission-retention-observer-");
 process.env.HARNESS_HOME = home;
 const { upsertTask, getTaskWorktreeRetention, listTaskWorktreeRetention, recordTaskWorktreeObservation, deleteTaskWorktreeRetention, listOrphanedTaskWorktreeRetentionIds, getTask } =
   await import("../src/server/db.ts");
@@ -280,6 +279,11 @@ test("the generation moves for every cleanup-relevant fact and for none of the b
   for (const [what, over] of stays) {
     assert.equal(taskResourceGeneration(mkT({ ...base, ...over })), g, `${what} is not new work`);
   }
+});
+
+test("changing a disposable checkout's recorded branch invalidates its retention generation", () => {
+  const task = mkT({ worktreePath: "/wt/task", provider: "git", branch: "harness/original" });
+  assert.notEqual(taskResourceGeneration(task), taskResourceGeneration({ ...task, branch: "harness/replacement" }));
 });
 
 test("rows for tasks that stopped qualifying are pruned", async () => {

@@ -5,6 +5,7 @@ import type { SetupChecksSnapshot } from "../../src/shared/setup-catalog.ts";
 import { setupInstallerShell } from "../../src/server/setup/install.ts";
 import { shellCommand } from "../../src/server/terminal/shell.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
@@ -30,7 +31,6 @@ async function shoot(page: import("@playwright/test").Page, name: string): Promi
   mkdirSync(dir, { recursive: true });
   await page.mouse.move(1, 1);
   await page.screenshot({ path: join(dir, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/setup-acli/${name}.png`);
 }
 
@@ -94,7 +94,7 @@ test("Setup checks acli's install and sign-in, and opens the sign-in for the dae
   // Signed in again, to a site a configured source does not read.
   writeFileSync(state, JSON.stringify({}));
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
-    data: { sources: [{
+    data: { revision: await taskSourcesRevision(page, daemon), sources: [{
       id: "jira-acli", kind: "jira", label: "Atlassian queue", repoRoot: daemon.repo, enabled: false,
       config: { site: "other.atlassian.net", jql: "project = MC", queryVia: "acli" },
     }] },

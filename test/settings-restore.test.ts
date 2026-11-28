@@ -1,14 +1,12 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -29,8 +27,9 @@ import {
   type SettingsBackupEnvelopeV1,
 } from "../src/shared/settings-backups.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-settings-restore-"));
+const home = tempDir("mission-settings-restore-");
 process.env.HARNESS_HOME = join(home, "state");
 process.env.CLAUDE_SETTINGS_PATH = join(home, "claude-settings.json");
 
@@ -751,6 +750,31 @@ test("a Persona's effort survives capture and restore, and a pre-effort backup r
   const legacyRestored = await service(legacyRoot, {}, legacyStore).restore(legacy.id, legacy.digest);
   assert.equal(legacyRestored.status, "restored");
   assert.equal(workflowStore.getPersona("persona-one")!.effort, null);
+});
+
+test("a Local Inspector backup with omitted severity restores the major default", async () => {
+  const legacy = resign(snapshot(), (body) => {
+    const rows = body.domains.find((entry) => entry.domain === "workflow-commands")!.payload as
+      Array<Record<string, unknown>>;
+    const inspector = rows.find(row => row.slot === "inspector");
+    assert.ok(inspector);
+    delete inspector.inspectorSeverity;
+  });
+  const root = join(home, "inspector-severity-restore");
+  const backupStore = new SettingsBackupStore(root);
+  backupStore.write(legacy);
+  const inspector = workflowStore.getWorkflowCommand("inspector")!;
+  assert.ok(workflowStore.replaceWorkflowCommandCas("inspector", inspector.revision, {
+    ...inspector, inspectorSeverity: "minor",
+  }, 100).ok);
+
+  const restore = service(root, {}, backupStore);
+  const preview = restore.previewRestore(legacy.id);
+  assert.equal(preview.status, "ready");
+  assert.equal(preview.preview.workflowCommandsChanged, 1);
+  const result = await restore.restore(legacy.id, legacy.digest);
+  assert.equal(result.status, "restored");
+  assert.equal(workflowStore.getWorkflowCommand("inspector")?.inspectorSeverity, "major");
 });
 
 test("restore preview and mutation preserve installed built-in catalog rows", async () => {

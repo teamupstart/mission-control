@@ -5,6 +5,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
 
 const EVIDENCE = artifactsDir("workflow-round-limit-grant");
 
@@ -19,7 +20,6 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-round-limit-grant/${name}.png`);
 }
 
@@ -167,7 +167,6 @@ async function seedRoundLimitedRun(
         .poll(async () => statusOf(daemon, runId), { message: why, timeout: 40_000 })
         .toBe("waiting_for_session");
     } catch (caught) {
-      // eslint-disable-next-line no-console
       console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
       throw caught;
     }
@@ -421,32 +420,6 @@ async function seedCleanSpentInspectorGate(
   return fixture;
 }
 
-/** Stand in for the next normal Inspector observation after the operator grants the path. */
-function observeGrantedHead(
-  daemon: DaemonHandle,
-  runId: string,
-  currentHead: string,
-): void {
-  withDaemonDb(daemon, (db) => {
-    const row = db.prepare(
-      "SELECT gate_state_json FROM workflow_runs WHERE id = ?",
-    ).get(runId) as { gate_state_json: string } | undefined;
-    if (!row) throw new Error(`missing granted run ${runId}`);
-    const state = JSON.parse(row.gate_state_json) as Record<string, unknown>;
-    db.prepare(
-      "UPDATE workflow_runs SET gate_state_json = ?, updated_at = ? WHERE id = ?",
-    ).run(
-      JSON.stringify({
-        ...state,
-        lastObservedAt: Date.now(),
-        observedHeadSha: currentHead,
-      }),
-      Date.now(),
-      runId,
-    );
-  });
-}
-
 test("a clean current Inspector head is adopted through the audited grant evaluator", async ({
   dashboard,
   daemon,
@@ -500,6 +473,11 @@ test("a clean current Inspector head is adopted through the audited grant evalua
   await expect(confirm).toContainText("existing audited path");
   await expect(confirm).toContainText("browser does not pass the gate");
   await expect(confirm).toContainText("immutable Inspector-only submission");
+  writeGhPullRequests(daemon.home, [{
+    cwd: daemon.repo, number: fixture.prNumber, url: `https://github.example/owner/repo/pull/${fixture.prNumber}`,
+    state: "OPEN", createdAt: new Date().toISOString(), mergedAt: null,
+    headRefName: "feat/spent-inspector-gate", headRefOid: fixture.currentHead,
+  }]);
   const responsePromise = dashboard.waitForResponse((response) =>
     response.request().method() === "POST"
     && response.url().endsWith(`/api/workflow-runs/${runId}/grant-rounds`));
@@ -512,17 +490,6 @@ test("a clean current Inspector head is adopted through the audited grant evalua
   expect((await response.json()).run.status).toBe("waiting_for_new_head");
   await expect(confirm).toBeHidden();
 
-  observeGrantedHead(daemon, runId, fixture.currentHead);
-  // Recheck wakes an evaluator still waiting. A session update may already have evaluated
-  // the observed head; in that ordering only the terminal refusal with completed state is
-  // valid. Both paths must still prove the exact-head submission and single audit events.
-  const recheck = await post(daemon, `/api/workflow-runs/${runId}/recheck-inspector`, {
-    requestId: "e2e-adopt-clean-head-recheck",
-  });
-  if (recheck.status !== 200) {
-    expect(recheck).toEqual({ status: 409, code: "workflow_run_not_waiting" });
-    expect(await statusOf(daemon, runId)).toBe("completed");
-  }
   try {
     await expect
       .poll(async () => statusOf(daemon, runId), {
@@ -536,13 +503,11 @@ test("a clean current Inspector head is adopted through the audited grant evalua
       run: { status: string; currentPhase: string; gateState: unknown };
       events: Array<{ kind: string; payload: unknown }>;
     }>(daemon, `/api/workflow-runs/${runId}`);
-    // eslint-disable-next-line no-console
     console.log(`FAILED ADOPTION DETAIL:\n${JSON.stringify({
       summary: detail.summary,
       run: detail.run,
       events: detail.events.slice(-8),
     }, null, 2)}`);
-    // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-80).join("\n")}`);
     throw caught;
   }

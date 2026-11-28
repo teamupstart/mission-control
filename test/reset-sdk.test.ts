@@ -1,12 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Isolate the daemon's state dir BEFORE any value import that can resolve it - static
 // imports are hoisted above this line, so every server module below loads dynamically.
-process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-reset-sdk-"));
+process.env.MISSION_HOME = tempDir("mission-reset-sdk-");
 
 const { openDb } = await import("../src/server/db.ts");
 const { resetToOrigin } = await import("../src/server/actions.ts");
@@ -16,6 +15,7 @@ import { gitIn, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { SdkEvent } from "../src/server/harness/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a reset is TWO successes, and the second one moves a task's ownership.
 //
@@ -45,6 +45,7 @@ const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("har
 function sdkSess(cwd: string | null, over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: `${SDK_SESSION_ID_PREFIX}11111111-1111-4111-8111-111111111111`,
     agent: "claude",
     name: "embedded",

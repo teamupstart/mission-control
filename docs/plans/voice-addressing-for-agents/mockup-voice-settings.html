@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice mock-ups: voice settings panel (selected)</title>
+<link rel="stylesheet" href="../../../src/web/styles.css">
+<style>
+/* ---- Mock-up kit: page chrome shared by every voice-addressing mock-up page ----
+   The product stylesheet (src/web/styles.css) is linked above this block, so every
+   var(--token) and every product class (.btn, .field, .review, .inbox-item, .modal ...)
+   is the real one. Rules here only frame the variants. */
+html, body { height: auto !important; overflow: auto !important; }
+body.mk {
+  margin: 0;
+  padding: 28px 32px 90px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 var(--sans);
+  min-width: 1180px;
+}
+.mk-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.mk-ico { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
+.mk-ico.sm { width: 11px; height: 11px; }
+.mk-ico.lg { width: 18px; height: 18px; }
+
+.mk-top h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+.mk-top p { color: var(--muted); max-width: 1020px; margin: 0 0 6px; }
+.mk-top .mk-spec { color: var(--dim); font-size: 12px; }
+.mk-top code, .mk-notes code, .mk-pitch code { font: 11.5px var(--mono); color: var(--fg); background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px; }
+.mk-toc { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.mk-toc a { color: var(--muted); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+.mk-toc a b { color: var(--working); font-family: var(--mono); margin-right: 4px; }
+
+.mk-variant { margin-top: 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-2); overflow: hidden; }
+.mk-variant-head { display: flex; gap: 14px; align-items: baseline; padding: 13px 18px; border-bottom: 1px solid var(--border-soft); background: var(--panel); }
+.mk-letter { font: 700 14px var(--mono); color: var(--on-accent); background: var(--working); border-radius: 8px; padding: 3px 10px; flex: none; }
+.mk-variant-head h2 { margin: 0; font-size: 16px; white-space: nowrap; }
+.mk-pitch { color: var(--muted); margin: 0; flex: 1; }
+.mk-stage { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px 18px 22px; align-items: flex-start; }
+.mk-state { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mk-cap { font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.mk-cap b { color: var(--muted); }
+.mk-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 28px; margin: 0; padding: 12px 18px 15px; border-top: 1px solid var(--border-soft); list-style: none; color: var(--muted); font-size: 12px; }
+.mk-notes li::before { content: "+ "; color: var(--idle); font-weight: 700; font-family: var(--mono); }
+.mk-notes li.con::before { content: "- "; color: var(--attention); }
+
+/* What the operator said. Never part of the product UI: it labels the mock-up. */
+.mk-say { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; font: 12px var(--mono); color: var(--muted); border: 1px dashed var(--border); border-radius: 999px; padding: 3px 11px 3px 9px; }
+.mk-say .mk-ico { color: var(--working); }
+.mk-say q { color: var(--fg); quotes: "\201C" "\201D"; }
+
+/* A slice of the macOS menu bar, for anything that lives in or hangs off the tray. */
+.mk-menubar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; height: 26px; padding: 0 12px; border-radius: 8px 8px 0 0; background: linear-gradient(#3a3d44, #33363c); color: #f2f3f5; font: 500 12.5px -apple-system, system-ui, sans-serif; }
+.mk-menubar .mk-mb-left { margin-right: auto; display: flex; gap: 14px; opacity: 0.92; }
+.mk-menubar .mk-mb-left b { font-weight: 700; }
+.mk-menubar .mk-mb-item { display: inline-flex; align-items: center; gap: 4px; opacity: 0.9; }
+.mk-menubar .mk-mb-item.is-open { background: rgba(255, 255, 255, 0.2); border-radius: 4px; padding: 1px 6px; margin: 0 -6px; opacity: 1; }
+.mk-menubar .mk-mb-dot { width: 6px; height: 6px; border-radius: 50%; background: #ff9f0a; }
+/* Some other app in front (Mission Control minimized). */
+.mk-desktop { position: relative; border-radius: 0 0 8px 8px; background: linear-gradient(135deg, #20304a, #3a2a4a 60%, #4a3340); overflow: hidden; }
+.mk-otherapp { position: absolute; inset: 18px 18px 0; border-radius: 9px 9px 0 0; background: #f4f5f7; opacity: 0.16; }
+/* A slice of the Mission Control window. */
+.mk-win { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; position: relative; }
+.mk-win-bar { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border-soft); color: var(--dim); font-size: 11.5px; }
+.mk-win-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--border); }
+.mk-win-bar span { margin-left: 8px; }
+.mk-skel { height: 9px; border-radius: 5px; background: var(--panel-2); margin: 8px 0; }
+.mk-skel.w40 { width: 40%; } .mk-skel.w60 { width: 60%; } .mk-skel.w80 { width: 80%; }
+.mk-tile { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--panel); padding: 10px 12px; }
+
+/* ---- Shared voice vocabulary. Variants restyle these; the names stay the same. ---- */
+/* An agent's display name, in its resident board colour (set --resident inline). */
+.v-name { font-weight: 650; color: color-mix(in oklab, var(--resident, var(--fg)) 88%, var(--fg)); }
+/* The always-visible inline voice hint: lighter text, no hover. */
+.v-hint { font-size: 11.5px; color: var(--dim); }
+.v-hint q { color: var(--muted); quotes: "\201C" "\201D"; font-style: normal; }
+/* A draining cancel-window bar. Width is set inline to show a moment in time. */
+.v-count { height: 3px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.v-count > i { display: block; height: 100%; background: var(--working); border-radius: 2px; }
+.v-secs { font: 600 11px var(--mono); color: var(--working); }
+.v-live { width: 7px; height: 7px; border-radius: 50%; background: var(--idle); box-shadow: 0 0 8px color-mix(in oklab, var(--idle) 70%, transparent); flex: none; }
+
+
+.vs-main { width: 448px; }
+.vs-side { width: 290px; }
+.vs-stack { display: flex; flex-direction: column; gap: 10px; }
+
+/* A slice of the Settings pane: the real panel head and rows inside a plain frame. */
+.vs-pane { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); padding: 14px 16px 16px; }
+.vs-pane .settings-panel-head { margin-bottom: 8px; }
+.vs-pane .settings-group { margin-top: 12px; }
+.vs-pane .settings-hint { margin-top: 10px; }
+.vs-pane .settings-warn { margin: 0 0 6px; }
+.vs-pane .kb-row { padding: 8px 8px; }
+.vs-pane .kb-row:hover { background: transparent; }
+.vs-side .kb-row { flex-wrap: wrap; row-gap: 7px; }
+.vs-side .kb-row-text { flex-basis: 100%; }
+.vs-statusline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 2px 8px 0; }
+.vs-statusline b { color: var(--fg); font-weight: 620; }
+.vs-statusline .vs-grow { flex: 1; }
+.vs-secs { display: inline-flex; align-items: center; gap: 7px; }
+.vs-dim { opacity: 0.45; pointer-events: none; }
+.vs-off { width: 7px; height: 7px; border-radius: 50%; background: var(--exited); flex: none; }
+.vs-amber { width: 7px; height: 7px; border-radius: 50%; background: var(--attention); flex: none; }
+.vs-note { font-size: 11.5px; color: var(--dim); margin: 0; }
+.vs-kbd { font: 600 11px var(--mono); color: var(--fg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; background: var(--bg-2); }
+
+/* B: status first */
+.vs-hero { display: flex; align-items: center; gap: 14px; border: 1px solid color-mix(in oklab, var(--idle) 40%, var(--border)); background: color-mix(in oklab, var(--idle) 7%, var(--panel)); border-radius: 12px; padding: 14px 16px; }
+.vs-hero-ico { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--idle); background: color-mix(in oklab, var(--idle) 16%, transparent); border: 1px solid color-mix(in oklab, var(--idle) 45%, transparent); }
+.vs-hero-ico .mk-ico { width: 22px; height: 22px; }
+.vs-hero-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vs-hero-state { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.vs-hero-sub { font-size: 11.5px; color: var(--muted); }
+.vs-meter { display: flex; align-items: flex-end; gap: 2px; height: 16px; margin-top: 5px; }
+.vs-meter i { width: 3px; border-radius: 1px; background: var(--idle); }
+.vs-meter i.q { background: var(--border); }
+.vs-hero.is-warn { border-color: color-mix(in oklab, var(--attention) 45%, var(--border)); background: color-mix(in oklab, var(--attention) 8%, var(--panel)); }
+.vs-hero.is-warn .vs-hero-ico { color: var(--attention); background: color-mix(in oklab, var(--attention) 16%, transparent); border-color: color-mix(in oklab, var(--attention) 45%, transparent); }
+.vs-hero.is-rec { border-color: var(--working); background: color-mix(in oklab, var(--working) 9%, var(--panel)); }
+.vs-side .vs-hero { flex-wrap: wrap; padding: 12px; gap: 10px; }
+.vs-side .vs-hero-text { flex: 1 0 170px; }
+.vs-side .vs-hero-state { font-size: 15px; }
+.vs-side .vs-hero .btn { margin-left: 54px; }
+.vs-states { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.vs-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); border: 1px solid var(--border-soft); border-radius: 999px; padding: 2px 8px; }
+.vs-chip.is-now { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 40%, var(--border)); }
+.vs-lean .kb-row-desc { display: none; }
+.vs-lean .kb-row { padding: 6px 8px; }
+
+/* C: try it */
+.vs-two { display: grid; grid-template-columns: minmax(0, 1fr) 196px; gap: 14px; align-items: start; }
+.vs-try { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 10px 11px 11px; display: flex; flex-direction: column; gap: 8px; }
+.vs-try h4 { margin: 0; font-size: 12px; font-weight: 620; }
+.vs-try .field-input { font-size: 12px; padding: 6px 8px; }
+.vs-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--muted); }
+.vs-steps li { display: flex; gap: 6px; align-items: flex-start; }
+.vs-steps .mk-ico { color: var(--idle); margin-top: 2px; }
+.vs-steps li.no .mk-ico { color: var(--dim); }
+.vs-steps b { color: var(--fg); font-weight: 600; }
+.vs-samples { display: flex; flex-direction: column; gap: 4px; }
+.vs-samples span { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--border-soft); border-radius: 6px; padding: 3px 6px; }
+.vs-samples span.is-on { color: var(--fg); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); }
+
+/* D: in the alerts popover */
+.vs-d .alert-pop { position: static; max-height: none; overflow: visible; }
+.vs-d .vs-side .alert-pop { width: auto; }
+.vs-topbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--border-soft); background: var(--panel); color: var(--dim); font-size: 11.5px; }
+.vs-topbar .vs-bell { color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: 2px 7px; background: var(--panel-2); }
+.vs-popwrap { display: flex; justify-content: flex-end; padding: 8px 12px 14px; }
+.vs-mini { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 5px 2px; }
+.vs-mini .vs-grow { flex: 1; min-width: 0; color: var(--fg); }
+.vs-mini small { display: block; color: var(--dim); font-size: 11px; }
+.vs-d .kb-capture { min-width: 66px; min-height: 26px; }
+.vs-d .settings-select { font-size: 11.5px; padding: 2px 5px; }
+.vs-d .display-choice-option { padding: 3px 8px; font-size: 11.5px; }
+
+/* E: roster first */
+.vs-roster { width: 100%; border-collapse: collapse; font-size: 12px; }
+.vs-roster th { text-align: left; font: 640 10px var(--sans); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); padding: 4px 8px 5px; border-bottom: 1px solid var(--border-soft); }
+.vs-roster td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.vs-roster td.k { color: var(--muted); white-space: nowrap; }
+.vs-roster .vs-spoken { font: 600 11.5px var(--mono); }
+.vs-roster .vs-w { color: var(--attention); font-size: 11px; display: flex; gap: 5px; align-items: flex-start; }
+.vs-roster .vs-w .mk-ico { margin-top: 2px; }
+.vs-roster .vs-ok { color: var(--dim); font-size: 11px; }
+.vs-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+
+</style>
+</head>
+<body class="mk">
+<svg class="mk-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 16 16"><path d="M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z"/><path d="M4 7.5a4 4 0 0 0 8 0M8 11.5v3M5.5 14.5h5"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 16 16"><path d="M10 6V3.5a2 2 0 0 0-3.7-1M6 6v1.500a2 2 0 0 0 3 1.700"/><path d="M4 7.5a4 4 0 0 0 6.300 3.300M12 7.500a4 4 0 0 1-.300 1.500M8 11.500v3M5.500 14.500h5M2 1.500l12 13"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 16 16"><path d="M3 2.500h2.500l1 3-1.500 1a7 7 0 0 0 3.500 3.500l1-1.500 3 1V12a1.500 1.500 0 0 1-1.500 1.500A9.500 9.500 0 0 1 1.500 4 1.500 1.500 0 0 1 3 2.500z"/></symbol>
+  <symbol id="i-ptt" viewBox="0 0 16 16"><path d="M8 3a1.700 1.700 0 0 0-1.700 1.700v3a1.700 1.700 0 0 0 3.400 0v-3A1.700 1.700 0 0 0 8 3z"/><path d="M4.800 8a3.200 3.200 0 0 0 6.400 0M8 11.200v2.300M2 4.500a7 7 0 0 0 0 5.500M14 4.500a7 7 0 0 1 0 5.500"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.500l3.200 3.200L13 4.800"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.200l6.300 11H1.700z"/><path d="M8 6.500v3.200M8 11.700v.100"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.500V8l2.300 1.500"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M2 8l11.500-5.500L10 14l-2.500-5z"/><path d="M7.500 9l6-6.500"/></symbol>
+  <symbol id="i-queue" viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13 9.500A5.500 5.500 0 0 1 6.500 3 5.500 5.500 0 1 0 13 9.500z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.300 6.300a1.800 1.800 0 1 1 2.600 1.600c-.600.300-.900.700-.900 1.300M8 11.500v.100"/></symbol>
+  <symbol id="i-keys" viewBox="0 0 16 16"><rect x="1.500" y="4" width="13" height="8" rx="1.500"/><path d="M4 6.500h.100M6.500 6.500h.100M9 6.500h.100M11.500 6.500h.100M4.500 9.500h7"/></symbol>
+  <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2v8M4.800 7L8 10.200 11.200 7M2.500 13.500h11"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 16 16"><path d="M2 8v0M4.500 6v4M7 3.500v9M9.500 5.500v5M12 7v2M14 8v0"/></symbol>
+</svg>
+
+
+
+<header class="mk-top">
+  <h1>Voice settings panel</h1>
+  <p>Where the operator sets the system-wide mute hotkey, auto-mute during calls, the cancel window before routing and auto-submit, and what happens when routing is unsure (ask aloud, or show on screen). The panel also points at where spoken names are set (a resident's reference name on its profile, a session's call sign in dispatch Advanced) and at the Recently heard list.</p>
+  <p class="mk-spec">Fixed in every variant: the Voice preview flag itself stays in the Feature flags list like every preview, the five settings and their defaults are the spec's, and the hotkey uses the capture control Keyboard settings already has. What varies is <b>what the panel leads with</b> and <b>where it lives</b>. Each variant shows the normal panel, the hotkey being captured and refused, and voice unavailable. <code>⌘⌃⌥V</code> is an example chord only.</p>
+  <nav class="mk-toc"><a href="#e"><b>E</b>Roster first</a></nav>
+<p class="mk-spec"><b>Selected by the operator on 2026-11-22: variant E.</b> This page holds the selected design; the variants that were not adopted are left out. Implementation detail is in the phase documents beside this file.</p>
+</header>
+
+<!-- ============================== A ============================== -->
+<section class="mk-variant vs-e" id="e">
+  <div class="mk-variant-head"><span class="mk-letter">E</span><h2>Roster first</h2>
+    <p class="mk-pitch">The panel leads with who can be addressed: every resident and every session with a call sign, its spoken name and any name warning. Behaviour settings come second.</p></div>
+  <div class="mk-stage">
+    <div class="mk-state vs-main">
+      <span class="mk-cap"><b>1</b> Settings · Voice</span>
+      <div class="vs-pane">
+        <div class="settings-panel-head"><h2>Voice</h2><span class="settings-scope settings-scope-machine">This machine</span></div>
+        <div class="vs-statusline"><span class="v-live"></span><b>Listening</b><span class="vs-grow">4 agents answer to a name</span><button class="settings-link">Recently heard</button></div>
+        <div class="settings-group"><p class="settings-group-label">Who you can address</p>
+          <table class="vs-roster" aria-label="Agents that answer to a spoken name">
+            <thead><tr><th>Agent</th><th>Kind</th><th>Say</th><th>Check</th></tr></thead>
+            <tbody>
+              <tr><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></td><td class="k">Resident</td><td class="vs-spoken">Steve</td><td><span class="vs-ok">Distinct</span></td></tr>
+              <tr><td><span class="v-name" style="--resident: var(--resident-rose)">Carol</span></td><td class="k">Resident</td><td class="vs-spoken">Carol</td><td><span class="vs-ok">Distinct</span></td></tr>
+              <tr><td><span class="v-name" style="--resident: var(--resident-amber)">Release notes writer</span></td><td class="k">Resident</td><td class="vs-spoken">Will</td><td><span class="vs-w"><svg class="mk-ico sm"><use href="#i-warn"/></svg>A common word. "Will you..." needs the pause to tell them apart.</span></td></tr>
+              <tr><td><span class="v-name" style="--resident: var(--resident-violet)">Alice</span></td><td class="k">Session</td><td class="vs-spoken">Alice</td><td><span class="vs-ok">Distinct</span></td></tr>
+            </tbody>
+          </table>
+          <p class="settings-hint">7 other sessions have no call sign. Answer one through its open card by starting with "reply". A reference name is set on the resident's profile; a call sign in dispatch Advanced.</p>
+        </div>
+        <div class="settings-group vs-lean"><p class="settings-group-label">Behaviour</p>
+          <div class="vs-grid2">
+            <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span></div><div class="kb-row-controls"><button class="kb-capture" style="min-width:66px"><kbd>⌘⌃⌥V</kbd></button></div></div>
+            <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Auto-mute on calls</span></div><div class="kb-row-controls"><label class="sc-switch sc-switch-ok"><input type="checkbox" aria-label="Auto-mute on calls" checked><span class="sc-switch-track"></span></label></div></div>
+            <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Cancel window</span></div><div class="kb-row-controls"><select class="settings-select" aria-label="Cancel window"><option>4 s</option><option>Off</option></select></div></div>
+            <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Unsure</span></div><div class="kb-row-controls"><div class="display-choice-options"><label class="display-choice-option"><input type="radio" name="vse-unsure">Ask</label><label class="display-choice-option is-on"><input type="radio" name="vse-unsure" checked>Show</label></div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mk-state vs-side">
+      <span class="mk-cap"><b>2</b> Capturing, then refused</span>
+      <div class="vs-pane vs-stack">
+        <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span><span class="kb-row-desc">Press the chord you want. Esc keeps ⌘⌃⌥V.</span></div><div class="kb-row-controls"><button class="kb-capture is-recording"><span class="kb-recording">Press a key…</span></button></div></div>
+        <div class="kb-row has-conflict"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span><span class="kb-row-conflict">macOS refused ⌥Space: another app already owns it. ⌘⌃⌥V is still your hotkey.</span></div><div class="kb-row-controls"><button class="kb-capture"><kbd>⌘⌃⌥V</kbd></button></div></div>
+      </div>
+    </div>
+    <div class="mk-state vs-side">
+      <span class="mk-cap"><b>3</b> Speech model missing</span>
+      <div class="vs-pane">
+        <div class="vs-statusline" style="padding:0 0 8px"><span class="vs-amber"></span><b>Not listening</b><span class="vs-grow">model missing</span><button class="settings-link">Open Setup</button></div>
+        <table class="vs-roster" aria-label="Agents that answer to a spoken name">
+          <thead><tr><th>Agent</th><th>Say</th></tr></thead>
+          <tbody>
+            <tr><td><span class="v-name" style="--resident: var(--resident-cyan)">Steve</span></td><td class="vs-spoken">Steve</td></tr>
+            <tr><td><span class="v-name" style="--resident: var(--resident-rose)">Carol</span></td><td class="vs-spoken">Carol</td></tr>
+            <tr><td><span class="v-name" style="--resident: var(--resident-violet)">Alice</span></td><td class="vs-spoken">Alice</td></tr>
+          </tbody>
+        </table>
+        <p class="settings-hint">Names can still be reviewed and fixed while voice is not listening.</p>
+      </div>
+    </div>
+  </div>
+  <ul class="mk-notes">
+    <li>Answers the question the spec makes most likely: "who can I talk to, and what do I call them?", and shows every name warning in one place instead of only at the moment a name is typed.</li>
+    <li class="con">The roster is a live view of the daemon's name registry, so the panel needs that registry on the wire (a snapshot field and an event), not only settings in <code>app_config</code>.</li>
+    <li>The same table is the roster the recognizer is primed with and the small model is given, so what the operator sees is what routing uses.</li>
+    <li class="con">Names are still edited elsewhere (profile, dispatch). A read-only table that looks editable invites clicks that only navigate away.</li>
+  </ul>
+</section>
+
+</body>
+</html>

@@ -1,8 +1,8 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // `fetchDiff` is the public path the byte cap actually has to hold on: the Inspector's
 // prompt is built from what this returns, and `MISSION_INSPECTOR_MAX_DIFF_BYTES` promises
@@ -20,7 +20,7 @@ import { delimiter, join } from "node:path";
 // question spans the subprocess boundary: `gh` hands us bytes and node decodes them into a
 // string, and that decode is exactly where the two measures diverge.
 
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-diff-bytes-"));
+const temp = tempDir("mission-inspector-diff-bytes-");
 const binDir = join(temp, "bin");
 const diffPath = join(temp, "payload.diff");
 mkdirSync(binDir, { recursive: true });

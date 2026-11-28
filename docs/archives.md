@@ -4,10 +4,16 @@ An archive is work that outlives the agent that did it, the task card that asked
 worktree it happened in, and the database that once indexed it - because it is kept as
 ordinary files on your machine, not as rows.
 
-Every archive declares its **kind**: what the bundle preserves. Two kinds are produced -
-`scout`, an answer to a question, and `plan`, a plan a task wrote - and the container itself
-knows nothing about either, which is the point: a third kind of durable artifact reuses this
-library rather than growing a second one beside it.
+Every archive declares its **kind**: what the bundle preserves. Three kinds are produced -
+`scout`, an answer to a question, `plan`, a plan a task wrote, and `checkout`, the local-only
+files of an [orphaned task checkout](worktrees-and-checks.md#orphaned-task-checkouts) captured
+just before automatic retention removes it - and the container itself knows nothing about any
+of them, which is the point: another kind of durable artifact reuses this library rather than
+growing a second one beside it. A `checkout` bundle has no report, so it is always `partial`,
+names the missing report in `missing`, and stores every file as a supporting artifact under
+`artifacts/repo-01/` at its checkout-relative path. Each path segment is escaped (`%` as `%25`,
+then a leading `.` as `%2E`) because bundle paths refuse dot-prefixed segments; the manifest's
+`original_path` keeps the path exactly as it was.
 
 This page describes the local library: where it lives, what a bundle contains, how one is
 produced, how Mission Control discovers one, and what deleting one does. It is the storage,
@@ -391,6 +397,129 @@ submitted it is gone. A plan's session can exit while the task is still running,
 can never be rewritten - so publishing then would freeze a draft as the permanent record of a
 plan still being written. Teardown is the only moment a plan is captured.
 
+## How a report produces one
+
+An [agent report](sessions.md#agent-reports) can carry an `.html` or `.md` document, which
+Mission Control copies into `<state home>/reports/<id>/` when the report is posted. **Publish as
+scout** on the report's inbox card turns that stored copy into an ordinary `scout` bundle. It is
+the archive's one operator-initiated capture: nothing else publishes a report, and no capture
+job, exit, cleanup or restart path reaches it.
+
+| From the report | Captured as |
+|---|---|
+| the stored `.html` document | `report/report.html`, byte for byte except for links to files that were not stored (see below) |
+| the stored `.md` document | `report/report.html`, a static page the daemon renders with the dashboard's Markdown dialect (GitHub-flavoured; raw HTML and unsafe link schemes are dropped) |
+| the stored companions | `report/<path>`, byte for byte, as `report_companion` files |
+
+The bundle's title is the report's title. It has no prompt trail, no summary or tags and no
+`artifacts/` half; its source session is the session that posted the report, and its `source` is
+`report`. The bundle format is unchanged, so any reader opens it as a scout archive.
+
+- **Companions are stored when the report is posted.** The files the document links to inside
+  its own directory (for example `variants.csv` or `data/recording.json` beside
+  `docs/reports/<slug>/report.html`) are copied with it into
+  `<state home>/reports/<id>/companions/`, up to 128 files and 16 MiB in all, looked up from at most the first 512 linked paths in sorted order. A Markdown
+  document's links are read from its rendered page. A linked file that is missing, outside the
+  checkout, not a regular file (a named pipe is opened without blocking and rejected) or past
+  those bounds is left out. A linked file that exists but cannot be read (`EACCES`, `EIO`)
+  refuses the post, naming the file and the error, so the report can be posted again once it is
+  readable rather than stored without data that was there; so does a checkout that cannot be
+  resolved for any reason other than being gone, and so does a checkout replaced at the same
+  path between reading the document and collecting its linked files, which are only ever taken
+  from the checkout the document was read from (its identity is checked again for every file,
+  before any byte is read, and once capture ends). Paths that collide on a case-insensitive volume
+  (the same path in another letter case or another Unicode normalization form, or a file where another linked path needs a directory,
+  such as `Data` and `data/x.csv`) cannot all be stored or archived, so one is kept: the first, in
+  sorted order, that names a file actually stored, so a spelling that names nothing never shuts
+  out one that does. A link to any other is unlinked as missing. Directories that differ only in
+  case merge harmlessly and keep all their files.
+  Companions follow the scout capture's containment rule: no path component may be a symbolic
+  link, and the file opened must be the file that was checked (opened without following a final
+  symlink, its device and inode compared, and the path checked again after the open, before any
+  byte is read, so a folder moved out of the checkout and replaced by a symlink is caught even
+  though the file itself is unchanged), so a file or folder swapped for a symlink while
+  the report is being posted is left out rather than read. Publishing reads the store under the
+  same rule: only the `reports` store is canonicalized, the report's own directory and its
+  `companions` store beneath it must each be a real directory, and after each file is opened every
+  component of its path is checked with `lstat`: each directory must be a real directory, never a
+  symlink (to outside the store or to another directory inside it), and the file must be the one
+  opened, by device and inode. So a stored directory swapped for a symlink is never followed, even if the swap is undone straight after the open. The store is never
+  listed: publishing opens only the paths the page it is publishing links to (taken from
+  that one built page, never from a second read of the stored document), capped at the same 512
+  lookups as posting, so every stored companion is read however deep its directories, and a
+  store swapped for a symlink to a large tree cannot stall a publish. A stored companion that
+  is gone, was replaced by a symlink or a named pipe, or has a path too long for the filesystem,
+  is unlinked as missing; any other
+  failure reading it fails the publish with a 500 and writes no archive.
+  A link that climbs out of the document's directory is not a companion. Neither is a sibling
+  named `report.html` in any letter case (on a case-insensitive volume `Report.html` is the
+  page's own path), the name the page itself takes in the archive, nor any path beneath it
+  (`report.html/data.csv`): from a document with any
+  other name, a link to it is unlinked and listed as missing rather than left pointing at the
+  page. A document whose own name is `report.html` in another case (`Report.html`) is the page:
+  its link to itself, spelled as its own name, is rewritten to `report.html` (query and fragment
+  kept), so it still resolves in the archive.
+
+- **The daemon builds the page.** `POST /api/reports/:id/publish` takes nothing but the id in
+  its path. A body that names a page, a path or anything else is refused, and no checkout is
+  read, so what is archived is always the document as it was posted.
+- **The same checker.** The page must pass the static checker every bundle passes, against
+  the companions stored with the report. A relative link to a file that was not stored (a report
+  posted before companions were stored, or a file left out at post time) is unlinked rather than
+  refused: the attribute naming it is removed, with the HTML whitespace before it (never a
+  non-breaking space, which belongs to a preceding unquoted value; and not before a `/`, so a
+  self-closing tag such as `<image width=10 href="gone.svg"/>` keeps the separator that stops the
+  slash joining the unquoted value), so its text stays and the
+  rest of the page keeps its bytes, and the bundle is `partial` with each such path listed as a missing
+  `report_companion`. Every such link is removed, but the manifest holds at most 64 missing
+  entries: past 64 paths, the first 63 in sorted order are listed and one last entry counts the
+  rest. The whole attribute goes, so a `srcset` or `style` attribute that also names
+  a stored file loses that reference too; the stored file stays in the bundle and is listed with
+  its evidence. An attribute that also carries a reference the checker refuses for another
+  reason (a path that climbs out, a fetching scheme) is never removed, so it still refuses the
+  page. In a `<style>` element, a reference to a file that was not stored is
+  rewritten in place: a `url(...)` becomes `none`, and an `@import` rule is removed from
+  `@import` through its `;`, because an empty import target would resolve to the page's own URL
+  and still be fetched. The rest of the stylesheet keeps its bytes. Anything else the checker
+  refuses (a link that leaves the report directory, anything that runs or fetches) still refuses
+  the page: it is answered with every problem named, shown on the card, and nothing is written.
+- **One archive per report.** The archive id is derived from this machine's producer id, the
+  report's id and when it was posted. Pressing again on a report that records its key checks
+  only that the bundle is still present and returns it. When the key was lost (a lost response,
+  or a restart before the key was written), the press verifies the bundle already at that id in
+  full and reuses it, unchanged, when it holds the same page or when its manifest says this
+  report's session published it (a Markdown page is re-rendered on every press, so a renderer
+  change must not turn the report's own archive into a conflict). Any other bundle at that id
+  is a conflict that is never overwritten: delete it from the Scouts page, then publish again.
+  Either way the report records its key once.
+  A report's recorded key is checked against the library at four moments, and cleared only
+  when its bundle is absent, so the report can be published again under the same key:
+
+  - **Publish as scout.** A press on a report that already records a key checks that its bundle
+    is still in the library. If it is gone, the report is published again rather than answered
+    with the stale key.
+  - **Deleting the archive.** `DELETE /api/archives/:archiveKey` re-checks the reports recorded
+    under that one key. The check waits behind any Publish of the same report, so a publish
+    that recreated the archive meanwhile keeps its key.
+  - **Startup.** Every recorded key is checked once, which heals a delete interrupted between
+    removing the bundle and clearing the key.
+  - **In the background.** When a reconciliation pass prunes bundles that left the library, it
+    hands over exactly those keys, and only the reports recorded under them are re-checked. A
+    bundle removed by hand heals this way, and publishing or deleting other archives costs
+    nothing.
+
+  A bundle that is present but no longer verifies, because it was edited or damaged on disk,
+  keeps its report's key: the card stays **Published** and the Scouts page shows the archive
+  as unreadable. It is never rewritten. Delete it from the Scouts page to publish the report
+  again. A press that finds such a bundle at its key with no key recorded refuses with that
+  instruction and writes nothing. A library that cannot be read right now (a permission error,
+  an I/O error, running out of file descriptors) is not an absence either: every key is kept,
+  and a Publish press answers with the error instead of publishing again. A library root that is
+  missing, or empty because its volume is not mounted, does count as absence: Mission Control
+  cannot tell it from a deleted library, so the startup check clears those keys. Nothing is
+  lost: once the volume is back, a Publish press finds the bundle at the report's key, verifies
+  it and records the key again without writing anything.
+
 ## Cleanup asks first
 
 Reclaim, Remove, Cancel, Reschedule, and the startup pass that reclaims a worktree whose agent
@@ -506,6 +635,7 @@ GET    /api/archives/:archiveKey/artifacts/:artifactId
 POST   /api/archives/:archiveKey/artifacts/:artifactId/open
 DELETE /api/archives/:archiveKey
 POST   /mcp/scouts/submit
+POST   /api/reports/:id/publish
 ```
 
 `kind` filters to one kind. An unreadable bundle has no readable kind, so a kind filter

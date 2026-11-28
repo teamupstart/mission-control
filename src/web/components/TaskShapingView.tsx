@@ -1,27 +1,79 @@
 import { useRef, useState } from "react";
-import { SHAPING_LIMIT_RANGES, shapingViewHasRevisions, type ShapingConfigView, type ShapingIntent, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import {
+  SHAPING_LIMIT_RANGES,
+  shapingViewHasRevisions,
+  type DiscoveredShaper,
+  type ShapingConfigView,
+  type ShapingFolderStatus,
+  type ShapingIntent,
+  type ShapingReferenceStatus,
+  type ShapingSignInView,
+} from "@shared/shaping.ts";
+import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import {
   moveIntent,
   shaperEnvironmentStatus,
   shaperReach,
+  shaperSignInRow,
   shapingList,
+  signInConnectionKey,
+  signInRowKey,
+  unusedSignIns,
   shapingStageLockKey,
   type ShapingListGroup,
   type ShapingListRow,
   type ShapingWriteOutcome,
+  type ShaperSignInControl,
+  type ShaperSignInRow,
 } from "../lib/shaping-settings.ts";
 import { EarlierOutcomes, ShapingImportDialog, ShapingTestDialog, type ShapingTestRunner } from "./TaskShapingDialogs.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported", { title: string; hint: string }> = {
+const STAGE_COPY: Record<NonNullable<ShapingListGroup["stage"]> | "unsupported" | "folder", { title: string; hint: string }> = {
   gather: { title: "Gather", hint: "Read each repository and report facts and a summary. They run first." },
   select: { title: "Select", hint: "Choose guidance for the task, with what the gatherers found." },
+  route: { title: "Route", hint: "Choose skills for the task once guidance is selected. Turn one names them, and Mission Control prompts the after-work ones when the work is complete." },
   unsupported: { title: "Not supported by this build", hint: "Kept exactly as stored and never called. Switch one off or remove it." },
+  folder: {
+    title: "Found on disk, not run",
+    hint: "Shapers in the shapers folder that cannot run, and why. The folder is read again at the next dispatch.",
+  },
 };
+
+const FOLDER_STATE_LABEL = { ok: "Found on disk", invalid: "Invalid", refused: "Refused", shadowed: "Shadowed" } as const;
+const NO_DISCOVERED: readonly DiscoveredShaper[] = [];
 
 const NO_LOCKS: ReadonlySet<string> = new Set();
 
 const TRANSPORT_LABEL = { command: "Command", mcp: "MCP", http: "HTTP", builtin: "Built in" } as const;
+
+/**
+ * What the panel holds for shaper sign-in: whether the flag is on, the daemon's sign-in list,
+ * the authorization links this window started, and the actions. The links live in the panel's
+ * state alone, so a reload drops them.
+ */
+export interface ShaperSignInProps {
+  enabled: boolean;
+  signIns: readonly ShapingSignInView[];
+  /** The authorization URL of each pending sign-in this window started, by connection id. */
+  links: Readonly<Record<string, string>>;
+  /**
+   * Requests awaiting their answer: a row's Sign in under `signInRowKey`, and any Cancel sign-in
+   * or Sign out under the connection's `signInConnectionKey`, whichever row or entry sent it.
+   */
+  busy: ReadonlySet<string>;
+  /** The latest refusal under each control: a row's under its row key, an unused entry's under its connection key. */
+  errors: Readonly<Record<string, string>>;
+  onSignIn: (shaper: string, key: string) => void;
+  onSignOut: (connection: string, key: string) => void;
+  /** Opens a held sign-in link again; a refusal for it goes under `key`. */
+  onOpen: (connection: string, url: string, key: string) => void;
+}
+
+const SIGN_IN_OFF: ShaperSignInProps = {
+  enabled: false, signIns: [], links: {}, busy: new Set(), errors: {},
+  onSignIn: () => {}, onSignOut: () => {}, onOpen: () => {},
+};
 
 /**
  * Settings > Task shaping, drawn from props alone so a static render can show any state. The
@@ -46,9 +98,16 @@ export function TaskShapingView({
   onTest,
   repositories,
   readFolderIds,
+  discovered = NO_DISCOVERED,
+  folder = null,
+  signIn = SIGN_IN_OFF,
 }: {
   /** Null while the config has not arrived. */
   config: ShapingConfigView | null;
+  /** The shapers folder's entries, as the daemon's latest scan reported them. */
+  discovered?: readonly DiscoveredShaper[];
+  /** Where the folder scan looked, or null when the daemon has not said. */
+  folder?: ShapingFolderStatus | null;
   references?: ShapingReferenceStatus;
   pending?: ShapingIntent | null;
   errors?: Record<string, string>;
@@ -75,6 +134,8 @@ export function TaskShapingView({
    * stays switched off rather than taking over.
    */
   readFolderIds?: () => Promise<readonly string[] | null>;
+  /** Shaper sign-in's state and actions. Without it every marked row reads as switched off. */
+  signIn?: ShaperSignInProps;
 }): React.JSX.Element {
   const [importing, setImporting] = useState(false);
   // Numbers each opening of the import dialog. A save answers after the stream may already have
@@ -102,11 +163,11 @@ export function TaskShapingView({
       ? { ...current, folder: ids === null ? null : ids.includes(entry.id) } : current));
   };
   const busy = !ready || pending !== null || config === null;
-  const groups = config ? shapingList(config) : [];
+  const groups = config ? shapingList(config, discovered) : [];
   const listed = new Set(groups.flatMap((group) => group.rows.map((entry) => `row:${entry.id}`)));
   const orphans = config === null ? [] : [...new Set([...Object.keys(errors), ...Object.keys(earlier)])]
     .filter((key) => key.startsWith("row:") && !listed.has(key)).sort();
-  const count = config?.shapers.length ?? 0;
+  const count = (config?.shapers.length ?? 0) + (config ? discovered.length : 0);
 
   const row = (entry: ShapingListRow, group: ShapingListGroup, at: number): React.JSX.Element => {
     if (entry.duplicate) {
@@ -130,6 +191,9 @@ export function TaskShapingView({
     }
     const key = `row:${entry.id}`;
     const shaper = entry.shaper;
+    const found = entry.origin === "discovered";
+    // A shadowed folder shaper has nothing to switch: its id's stored choice is the registered one's.
+    const switchable = !(found && entry.folderState === "shadowed");
     const environment = shaper ? shaperEnvironmentStatus(shaper, references) : [];
     // An entry that cannot run may only be switched off, never on (`plan.md`).
     const canSwitch = entry.on || entry.problem === null;
@@ -138,25 +202,40 @@ export function TaskShapingView({
     // A write that changed it was accepted, but the revision it now has has not reached the view:
     // any action here would name an older one and be refused, so none is offered until it arrives.
     const awaitingUpdate = awaitingRevision.has(`row:${entry.id}`);
-    const unbound = entry.revision === null || awaitingUpdate;
+    // A folder shaper has no stored revision: switching it on is bound to the manifest's hash instead.
+    // Switching off needs no hash, so a shaper stored on whose folder is now refused, or whose
+    // manifest can no longer be read, can always be switched off.
+    const unbound = found ? entry.manifest === null && !entry.on : entry.revision === null || awaitingUpdate;
     // This row's own write still awaits its answer: none of its writes is offered until it arrives.
     const rowBusy = busy || locked.has(key);
     // A move in this stage still awaits its answer: no other row here moves until it arrives.
     const stageBusy = rowBusy || (group.stage !== null && locked.has(shapingStageLockKey(group.stage)));
     // A confirmation opened for an earlier definition of this id does not apply to its replacement.
     const confirmRemove = removing?.id === entry.id && removing.revision === entry.revision;
+    // A shadowed folder shaper is never the one a sign-in starts for: the registered shaper of the
+    // same id is, so that row alone offers the controls.
+    const signInRow = shaper && !(found && entry.folderState === "shadowed")
+      ? shaperSignInRow(shaper, entry.id, signIn) : null;
     return (
       <div className="shaping-row" key={entry.id} data-anchor={`task-shaping/${entry.id}`} role="group" aria-label={entry.label}>
         <div className="shaping-row-copy">
           <div className="shaping-row-title">
             <strong>{entry.label}</strong>
-            <code className="shaping-row-id">{entry.id}</code>
-            <span className="shaping-chip">Registered</span>
+            {/* A folder shaper whose manifest was not read is labelled by its id: it is not shown twice. */}
+            {entry.label !== entry.id && <code className="shaping-row-id">{entry.id}</code>}
+            <span className="shaping-chip">{found ? "Found on disk" : "Registered"}</span>
+            {found && entry.folderState !== "ok" && entry.folderState !== null && (
+              <span className={`shaping-chip is-${entry.folderState}`}>{FOLDER_STATE_LABEL[entry.folderState]}</span>
+            )}
             {shaper && <span className="shaping-chip">{TRANSPORT_LABEL[shaper.transport.type]}</span>}
           </div>
+          {found && entry.path && (
+            <p className="shaping-row-path">Path: <code>{entry.path}</code></p>
+          )}
           {shaper && shaperReach(shaper).map((line) => (
             <p className="shaping-row-reach" key={line.label + ":" + line.value}>{line.label + ": " + line.value}</p>
           ))}
+          {signInRow && <ShaperSignIn id={entry.id} label={entry.label} row={signInRow} signIn={signIn} />}
           {environment.length > 0 && (
             <ul className="shaping-env" aria-label={`Environment variables ${entry.label} names`}>
               {environment.map(({ name, status }) => (
@@ -168,6 +247,9 @@ export function TaskShapingView({
             </ul>
           )}
           {entry.problem && <p className="shaping-row-problem">{entry.problem}</p>}
+          {entry.startsOff && (
+            <p className="shaping-row-note">Its manifest asks to start switched off. Switch it on to run it.</p>
+          )}
           {errors[key] && <p role="alert">{errors[key]}</p>}
           <EarlierOutcomes messages={earlier[key]} />
           {entry.repeats > 0 && (
@@ -185,16 +267,16 @@ export function TaskShapingView({
           )}
         </div>
         <div className="shaping-row-actions">
-          {group.stage !== null && (
+          {group.stage !== null && !found && (
             <>
               <Tooltip label="Run it earlier in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} up`}
-                  disabled={stageBusy || unbound || at === 0}
+                  disabled={stageBusy || unbound || !config || moveIntent(config, entry.id, -1) === null}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, -1); if (intent) void onSet(intent, key); }}>↑</button>
               </Tooltip>
               <Tooltip label="Run it later in its stage">
                 <button type="button" className="btn btn-ghost shaping-move" aria-label={`Move ${entry.label} down`}
-                  disabled={stageBusy || unbound || at === group.rows.length - 1}
+                  disabled={stageBusy || unbound || !config || moveIntent(config, entry.id, 1) === null}
                   onClick={() => { const intent = config && moveIntent(config, entry.id, 1); if (intent) void onSet(intent, key); }}>↓</button>
               </Tooltip>
               <Tooltip label="Run this shaper once against a repository and see what it would add. Nothing is saved.">
@@ -205,7 +287,7 @@ export function TaskShapingView({
               </Tooltip>
             </>
           )}
-          {confirmRemove ? (
+          {found ? null : confirmRemove ? (
             <>
               <Tooltip label="Keep this shaper">
                 <button type="button" className="btn btn-ghost" onClick={() => setRemoving(null)}>Keep</button>
@@ -221,21 +303,25 @@ export function TaskShapingView({
                 onClick={() => confirmRemoval(entry)}>Remove</button>
             </Tooltip>
           )}
-          <Tooltip label={awaitingUpdate
+          {switchable && <Tooltip label={found && !unbound && canSwitch && entry.problem === null
+            ? `Switch ${entry.label} ${entry.on ? "off" : "on"} immediately in every window. This choice is stored and always wins over the folder's manifest.`
+            : awaitingUpdate
             ? "Waiting for the update that carries this shaper's latest change."
             : unbound
             ? "Unavailable until the daemon says which definition this is. Reload the page."
             : !canSwitch
-            ? "This build cannot run it, so it cannot be switched on."
+            ? found ? "It cannot run as it is on disk, so it cannot be switched on." : "This build cannot run it, so it cannot be switched on."
             : entry.problem !== null
-              ? "Stored on, but this build never runs it. Switch it off."
+              ? found ? "Stored on, but it cannot run as it is on disk. Switch it off." : "Stored on, but this build never runs it. Switch it off."
               : `Switch ${entry.label} ${entry.on ? "off" : "on"} immediately in every window.`}>
             <button type="button" className={`settings-grant ${entry.on ? "is-on" : "is-off"}`}
               disabled={rowBusy || !canSwitch || unbound} aria-label={`${entry.label}: ${entry.on ? "on" : "off"}`} aria-pressed={entry.on}
-              onClick={() => void onSet({ kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision ?? undefined }, key)}>
+              onClick={() => void onSet(found
+                ? { kind: "enable", id: entry.id, enabled: !entry.on, manifest: entry.manifest ?? undefined }
+                : { kind: "enable", id: entry.id, enabled: !entry.on, expect: entry.revision ?? undefined }, key)}>
               <span className="settings-grant-dot" aria-hidden />{entry.on ? "On" : "Off"}
             </button>
-          </Tooltip>
+          </Tooltip>}
         </div>
       </div>
     );
@@ -311,9 +397,10 @@ export function TaskShapingView({
           <p className="feature-flag-empty">No shapers registered. Import a manifest to add one.</p>
         )}
         {config !== null && count > 0 && groups.map((group) => {
-          const copy = STAGE_COPY[group.stage ?? "unsupported"];
+          const copyKey = group.stage ?? (group.folder ? "folder" : "unsupported");
+          const copy = STAGE_COPY[copyKey];
           return (
-            <div className="shaping-stage" key={group.stage ?? "unsupported"} role="group" aria-label={copy.title}>
+            <div className="shaping-stage" key={copyKey} role="group" aria-label={copy.title}>
               <div className="shaping-stage-head">
                 <h4>{copy.title}</h4>
                 <p>{copy.hint}</p>
@@ -324,6 +411,15 @@ export function TaskShapingView({
             </div>
           );
         })}
+        {signIn.enabled && <UnusedSignIns signIn={signIn} />}
+        {folder && (
+          <p className="settings-hint shaping-folder-note">
+            To install a shaper without a click, put a folder holding its <code>shaper.json</code> in{" "}
+            <code>{folder.path}</code>. It runs from the next dispatch unless its manifest says{" "}
+            <code>&quot;enabled&quot;: false</code>. Switch it on or off here and that choice always wins.
+            {folder.ignored > 0 && ` ${folder.ignored} more ${folder.ignored === 1 ? "entry was" : "entries were"} not read: at most 32 are.`}
+          </p>
+        )}
       </div>
       {importing && config && (
         <ShapingImportDialog config={config} busy={busy || locked.has("import")} locked={locked} saving={pending?.kind === "upsert"} error={errors.import ?? null} earlier={earlier.import} subject={outcomeSubjects.import ?? null}
@@ -343,6 +439,117 @@ export function TaskShapingView({
           repositories={repositories} onTest={onTest} onClose={() => setTesting(null)} />
       )}
     </section>
+  );
+}
+
+/**
+ * A marked row's sign-in: its state in one sentence, the daemon's reason when it gave one, and
+ * the controls that state offers. Every control names the shaper in its `aria-label`.
+ */
+function ShaperSignIn({ id, label, row, signIn }: {
+  id: string;
+  label: string;
+  row: ShaperSignInRow;
+  signIn: ShaperSignInProps;
+}): React.JSX.Element {
+  const copy = useCopyFeedback({ resetOn: row.kind === "status" ? row.link : null });
+  const name = `Sign-in for ${label}`;
+  if (row.kind === "off") {
+    return (
+      <div className="shaping-sign-in is-off" role="group" aria-label={name}>
+        <p className="shaping-sign-in-state" role="status">{row.text}</p>
+      </div>
+    );
+  }
+  const key = signInRowKey(id);
+  const connection = row.connection;
+  const connectionKey = connection ? signInConnectionKey(connection) : null;
+  // Signing in holds the row. Cancelling and signing out hold the connection, so a request from
+  // any row sharing it makes every one of them wait.
+  const busy = signIn.busy.has(key) || (connectionKey !== null && signIn.busy.has(connectionKey));
+  const error = signIn.errors[key] ?? (connectionKey ? signIn.errors[connectionKey] : undefined);
+  const signOut = (): void => { if (connection) signIn.onSignOut(connection, key); };
+  const control = (control: ShaperSignInControl): React.JSX.Element => {
+    switch (control) {
+      case "sign-in":
+        return (
+          <Tooltip key={control} label={row.state === "pending"
+            ? "Start the sign-in again from this window. The link the earlier one opened stops working."
+            : "Open the server's sign-in page in your browser. Mission Control keeps the token; the browser never sees it."}>
+            <button type="button" className="btn" aria-label={`Sign in ${label}`} disabled={busy}
+              onClick={() => signIn.onSignIn(id, key)}>Sign in</button>
+          </Tooltip>
+        );
+      case "open":
+        return (
+          <Tooltip key={control} label="Open the sign-in page in your browser again">
+            <button type="button" className="btn" aria-label={`Open the sign-in page for ${label}`}
+              onClick={() => { if (row.link && connection) signIn.onOpen(connection, row.link, key); }}>Open the sign-in page</button>
+          </Tooltip>
+        );
+      case "copy":
+        return (
+          <Tooltip key={control} label={copy.copied ? COPY_FEEDBACK_LABEL : "Copy the sign-in link, to open it in another browser"}>
+            <button type="button" className="btn btn-ghost" aria-label={`Copy the sign-in link for ${label}`}
+              onClick={() => { if (row.link) void copy.copy(row.link); }}>{copy.copied ? COPY_FEEDBACK_LABEL : "Copy link"}</button>
+          </Tooltip>
+        );
+      case "cancel":
+        return (
+          <Tooltip key={control} label="Stop waiting for this sign-in. Its link stops working.">
+            <button type="button" className="btn btn-ghost" aria-label={`Cancel sign-in for ${label}`} disabled={busy || !connection}
+              onClick={signOut}>Cancel sign-in</button>
+          </Tooltip>
+        );
+      case "sign-out":
+        return (
+          <Tooltip key={control} label="Remove this sign-in's tokens from Mission Control and revoke them">
+            <button type="button" className="btn btn-ghost" aria-label={`Sign out ${label}`} disabled={busy || !connection}
+              onClick={signOut}>Sign out</button>
+          </Tooltip>
+        );
+    }
+  };
+  return (
+    <div className={`shaping-sign-in is-${row.state}`} role="group" aria-label={name}>
+      <p className="shaping-sign-in-state" role="status">{row.text}</p>
+      {row.reason && <p className="shaping-sign-in-reason">{row.reason}</p>}
+      <div className="shaping-sign-in-actions">{row.controls.map(control)}</div>
+      {error && <p role="alert">{error}</p>}
+      {copy.error && <p role="alert">{copy.error}</p>}
+    </div>
+  );
+}
+
+/** Sign-ins that no known shaper names, such as one whose shaper was removed: each can be signed out. */
+function UnusedSignIns({ signIn }: { signIn: ShaperSignInProps }): React.JSX.Element | null {
+  const unused = unusedSignIns(signIn.signIns);
+  if (unused.length === 0) return null;
+  return (
+    <div className="shaping-stage shaping-unused-sign-ins" role="group" aria-label="Sign-ins no shaper uses">
+      <div className="shaping-stage-head">
+        <h4>Sign-ins no shaper uses</h4>
+        <p>No shaper names these now, so they are not renewed. Sign out to remove their tokens.</p>
+      </div>
+      <ul>
+        {unused.map((entry) => {
+          const key = signInConnectionKey(entry.id);
+          return (
+            <li key={entry.id}>
+              <div className="shaping-unused-copy">
+                <code>{entry.url}</code>
+                <span>Scope {entry.scope}</span>
+                {signIn.errors[key] && <p role="alert">{signIn.errors[key]}</p>}
+              </div>
+              <Tooltip label="Remove this sign-in's tokens from Mission Control and revoke them">
+                <button type="button" className="btn btn-ghost" aria-label={`Sign out ${entry.url} (${entry.scope})`}
+                  disabled={signIn.busy.has(key)} onClick={() => signIn.onSignOut(entry.id, key)}>Sign out</button>
+              </Tooltip>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

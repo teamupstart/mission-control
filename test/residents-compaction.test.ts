@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { codexResidentCompactionArgs } from "../src/server/harness/codex/compaction.ts";
@@ -11,9 +10,10 @@ import { Registry, type SessionCompacted } from "../src/server/registry.ts";
 import { taskRepoManifest } from "../src/server/repo-manifest.ts";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 test("Codex compaction refuses an oversized native model catalog", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "resident-model-window-bound-"));
+  const home = tempDir("resident-model-window-bound-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "models_cache.json");
   const entry = { slug: "test-model", context_window: 100_000, effective_context_window_percent: 100 };
@@ -25,7 +25,7 @@ test("Codex compaction refuses an oversized native model catalog", (t) => {
 });
 
 test("Codex's backstop uses the native effective window and refuses absent or malformed metadata", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "resident-model-window-"));
+  const home = tempDir("resident-model-window-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "models_cache.json");
   writeFileSync(path, JSON.stringify({ models: [{ slug: "test-model", context_window: 272_000, effective_context_window_percent: 95 }] }));
@@ -93,7 +93,7 @@ test("a driver's compaction reaches the registry's internal listeners, and only 
   const registry = new Registry();
   const heard: SessionCompacted[] = [];
   const unsubscribe = registry.onCompacted((event) => heard.push(event));
-  registry.registerSdkSession({ id: "sdk:compacting", agent: "claude", name: "compacting", cwd: tmpdir() });
+  registry.registerSdkSession({ id: "sdk:compacting", agent: "claude", name: "compacting", cwd: testTempRoot() });
   registry.applyDriverEvent("sdk:compacting", { kind: "compacted" });
   registry.applyDriverEvent("sdk:unknown", { kind: "compacted" });
   assert.deepEqual(heard, [{ sessionId: "sdk:compacting" }]);

@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SubmitEnsembleResultSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: a submission is the ONE reliable "ready for comparison" signal - a hook falling
@@ -15,7 +15,7 @@ import { SubmitEnsembleResultSchema } from "../src/shared/protocol.ts";
  * fails leaves the member active with no invented artifact.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-submit-"));
+const home = tempDir("mission-ensemble-submit-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

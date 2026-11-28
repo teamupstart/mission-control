@@ -1,7 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { PRIMARY_ACTION_ROUTES, PRIMARY_FEATURES, matchPrimaryAction } from "../src/shared/telemetry-sources/primary-actions.ts";
@@ -9,8 +8,9 @@ import { ACTION_RESULT_SCHEMA } from "../src/shared/telemetry-sources/actions.ts
 import { ERROR_SCHEMA, FEATURE_EVENT, FEATURE_SCHEMA } from "../src/shared/telemetry-sources/experience.ts";
 import { resolveOperationContext } from "../src/shared/telemetry-ingress.ts";
 import { TELEMETRY_LIMITS } from "../src/shared/telemetry.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-actions-"));
+const home = tempDir("mission-actions-");
 process.env.MISSION_HOME = home;
 const { openDb, closeDb } = await import("../src/server/db.ts");
 const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
@@ -175,7 +175,7 @@ test("every mutating HTTP/MCP operation has exactly one phase owner or explicit 
   const accounted = [...PRIMARY_ACTION_ROUTES, ...WORKFLOW_ACTION_ROUTES, ...ACTION_EXCLUSIONS].map(([method, path]) => canonical(method, path));
   assert.equal(new Set(accounted).size, accounted.length, "no route may count in two phases");
   // Route groups registered from their own module are part of the same surface.
-  const source = ["routes.ts", "shaping/routes.ts"]
+  const source = ["routes.ts", "shaping/routes.ts", "shaping/sign-in/routes.ts", "report-routes.ts"]
     .map((file) => readFileSync(new URL(`../src/server/${file}`, import.meta.url), "utf8")).join("\n");
   const routes = [...source.matchAll(/app\.(post|put|patch|delete)\(\s*"([^"]+)"/g)].map((m) => canonical(m[1]!, m[2]!));
   assert.deepEqual(routes.filter((r) => !accounted.includes(r)), [], "new operations must declare ownership or an exclusion");

@@ -1,11 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkTask as baseTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a task row that says `running` long after its agent is gone.
 //
@@ -28,7 +27,7 @@ import type { Task } from "../src/shared/types.ts";
 // existing, confirmed Clean up - the same policy `complete` states ("Mark done must not
 // silently discard unpushed work").
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-orphan-"));
+const home = tempDir("mission-task-orphan-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
@@ -261,4 +260,27 @@ test("startup null-binding recovery does not settle work created or rebound duri
   r.applyDiscovery([]);
   assert.equal(r.getTask("fresh-running")!.status, "running");
   assert.equal(r.getTask("startup-rebound")!.status, "running");
+});
+
+test("startup still settles a sessionless row that was only given its work unit id before the first sweep", async () => {
+  // A row the previous daemon left running with no session, filed before work unit ids. A
+  // dispatch or assign reaching it before discovery's first sweep gives it an id first, then
+  // leaves it alone: a dispatch of a running task is a no-op and an assign refuses it. That
+  // id-only write is not this daemon's lifecycle touching the row, so the restart
+  // reconciliation must still recognize and settle it.
+  for (const operation of ["dispatch", "assign"] as const) {
+    const id = `null-${operation}-work-unit`;
+    const r = new Registry();
+    r.upsertTask(mkTask({ id, status: "running", sessionId: null, workUnitId: null }));
+    const tasks = new TaskManager(r);
+    if (operation === "dispatch") await tasks.dispatch(id);
+    else assert.equal((await tasks.assign(id, "no-such-session")).ok, false);
+    assert.equal(r.getTask(id)!.status, "running", `${operation} left the row as it was`);
+    assert.match(String(r.getTask(id)!.workUnitId), /^wu_/, `${operation} gave it an id`);
+    r.applyDiscovery([]);
+    const task = r.getTask(id)!;
+    assert.equal(task.status, "failed", `${operation}: the inherited row is still reconciled`);
+    assert.match(task.error!, /session ended with no outcome recorded/);
+    assert.match(String(task.workUnitId), /^wu_/, `${operation}: and it keeps the id it was given`);
+  }
 });

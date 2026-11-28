@@ -1,11 +1,11 @@
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 /**
  * Settings > Storage, driven the way a person drives it.
@@ -24,7 +24,6 @@ async function shoot(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true, animations: "disabled" });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/storage/${name}.png`);
 }
 
@@ -180,7 +179,7 @@ test("a failed Back up now appears in Problems and clears on the next success", 
   await openTab(dashboard, "Backups");
 
   // A backup root the daemon refuses to write into: a symlink in place of the directory.
-  const elsewhere = mkdtempSync(join(tmpdir(), "mission-storage-elsewhere-"));
+  const elsewhere = tempDir("mission-storage-elsewhere-");
   try {
     rmSync(backupRoot(daemon), { recursive: true, force: true });
     symlinkSync(elsewhere, backupRoot(daemon));

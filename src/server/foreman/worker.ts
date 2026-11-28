@@ -1,6 +1,10 @@
+import { backgroundEffortEnabled } from "./background-effort.ts";
 import { isActiveTask } from "@shared/task-status.ts";
-import { isShippingTaskKind } from "@shared/task.ts";
-import type { PlanPublicationContext } from "@shared/plan-publication.ts";
+import {
+  heldGapRecoveryApplies,
+  planStartsWorkflowOnCompletion,
+  type PlanPublicationContext,
+} from "@shared/plan-publication.ts";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,11 +23,13 @@ import {
 } from "@shared/protocol.ts";
 import { taskCompletionContract } from "@shared/task-completion.ts";
 import { planPublicationStillCurrent, withPlanPublicationGuard } from "./plan-publication.ts";
+import { recordCompletionDecision } from "./decision-log.ts";
 import type {
   AgentType,
   PromptedCompletionGap,
   PromptedDirectHandoffKind,
   ReviewItem,
+  SessionIntentGuard,
   Session,
   SessionDiff,
   SessionQueue,
@@ -44,7 +50,7 @@ import {
 import { setLlmSpendSink } from "../llm/spend.ts";
 import { ForemanHealthTracker, ForemanHealthPublisher } from "./health.ts";
 import type { ForemanHealthOperation } from "@shared/foreman-health.ts";
-import { reviewModel, reviewSession } from "./review.ts";
+import { reviewSession } from "./review.ts";
 import { FOREMAN_MODEL_ROLES, resolveForemanRunner, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
@@ -68,7 +74,7 @@ import type { ReviewContext, Verdict } from "./verdict.ts";
 import { cheapActionOf, classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
-import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { continuationSource, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
@@ -82,6 +88,7 @@ import {
 import type { QueueConfig } from "./queue-machine.ts";
 import {
   PromptedFailureTracker,
+  PromptedHoldLog,
   decidePromptedWrapup,
   planPromptedWrapup,
   promptedVerificationHistory,
@@ -114,13 +121,14 @@ import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { BacklogPlannerCircuit } from "./planner-circuit.ts";
-import { verifyItem, verifyModel } from "./queue-verify.ts";
+import { verifyItem } from "./queue-verify.ts";
 import type { RegisteredEvidenceInput, RegisteredEvidenceItem } from "./queue-prompt.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { DEFAULT_LLM_RUNNER_ID, llmRunner } from "../llm/index.ts";
 import { configureClaudeRunnerTransport } from "../llm/claude.ts";
 import { configureCodexRunnerTransport } from "../llm/codex.ts";
-import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
+import { resolveLlmEffort, type ClaudeTransport, type CodexTransport, type LlmRunnerId } from "@shared/llm.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 import { installForemanShutdown } from "./shutdown.ts";
 import {
   drainCompletionClaim,
@@ -255,6 +263,21 @@ const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
 /** Consecutive prompted-wrap-up attempts that got nowhere - see PromptedFailureTracker. */
 const promptedFailures = new PromptedFailureTracker();
+/** One pending-handoff line per held generation; see `PromptedHoldLog`. */
+const promptedHolds = new PromptedHoldLog();
+
+/** Log a held generation once, and forget holds that no longer exist. */
+function notePromptedHold(session: Session, live: readonly Session[], candidate: PromptedCandidate): void {
+  promptedHolds.retainOnly(new Set(live.map((s) => s.agentSessionId ?? s.id)));
+  const cycle = session.workCycle;
+  if (!cycle) return;
+  if (candidate.kind !== "skip" || !candidate.operatorHold) {
+    promptedHolds.forget(cycle.logicalKey);
+    return;
+  }
+  if (!promptedHolds.shouldLog(cycle.logicalKey, cycle.generation)) return;
+  log(`${session.name}: prompted automatic wrap-up pending - ${candidate.why}; send Resume automatic handoff to release it`);
+}
 
 /** Pre-claim reviewer failures are not recovery sends, so bound them separately. */
 const SHIP_RECOVERY_REVIEW_FAILURE_CAP = 3;
@@ -296,16 +319,30 @@ async function consumePromptedCycle(
     promptRevision: candidate.promptRevision,
     episodeKey: candidate.episodeKey,
   };
+  // One bounded value for both the durable write and its audit line, so the log can never
+  // carry a gap id or count the stored decision does not.
+  const bounded = boundedDecision(decision);
   try {
     await client.consumePromptedGeneration(
       session.id,
       candidate.logicalKey,
       candidate.generation,
       expectedIntent,
-      boundedDecision(decision),
+      bounded,
       opts,
     );
     promptedFailures.onConsumed(candidate.logicalKey);
+    noteDecisionLogWrite(recordCompletionDecision({
+      at: Date.now(),
+      sessionId: session.id,
+      sessionName: session.name,
+      taskKind: session.task?.kind ?? null,
+      generation: candidate.generation,
+      episodeKey: candidate.episodeKey,
+      outcome: bounded.outcome,
+      summary: bounded.summary,
+      gaps: bounded.gaps,
+    }));
     return true;
   } catch (err) {
     const failures = promptedFailures.onFailure(candidate.logicalKey, candidate.generation);
@@ -315,6 +352,21 @@ async function consumePromptedCycle(
     );
     return false;
   }
+}
+
+/** The last decision-log write failure reported, so a persistent one is logged once. */
+let decisionLogFailure: string | null = null;
+
+/**
+ * Surface a `foreman.log` write failure without failing the tick that already consumed the
+ * generation. Logged on the first failure, on a different failure, and on recovery - a CHANGE
+ * is news, the same unwritable directory on every decision is not.
+ */
+function noteDecisionLogWrite(error: string | null): void {
+  if (error === decisionLogFailure) return;
+  if (error) log(`could not record a completion decision in foreman.log: ${error}`);
+  else log("recording completion decisions in foreman.log again");
+  decisionLogFailure = error;
 }
 
 /** This process's identity for the lease. New per start, by design. */
@@ -839,9 +891,13 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     }
     const identity = backlogPlanner.health(now);
     if (!identity) return false;
+    const effort = await roleEffort(client, cfg, "backlog", identity.runner, identity.model);
     const result = await workerHealth.observe(
       { operation: "backlog", runner: identity.runner, model: identity.model },
-      () => planBacklog(action.tasks, identity.model, identity.runner),
+      () => planBacklog(
+        action.tasks, identity.model, identity.runner,
+        effort,
+      ),
       // planBacklog builds zero/one-task plans locally. Observe every failure, but only
       // a real provider call can establish recovery from a previous model error.
       { recoverOnSuccess: action.tasks.length >= 2 },
@@ -1310,7 +1366,15 @@ async function resolveShipRecoveryCandidate(
   deliveryRoute: ShipRecoveryDeliveryRoute,
 ): Promise<ShipRecoveryCandidate | null> {
   const task = session.task;
-  if (!task || !isShippingTaskKind(task.kind)) return null;
+  if (!task) return null;
+  // A plan qualifies only while its `foreman_complete` workflow is still waiting on Foreman's
+  // claim. The ownership read is live, and a failed read holds: it never becomes permission.
+  let planStartsWorkflow = false;
+  if (task.kind === "plan" && isActiveTask(task.status)) {
+    const publication = await client.planPublicationContext(session.id).catch(() => null);
+    planStartsWorkflow = planStartsWorkflowOnCompletion(task, publication);
+  }
+  if (!heldGapRecoveryApplies(task.kind, planStartsWorkflow)) return null;
 
   // Queue and Workflow are durable owners outside the card snapshot. Failure to read
   // either holds this candidate: missing evidence can never become permission to type.
@@ -1328,7 +1392,9 @@ async function resolveShipRecoveryCandidate(
   const diff = await client.diff(session.id).catch(() => null);
   if (!diff?.ok) return null;
 
+  const previous = continuationSource(goal);
   const input = {
+    earlierContinuationEvidence: Boolean(previous && [...evidence.images, ...evidence.artifacts].some(item => item.episodeKey === previous)),
     session,
     queue,
     episodeKey: resolvedSessionIntent(goal)?.episodeKey ?? null,
@@ -1338,6 +1404,7 @@ async function resolveShipRecoveryCandidate(
     workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
     workflowEvidenceEligible: evidence.registrationEligible,
     hasTaskOwnedOpenPr: followupPrs(session).length > 0,
+    planStartsWorkflowOnCompletion: planStartsWorkflow,
     diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
     featureEnabled: cfg.keepShipTasksMoving,
     mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
@@ -1406,7 +1473,7 @@ async function runShipShepherd(
             reviewFailure = "the bounded task evidence could not be read safely";
           } else {
             const objective = goal.objective;
-            const reviewed = await observeModel("review", cfg, session, () => reviewShipRecovery({
+            const reviewed = await observeModel("review", cfg, session, async () => reviewShipRecovery({
               objective,
               focus: goal.focus,
               diff: diff.patch,
@@ -1419,7 +1486,7 @@ async function runShipShepherd(
               workflowEvidenceEligible: candidate.workflowEvidenceEligible,
               idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
               priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
-            }, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review), "ship-recovery");
+            }, ...await roleModelOptions(client, cfg, "review")), "ship-recovery");
             if (reviewed.kind === "failed") {
               reviewFailure = reviewed.reason;
             } else if (reviewed.verdict.action === "escalate") {
@@ -1937,7 +2004,9 @@ async function processTarget(
   }
 
   const qcfg = queueConfig(cfg);
-  const intent = await client.goal(fresh.id).catch(() => null);
+  const goalRead = await client.goal(fresh.id).then((goal) => ({ goal }), () => null);
+  const intent = goalRead?.goal ?? null;
+  const actions = queueActions(client, cfg, resolvedSessionIntent(intent));
 
   const action = decideQueueTick({
     session: fresh,
@@ -1963,6 +2032,9 @@ async function processTarget(
     return true;
   }
 
+  if (!goalRead && (action.kind === "ask-wrapup" || action.kind === "skip-wrapup" || action.kind === "auto-wrapup")) {
+    return false;
+  }
   if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
     const completionIntent = action.kind === "auto-wrapup"
       ? action.intentGuard
@@ -1989,7 +2061,7 @@ async function processTarget(
       });
       if (block) {
         const outcome = await applyQueueAction(
-          queueActions(client, cfg),
+          actions,
           fresh,
           { kind: "skip-wrapup", queue: action.queue, reason: block.reason },
           qcfg,
@@ -2021,7 +2093,7 @@ async function processTarget(
         // so direct shipping must not race it on the same branch. Degrade to the Ship it?
         // card and let the operator choose which path owns the completion.
         const outcome = await applyQueueAction(
-          queueActions(client, cfg),
+          actions,
           fresh,
           { kind: "ask-wrapup", queue: action.queue },
           qcfg,
@@ -2039,7 +2111,7 @@ async function processTarget(
   ) return false;
 
   const outcome = await applyQueueAction(
-    queueActions(client, cfg),
+    actions,
     fresh,
     action,
     qcfg,
@@ -2078,20 +2150,27 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
   };
 }
 
+function revalidatedPacket(staged: WorkflowSessionEvidenceList, episodeKey: string) {
+  const result = staged.continuation;
+  return result?.status === "revalidated" && result.episodeKey === episodeKey ? result : null;
+}
+
 /** Compare the admitted registration, including identity and bytes, across a verifier call.
  * Ignore capture timestamps: reserving the same proof does not change what was judged.
  * Other episodes and coverage-only edits are not inputs to this completion verifier.
  */
 function promptedEvidenceSnapshot(evidence: WorkflowSessionEvidenceList, episodeKey: string): string {
+  const packet = revalidatedPacket(evidence, episodeKey);
   const items = [...evidence.images, ...evidence.artifacts]
-    .filter(item => item.episodeKey === episodeKey)
+    .filter(item => item.episodeKey === episodeKey || (packet && item.episodeKey === packet.sourceEpisode))
     .sort((a, b) => a.id.localeCompare(b.id))
     .map(({ updatedAt: _updatedAt, ...item }) => item);
-  return JSON.stringify(items);
+  const excludedCount = items.length === 0 ? evidence.images.length + evidence.artifacts.length : 0;
+  return JSON.stringify([evidence.continuation, excludedCount, items]);
 }
 
 /**
- * Admit only evidence registered under the intent episode being verified.
+ * Admit current-episode evidence and an explicitly revalidated continuation packet.
  *
  * A missing stamp is a legacy row, not proof of current work. The split between metadata and
  * content mirrors the prompt's trust fence: only the former may render above it.
@@ -2100,9 +2179,12 @@ function promptedRegisteredEvidence(
   staged: WorkflowSessionEvidenceList,
   episodeKey: string,
 ): RegisteredEvidenceInput {
+  const packet = revalidatedPacket(staged, episodeKey);
+  const admitted = (item: { episodeKey: string | null }) => item.episodeKey === episodeKey ||
+    (packet && item.episodeKey === packet.sourceEpisode);
   const items: Array<{ id: string; item: RegisteredEvidenceItem }> = [
     ...staged.images
-      .filter((item) => item.episodeKey === episodeKey)
+      .filter(admitted)
       .map((item) => ({
         id: item.id,
         item: {
@@ -2120,7 +2202,7 @@ function promptedRegisteredEvidence(
         },
       })),
     ...staged.artifacts
-      .filter((item) => item.episodeKey === episodeKey)
+      .filter(admitted)
       .map((item) => ({
         id: item.id,
         item: {
@@ -2140,6 +2222,8 @@ function promptedRegisteredEvidence(
   ].sort((a, b) => a.item.metadata.createdAt - b.item.metadata.createdAt || a.id.localeCompare(b.id));
   return {
     registrationEligible: staged.registrationEligible,
+    excludedCount: staged.images.length + staged.artifacts.length - items.length,
+    continuationStatus: staged.continuation?.episodeKey === episodeKey ? staged.continuation.status : undefined,
     items: items.map(({ item }) => item), totalCount: items.length, truncated: false,
   };
 }
@@ -2237,6 +2321,7 @@ export async function processPromptedWrapup(
     cfg: pcfg,
     now: Date.now(),
   });
+  notePromptedHold(session, live, candidate);
   if (candidate.kind === "skip") return false;
   if (candidate.kind === "retire") {
     const current = await refreshPromptedCandidate(client, pcfg, candidate);
@@ -2284,7 +2369,7 @@ export async function processPromptedWrapup(
       () => ({ ok: false as const, value: null }),
     ),
     completionContract
-      ? client.workflowEvidence(session.id).then(
+      ? client.workflowEvidence(session.id, true).then(
         (value) => ({ ok: true as const, value }),
         () => ({ ok: false as const, value: null }),
       )
@@ -2386,7 +2471,7 @@ export async function processPromptedWrapup(
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy the durable
   // objective, in light of the latest focus?" is one question, and a second prompt for it
   // would be a second thing to keep true.
-  const result = await withPlanPublicationGuard(planPublication, () => observeModel("verify", cfg, session, () => verifyItem({
+  const result = await withPlanPublicationGuard(planPublication, () => observeModel("verify", cfg, session, async () => verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: candidate.objective,
     focus: candidate.focus,
@@ -2417,7 +2502,7 @@ export async function processPromptedWrapup(
     // handoff only under current workflow ownership; personal sessions carry neither.
     completionContract,
     registeredEvidence,
-  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify)), () => client.planPublicationContext(session.id));
+  }, ...await roleModelOptions(client, cfg, "verify"))), () => client.planPublicationContext(session.id));
   if (!result) {
     log(`${session.name}: prompted wrap-up held - plan publication ownership changed during verification`);
     return false;
@@ -2466,7 +2551,7 @@ export async function processPromptedWrapup(
   // A workflow can be attached or removed while the verifier runs. Do not consume a verdict
   // judged against an evidence obligation that no longer applies (or has just become due).
   if (registeredEvidence) {
-    const freshEvidence = await client.workflowEvidence(current.session.id).catch(() => null);
+    const freshEvidence = await client.workflowEvidence(current.session.id, true).catch(() => null);
     if (!freshEvidence || freshEvidence.registrationEligible !== registeredEvidence.registrationEligible) {
       log(`${session.name}: prompted wrap-up held - workflow evidence eligibility changed or is unavailable`);
       return false;
@@ -2478,6 +2563,15 @@ export async function processPromptedWrapup(
     }
   }
 
+  // A clean model answer cannot turn excluded registrations into completion proof.
+  if (registeredEvidence?.registrationEligible && registeredEvidence.excludedCount &&
+      registeredEvidence.totalCount === 0 && !result.verdict.gaps.some(gap => gap.severity === "blocking")) {
+    result.verdict.complete = false;
+    result.verdict.summary = "Earlier registrations require verified evidence for the current completion contract.";
+    result.verdict.gaps.push({ id: "workflow-evidence-current-contract", severity: "blocking", kind: "unverified",
+      path: "", detail: "Registered evidence could not be validated for the current contract.",
+      fix: "Check the current checkout and register the verified packet through submit_workflow_evidence." });
+  }
   const blockingGaps = result.verdict.gaps.filter((gap) => gap.severity === "blocking");
   const trackedDecisionGaps = reconcileGaps(
     verificationHistory.priorGaps,
@@ -2489,6 +2583,9 @@ export async function processPromptedWrapup(
     && registeredEvidence
     && registeredEvidence.registrationEligible
     && registeredEvidence.totalCount > 0
+    // A revalidated prior packet can support an ordinary clean verdict. Only registration
+    // in this episode authorizes the separate fallback for still-unverified work.
+    && registeredEvidence.continuationStatus !== "revalidated"
     && blockingGaps.length > 0
     && blockingGaps.every((gap) => gap.kind === "unverified"),
   );
@@ -2509,6 +2606,8 @@ export async function processPromptedWrapup(
         headSha: diff.headSha,
         transcriptAnchor,
         summary: claimSummary,
+        ...(evidenceRead.value?.continuation?.status === "revalidated"
+          ? { expectedContinuationPacket: evidenceRead.value.continuation.packet } : {}),
         ...(planPublication ? { expectedPlanPublication: planPublication } : {}),
       }),
     );
@@ -2517,8 +2616,24 @@ export async function processPromptedWrapup(
       return false;
     }
     if (claim.kind === "claimed") {
+      noteDecisionLogWrite(recordCompletionDecision({
+        at: Date.now(),
+        sessionId: current.session.id,
+        sessionName: current.session.name,
+        taskKind: current.session.task?.kind ?? null,
+        generation: current.candidate.generation,
+        episodeKey: current.candidate.episodeKey,
+        outcome: "workflow_claimed",
+        summary: claimSummary,
+        gaps: [],
+        runId: claim.result.runId,
+      }));
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
+    }
+    if (registeredEvidence?.continuationStatus === "revalidated" && claim.result.reason === "no_binding") {
+      log(`${session.name}: prompted wrap-up held - the workflow owning the revalidated evidence could not claim it`);
+      return false;
     }
     if (planPublication?.owner === "workflow" && claim.result.reason === "no_binding") {
       log(`${session.name}: prompted wrap-up held - the plan workflow was removed before its claim`);
@@ -2622,7 +2737,11 @@ export async function processPromptedWrapup(
   if (plan.kind === "hold") {
     if (
       cfg.keepShipTasksMoving
-      && current.session.task && isShippingTaskKind(current.session.task.kind)
+      && current.session.task
+      && heldGapRecoveryApplies(
+        current.session.task.kind,
+        planStartsWorkflowOnCompletion(current.session.task, planPublication),
+      )
       && isActiveTask(current.session.task.status)
     ) {
       const latestSessions = await client.sessions().catch(() => null);
@@ -2753,7 +2872,7 @@ function queueItemContext(item: WorkItem | null): ReviewInput["queueItem"] {
 }
 
 /** The daemon surface the apply layer needs, bound to this client. */
-function queueActions(client: ForemanClient, _cfg: ForemanConfig): QueueActions {
+function queueActions(client: ForemanClient, _cfg: ForemanConfig, expectedIntent?: SessionIntentGuard | null): QueueActions {
   return {
     sessions: () => client.sessions(),
     getConfig: () => client.getConfig(),
@@ -2762,7 +2881,7 @@ function queueActions(client: ForemanClient, _cfg: ForemanConfig): QueueActions 
     inject: (id, text) => client.inject(id, text),
     markSent: (sid, iid, sha, anchor) => client.markSent(sid, iid, sha, anchor),
     recoverItem: (sid, iid) => client.recoverItem(sid, iid),
-    markWrapupAsked: (id) => client.markWrapupAsked(id),
+    markWrapupAsked: (id, retire) => client.markWrapupAsked(id, { expectedIntent, retire }),
     setWrapupAnswer: (id, answer) => client.setWrapupAnswer(id, answer),
     captureScope: (s) => captureScope(client, s),
     holdsLease: () => isLeader,
@@ -2863,7 +2982,7 @@ async function runVerify(
 
   const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
-  const result = await observeModel("verify", cfg, session, () => verifyItem({
+  const result = await observeModel("verify", cfg, session, async () => verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: item.intent,
     round: item.round,
@@ -2878,7 +2997,7 @@ async function runVerify(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: item.gaps,
-  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify));
+  }, ...await roleModelOptions(client, cfg, "verify")));
 
   if (result.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, result.reason));
@@ -3394,7 +3513,7 @@ async function fullReview(
   };
 
   const result = await observeModel("review", cfg, session,
-    () => reviewSession(input, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review));
+    async () => reviewSession(input, ...await roleModelOptions(client, cfg, "review")));
   if (result.kind === "failed") {
     // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
     // marker, or the idempotency check would abandon this prompt forever after a
@@ -3463,6 +3582,25 @@ let roleRunnerIds: Record<ForemanModelRole, LlmRunnerId> = Object.fromEntries(
   FOREMAN_MODEL_ROLES.map((role) => [role, DEFAULT_LLM_RUNNER_ID]),
 ) as Record<ForemanModelRole, LlmRunnerId>;
 
+async function roleEffort(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  role: ForemanModelRole,
+  runner: LlmRunnerId,
+  model: string,
+): Promise<ThinkingLevel | undefined> {
+  const enabled = await backgroundEffortEnabled(() => client.llmSelection());
+  return enabled
+    ? resolveLlmEffort(runner, model, cfg.efforts?.[role]).level ?? undefined
+    : undefined;
+}
+
+async function roleModelOptions(client: ForemanClient, cfg: ForemanConfig, role: ForemanModelRole): Promise<[string, LlmRunnerId, ThinkingLevel?]> {
+  const runner = roleRunnerIds[role];
+  const model = resolveForemanModel(role, cfg, process.env, runner).id;
+  return [model, runner, await roleEffort(client, cfg, role, runner, model)];
+}
+
 /**
  * The Claude wire transport this worker process applies to all four Foreman call sites.
  *
@@ -3498,10 +3636,11 @@ function triageDeps(client: ForemanClient, cfg: ForemanConfig, session: Session)
       else workerHealth.success(context);
     },
     transcript: (id, turns) => client.transcript(id, turns),
-    runner: roleRunnerIds.triage,
-    runModel: (prompt, model, schema) =>
-      llmRunner(roleRunnerIds.triage).run(prompt, {
+    runner,
+    runModel: async (prompt, model, schema) =>
+      llmRunner(runner).run(prompt, {
         model,
+        effort: await roleEffort(client, cfg, "triage", runner, model),
         timeoutMs: TRIAGE_TIMEOUT_MS,
         role: "foreman:triage",
         schema,

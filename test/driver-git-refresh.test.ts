@@ -1,11 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
-process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-driver-git-"));
+process.env.HARNESS_HOME = tempDir("harness-driver-git-");
 const { Registry } = await import("../src/server/registry.ts");
 const { pollOnce, refreshDriverGit } = await import("../src/server/discovery/poller.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");

@@ -2,6 +2,29 @@ import { hibernatedTasks } from "@shared/hibernation.ts";
 import { useFeatureFlagsSettings } from "./useFeatureFlagsSettings.ts";
 import { useShapingSettings } from "./useShapingSettings.ts";
 import { FeatureFlagsContext } from "./useFeatureFlag.ts";
+import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
+
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { IDLE_RAIL_SECTION_COUNTS_FLAG_ID, IDLE_STALLED_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import type { Stall } from "@shared/stall.ts";
+import { useNow } from "./useNow.ts";
+import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { RecentlyHeard } from "./components/RecentlyHeard.tsx";
+import { useVoiceSurface, VoiceCardOutlet, voicePortal } from "./components/VoiceFloatingSurface.tsx";
+import { VoiceCardHost } from "./components/VoiceCardHost.tsx";
+import { launchResident } from "./residents/launch.ts";
+import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
+import { VOICE_FLAG, voiceCapable, voiceCardCallSignMode, voiceCardsShowSpokenNames } from "@shared/voice.ts";
+import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
+import type { ReportEntryControls } from "./lib/sessionReports.ts";
+import { clearReportDraft } from "./lib/reportDrafts.ts";
+import { ResidentNamesContext } from "./lib/agent-names.ts";
+import { useVoiceOpenCards, VoiceAnswersContext } from "./lib/voice-open-cards.ts";
+import { VoiceHintsContext } from "./lib/agent-names.ts";
+import { NO_SPOKEN_NAMES, VoiceRosterContext } from "./lib/voice-roster.ts";
+import { sessionCallSign, withCurrentReferenceNames } from "@shared/display-name.ts";
+
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { FleetPauseContext, fleetPauseView } from "./lib/fleet-pause.ts";
@@ -20,15 +43,21 @@ import {
   backlogTasks,
   canCycleMode,
   canInterruptSession,
+  liveActivity,
   lostTasks,
   provisioningTasks,
   sessionWorkspaceRoot,
 } from "@shared/session.ts";
+import { subagentActivityLine } from "@shared/subagents.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
-import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
+import { api, acknowledgeTelemetryOrganizationNotice, fetchReport, fetchRepos } from "./lib/api.ts";
+import { pinnedToShow, placeReport, reportToShow, resolvedReport, type ReportPlacement } from "./lib/report-notification.ts";
+import { markAllReportsRead } from "./lib/report-state.ts";
+import type { ReportItem } from "@shared/reports.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { useVoiceConfig } from "./useVoiceConfig.ts";
 import { useAttentionDismissals } from "./useAttentionDismissals.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -39,9 +68,12 @@ import type {
 } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
-import { AttentionInbox } from "./components/AttentionInbox.tsx";
+import { ReportDocumentReader } from "./components/ReportDocumentReader.tsx";
+import type { ReportPublishState } from "./lib/sessionReports.ts";
+import { AttentionInbox, type InboxReportControls, type PinnedReport } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
+import { newRequestId } from "./lib/request-id.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import {
   LaunchFailureProvider,
@@ -68,7 +100,7 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
 import type { EnvironmentCheckId } from "@shared/environment-checks.ts";
-import { setupRowAnchor } from "@shared/setup-catalog.ts";
+import { setupReadingFlags, setupRowAnchor } from "@shared/setup-catalog.ts";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStageDock, LineStrip, type LineDockProps } from "./components/LineStrip.tsx";
@@ -97,12 +129,14 @@ import { useLlm } from "./useLlm.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
+import { inboxStalls, NO_STALLED_DRAWN, stalledSessions } from "./lib/stalled.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { toggleSessionRail } from "./lib/session-rail.ts";
+import { idleRailFocusFallback, idleRailSections, type IdleRailSections } from "./lib/idle-rail-sections.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
-import { orderSessions } from "./lib/fleet-order.ts";
+import { orderSessions, stalledInOrder } from "./lib/fleet-order.ts";
 import { useDisplayItems } from "./lib/board-card.ts";
 import { isTopbarItemShown, PAGE_SEGMENTS, useTopbarLayout } from "./lib/topbar-items.ts";
 import {
@@ -122,7 +156,8 @@ import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { HeldSessionsContext, heldSessionIds, ownBindingBySession } from "./lib/held.ts";
-import { foldAttention, type AttentionFold } from "./lib/attention.ts";
+import { InboxReplyBoxesContext, withInboxReplyBox } from "./lib/inbox-reply-boxes.ts";
+import { foldAttention, foldWhileDismissalsUnknown, stallDismissalKey } from "./lib/attention.ts";
 import { snoozedQuestions } from "./lib/review-snooze.ts";
 import {
   useKeybindings,
@@ -174,8 +209,12 @@ import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
 import { isBuiltinResidentProfileId } from "@shared/residents.ts";
-import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
-import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } from "./residents/ResidentsDrawer.tsx";
+import { pinnedResidentSessions, residentMarksBySession, residentMarkTitle, residentReplacementsBySession } from "./residents/marker.ts";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, matchesResidentDrawerFilter, residentDrawerEntries, residentDrawerGroups, residentEntryAmber } from "./residents/ResidentsDrawer.tsx";
+import type { ResidentLoopFeedback } from "./residents/ResidentLoopControls.tsx";
+import { RESIDENT_LOOP_CONTROLS_LABEL, residentLoopActions, residentLoopSearchFields } from "./residents/loop-presentation.ts";
+import { RESIDENT_VISITOR_NOTE } from "./residents/ResidentVisitorCard.tsx";
+import { PausedResidentsContext, asQuestionAgent, pausedResidentSessionIds } from "./lib/async-questions.ts";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
 import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
@@ -356,6 +395,8 @@ export function App(): React.JSX.Element {
     sessions,
     restoringSessions,
     reviews,
+    reports,
+    reportMutes,
     tasks,
     personas,
     sessionActions,
@@ -374,6 +415,13 @@ export function App(): React.JSX.Element {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    shapingSignIns,
+    voice,
+    voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
+    fadingVoiceCards,
+    setVoiceCardRetention,
+    dismissVoiceCard,
+    acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -396,21 +444,63 @@ export function App(): React.JSX.Element {
     latestSessionTransfer,
   } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
-  const { route, navigate, replace, pendingRoute, confirmPending, cancelPending } =
+  const { route: requestedRoute, navigate, replace, pendingRoute, confirmPending, cancelPending } =
     useWorkflowRoute(workflowDirty);
+  const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
+  // The initial flag defaults precede the snapshot, including on an enabled shell deep link.
+  const disabledVoiceRoute = requestedRoute.page === "voice-card" && hasSnapshot && !spokenNames;
+  const route = disabledVoiceRoute ? { page: "fleet" as const } : requestedRoute;
+  useEffect(() => {
+    if (disabledVoiceRoute) replace({ page: "fleet" });
+  }, [disabledVoiceRoute, replace]);
   const [alertSettings, updateAlerts] = useAlertSettings();
-  const { away, setAway, digest, dismissDigest, buffered } = useAwayMode();
+  const { away, setAway, digest, dismissDigest, buffered, returning: returningFromAway } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
-  const stalls = useStalls();
-  const alertScope = useMemo(
-    () => ({ sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns }),
-    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns],
+  const { reported: reportedStalls, current: stalls } = useStalls(sessions, hasSnapshot ? workflowRuns : undefined);
+  // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
+  // resident runs; the daemon's Away watcher passes them on the same flag.
+  const sessionControlRequestsEnabled = resolveFeatureFlag("session-control-requests", featureFlags);
+  const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
+  // The runs as the naming rule reads them: each with its profile's current reference name, the
+  // name the operator says to it (`withCurrentReferenceNames`).
+  const residentNames = useMemo(
+    () => withCurrentReferenceNames(residentRuns, residentProfiles),
+    [residentRuns, residentProfiles],
   );
-  useNotifier(alertScope, alertSettings, hasSnapshot);
+  // Call signs and reference names are voice's names: they name an agent only while it is on.
+  const voiceConfig = useVoiceConfig(spokenNames && route.page === "settings" && route.category === "voice");
+  // Muted report authors: left out of the fold and its to read figure, and never notified.
+  const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
+  const alertScope = useMemo(
+    () => ({
+      sessions, tasks, reviews, stalls: reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
+      // Reports too: a report's announce stamp raises its notification, whether or not reports
+      // are listed in the inbox.
+      ...(inboxNames ? { names: residentNames, spokenNames, reports } : {}),
+      // When this scope was built, so a report posted and stamped inside one batch of events is
+      // still news (see `AlertScope.takenAt`).
+      takenAt: Date.now(),
+    }),
+    [sessions, tasks, reviews, reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentNames, spokenNames, reports],
+  );
+  // Who can be addressed by voice, for the fields that check a new name against it.
+  const voiceRoster = voice?.roster ?? NO_SPOKEN_NAMES;
+  // What a click on a report notification does. Assigned further down, once the inbox's fold
+  // exists; the notifier reads it when the click lands, so the toast never holds a stale one.
+  const openReportFromNotification = useRef<(reportId: string) => void>(() => undefined);
+  useNotifier(alertScope, alertSettings, hasSnapshot, {
+    notify: inboxNames ? alertSettings.notify : null,
+    // Still away until the daemon has closed the window and marked what its digest counted, and
+    // unknown (null) until its first answer, so a report stamped during page load waits for it.
+    away: away === null ? null : away.away || returningFromAway,
+    onOpenReport: (reportId) => openReportFromNotification.current(reportId),
+    muted: mutedReportAuthors,
+  });
   const { bindings } = useKeybindings();
   useEffect(() => {
+    if (route.page === "voice-card") return;
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
@@ -431,7 +521,12 @@ export function App(): React.JSX.Element {
   const llm = useLlm();
   // One uncached mount read, shared by the App-level reminder and Settings > Setup. The
   // panel's Re-check calls this same owner; there is no second hook and no polling tick.
-  const setup = useSetupChecks(true);
+  // Re-read when a flag Setup depends on is switched in any window (the Voice family).
+  const liveSetupFlags = useMemo(
+    () => (hasSnapshot ? setupReadingFlags((id) => resolveFeatureFlag(id, featureFlags)) ?? "" : null),
+    [hasSnapshot, featureFlags],
+  );
+  const setup = useSetupChecks(true, liveSetupFlags, resolveFeatureFlag(MACOS_TERMINAL_FLAG_ID, featureFlags));
   // Owned here for the same reason as `cost` above: two surfaces read one answer. The Library
   // shelf badges reviewer cards with it and the Persona editor badges the open row, and a copy
   // per surface would mean two requests and two chances to disagree about the same file.
@@ -450,11 +545,171 @@ export function App(): React.JSX.Element {
   const gearPhrase = gearDotPhrase(gearDot);
   // Storage's size and free-space warnings, as a desktop notification when the operator asked.
   useStorageNotifications(storageHealth);
-  const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
-  // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
-  // target of its own - what it draws is `attention` below, folded from state App already has -
-  // so it cannot go stale behind an item that resolved while it was open.
-  const [inboxOpen, setInboxOpen] = useState(false);
+  const voiceHints = spokenNames && !!voice && voice.mode !== "off";
+  useVoiceOpenCards(voiceHints && connected ? voiceWindowId : undefined, route.page !== "voice-card");
+  const [reviewRequest, setReviewRequest] = useState<{ sessionId: string; questionId?: string } | null>(null);
+  const reviewSessionId = reviewRequest?.sessionId ?? null;
+  const setReviewSessionId = useCallback((sessionId: string | null) => {
+    setReviewRequest(sessionId ? { sessionId } : null);
+  }, []);
+  // The entry point can ask for initial focus on a conversation's question. The inbox still
+  // renders the live attention fold.
+  const [inbox, setInbox] = useState<{ focusSessionId: string | null } | null>(null);
+  // The agent report open on screen in the inbox, if any. Held here rather than in a card so there
+  // is one answer to "which report is open", which a later voice layer binds "reply" and "mark
+  // read" to. Opening a report records that it was opened (once) and never marks it read.
+  const [openReportId, setOpenReportId] = useState<string | null>(null);
+  // The chain (`rootId`) of the open report, so that when the agent replaces it the replacement
+  // takes its place on screen rather than the card closing under the operator.
+  const openReportRoot = useRef<string | null>(null);
+  // Whether the open report has been seen waiting to be read since it was opened. Only a report
+  // that was live and has just left the live list was replaced under the operator; an older
+  // version opened on purpose from its conversation entry was never live, and stays open.
+  const openReportLive = useRef<{ id: string | null; live: boolean }>({ id: null, live: false });
+  useEffect(() => {
+    const live = openReportId !== null && reports.some((report) => report.id === openReportId);
+    const seen = openReportLive.current;
+    if (seen.id !== openReportId) {
+      openReportLive.current = { id: openReportId, live };
+      return;
+    }
+    if (live) {
+      seen.live = true;
+      return;
+    }
+    if (openReportId === null || !seen.live) return;
+    seen.live = false;
+    const successor = reports.find((report) => report.rootId === openReportRoot.current && reportToRead(report));
+    if (successor) setOpenReportId(successor.id);
+  }, [reports, openReportId]);
+  const reportOpenPosted = useRef(new Set<string>());
+  // Record the first time the operator opened a report, whichever way they opened it.
+  const recordReportOpened = useCallback((report: ReportItem) => {
+    if (report.openedAt !== null || reportOpenPosted.current.has(report.id)) return;
+    reportOpenPosted.current.add(report.id);
+    void api.openReport(report.id).then((result) => {
+      if (!result.ok) reportOpenPosted.current.delete(report.id);
+    });
+  }, []);
+  // The report a notification opened that the inbox does not list, drawn on its own above the
+  // sections. Gone when the inbox closes; a fetch still in flight then is dropped by its number.
+  const [pinnedReport, setPinnedReport] = useState<PinnedReport | null>(null);
+  const pinnedRequest = useRef(0);
+  const inboxOpen = inbox !== null;
+  useEffect(() => {
+    if (inboxOpen) return;
+    pinnedRequest.current += 1;
+    setPinnedReport(null);
+  }, [inboxOpen]);
+  // An action on the pinned report (Mark read, a reply, a follow-up) takes it out of `reports`,
+  // which holds only reports waiting to be read, so the band would fall back to its copy from the
+  // click, unread. Re-read it from the daemon instead. A band showing another report, or none,
+  // by the time the read lands is left alone.
+  const refreshPinned = useCallback((id: string) => {
+    void fetchReport(id).then((answer) => {
+      if (!answer) return;
+      setPinnedReport((current) =>
+        current?.status === "ready" && current.report.id === id
+          ? { status: "ready", report: answer.latest ?? answer.report }
+          : current);
+    });
+  }, []);
+  // The report whose attached document the reader is showing, if any.
+  const [documentReport, setDocumentReport] = useState<AgentReport | null>(null);
+  // Publish as scout's state per report id. Held here, not in the card, so a refusal or a request
+  // still in flight survives the card being collapsed or the inbox being closed, until the next
+  // attempt starts.
+  const [publishStates, setPublishStates] = useState<ReadonlyMap<string, ReportPublishState>>(new Map());
+  // What a report's conversation entry needs: which report is open, opening it, opening its
+  // document, and Mark read. Kept apart from the inbox's controls so that typing a draft, or a
+  // session or resident run changing, does not hand the open conversation new controls and
+  // re-merge its transcript. Everything here depends only on the open report and stable setters.
+  const reportEntryControls = useMemo<ReportEntryControls>(() => {
+    return {
+      openReportId,
+      onToggle: (report) => {
+        const opening = openReportId !== report.id;
+        setOpenReportId(opening ? report.id : null);
+        openReportRoot.current = opening ? report.rootId : null;
+        if (opening) recordReportOpened(report);
+      },
+      // Open report: the stored copy of its document. Posts opened, and never marks it read.
+      onOpenDocument: (report) => {
+        setDocumentReport(report);
+        recordReportOpened(report);
+      },
+      onMarkRead: async (report) => {
+        const result = await api.markReportRead(report.id);
+        if (!result.ok) return result.error ?? "Could not mark the report read";
+        setOpenReportId((current) => (current === report.id ? null : current));
+        refreshPinned(report.id);
+        return null;
+      },
+    };
+  }, [openReportId, recordReportOpened, refreshPinned]);
+  // The inbox card's controls: the entry's, plus where a reply can go, reply and follow-up, and
+  // Publish as scout. The card's draft lives in its own store (`lib/reportDrafts.ts`), so typing
+  // re-renders the card alone; a send that is accepted clears it here.
+  const reportControls = useMemo<InboxReportControls>(() => ({
+    ...reportEntryControls,
+    // Read from the live sessions and resident runs, so a card changes what it offers the moment
+    // its agent exits or a resident is relaunched.
+    targetFor: (report) => replyTarget(report, sessions, residentRuns),
+    onReply: async (report, text) => {
+      const result = await api.replyToReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not send the reply";
+      clearReportDraft(report.rootId, text);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      refreshPinned(report.id);
+      return null;
+    },
+    onFollowUp: async (report, text) => {
+      const result = await api.followUpReport(report.id, text);
+      if (!result.ok) return result.error ?? "Could not start the follow-up task";
+      clearReportDraft(report.rootId, text);
+      setOpenReportId((current) => (current === report.id ? null : current));
+      refreshPinned(report.id);
+      return null;
+    },
+    mutedAuthors: mutedReportAuthors,
+    // The author's rows leave the inbox as soon as the daemon's `report_mutes` lands; nothing is
+    // marked read, so Unmute in Settings brings them back.
+    onMute: async (report) => {
+      const result = await api.muteReports(report.author.key);
+      return result.ok ? null : result.error ?? "Could not mute these reports";
+    },
+    onMarkAllRead: async (ids) => {
+      // Batched: a Reports section longer than one request's bound is still cleared by one press.
+      const refused = await markAllReportsRead(ids, (batch) => api.markAllReportsRead(batch));
+      if (refused) return refused;
+      setOpenReportId((current) => (current !== null && ids.includes(current) ? null : current));
+      return null;
+    },
+    // Publish as scout. The request carries no page; the daemon builds it from the stored copy.
+    onPublish: (report) => {
+      const set = (state: ReportPublishState) =>
+        setPublishStates((current) => new Map(current).set(report.id, state));
+      set({ busy: true, refusal: null });
+      void api.publishReport(report.id).then((result) => {
+        if (result.ok) return set({ busy: false, refusal: null });
+        const error = result.error ?? "Could not publish the report";
+        set({
+          busy: false,
+          refusal: {
+            error,
+            problems: result.problems?.length ? result.problems : [error],
+            failed: result.status === undefined || result.status >= 500,
+          },
+        });
+      });
+    },
+    publishStateFor: (report) => publishStates.get(report.id) ?? { busy: false, refusal: null },
+    onOpenArchive: (report) => {
+      if (!report.publishedArchiveKey) return;
+      setInbox(null);
+      navigate({ page: "scouts", archiveKey: report.publishedArchiveKey });
+    },
+  }), [reportEntryControls, sessions, residentRuns, publishStates, navigate, refreshPinned, mutedReportAuthors]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -471,6 +726,8 @@ export function App(): React.JSX.Element {
   // coming back to the board reopened the session you left while the tile cursor sat on a
   // different one - and it needed the arrow keys to remember to keep the two in step.
   // `boardOpenId` below derives the invariant instead of restating it.
+  const [queueTabSession, setQueueTabSession] = useState<string | null>(null);
+  const clearQueueTab = useCallback(() => setQueueTabSession(null), []);
   const [boardOpen, setBoardOpen] = useState(false);
   // What the dispatch form was last asked to be, or null for closed - ONE value, written
   // whole by whichever opener ran last. It used to be three (an open flag, a task being
@@ -483,6 +740,12 @@ export function App(): React.JSX.Element {
   // edit made anywhere else - or the task being dispatched out from under the modal - is seen
   // here rather than shadowed by a copy taken at open time.
   const [dispatchRequest, setDispatchRequest] = useState<DispatchRequest | null>(null);
+  const pendingVoiceFollowUp = useRef<string | null>(null);
+  useEffect(() => () => { pendingVoiceFollowUp.current = null; }, [spokenNames]);
+  const requestDispatch = useCallback((request: Parameters<typeof setDispatchRequest>[0]) => {
+    pendingVoiceFollowUp.current = null;
+    setDispatchRequest(request);
+  }, []);
   const [reportOpen, setReportOpen] = useState(false);
   useEffect(() => {
     if (reportOpen) featureVisit("report", "open", "reports");
@@ -623,8 +886,8 @@ export function App(): React.JSX.Element {
     toggleSurface: (): void => {},
     openDetail: (_sessionId: string): void => {},
   });
-  const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
-  const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [fleetActionError, setFleetActionError] = useState<string | null>(null);
+  const fleetActionErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
   // generated task's provenance mark - a schedule, and the occurrence whose history to open
   // - so opening Missions from a card lands on the right run rather than the catalog root.
@@ -677,6 +940,38 @@ export function App(): React.JSX.Element {
     },
     [navigate],
   );
+  const standalone = route.page === "voice-card";
+  const desktopVoice = spokenNames && !standalone && !!window.missionDesktop?.isDesktop;
+  const trayHistory = desktopVoice && !!window.missionDesktop?.onRecentlyHeard;
+  const preferredPlacement = useUiConfig().voice.confirmation;
+  const voicePlacement = desktopVoice && voiceCapable(voice, "floating-windows") ? preferredPlacement : "toast";
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const closeTrayHistory = useCallback(() => setHistoryOpen(false), []);
+  const { root: pillRoot, requestOpen: requestPill } = useVoiceSurface("pill", voicePlacement === "pill");
+  const { root: popRoot, requestOpen: requestPopover } = useVoiceSurface("popover", voicePlacement === "popover" || (trayHistory && historyOpen), closeTrayHistory);
+  const previousCards = useRef(voiceCards);
+  useEffect(() => {
+    const previous = previousCards.current;
+    previousCards.current = voiceCards;
+    if (![...voiceCards.keys()].some(id => !previous.has(id))) return;
+    if (voicePlacement === "pill") requestPill();
+    if (voicePlacement === "popover") requestPopover();
+  }, [voiceCards, voicePlacement, requestPill, requestPopover]);
+  const openTrayHistory = useCallback(() => { setHistoryOpen(true); requestPopover(); }, [requestPopover]);
+  const surfaceRoot = voicePlacement === "popover" ? popRoot : voicePlacement === "pill" ? pillRoot : null;
+  useEffect(() => {
+    if (!trayHistory) { setHistoryOpen(false); return; }
+    return window.missionDesktop?.onRecentlyHeard?.(openTrayHistory);
+  }, [trayHistory, openTrayHistory]);
+  useEffect(() => {
+    const child = popRoot?.ownerDocument.defaultView;
+    if (!historyOpen || !child) return;
+    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") closeTrayHistory(); };
+    child.addEventListener("blur", closeTrayHistory);
+    child.addEventListener("keydown", escape);
+    return () => { child.removeEventListener("blur", closeTrayHistory); child.removeEventListener("keydown", escape); };
+  }, [historyOpen, popRoot, closeTrayHistory]);
+  const openVoiceSetup = useCallback(() => openSettingsAnchor("setup", "setup/family-voice"), [openSettingsAnchor]);
   const openForemanTrust = useCallback(
     (): void => openSettingsAnchor("trust", "trust/matrix"),
     [openSettingsAnchor],
@@ -839,10 +1134,35 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
+  const committedIdleSections = useRef<IdleRailSections["sections"] | undefined>(undefined);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
-    if (el) sessionEls.current.set(id, el);
-    else sessionEls.current.delete(id);
+    if (el) {
+      sessionEls.current.set(id, el);
+      return;
+    }
+    const previous = sessionEls.current.get(id);
+    sessionEls.current.delete(id);
+    const idleSectionRow = ".has-idle-sections .rail-row";
+    if (previous !== document.activeElement || !previous?.matches(idleSectionRow)) return;
+    const rail = previous.closest(".has-idle-sections");
+    // A status update can remount a session under a different heading. Let React attach
+    // the replacement ref and keep any focus the operator has already moved elsewhere.
+    queueMicrotask(() => {
+      if (document.activeElement !== document.body) return;
+      const replacement = sessionEls.current.get(id);
+      if (replacement?.matches(idleSectionRow)) {
+        replacement.focus({ preventScroll: true });
+        replacement.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return;
+      }
+      const destination = committedIdleSections.current?.find((section) =>
+        !section.expanded && section.sessionIds.includes(id));
+      const heading = destination && rail?.querySelector<HTMLButtonElement>(
+        `.idle-rail-section-toggle[data-idle-section="${CSS.escape(destination.key)}"]`,
+      );
+      (heading ?? idleRailFocusFallback(rail))?.focus();
+    });
   }, []);
 
   const registerWorkflowDisclosure = useCallback(
@@ -864,8 +1184,13 @@ export function App(): React.JSX.Element {
     // A folded rail draws no rows, so no row is registered for the id. The strip that stands
     // in for them takes the keyboard instead: leaving the reader must still leave it, or every
     // Escape would land back inside the reader and the next one could never peel further.
-    (sessionEls.current.get(id) ?? document.querySelector<HTMLElement>(".session-rail-strip"))
-      ?.focus({ preventScroll: true });
+    const target = sessionEls.current.get(id)
+      ?? document.querySelector<HTMLElement>(".idle-rail-section-toggle[data-contains-selection]")
+      ?? document.querySelector<HTMLElement>(".session-rail-strip");
+    target?.focus({ preventScroll: true });
+    if (target?.closest(".has-idle-sections")) {
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   }, []);
 
   const focusReaderBody = useCallback(() => {
@@ -959,7 +1284,14 @@ export function App(): React.JSX.Element {
     [layout, selectedId],
   );
 
-  const closeDispatch = useCallback(() => setDispatchRequest(null), []);
+  const closeDispatch = useCallback(() => requestDispatch(null), [requestDispatch]);
+  const followUpRequest = dispatchRequest?.kind === "new" && dispatchRequest.followUp ? dispatchRequest : null;
+  const closeDispatchOpening = useCallback(() => {
+    setDispatchRequest(current => {
+      const activeFollowUp = current?.kind === "new" && current.followUp ? current : null;
+      return activeFollowUp === followUpRequest ? null : current;
+    });
+  }, [followUpRequest]);
   const closeComplete = useCallback(() => {
     setCompleteSessionId(null);
     setRestartPromptSessionId(null);
@@ -983,14 +1315,15 @@ export function App(): React.JSX.Element {
    * all the way out rather than dropping back onto a new-dispatch form nobody asked for.
    */
   const openTaskEditor = useCallback((taskId: string) => {
-    setDispatchRequest({ kind: "edit", taskId });
-  }, []);
+    requestDispatch({ kind: "edit", taskId });
+  }, [requestDispatch]);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
-  const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
+  const openDispatch = useCallback(() => requestDispatch(current => current?.kind === "repair-follow-up"
+    ? { kind: "new", followUp: current.followUp } : { kind: "new" }), [requestDispatch]);
   /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
   const openResidentLaunch = useCallback(
-    (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
-    [],
+    (profileId: string) => requestDispatch({ kind: "resident", profileId }),
+    [requestDispatch],
   );
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
@@ -1001,8 +1334,8 @@ export function App(): React.JSX.Element {
    * than an Ensemble the operator did not ask for.
    */
   const launchEnsemble = useCallback((strategyId: EnsembleStrategyId) => {
-    setDispatchRequest({ kind: "ensemble", strategyId });
-  }, []);
+    requestDispatch({ kind: "ensemble", strategyId });
+  }, [requestDispatch]);
   const closeMissions = useCallback(() => {
     setMissionsOpen(false);
     setMissionsTarget(null);
@@ -1182,10 +1515,59 @@ export function App(): React.JSX.Element {
    * The live residents in the order the drawer, the dock and `⌥1`…`⌥9` share. One derivation
    * for the drawer's cards, the jump keys and the palette's resident rows.
    */
-  const residentEntries = useMemo(
-    () => residentDrawerEntries(residentRuns, residentProfiles, sessions),
-    [residentRuns, residentProfiles, sessions],
+  const spokenCardNames = voiceCardsShowSpokenNames(voice);
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles, spokenCardNames),
+    [sessions, residentRuns, residentProfiles, spokenCardNames],
   );
+  const residentEntries = useMemo(
+    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession),
+    [residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession],
+  );
+  // Push-to-talk titles a session's card by its call sign; Always-on keeps the title and draws
+  // the call sign beside it. One map or the other, from the same rule (`voiceCardCallSignMode`).
+  const callSignMode = voiceCardCallSignMode(voice);
+  const allCallSigns = useMemo(() => {
+    const out = new Map<string, string>();
+    if (!callSignMode) return out;
+    for (const session of sessions) {
+      const callSign = sessionCallSign(session);
+      if (callSign) out.set(session.id, callSign);
+    }
+    return out;
+  }, [sessions, callSignMode]);
+  const noCallSigns = useMemo(() => new Map<string, string>(), []);
+  const cardCallSigns = callSignMode === "title" ? allCallSigns : noCallSigns;
+  const cardCallSignElements = callSignMode === "element" ? allCallSigns : noCallSigns;
+  // The filter and both card surfaces share each run's feedback across menu and card unmounts.
+  const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
+  const updateResidentLoopFeedback = useCallback((runId: string, feedback: ResidentLoopFeedback) => {
+    setResidentLoopFeedback((current) => {
+      const next = new Map(current);
+      if (feedback.busy || feedback.error) next.set(runId, feedback);
+      else next.delete(runId);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    if (residentLoopFeedback.size === 0) return;
+    const live = new Set(residentRuns.map((run) => run.id));
+    if ([...residentLoopFeedback.keys()].every((id) => live.has(id))) return;
+    setResidentLoopFeedback((current) => new Map([...current].filter(([id]) => live.has(id))));
+  }, [residentRuns, residentLoopFeedback]);
+  const pendingReviews = useMemo(() => reviews.filter((review) => review.status === "pending"), [reviews]);
+  const fleetQuery = filter.trim();
+  const residentActiveHours = resolveFeatureFlag("resident-active-hours", featureFlags);
+  const residentSearchNow = useNow(route.page === "fleet" && Boolean(fleetQuery) && residentRuns.some((run) => run.nextWakeAt !== null));
+  const visibleResidentEntries = useMemo(() => {
+    if (!residentDrawerShown || !fleetQuery) return residentEntries;
+    return residentEntries.filter((entry) =>
+      matchesResidentDrawerFilter(entry, fleetQuery, pendingReviews, residentSearchNow, residentActiveHours,
+        residentLoopFeedback.get(entry.run.id)?.error));
+  }, [residentDrawerShown, fleetQuery, residentEntries, pendingReviews, residentSearchNow, residentActiveHours, residentLoopFeedback]);
   // The drawer always has a card selected while it is on screen: the one it was asked to open
   // on, or the one it last had while that resident is still live, else the first needing you.
   useEffect(() => {
@@ -1802,7 +2184,10 @@ export function App(): React.JSX.Element {
       delete document.documentElement.dataset[flag];
     }
     closeComplete();
-    closeDispatch();
+    // Tour teardown closes its demo form. The operator's repository lookup and draft
+    // both belong to the follow-up that requested them.
+    setDispatchRequest(current =>
+      current?.kind === "repair-follow-up" || (current?.kind === "new" && current.followUp) ? current : null);
     setReviewSessionId(null);
     navigate(exit?.route ?? snapshot.route);
     setLayout(snapshot.layout);
@@ -1880,7 +2265,7 @@ export function App(): React.JSX.Element {
       else if (!settled) land(exit?.focus ?? "setup:settings-gear");
     };
     requestAnimationFrame(restore);
-  }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout, tourTargets]);
+  }, [cancelPending, closeComplete, navigate, setLayout, tourTargets]);
 
   /**
    * Perform one palette row.
@@ -2406,17 +2791,17 @@ export function App(): React.JSX.Element {
       residentsTourReachedEnd.current = true;
     },
   }), [navigate]);
-  const showLauncherFocusError = useCallback((message: string) => {
-    if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
-    setLauncherFocusError(message);
-    launcherFocusErrorTimer.current = setTimeout(() => {
-      launcherFocusErrorTimer.current = null;
-      setLauncherFocusError(null);
+  const showFleetActionError = useCallback((message: string) => {
+    if (fleetActionErrorTimer.current) clearTimeout(fleetActionErrorTimer.current);
+    setFleetActionError(message);
+    fleetActionErrorTimer.current = setTimeout(() => {
+      fleetActionErrorTimer.current = null;
+      setFleetActionError(null);
     }, 6000);
   }, []);
   useEffect(
     () => () => {
-      if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
+      if (fleetActionErrorTimer.current) clearTimeout(fleetActionErrorTimer.current);
     },
     [],
   );
@@ -2460,6 +2845,26 @@ export function App(): React.JSX.Element {
       }));
     }
   }, [files.ensure, files.select, layout, requestFilesTab]);
+
+  /**
+   * Open one of a session's checkout files from the inbox, from wherever the operator was.
+   *
+   * `focusSession`'s reason, for a file: the inbox opens over any page, and `openSessionPath`
+   * only selects - so from Settings it closed the inbox and left Settings on screen, and a Fleet
+   * filter that excluded the session hid the detail the file opens in. The file opens only once
+   * the move to Fleet is accepted, so a dirty draft's "leave anyway?" still gets its say.
+   *
+   * A stable callback, not a plain function: it reaches every inbox question's `Markdown`,
+   * whose memo compares the link handler by identity, so a new one per App render re-parsed
+   * every open question on every SSE frame.
+   */
+  const openSessionPathOnFleet = useCallback((sessionId: string, path: string): void => {
+    navigate({ page: "fleet" }, (allowed) => {
+      if (!allowed) return;
+      setFilter("");
+      openSessionPath(sessionId, path);
+    });
+  }, [navigate, openSessionPath]);
 
   const commentOnSessionPath = useCallback((sessionId: string, path: string): void => {
     openSessionPath(sessionId, path);
@@ -2583,8 +2988,7 @@ export function App(): React.JSX.Element {
     [workflowBindingSummaries, sessions],
   );
 
-  // Nav-bar filter: live substring match over each card's title, status, agent, and visible
-  // pull-request label. Empty filter shows everything.
+  // The nav-bar filter matches every word of the query against the card's text.
   //
   // Ordered AFTER filtering, not before: `orderSessions` pulls an ensemble's siblings adjacent
   // and anchors the cluster at its first member, so a filter that hides that member has to be
@@ -2624,13 +3028,6 @@ export function App(): React.JSX.Element {
   // reason: the placement moves sessions between `boardColumns` arrays, so it is an input to
   // the one ordering rather than a decision a view makes while drawing.
   const { groupBoardByRepo: groupByRepo, blockedPlacement, blockedFrameCollapsed } = useUiConfig();
-  // Which sessions are residents, joined through their task to the live run that launched
-  // them: the marker and pin from that run's pinned revision. One join, handed to every
-  // layout, and its pins reach `orderSessions` here and in both views from the same map.
-  const residentBySession = useMemo(
-    () => residentMarksBySession(sessions, residentRuns, residentProfiles),
-    [sessions, residentRuns, residentProfiles],
-  );
   const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
   const residentReplacementBySession = useMemo(
     () => residentReplacementsBySession(sessions, tasks, residentRuns),
@@ -2658,17 +3055,87 @@ export function App(): React.JSX.Element {
     }),
     [residentPlacement, residentBySession, sessions, residentDrawerShown, detailId],
   );
+  // The inbox and Idle share dismissals. Until the first read, the inbox holds back dismissible
+  // rows and their counts. Idle shows stalled cards so a delayed or failed read still leaves
+  // their fixes reachable. A previously dismissed card can appear briefly after a reload.
+  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision, stalls);
+  // Idle's Stalled section (`idle-stalled`): the idle stalls, by session, that the Board and the
+  // Console rail draw under the Stalled rule and the inbox no longer folds. One map, handed to the
+  // fleet ordering below and to both views, so the arrow keys walk the order the columns draw.
+  const idleStalledEnabled = resolveFeatureFlag(IDLE_STALLED_FLAG_ID, featureFlags);
+  const stalledById = useMemo(
+    () => stalledSessions(stalls, idleStalledEnabled, attentionDismissals.dismissed),
+    [stalls, idleStalledEnabled, attentionDismissals.dismissed],
+  );
+  const dismissAttention = attentionDismissals.dismiss;
+  const dismissStall = useCallback(async (sessionId: string, stall: Stall) => {
+    const name = sessionsRef.current.find(session => session.id === sessionId)?.name;
+    const error = await dismissAttention([stallDismissalKey(sessionId, stall)]);
+    if (error) showFleetActionError(name ? `${name} · ${error}` : error);
+  }, [dismissAttention, showFleetActionError]);
+  // Which sessions sit under Idle's Awaiting rule. Time-dependent (an overdue wait leaves the
+  // section), so a slow clock runs while any wait stands. Computed once, here, and handed to
+  // BoardView and ConsoleView (`awaitingIds`), so the arrow keys walk the order the columns draw
+  // even in the tick a deadline passes.
+  const awaitingEnabled = resolveFeatureFlag(SESSION_AWAITING_FLAG_ID, featureFlags);
+  const awaitingNow = useNow(anyAwaiting(sessions, awaitingEnabled), 15_000);
+  // The same Set object while its members are unchanged, so a tick that moves no wait across
+  // its deadline does not rerun the fleet ordering below or redraw its cards.
+  const awaitingIdsRef = useRef<ReadonlySet<string>>(NO_AWAITING_SESSIONS);
+  const awaitingIds = useMemo(() => {
+    awaitingIdsRef.current = keepAwaitingIds(awaitingIdsRef.current, awaitingSessionIds(sessions, awaitingEnabled, awaitingNow));
+    return awaitingIdsRef.current;
+  }, [sessions, awaitingEnabled, awaitingNow]);
   const fleet = useMemo(() => {
-    const q = filter.trim().toLowerCase();
     const placed = placement.excluded.size > 0
       ? sessions.filter((s) => !placement.excluded.has(s.id))
       : sessions;
-    const matched = q ? placed.filter((s) => matchesSessionFilter(s, q)) : placed;
+    const matched = !fleetQuery ? placed : placed.filter((session) => {
+      const mark = residentBySession.get(session.id);
+      if (!mark) return matchesSessionFilter(session, fleetQuery, [allCallSigns.get(session.id)]);
+      const residentFields = [mark.listeningTitle ?? "", mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
+      if (placement.visitors.has(session.id)) {
+        residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
+      } else {
+        residentFields.push(session.activity, liveActivity(session) ?? subagentActivityLine(session));
+        if (mark.loop) {
+          residentFields.push(...residentLoopSearchFields(mark.loop, session, residentSearchNow, residentActiveHours));
+          if (layout === "board") {
+            residentFields.push(
+              RESIDENT_LOOP_CONTROLS_LABEL,
+              ...residentLoopActions(mark).map(({ label }) => label),
+              residentLoopFeedback.get(mark.runId)?.error ?? null,
+            );
+          }
+        }
+      }
+      return matchesSessionFilter(session, fleetQuery, residentFields);
+    });
     return orderSessions(
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds, stalledById,
     );
-  }, [sessions, placement, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement]);
+  }, [sessions, placement, fleetQuery, allCallSigns, residentBySession, residentSearchNow, residentActiveHours,
+    residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
+    pinnedResidents, blockedPlacement, awaitingIds, stalledById]);
   const visible = fleet.sessions;
+  // The sessions Idle's Stalled section draws, which are the only stalls the inbox leaves out
+  // (`inboxStalls`). Read off the ordering itself rather than re-derived from the stall kinds, so
+  // a stalled session the fleet does not hold - a resident in the residents drawer - keeps its
+  // Stuck row instead of being shown nowhere. Ordered over the placed fleet WITHOUT the search
+  // filter: a card a search hides is still in Idle, and finding it again must not move its stall.
+  const stalledDrawn = useMemo(() => {
+    if (stalledById.size === 0) return NO_STALLED_DRAWN;
+    if (!fleetQuery) return stalledInOrder(fleet.groups);
+    const placed = placement.excluded.size > 0
+      ? sessions.filter((s) => !placement.excluded.has(s.id))
+      : sessions;
+    return stalledInOrder(orderSessions(
+      placed, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
+      awaitingIds, stalledById,
+    ).groups);
+  }, [stalledById, fleetQuery, fleet, placement, sessions, heldIds, groupByRepo, pipelineCommissionById,
+    pipelineRunByKey, pinnedResidents, blockedPlacement, awaitingIds]);
   /**
    * The session whose detail is open: the fleet list first, then - in Drawer placement - the
    * open resident, which no fleet list holds. The views draw the detail from this, and the
@@ -2698,14 +3165,19 @@ export function App(): React.JSX.Element {
     ? detailSession.id
     : null;
   /**
-   * The drawer's Needs you group while the drawer is on screen, residents asking in the Needs you
-   * rail included: the group prints the review chord's keycap, so the chord reaches every resident
-   * it lists, after every fleet session with a review (see `reviewChordTarget`).
+   * The drawer's Needs you group, including residents in the rail. The review shortcut
+   * uses this group when the inbox entry point does not apply.
    */
   const drawerAsking = useMemo(() => {
     if (!residentDrawerShown) return [];
-    return residentDrawerGroups(residentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
-  }, [residentDrawerShown, residentEntries]);
+    return residentDrawerGroups(visibleResidentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
+  }, [residentDrawerShown, visibleResidentEntries]);
+  /**
+   * Residents the operator paused, by session: a paused resident does not wake, so its open
+   * questions read as stopped on every surface (`questionAgentStatus`). Components read it from
+   * `PausedResidentsContext`; the review chord is handed it through `residentKeysRef`.
+   */
+  const pausedResidents = useMemo(() => pausedResidentSessionIds(residentRuns, sessions), [residentRuns, sessions]);
   /**
    * What the global key handler needs about residents, read through a ref so the listener does
    * not re-subscribe on every resident or drawer change.
@@ -2715,6 +3187,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -2726,6 +3199,7 @@ export function App(): React.JSX.Element {
     openResident,
     detailResidentId,
     drawerAsking,
+    pausedResidents,
     detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
@@ -2794,7 +3268,6 @@ export function App(): React.JSX.Element {
   // Every pause control reads this one fold (`lib/fleet-pause.ts`), so the title bar, the
   // cards and the console cannot count paused sessions differently.
   const fleetPause = useMemo(() => fleetPauseView(sessions, pauseState), [sessions, pauseState]);
-  const pendingReviews = reviews.filter((r) => r.status === "pending");
   // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
   // An inbox row is a thing to act on, and a review whose session is gone has nothing left to
@@ -2849,20 +3322,25 @@ export function App(): React.JSX.Element {
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
   //
-  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
-  // popping back up on the next frame, the next reload or in a second window. The fold applies
-  // them, so the figure and the list still cannot disagree.
-  //
-  // Until the dismissals have been read once they are UNKNOWN, and the fold is held empty: drawn
-  // over "nothing dismissed" instead, every dismissed row flashed back into the inbox and the
-  // count after a reload, which is the pop-back dismissing exists to prevent.
-  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
+  // Stuck rows whose message box is open, by session: the inbox's half of the `onReplyBox`
+  // contract, which the session detail reads so its send composer gives way to that box.
+  const [inboxReplyBoxes, setInboxReplyBoxes] = useState<ReadonlySet<string>>(() => new Set());
+  const noteInboxReplyBox = useCallback((sessionId: string, present: boolean) => {
+    setInboxReplyBoxes((boxes) => withInboxReplyBox(boxes, sessionId, present));
+  }, []);
   const attention = useMemo(
     () =>
       attentionDismissals.dismissed === null
-        ? NO_ATTENTION_YET
+        // Held, but under the same rule as the full fold: "Agent reports are listed in the inbox"
+        // off lists and counts no report here either, and a muted author's reports are left out.
+        ? foldWhileDismissalsUnknown(
+          inboxNames && alertSettings.reportsInInbox ? reports : undefined,
+          sessionControlRequestsEnabled ? sessions : [],
+          mutedReportAuthors,
+        )
         : foldAttention({
             sessions,
+            sessionControlRequestsEnabled,
             reviews: answerableReviews,
             residentRuns,
             ensembles: ensembleSummaries,
@@ -2870,18 +3348,82 @@ export function App(): React.JSX.Element {
             pipelineCommissions,
             tasks,
             dismissed: attentionDismissals.dismissed,
+            // Agent reports, behind the `inbox` flag: off, there is no Reports section and no to
+            // read figure, whatever the window was told before the flag went off. "Agent reports
+            // are listed in the inbox" off does the same without marking anything read; each
+            // conversation keeps its reports.
+            ...(inboxNames && alertSettings.reportsInInbox ? { reports, mutedAuthors: mutedReportAuthors } : {}),
+            // Stuck rows fold the daemon's stalls only while the `inbox` flag is on, and leave
+            // the idle ones to Idle's Stalled section while `idle-stalled` is on.
+            ...(inboxNames && stalls ? { stalls: inboxStalls(stalls, stalledDrawn) } : {}),
           }),
     [
       sessions,
       answerableReviews,
+      inboxNames,
+      sessionControlRequestsEnabled,
+      stalls,
+      stalledDrawn,
       ensembleSummaries,
       pipelineRuns,
       pipelineCommissions,
       tasks,
       residentRuns,
       attentionDismissals.dismissed,
+      alertSettings.reportsInInbox,
+      reports,
+      mutedReportAuthors,
     ],
   );
+  const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
+  // The band's report as the window's state moves on: followed to its replacement, and gone once
+  // a Reports row lists it (`pinnedToShow`).
+  const pinnedBand = useMemo<PinnedReport | null>(() => {
+    if (pinnedReport?.status !== "ready") return pinnedReport;
+    const report = pinnedToShow(pinnedReport.report, reportsById, attention);
+    return report ? { status: "ready", report } : null;
+  }, [pinnedReport, reportsById, attention]);
+  // The pin follows what the band draws: once it draws a replacement (or a newer copy), that is
+  // what it falls back to when the report later leaves the waiting reports, never the version it
+  // replaced.
+  useEffect(() => {
+    if (pinnedReport?.status !== "ready" || pinnedBand?.status !== "ready") return;
+    if (pinnedBand.report !== pinnedReport.report) setPinnedReport({ status: "ready", report: pinnedBand.report });
+  }, [pinnedBand, pinnedReport]);
+  // Read when a report notification is clicked, which may be long after it was raised: the flag,
+  // the reports and the fold are taken as they are at the click.
+  const notificationReads = useRef({ inboxOn: inboxNames, reportsById, attention });
+  notificationReads.current = { inboxOn: inboxNames, reportsById, attention };
+  openReportFromNotification.current = (reportId) => {
+    // With the flag off at the click, the toast only focused the window.
+    if (!notificationReads.current.inboxOn) return;
+    // Opens the inbox if it is closed; one already open keeps whatever it was asked to focus.
+    setInbox((current) => current ?? { focusSessionId: null });
+    const show = ({ where, report }: ReportPlacement) => {
+      setPinnedReport(where === "band" ? { status: "ready", report } : null);
+      // Opened as a click on its row would open it: recorded once, never marked read.
+      setOpenReportId(report.id);
+      openReportRoot.current = report.rootId;
+      recordReportOpened(report);
+    };
+    const request = ++pinnedRequest.current;
+    const found = reportToShow(reportId, notificationReads.current.reportsById, notificationReads.current.attention);
+    if (found.where !== "fetch") {
+      show(found);
+      return;
+    }
+    // Already read, or replaced by a report this window never saw: the daemon resolves it.
+    setPinnedReport({ status: "loading" });
+    void fetchReport(reportId).then((answer) => {
+      if (request !== pinnedRequest.current) return;
+      if (!answer) {
+        setPinnedReport({ status: "failed" });
+        return;
+      }
+      const now = notificationReads.current;
+      show(placeReport(resolvedReport(answer, now.reportsById), now.attention));
+    });
+  };
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
   const scheduleAttentionCount = useMemo(
@@ -2939,24 +3481,54 @@ export function App(): React.JSX.Element {
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
   const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  const hasAnswers = attention.total > 0;
+  const hasOtherInboxItems = attention.toRead > 0 || snoozed.length > 0;
   // A filter can hide the selected detail without clearing the saved drill-in intent.
   // Navigation follows the overview that BoardView renders until a detail is visible again.
   const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
   const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
+  const idleRailCountsEnabled = resolveFeatureFlag(IDLE_RAIL_SECTION_COUNTS_FLAG_ID, featureFlags);
+  const idleColumn = boardDetailOpen && !allSessionsRail && idleRailCountsEnabled
+    ? fleet.columns.find((column) => column.id === "idle" && column.sessions.some((session) => session.id === detailId))
+    : undefined;
+  const idleSectionRows = useMemo(() => idleColumn && idleRailSections(idleColumn), [idleColumn]);
+  const selectedIdleSectionKey = idleSectionRows?.find((section) => detailId && section.sessionIds.includes(detailId))?.key;
+  const [idleSectionState, setIdleSectionState] = useState({
+    detailId,
+    selectedSectionKey: selectedIdleSectionKey,
+    overrides: new Map<string, boolean>(),
+  });
+  if (idleSectionState.detailId !== detailId || idleSectionState.selectedSectionKey !== selectedIdleSectionKey) {
+    // An explicit collapse applies to the current conversation. When a session opens
+    // or moves to another section, reveal its row before the rail renders.
+    const overrides = new Map(idleSectionState.overrides);
+    if (selectedIdleSectionKey) overrides.delete(selectedIdleSectionKey);
+    setIdleSectionState({ detailId, selectedSectionKey: selectedIdleSectionKey, overrides });
+  }
+  const idleSections = useMemo(() => idleSectionRows?.map((section, index) => ({
+    ...section,
+    expanded: idleSectionState.overrides.get(section.key) ?? (index === 0 || section.key === selectedIdleSectionKey),
+  })), [idleSectionRows, idleSectionState.overrides, selectedIdleSectionKey]);
+  useLayoutEffect(() => {
+    committedIdleSections.current = idleSections;
+  }, [idleSections]);
   const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
   // The folded At the top of Idle frame hides its cards on the Board overview only, like a
   // collapsed column: the rails always list the Blocked group in full.
   const hideFoldedBlocked = layout === "board" && !boardDetailOpen && blockedFrameCollapsed
     && fleet.blockedPlacement === "idle";
   const foldedIds = useMemo(() => {
-    const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
+    const folded = new Set(hiddenSessionIds(fleet.groups, collapsedRepoKeys));
+    for (const section of idleSections ?? []) {
+      if (!section.expanded) for (const id of section.sessionIds) folded.add(id);
+    }
     const inStrips = hideCollapsedColumns
       ? collapsedColumnSessionIds(fleet.columns, new Set(collapsedColumns))
       : new Set<string>();
     const inFrame = hideFoldedBlocked ? fleet.blocked : [];
     if (inStrips.size === 0 && inFrame.length === 0) return folded;
     return new Set([...folded, ...inStrips, ...inFrame.map((s) => s.id)]);
-  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked, idleSections]);
 
   // One array per drawn column, in Board order, so a Blocked lane or frame is walked as part
   // of the column that draws it and the Own column placement adds a sixth array.
@@ -3069,11 +3641,11 @@ export function App(): React.JSX.Element {
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
-    ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
+    ? pendingReviews.filter((r) => r.sessionId === modalSession.id && (!reviewRequest?.questionId || r.id === reviewRequest.questionId))
     : [];
   // A menu the session is parked on is answered in the same modal as its reviews: a resident
   // card's menu row opens it, as its review rows do.
-  const modalDialog = modalSession ? activePaneDialog(modalSession) : null;
+  const modalDialog = modalSession && !reviewRequest?.questionId ? activePaneDialog(modalSession) : null;
   const seeWorkPreviewTask = seeWorkTourPreviewTaskId
     ? tasks.find((task) => task.id === seeWorkTourPreviewTaskId) ?? null
     : null;
@@ -3389,6 +3961,7 @@ export function App(): React.JSX.Element {
       (visibleBacklog.length > 0 || visibleHibernated.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length - placement.excluded.size + (layout === "board" ? restoringSessions.length : 0);
+  const drawerHasMatches = residentDrawerShown && visibleResidentEntries.length > 0;
   const filterableSessionNoun =
     layout === "board"
       ? `session ${filterableSessionCount === 1 ? "row" : "rows"}`
@@ -3410,6 +3983,13 @@ export function App(): React.JSX.Element {
 
   const viewProps: SessionViewProps = {
     sessions: visible,
+    idleRailSections: idleSections && {
+      sections: idleSections,
+      onToggle: (key, expanded) => setIdleSectionState((previous) => ({
+        ...previous,
+        overrides: new Map(previous.overrides).set(key, expanded),
+      })),
+    },
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
@@ -3422,9 +4002,12 @@ export function App(): React.JSX.Element {
     selectedId,
     consoleZone,
     onConsoleZoneChange: setConsoleZone,
+    queueTabSession,
+    onQueueTabOpened: clearQueueTab,
     onSelect:
       layout === "board"
-        ? (id) => {
+        ? (id, tab) => {
+            setQueueTabSession(tab === "queue" ? id : null);
             setSelectedId(id);
             setBoardOpen(true);
           }
@@ -3480,6 +4063,9 @@ export function App(): React.JSX.Element {
     // The whole list, unnarrowed - the conversation replays RESOLVED reviews, which every
     // other consumer here filters out. See `SessionViewProps.reviews`.
     reviews,
+    // Agent reports' conversation entries, behind the `inbox` flag like the inbox's section.
+    reports: inboxNames ? reports : [],
+    reportControls: reportEntryControls,
     onEditTask: openTaskEditor,
     workflowRunsBySession,
     onOpenWorkflowRun: openWorkflowRun,
@@ -3494,7 +4080,16 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    cardCallSignBySession: cardCallSigns,
+    cardCallSignElementBySession: cardCallSignElements,
     residentBySession,
+    residentLoopFeedbackFor: (runId) => ({
+      value: residentLoopFeedback.get(runId),
+      onChange: (feedback) => updateResidentLoopFeedback(runId, feedback),
+    }),
+    awaitingIds,
+    stalledById,
+    onDismissStall: dismissStall,
     residentReplacementBySession,
     onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
@@ -3597,7 +4192,7 @@ export function App(): React.JSX.Element {
   // the bar's content at a fixed width, like a browser minimum font size. Both live in
   // `observeTopbar`, with the reasoning, because telling those apart from the fit's own
   // settling is the subtle part and it belongs beside the fit.
-  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), []);
+  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), [standalone]);
 
   // The palette does NOT close when the page changes - that is the whole difference between
   // it and the settings-only search it replaced. It navigates for a living, and a row that
@@ -3670,7 +4265,7 @@ export function App(): React.JSX.Element {
       // bare-key rebinding must stay behind the typing guard, or that character would open
       // the palette from inside any input.
       if (
-        chord === bindings.settingsSearch &&
+        route.page !== "voice-card" && chord === bindings.settingsSearch &&
         (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
         overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
       ) {
@@ -3913,10 +4508,49 @@ export function App(): React.JSX.Element {
       // it natively. Without this they would act as they do on a rail row: Tab dives into the
       // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
       // never get from Intake to Backlog.
-      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+      // In the Idle preview, Tab enters a section's controls and rows natively.
+      // Once a row has focus, Tab and Shift+Tab keep their session shortcuts.
+      const inIdleSections = Boolean(target?.closest(".has-idle-sections"));
+      if (chord === "Home" && inIdleSections && target?.closest(".rail-row")) {
+        e.preventDefault();
+        target.closest(".idle-rail-section")
+          ?.querySelector<HTMLButtonElement>(".idle-rail-section-toggle")?.focus();
+        return;
+      }
+      if ((chord === "Tab" || chord === "shift+Tab") && (
+        target?.closest(".line-dock, .voice-card, .voice-card-surface") || (inIdleSections && !target?.closest(".rail-row"))
+      )) return;
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
+        // A session awaiting a background process draws its band's controls (Open, Clear,
+        // Details) in the Conversation pane, which the tab strip walk below would skip: without
+        // this a hold could only be ended with a pointer. Tab order inside the reader is
+        // therefore body, then the band's controls, then the tab strip; Shift+Tab walks back to
+        // the body. Only while a band is drawn, so every other reader tabs exactly as before.
+        if ((chord === "Tab" || chord === "shift+Tab") && inReader) {
+          const band = target?.closest(".awaiting-band") ?? null;
+          const onBody = Boolean(target?.matches(".detail-body"));
+          const scope = band ?? (onBody && chord === "Tab" ? target?.closest(".cdetail")?.querySelector(".awaiting-band") : null);
+          // A collapsed Details keeps its Markdown in the DOM, hidden: a link or button in it cannot
+          // take focus, and stepping onto one would leave the keyboard stuck on the summary. Only
+          // controls a person can see are on the path, so a closed Details offers its summary alone.
+          const controls = scope
+            ? [...scope.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), summary")].filter((el) => {
+                const closed = el.closest("details:not([open])");
+                return !closed || (el.tagName === "SUMMARY" && el.parentElement === closed);
+              })
+            : [];
+          if (controls.length > 0) {
+            const at = band ? controls.indexOf(target as HTMLElement) : -1;
+            const next = controls[at + (chord === "Tab" ? 1 : -1)];
+            e.preventDefault();
+            if (next) next.focus({ preventScroll: true });
+            else if (chord === "Tab") readerTabbers.current.get(readerSession.id)?.(1);
+            else focusReaderBody();
+            return;
+          }
+        }
         if (chord === "Tab") {
           e.preventDefault();
           if (!inReader) {
@@ -3977,6 +4611,15 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // The inbox can hold items even with no visible session rows.
+      if (chord === bindings.review && (
+        (layout === "board" && hasAnswers) || (readerSession && (hasAnswers || hasOtherInboxItems))
+      )) {
+        e.preventDefault();
+        setInbox({ focusSessionId: readerSession?.id ?? null });
+        return;
+      }
+
       // The flat rail order, minus anything a folded repository frame is hiding. `visible` itself
       // is NOT filtered: the views still need every session to draw a frame's count and to know
       // what a fold is covering. Only what the keyboard walks is narrowed.
@@ -3987,7 +4630,10 @@ export function App(): React.JSX.Element {
       const detailResident = residentKeysRef.current.detailResidentId;
       // The drawer's Needs you group keeps the review chord live on a fleet with no rows.
       const drawerReview = chord === bindings.review && residentKeysRef.current.drawerAsking.length > 0;
-      if (ids.length === 0 && !residentOpen && !drawerReview) return;
+      // The selected session's section can hide the last row while its reader stays open.
+      const escapingDetail = chord === "Escape" && readerSession
+        && (boardDetailOpen || target?.closest(".cdetail"));
+      if (ids.length === 0 && !residentOpen && !drawerReview && !escapingDetail) return;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
@@ -4059,7 +4705,7 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail || inIdleSections) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
@@ -4207,18 +4853,11 @@ export function App(): React.JSX.Element {
         setResetSessionId(sel.id);
         return;
       }
-      // The review queue. The same click the attention-toned badge on the card performs,
-      // and deliberately the same TARGET rule: the selected session when it is the one
-      // asking, otherwise the first session in fleet order that is. Unclaimed - no
-      // `preventDefault` - when nothing anywhere is waiting, so a bare `e` on a quiet
-      // fleet stays the browser's.
-      // After the fleet, the first resident in the drawer's Needs you group: its review queue, with
-      // its card selected, or - asking without a review - its conversation with the cursor in the
-      // reply box, which is also what the chord does when that conversation is already the one
-      // open. See `reviewChordTarget`.
+      // Session and resident shortcuts when the inbox entry point does not apply.
       if (chord === bindings.review) {
         const keys = residentKeysRef.current;
-        const target = reviewChordTarget(visible, selectedId, keys.drawerAsking, keys.detailId);
+        const mark = (s: Session) => asQuestionAgent(s, keys.pausedResidents);
+        const target = reviewChordTarget(visible.map(mark), selectedId, keys.drawerAsking.map(mark), keys.detailId);
         if (!target) return;
         e.preventDefault();
         if (target.kind === "resident" && target.opens === "conversation") {
@@ -4248,7 +4887,7 @@ export function App(): React.JSX.Element {
           if (action === "focus") {
             void api.focus(sel.id).then((result) => {
               if (!result.ok) {
-                showLauncherFocusError(result.error ?? "could not focus");
+                showFleetActionError(result.error ?? "could not focus");
               }
             });
             return;
@@ -4334,7 +4973,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showFleetActionError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer, hasAnswers, hasOtherInboxItems]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -4540,11 +5179,59 @@ export function App(): React.JSX.Element {
           />
         );
 
+  useEffect(() => {
+    if (!openVoiceQuestion) return;
+    if (route.page === "voice-card") consumeVoiceQuestion(openVoiceQuestion);
+    else {
+      window.missionDesktop?.revealVoiceDashboard?.();
+      setReviewSessionId(openVoiceQuestion.sessionId);
+    }
+  }, [openVoiceQuestion, setReviewSessionId, consumeVoiceQuestion, route.page]);
+
+  const voiceCardHost = <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
+    surface={route.page === "voice-card" ? route.placement : surfaceRoot && voicePlacement !== "toast" ? voicePlacement : undefined}
+    sound={alertSettings.sound} notifications={alertSettings.notifications}
+    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention, dismiss: dismissVoiceCard,
+      openRecentlyHeard: () => trayHistory ? openTrayHistory() : openSettingsAnchor("voice", "voice/heard"),
+      openQuestion: (sessionId, questionId) => { if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.(); navigate({ page: "fleet" }, allowed => {
+        if (allowed) setReviewRequest({ sessionId, questionId });
+      }); },
+      followUp: async taskId => {
+        const id = newRequestId();
+        pendingVoiceFollowUp.current = id;
+        const superseded = { ok: false, error: "Another Dispatch opening took precedence." };
+        const task = await api.voiceFollowUpRepository(taskId);
+        if (pendingVoiceFollowUp.current !== id) return superseded;
+        if (!task.ok || !task.repoRoot) return { ok: false, error: task.error ?? "The task repository is unavailable." };
+        const repoRoot = task.repoRoot;
+        if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.();
+        return new Promise(resolve => navigate({ page: "fleet" }, allowed => {
+          if (pendingVoiceFollowUp.current !== id) return resolve(superseded);
+          if (allowed) requestDispatch({ kind: "new", followUp: { id, repoRoot } });
+          resolve(allowed ? { ok: true } : { ok: false, error: "Follow-up stayed closed. Your draft is still open." });
+        }));
+      },
+      relaunch: async (target, requestId) => {
+        const profile = residentProfiles.find(p => "resident:" + p.id === target.key);
+        if (!profile) return { ok: false, error: "The resident profile is unavailable." };
+        const { defaultRepoRoot, additionalRepoRoots } = profile.settings.workspace;
+        const result = await launchResident(profile.id, { repoRoot: defaultRepoRoot, additionalRepoRoots, requestId, answerWhen: "accepted" }, { profile });
+        return result.state === "failed" || result.state === "refused" ? { ok: false, error: result.error } : { ok: true };
+      },
+    }} /></VoiceHintsContext.Provider>;
+  const history = <RecentlyHeard roster={voiceRoster} mode={voice?.mode ?? "off"} />;
+
   return (
     <OverlayHost value={overlays}>
       <FeatureFlagsContext.Provider value={featureFlags}>
       <FleetPauseContext.Provider value={fleetPause}>
       <HeldSessionsContext.Provider value={heldIds}>
+      <PausedResidentsContext.Provider value={pausedResidents}>
+      <ResidentNamesContext.Provider value={residentNames}>
+      <VoiceWindowProvider enabled={spokenNames && !standalone} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
+      <VoiceAnswersContext.Provider value={voiceHints ? { planFormsByVoice: voice?.planFormsByVoice ?? true, answers: voiceAnswers, windowId: connected ? voiceWindowId : undefined } : null}>
+      <VoiceRosterContext.Provider value={voiceRoster}>
+      <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
@@ -4552,8 +5239,13 @@ export function App(): React.JSX.Element {
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
         activeRunId={activeTourBinding?.activeRunId ?? null}
       >
-      <ContextMenuHost ref={contextMenuRef} />
-      <div className={`app app-${layout}`}>
+      {!standalone && <ContextMenuHost ref={contextMenuRef} />}
+      <div className={route.page === "voice-card" ? `voice-standalone voice-${route.placement}` : `app app-${layout}`} role={standalone ? "main" : undefined}>
+        {spokenNames && <VoiceCardOutlet root={voiceCards.size ? surfaceRoot : null} placement={voicePlacement}
+          hidden={voicePlacement === "popover" && historyOpen}>{voiceCardHost}</VoiceCardOutlet>}
+        {historyOpen && popRoot && voicePortal(popRoot, <div className="voice-standalone voice-popover">{history}</div>)}
+        {!standalone && <>
+        <VoiceIndicator id="edge" />
         <Topbar
           barRef={topbarRef}
           layout={topbarLayout}
@@ -4569,8 +5261,9 @@ export function App(): React.JSX.Element {
           working={counts.working}
           inbox={attention.total}
           snoozed={snoozed.length}
+          toRead={attention.toRead}
           inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
-          onOpenInbox={() => setInboxOpen(true)}
+          onOpenInbox={() => setInbox({ focusSessionId: null })}
           didNotStart={launchFailureGroups.length}
           onShowDidNotStart={() => {
             const first = launchFailureGroups[0];
@@ -4582,7 +5275,7 @@ export function App(): React.JSX.Element {
             closeLineDrawer();
             setReportOpen(true);
           }}
-          launcherFocusError={launcherFocusError}
+          fleetActionError={fleetActionError}
           fleetCost={fleetCost}
           costView={cost.status?.config.view ?? "usd"}
           onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}
@@ -4849,8 +5542,14 @@ export function App(): React.JSX.Element {
           }
           settings={(
             <SettingsPage
+              voiceConfig={voiceConfig}
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
+              shapingSignIns={shapingSignIns}
+              reportMutes={reportMutes}
+              voice={voice}
+              sessions={sessions}
+              residentProfiles={residentProfiles}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:
@@ -5028,7 +5727,10 @@ export function App(): React.JSX.Element {
             <div className="residents-pinned-row">
               {layoutView ?? <div className="residents-pinned-spacer" />}
               <ResidentsDrawer
-                entries={residentEntries}
+                entries={visibleResidentEntries}
+                live={residentEntries.length}
+                loopFeedback={residentLoopFeedback}
+                onLoopFeedbackChange={updateResidentLoopFeedback}
                 profiles={residentProfiles}
                 pinned={residentDrawerPinned}
                 selectedId={residentDrawerSelected}
@@ -5051,7 +5753,7 @@ export function App(): React.JSX.Element {
         {residentsInDrawer && !residentDrawerShown && (
           <ResidentsEdgeTab
             live={residentEntries.length}
-            needsYou={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "attention")}
+            needsYou={residentEntries.some(residentEntryAmber)}
             working={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "working")}
             onOpen={() => showResidentDrawer()}
           />
@@ -5124,6 +5826,7 @@ export function App(): React.JSX.Element {
             asked for exactly that. `layoutHasContent` counts these tasks so the layout holding
             the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
+          !(residentDrawerShown && residentEntries.length > 0) &&
           (layout !== "board" || restoringSessions.length === 0) &&
           dispatchingTasks.length === 0 &&
           failedLaunchTiles === 0 && (
@@ -5160,10 +5863,8 @@ export function App(): React.JSX.Element {
           )
         )}
 
-        {/* Only when the layout drew nothing - on the board a filter that matched only
-            backlog items has already rendered them, and telling the operator nothing
-            matched while the match is on screen is the bug this replaced. */}
-        {filterableSessionCount > 0 && !layoutHasContent && (
+        {/* Backlog and drawer matches also count as results. */}
+        {filterableSessionCount > 0 && !layoutHasContent && !drawerHasMatches && (
           <div className="empty">
             <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">
@@ -5225,21 +5926,37 @@ export function App(): React.JSX.Element {
                 </OverlayRegistration>
               )}
 
-              {inboxOpen && (
+              {inbox && (
                 <AttentionInbox
                   fold={attention}
+                  focusSessionId={inbox.focusSessionId}
                   snoozed={snoozed}
                   onDismiss={attentionDismissals.dismiss}
-                  onClose={() => setInboxOpen(false)}
+                  onClose={() => setInbox(null)}
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  onComplete={setCompleteSessionId}
+                  onReplyBox={noteInboxReplyBox}
+                  reports={reportControls}
+                  held={attentionDismissals.dismissed === null}
+                  pinned={pinnedBand}
+                  files={files}
+                  // The question stays pending; "to answer" brings the operator back to decide.
+                  onOpenPath={openSessionPathOnFleet}
                 />
+              )}
+              {/* Open report: an agent report's attached document, from its stored copy. Opened from
+                  an inbox card or a conversation entry, so it sits over either. */}
+              {documentReport && (
+                <ReportDocumentReader report={documentReport} onClose={() => setDocumentReport(null)} />
               )}
 
               {modalSession && (modalReviews.length > 0 || modalDialog) && (
                 <ReviewModal
                   session={modalSession}
+                  focusQuestion={openVoiceQuestion}
+                  onQuestionFocused={consumeVoiceQuestion}
                   reviews={modalReviews}
                   dialog={modalDialog}
                   onClose={() => {
@@ -5259,33 +5976,6 @@ export function App(): React.JSX.Element {
                   onOpenPath={openSessionPath}
                 />
               )}
-
-              <DispatchLayer
-                opening={dispatchOpening}
-                tasks={tasks}
-                sessions={sessions}
-                personas={personas}
-                workflowSummaries={workflowSummaries}
-                foremanEnabled={foreman.config?.enabled ?? false}
-                harnessesRevision={harnessesRevision}
-                stackingDefault={settingsStatus?.shipping.stacking}
-                pipelinesRevision={
-                  settingsStatus?.pipelines.observedRepoKeys
-                    ? JSON.stringify({
-                        repos: settingsStatus.pipelines.observedRepoKeys,
-                        launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
-                      })
-                    : `count:${settingsStatus?.pipelines.observing ?? 0}`
-                }
-                onClose={closeDispatch}
-                onOpenSchedule={onOpenSchedule}
-                onOpenLaunchFix={openLaunchFix}
-                onOpenEnvironmentFix={openEnvironmentFix}
-                onEnsembleLaunched={openEnsembleRun}
-                residentProfiles={residentProfiles}
-                onEditResidentProfile={(profileId) =>
-                  navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
-              />
 
               <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
 
@@ -5422,10 +6112,53 @@ export function App(): React.JSX.Element {
           onShow={showLaunchFailure}
           onReport={setReportingLaunchFailure}
         />
+        <VoiceIndicator id="floating" />
+        <VoiceIndicator id="status-line" />
+        </>}
+        <DispatchLayer
+          opening={dispatchOpening}
+          suspended={standalone}
+          repairFollowUpId={dispatchRequest?.kind === "repair-follow-up" ? dispatchRequest.followUp.id : undefined}
+          tasks={tasks}
+          sessions={sessions}
+          personas={personas}
+          workflowSummaries={workflowSummaries}
+          foremanEnabled={foreman.config?.enabled ?? false}
+          harnessesRevision={harnessesRevision}
+          stackingDefault={settingsStatus?.shipping.stacking}
+          pipelinesRevision={
+            settingsStatus?.pipelines.observedRepoKeys
+              ? JSON.stringify({
+                  repos: settingsStatus.pipelines.observedRepoKeys,
+                  launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
+                })
+              : `count:${settingsStatus?.pipelines.observing ?? 0}`
+          }
+          onClose={closeDispatchOpening}
+          onOpenSchedule={onOpenSchedule}
+          onOpenLaunchFix={fix => {
+            if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+            openLaunchFix(fix);
+          }}
+          onOpenEnvironmentFix={check => {
+            if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+            openEnvironmentFix(check);
+          }}
+          onEnsembleLaunched={openEnsembleRun}
+          residentProfiles={residentProfiles}
+          onEditResidentProfile={(profileId) =>
+            navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+        />
       </div>
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
+      </InboxReplyBoxesContext.Provider>
+      </VoiceRosterContext.Provider>
+      </VoiceAnswersContext.Provider>
+      </VoiceWindowProvider>
+      </ResidentNamesContext.Provider>
+      </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>
       </FleetPauseContext.Provider>
       </FeatureFlagsContext.Provider>
@@ -5442,9 +6175,6 @@ function taskLaunchStopped(task: Task | null): boolean {
         (task.status === "backlog" && task.error !== null)),
   );
 }
-
-/** The inbox while the dismissals are still unknown: nothing listed, nothing counted. */
-const NO_ATTENTION_YET: AttentionFold = { items: [], total: 0 };
 
 function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;

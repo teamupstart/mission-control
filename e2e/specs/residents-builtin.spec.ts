@@ -5,6 +5,8 @@ import type { Locator } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { FAKE_GH_PRODUCT_ISSUE_URL, writeGhProductScript } from "../fixtures/fake-agents.ts";
+import { recordsIn } from "../fixtures/records.ts";
 import { settled } from "../fixtures/settle.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
@@ -232,7 +234,7 @@ test("an Agent Shepherd profile that predates the built-in keeps its data, and b
   await expect(dock.getByRole("button", { name: `Launch ${BUILTIN}`, exact: true })).toHaveCount(1);
   await expect(dock.getByRole("button", { name: `Launch ${BUILTIN} (built-in)`, exact: true })).toHaveCount(1);
   // The tag is laid out whole inside its name cell: the name, not the tag, is what truncates.
-  const tagFits = await dock.locator(".residents-pop-name").filter({ hasText: "built-in" }).evaluate((cell) => {
+  const tagFits = await dock.locator(".residents-pop-name").filter({ hasText: BUILTIN }).filter({ hasText: "built-in" }).evaluate((cell) => {
     const tag = cell.querySelector(".resident-builtin-tag")!.getBoundingClientRect();
     const box = cell.getBoundingClientRect();
     return tag.width > 0 && tag.left >= box.left - 0.5 && tag.right <= box.right + 0.5;
@@ -245,8 +247,110 @@ test("an Agent Shepherd profile that predates the built-in keeps its data, and b
   await shipped.getByRole("button", { name: "Launch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   const cards = dialog.getByRole("radiogroup", { name: "Profile" }).getByRole("radio");
-  await expect(cards).toHaveCount(2);
-  await expect(cards.filter({ hasText: "built-in" })).toHaveAttribute("aria-checked", "true");
+  await expect(cards.filter({ hasText: BUILTIN })).toHaveCount(2);
+  await expect(cards.filter({ hasText: BUILTIN }).filter({ hasText: "built-in" })).toHaveAttribute("aria-checked", "true");
   await expect(dialog).toContainText("revision 1");
   await capture(dialog, "09-both-listed-dispatch");
+});
+
+async function inspectorPreview(daemon: DaemonHandle, enabled: boolean): Promise<void> {
+  const result = await api(daemon, "/api/feature-flags", { method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "flag", id: "bug-fix-inspector", enabled }) });
+  expect(result.status).toBe(200);
+}
+
+test("Bug Fix Inspector offers optional GitHub reporting with fixed loop guardrails", async ({ dashboard, daemon }) => {
+  const savedLink = `${daemon.baseURL}/#/residents/builtin%3Abug-fix-inspector`;
+  await dashboard.goto(savedLink);
+  const rail = dashboard.getByRole("complementary", { name: "Resident profiles" });
+  const row = rail.getByRole("button").filter({ hasText: "Bug Fix Inspector" });
+  await expect(rail).toContainText("Agent Shepherd");
+  await expect(row).toHaveCount(0);
+  await expect(dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" })).toHaveCount(0);
+  await inspectorPreview(daemon, true);
+  await rail.getByRole("button").filter({ hasText: "Bug Fix Inspector" }).click();
+  const editor = dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" });
+  await expect(editor.getByLabel("Description")).toHaveValue(/optional resident that helps improve Mission Control over time/);
+  await expect(editor.getByLabel("Profile instructions")).toHaveValue(/report_product_issue/);
+  await expect(editor.getByRole("button", { name: "Launch", exact: true })).toBeVisible();
+  for (const label of ["Wake cadence (seconds)", "Minimum requested delay (seconds)", "Maximum requested delay (seconds)"]) {
+    await expect(editor.getByLabel(label, { exact: true })).toHaveValue("2700");
+  }
+  await expect(editor.getByLabel("Spend per 24 hours (USD)", { exact: true })).toHaveValue("20");
+  await capture(editor.getByRole("region", { name: "Loop and guardrails", exact: true }), "11-inspector-cadence");
+  await expect(editor.getByRole("checkbox", { name: "Control other sessions" })).not.toBeChecked();
+  await expect(editor).toContainText("read-only inspection of other sessions and workflows");
+  await capture(editor.getByRole("region", { name: "Authority", exact: true }), "15-inspector-authority");
+  await capture(editor.getByRole("region", { name: "Identity", exact: true }), "12-inspector-profile");
+  await inspectorPreview(daemon, false);
+  await expect(row).toHaveCount(0);
+  await expect(editor).toHaveCount(0);
+  const refused = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {
+    data: { repoRoot: null, requestId: "preview-disabled" },
+  });
+  expect(refused.status()).toBe(404);
+});
+
+test("the inspector asks for a fresh duplicate search when the searched repository differs from the preview", async ({ dashboard, daemon }) => {
+  await inspectorPreview(daemon, true);
+  writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
+  const launch = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {
+    data: { repoRoot: null, instructions: "Fixture finding: Missing workflow submission\nFixture searched repository: acme/previous-tracker", requestId: "inspector-stale-target" },
+  });
+  expect(launch.ok(), await launch.text()).toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail).toContainText("search the current destination for duplicates", { timeout: 30_000 });
+  await expect(detail.getByRole("button", { name: "to review" })).toHaveCount(0);
+  await capture(detail, "16-inspector-tracker-changed");
+  expect(recordsIn<{ argv: string[] }>(daemon.recordDir, file => file.startsWith("gh-"))
+    .filter(({ argv }) => argv[0] === "issue" && argv[1] === "create")).toHaveLength(0);
+});
+
+for (const pass of ["first", "scheduled"] as const) test(`a launched Bug Fix Inspector requires approval for a finding on its ${pass} pass`, async ({ dashboard, daemon }) => {
+  await inspectorPreview(daemon, true);
+  const finding = "Finished task leaves its bound workflow unsubmitted";
+  writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
+  await dashboard.goto(`${daemon.baseURL}/#/residents/builtin%3Abug-fix-inspector`);
+  await dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" }).getByRole("button", { name: "Launch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toContainText("Launching this resident asks it to prepare GitHub issue drafts for confirmed defects on its first and scheduled passes. You approve each issue before publication.");
+  if (pass === "scheduled") await capture(dialog, "17-inspector-launch-authorization");
+  const fixtureLabel = pass === "first" ? "Fixture finding" : "Fixture scheduled finding";
+  await dialog.getByLabel("Instructions for this run").fill(`${fixtureLabel}: ${finding}\nFixture searched repository: acme/public-issues`);
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await expect(dialog).toBeHidden();
+
+  const run = () => withDaemonDb(daemon, db => db.prepare("SELECT iteration, loop_state FROM resident_runs WHERE ended_at IS NULL").get());
+  if (pass === "scheduled") {
+    // Make the next scheduled wake overdue in this disposable home after the quiet launch turn.
+    await expect.poll(run, { timeout: 30_000 }).toMatchObject({ iteration: 1, loop_state: "waiting" });
+    await daemon.crash();
+    withDaemonDb(daemon, db => db.prepare("UPDATE resident_runs SET next_wake_at = ? WHERE ended_at IS NULL").run(Date.now() - 1));
+    await daemon.restart();
+  }
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail.getByRole("group", { name: "Resident Bug Fix Inspector" })).toContainText("revision 1");
+  await detail.getByRole("button", { name: "to review" }).click({ timeout: 60_000 });
+  const preview = dashboard.locator(".review-modal");
+  await expect(preview).toContainText("Public GitHub issue preview");
+  await expect(preview).toContainText(finding);
+  await expect(preview).toContainText("acme/public-issues");
+  const creates = () => recordsIn<{ argv: string[] }>(daemon.recordDir, file => file.startsWith("gh-"))
+    .filter(({ argv }) => argv[0] === "issue" && argv[1] === "create");
+  const submit = preview.getByRole("button", { name: "Submit", exact: true });
+  await expect(submit).toBeDisabled();
+  expect(creates()).toHaveLength(0);
+  expect(run()).toMatchObject({ iteration: pass === "first" ? 1 : 2 });
+  await capture(preview, pass === "first" ? "18-inspector-first-pass-preview" : "13-inspector-issue-preview");
+  await preview.getByRole("radio", { name: "Submit public issue" }).check();
+  await submit.click();
+  await expect(detail).toContainText(`report_product_issue answered: Product issue created: ${FAKE_GH_PRODUCT_ISSUE_URL}`, { timeout: 30_000 });
+  await capture(detail, pass === "first" ? "19-inspector-first-pass-result" : "14-inspector-issue-result");
+  expect(creates()).toHaveLength(1);
+  expect(creates()[0]!.argv).toEqual(expect.arrayContaining(["acme/public-issues", finding, "bug", "source:agent"]));
 });

@@ -1,9 +1,6 @@
 import { test } from "node:test";
 import { mkEmuHandle, mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import {
   OK,
@@ -16,11 +13,12 @@ import type { TerminalDeps } from "../src/server/terminal/registry.ts";
 import type { EmulatorPane, MuxClient, MuxPane, TerminalResult } from "../src/server/terminal/types.ts";
 import { canRename, emulatorHandle, muxHandle, terminalResourceId } from "../src/shared/pane.ts";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Isolate the daemon's SQLite DB before ANY value import that can resolve it loads. A
 // static import of actions.ts here once sat above this line; hoisting evaluated it first,
 // config.ts stamped the real home, and every run of this file quietly opened the live db.
-process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-rename-"));
+process.env.HARNESS_HOME = tempDir("harness-rename-");
 const { rename, validateSessionName, validateSessionNameAgainstTasks } = await import(
   "../src/server/actions.ts"
 );
@@ -50,6 +48,7 @@ const embedded = { terminals: [], runtime: "sdk" as const };
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     blocker: null,
+    awaiting: null,
     id: "s",
     agent: "claude",
     name: "old",

@@ -31,6 +31,12 @@ export interface ModBand {
 
 export interface ModFetchInit {
   method?: "GET" | "POST";
+  /**
+   * Checked by the host after any wait it makes (reading the token file) and immediately before
+   * the request leaves. When it answers false the request is not sent and the call rejects, so a
+   * flow whose session ended while the host waited cannot file or change a task.
+   */
+  guard?: () => boolean;
   /** A JSON-serialisable body; the host sends it as JSON. */
   body?: unknown;
 }
@@ -54,6 +60,12 @@ export type ModPaneTab = ModState["paneTab"];
 export type ModPanePlacement = "dock" | "inline" | "widget";
 
 export interface ModPaneOpen {
+  /**
+   * Whether the session that asked is still current. The host checks it before it writes the
+   * pane's target and again as it opens, and takes back an open that finished after the session
+   * ended, so a stale command cannot open or retarget a replacement session's pane.
+   */
+  guard?: () => boolean;
   tab?: ModPaneTab;
   /** Open on this task's item view when the inbox lists it. */
   taskId?: string;
@@ -76,8 +88,16 @@ export interface ModHost {
   status: (text: string | undefined) => void;
   /** `undefined` draws no band. */
   band: (band: ModBand | undefined) => void;
+  /** The start-up banner lines above the prompt (7.21); `undefined` removes them. */
+  banner: (lines: readonly string[] | undefined) => void;
   /** Puts text in the prompt box without sending it (`$.prompt.fill`, spike S12). */
-  fillPrompt: (text: string) => void;
+  /**
+   * Resolves `false` (or throws) when the prompt box could not be filled, so the flow asks for
+   * the description in a dialog instead (S12). `void` means it was filled. `guard` is checked as
+   * the fill is issued; when it answers false the prompt is left alone (the session that asked
+   * has ended).
+   */
+  fillPrompt: (text: string, guard?: () => boolean) => void | boolean | Promise<void | boolean>;
   fetch: (path: string, init?: ModFetchInit) => Promise<ModFetchResult>;
   env: (name: string) => string | undefined;
   modelWrite: (write: ModModelWrite) => void;
@@ -90,3 +110,21 @@ export interface ModHost {
   /** Opens a URL for the person (`d Open in the dashboard`). */
   link: (url: string) => void;
 }
+
+/** The pane values the controller writes. Later phases widen this where they need more. */
+export type CoreStateKey = "registration" | "inbox" | "paneTab";
+
+export interface CorePaneState {
+  set: <K extends CoreStateKey>(key: K, value: ModState[K]) => Promise<void>;
+}
+
+/**
+ * What the session controller (`core.ts`) needs, and all the engine adapter implements in P8.
+ * The flow capabilities (`ask`, `fillPrompt`, `modelWrite`, `env`, `link`) and the wider pane
+ * state are not here: P11 and P12 add the members they use to the adapter in `register.ts`, next
+ * to their one registration line, so nothing in P8 pretends to implement them.
+ */
+export type CoreHost = Pick<
+  ModHost,
+  "notice" | "toast" | "status" | "band" | "banner" | "fetch" | "clockEvery" | "paneOpen" | "paneClose"
+> & { paneState: CorePaneState };

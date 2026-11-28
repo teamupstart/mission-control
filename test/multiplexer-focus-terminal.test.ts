@@ -235,6 +235,9 @@ const DOMAINS_APPENDED_SINCE: readonly string[] = [
   "storage-limits",
   "feature-flags",
   "shaping",
+  "voice",
+  "reports",
+  "agent-environment",
 ];
 
 test("the terminals backup domain is appended, and every id that existed stays where it was", () => {
@@ -324,7 +327,7 @@ test("one order serves both walks: the choice first, then the registry, never tw
   const preference: Record<string, EmulatorId | null> = { tmux: "iterm", herdr: null };
   const deps = { focusEmulator: (id: MultiplexerId) => preference[id] ?? null };
 
-  assert.deepEqual(emulatorAttemptOrder("tmux", deps), ["iterm", "wezterm", "ghostty"]);
+  assert.deepEqual(emulatorAttemptOrder("tmux", deps), ["iterm", "wezterm", "ghostty", "macos-terminal"]);
   assert.deepEqual(emulatorAttemptOrder("herdr", deps), [...EMULATOR_IDS]);
   // No multiplexer in hand at all - the shape focus's own `Multiplexer | null` can present.
   assert.deepEqual(emulatorAttemptOrder(null, deps), [...EMULATOR_IDS]);

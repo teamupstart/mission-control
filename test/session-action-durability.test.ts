@@ -11,8 +11,7 @@
  */
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionActionSnapshot, WorkflowJson } from "../src/shared/workflow.ts";
 import { SessionActionPromptSchema, SessionActionSnapshotSchema } from "../src/shared/protocol.ts";
@@ -25,8 +24,9 @@ import {
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RUN_STATUSES,
 } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-session-action-durability-"));
+const home = tempDir("mission-session-action-durability-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -478,7 +478,7 @@ test("a superseded parent, a terminal run, and a settled attempt all refuse to c
 });
 
 test("the completion transaction closes the attempt and seeds only the action's route", () => {
-  const { runId, submissionId, attemptId } = seedWaitingAction();
+  const { submissionId, attemptId } = seedWaitingAction();
   const reserved = store.reserveSessionActionContinuation({
     attemptId,
     submissionId: "child-1",

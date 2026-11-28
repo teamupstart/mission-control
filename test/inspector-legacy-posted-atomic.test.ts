@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
 // `addColumn` reports "added" once, so a `legacy_posted` column committed without its backfill
 // would leave every legacy row NULL forever. A trigger fails the backfill here to prove the
 // column rolls back with it and the next open classifies the rows.
-const home = mkdtempSync(join(tmpdir(), "mission-inspector-legacy-atomic-"));
+const home = tempDir("mission-inspector-legacy-atomic-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

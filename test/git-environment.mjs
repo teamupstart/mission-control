@@ -8,9 +8,9 @@
 // Loaded by `test/setup-state.mjs`, so it rides the one preload every test command carries.
 // Plain `.mjs` with only Node built-ins, for the same reason that file is.
 
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * `git maintenance run --auto` is a second git process that every `commit`, `merge`, `fetch`,
@@ -90,7 +90,7 @@ export function bypassXcrunGitShim(env = process.env) {
   const usr = join(developer, "usr");
   const real = join(usr, "bin", "git");
   if (!existsSync(real)) return;
-  const prefix = mkdtempSync(join(tmpdir(), "mission-test-git-"));
+  const prefix = tempDir("mission-test-git-");
   process.on("exit", () => rmSync(prefix, { recursive: true, force: true }));
   try {
     mkdirSync(join(prefix, "bin"), { recursive: true });

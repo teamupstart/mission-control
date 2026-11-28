@@ -7,6 +7,7 @@ import {
   SETUP_REPOSITORY_ANCHORS,
   SETUP_SERVICE_INFO,
   homeRelative,
+  setupFamilyFlagOn,
   setupRowAnchor,
   type SetupCommandPurpose,
   type SetupDependencyId,
@@ -19,6 +20,15 @@ import type {
   PipelineProviderId,
 } from "@shared/pipeline.ts";
 import { visibleSetupFamilyIds } from "@shared/conductor-integration.ts";
+import { resolveFeatureFlag, type FeatureFlagId } from "@shared/feature-flags.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { formatBytes } from "@shared/format-bytes.ts";
+import { VoiceModelProgress } from "./VoiceModelProgress.tsx";
+import type { VoiceState } from "@shared/voice.ts";
+import { formatChord } from "@shared/keyboard-chords.ts";
+import { confirmedVoiceHotkey } from "./VoiceIndicators.tsx";
+import { voiceModelSetupStatus } from "@shared/voice-models.ts";
+import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import {
   MULTIPLEXER_IDS,
   resolveEmulatorBackend,
@@ -29,6 +39,7 @@ import {
 } from "@shared/terminal.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import {
+  api,
   fetchPipelineInstallers,
   openSetupInstaller,
   startSetupService,
@@ -559,8 +570,171 @@ function ProviderInstallerRemedy({
   );
 }
 
-function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }): React.JSX.Element {
+/**
+ * Turn on the preview flags a row names, one `PUT /api/feature-flags` each, the way the Feature
+ * flags panel switches them. Stops at the first refusal and says which flag it was.
+ */
+function FeatureFlagsRemedy({
+  flags,
+  label,
+  note,
+  onRepaired,
+}: {
+  flags: readonly FeatureFlagId[];
+  label: string;
+  note: string;
+  onRepaired(): void;
+}): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function turnOn(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      for (const id of flags) {
+        const result = await api.setFeatureFlags({ kind: "flag", id, enabled: true });
+        if (!result.ok) {
+          // Named by its label, the name Settings > Feature flags shows, so the hint below leads there.
+          const label = FEATURE_FLAGS.find((flag) => flag.id === id)?.label ?? id;
+          setError(`${label} could not be turned on${result.error ? `: ${result.error}` : "."}`);
+          return;
+        }
+      }
+    } finally {
+      setBusy(false);
+      onRepaired();
+    }
+  }
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void turnOn()}>
+            {busy ? "Turning on..." : label}
+          </button>
+        </Tooltip>
+      </div>
+      {error && <RemedyNotice tone="error" detail={error} hint="Switch it in Settings > Feature flags, then press Re-check." />}
+    </div>
+  );
+}
+
+/**
+ * The voice state from the event stream, so the speech model's row follows a download as it runs
+ * instead of waiting for a Re-check. Null outside Settings or before the first snapshot.
+ */
+const SetupVoiceContext = createContext<VoiceState | null>(null);
+
+/**
+ * The daemon owns the download; this draws `VoiceState.model` as the event stream delivers it, so
+ * every window shows the same bar.
+ */
+function VoiceModelRemedy({ label, note }: { label: string; note: string }): React.JSX.Element | null {
+  const voice = useContext(SetupVoiceContext);
+  const model = voice?.model ?? null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function start(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.startVoiceModelDownload();
+      if (!result.ok) setError(result.reason ?? result.error ?? "The download could not start.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function cancel(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.cancelVoiceModelDownload();
+      if (!result.ok) setError(result.error ?? "The download could not be cancelled.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Nothing to download for this backend: the row's sentence says so, and a button would fail.
+  if (model && model.status === "missing" && model.revision === null) return null;
+  const notice = error && <RemedyNotice tone="error" detail={error} hint="Press Re-check, then try again." />;
+  if (model && (model.status === "downloading" || model.status === "verifying")) {
+    return <><VoiceModelProgress model={model} busy={busy} onCancel={() => void cancel()} />{notice}</>;
+  }
+  const failed = model?.status === "failed";
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void start()}>
+            {failed ? "Retry" : label}
+          </button>
+        </Tooltip>
+        {model && model.totalBytes > 0 && (
+          <span className="voice-model-figures">{formatBytes(model.totalBytes)} from Hugging Face</span>
+        )}
+      </div>
+      {notice}
+    </div>
+  );
+}
+
+function MicrophoneRemedy({ label, note, action, onRepaired }: {
+  label: string; note: string; action?: "settings" | "ask"; onRepaired(): void;
+}): React.JSX.Element {
+  const desktop = typeof window !== "undefined" ? window.missionDesktop : undefined;
+  const fix = desktop?.fixVoiceMicrophone;
+  const check = desktop?.checkVoiceMicrophone;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function apply(run: NonNullable<typeof fix>) {
+    setBusy(true);
+    setError("");
+    try {
+      if (await run() === "unavailable") setError("Desktop microphone controls are unavailable. Check that Voice is enabled.");
+      else onRepaired();
+    }
+    catch { setError("Could not access the macOS microphone controls."); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="setup-remedy-actions">
+      {!fix && <p className="setup-remedy-note">{desktop?.isDesktop ? "Microphone controls are unavailable in this desktop app." : note}</p>}
+      <div className="setup-run-controls">
+        {fix && action && (
+          <Tooltip label={action === "settings" ? "Open the macOS Microphone privacy pane" : "Ask macOS to allow Mission Control to use the microphone"}>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void apply(fix)}>
+              {action === "settings" ? "Open System Settings" : "Ask macOS"}
+            </button>
+          </Tooltip>
+        )}
+        {(!fix || action !== "ask") && <Tooltip label="Read the microphone permission again">
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={check ? () => void apply(check) : onRepaired}>{label}</button>
+        </Tooltip>}
+      </div>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  );
+}
+
+/** The pill a row reads while the live state is mid-way through something the snapshot cannot say. */
+function liveStatusLabel(row: SetupRowView, voice: VoiceState | null): string | null {
+  if (row.remedy.kind !== "voice-model-download" || !voice) return null;
+  if (voice.model.status === "downloading") return "Downloading";
+  if (voice.model.status === "verifying") return "Verifying";
+  return null;
+}
+
+function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }): React.JSX.Element | null {
   const remedy = row.remedy;
+  if (remedy.kind === "feature-flags") {
+    return <FeatureFlagsRemedy flags={remedy.flags} label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
+  }
+  if (remedy.kind === "voice-model-download") {
+    return <VoiceModelRemedy label={remedy.label} note={remedy.note} />;
+  }
+  if (remedy.kind === "microphone-access") {
+    return <MicrophoneRemedy action={remedy.action} label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
+  }
   if (remedy.kind === "service") {
     return (
       <ServiceRemedy
@@ -790,6 +964,9 @@ function SetupRow({
 }): React.JSX.Element {
   const status = row.status;
   const satisfied = status.state === "satisfied";
+  const voice = useContext(SetupVoiceContext);
+  const liveLabel = liveStatusLabel(row, voice);
+  const hotkey = row.remedy.kind === "microphone-access" && voice ? confirmedVoiceHotkey(voice) : null;
   const main = (
     <div className="setup-row-main">
       <div className="setup-row-title">
@@ -808,7 +985,7 @@ function SetupRow({
             worth repeating on a row that is already fine - "recommended" on ten healthy
             rows describes a decision made long ago and says nothing about now. */}
         {!satisfied && (
-          <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>
+          <span className={`setup-status setup-status-${status.state}`}>{liveLabel ?? STATUS_LABEL[status.state]}</span>
         )}
         {(!satisfied || row.requirement === "required") && (
           <span className={`setup-requirement setup-requirement-${row.requirement}`}>{row.requirement}</span>
@@ -830,6 +1007,7 @@ function SetupRow({
           <Remedy row={row} onRepaired={onRepaired} />
         </>
       )}
+      {hotkey && <p className="setup-source">{voice?.pushToTalkSession ? "Hold" : "Tap"} <kbd>{formatChord(hotkey)}</kbd> {voice?.pushToTalkSession ? "to talk" : "to mute voice"} from any app.</p>}
       {row.guide && (
         <div className="setup-guide">
           <Tooltip label={row.guide.label}>
@@ -884,8 +1062,8 @@ function tally(rows: readonly SetupRowView[]): FamilyTally {
  * answer behind a click - and the Setup banner links straight here precisely when something
  * required is unsatisfied.
  */
-function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
-  const byFamily = visibleSetupFamilyIds(rows).map((family) => ({
+function defaultFamily(rows: readonly SetupRowView[], flagOn?: (flag: FeatureFlagId) => boolean): SetupFamilyId {
+  const byFamily = visibleSetupFamilyIds(rows, undefined, flagOn).map((family) => ({
     family,
     tally: tally(rows.filter((row) => row.family === family)),
   }));
@@ -905,9 +1083,14 @@ function defaultFamily(rows: readonly SetupRowView[]): SetupFamilyId {
  * so a jump to one has to select that family first, or the page's flash observer waits for
  * an element that will never mount and silently lights nothing.
  */
-export function familyForAnchor(anchor: string, rows: readonly SetupRowView[]): SetupFamilyId | null {
+export function familyForAnchor(
+  anchor: string,
+  rows: readonly SetupRowView[],
+  /** The resolved flags, so a link to a family behind an off flag (Voice) names nothing. */
+  flagOn?: (flag: FeatureFlagId) => boolean,
+): SetupFamilyId | null {
   // Only a family the rail draws: a link to one hidden with its integration names nothing.
-  const named = visibleSetupFamilyIds(rows).find((family) => anchor === `setup/family-${family}`);
+  const named = visibleSetupFamilyIds(rows, undefined, flagOn).find((family) => anchor === `setup/family-${family}`);
   if (named) return named;
   // The Repositories family's directory editor is not a row, but it is only mounted while
   // that family is selected, so its controls resolve the same way a row anchor does.
@@ -952,16 +1135,20 @@ export function nextSetupSelection(
   current: SetupSelection,
   input: SetupSelectionInput,
 ): SetupSelection | null {
-  // Nothing to decide from. The request is deliberately left unconsumed: the panel starts
-  // fetching as it mounts, so a link from the command palette or Foreman routinely arrives
-  // before the rows that would resolve it.
-  if (input.rows.length === 0) return null;
-
   const unseen = input.jumpRequestId !== current.seenRequest;
-  // A fresh deep link outranks the default and the operator's last click alike.
+  // A fresh deep link outranks the default and the operator's last click alike. Latched as
+  // soon as it resolves, rows or not: an environment-check anchor resolves from the catalog
+  // before the snapshot lands (`familyForAnchor`), and the page stops handing the jump down
+  // once it has started waiting for the control. Waiting for rows here as well let a slow
+  // first read lose the jump and open the default family instead.
   if (unseen && input.jumpFamily) {
     return { chosen: input.jumpFamily, seenRequest: input.jumpRequestId };
   }
+
+  // Nothing else to decide from. An unresolved request is deliberately left unconsumed: the
+  // panel starts fetching as it mounts, so a link from the command palette or Foreman
+  // routinely arrives before the rows that would resolve it.
+  if (input.rows.length === 0) return null;
 
   // An unresolvable request is consumed rather than waited on, so a link to a row this build
   // does not render cannot pin the rail forever.
@@ -1054,10 +1241,13 @@ function VerdictHeader({
 
 export function SetupPanel({
   state,
+  voice = null,
   jumpAnchor = null,
   jumpRequestId = null,
 }: {
   state: SetupChecksState;
+  /** `MissionState.voice`, which the Voice family's speech model row follows live. */
+  voice?: VoiceState | null;
   /** A deep link asking for one row or one family. See `familyForAnchor`. */
   jumpAnchor?: string | null;
   jumpRequestId?: number | null;
@@ -1083,13 +1273,39 @@ export function SetupPanel({
 
   // `NO_ROWS` rather than a fresh `[]`: this array is an effect dependency and a memo input,
   // and a new identity every render makes both of them run every render.
-  const rows = state.view?.rows ?? NO_ROWS;
+  // The event stream's flags, so a family behind a preview flag (Voice) appears and leaves the
+  // rail the moment it is switched, in every window.
+  const flags = useContext(FeatureFlagsContext);
+  const flagOn = useCallback((flag: FeatureFlagId) => resolveFeatureFlag(flag, flags), [flags]);
+  // A snapshot read while a family's flag was on still holds its rows after the flag goes off,
+  // until the re-read lands. The live flag wins: those rows leave the rail, the pane and the
+  // verdict's counts at once, so no repair button outlives the feature it repairs.
+  const readRows = state.view?.rows ?? NO_ROWS;
+  // The speech model's row reads the live model state over the snapshot's: a download runs for
+  // minutes, and the bar, the rail's count and the verdict should all move with it, in every
+  // window, rather than at the next Re-check. The daemon's probe gives the same reading.
+  const liveModel = voice && voice.mode !== "off" && voice.model.backend !== null ? voice.model : null;
+  const rows = useMemo(() => {
+    const shown = readRows.filter((row) => setupFamilyFlagOn(row.family, flagOn));
+    const flagged = shown.length === readRows.length ? readRows : shown;
+    if (!liveModel) return flagged;
+    return flagged.map((row) => (row.remedy.kind === "voice-model-download" ? { ...row, status: voiceModelSetupStatus(liveModel) } : row));
+  }, [readRows, flagOn, liveModel]);
   const home = state.view?.home ?? "";
+  const families = useMemo(() => visibleSetupFamilyIds(rows, undefined, flagOn), [rows, flagOn]);
 
   // A remedy that settles in the daemon re-reads the machine itself, so the row it repaired
   // reports the new truth rather than waiting for the operator to press Re-check on a
   // question they have already answered.
   const refresh = state.refresh;
+  // The shell can obtain or lose access after Setup's initial probe, including while
+  // macOS has focus. Re-read the daemon's merged listener/shell reading on a transition.
+  const microphone = voice?.capabilities.microphone;
+  const microphoneStatus = microphone && (microphone.available ? "granted" : microphone.reason ?? "unknown");
+  useEffect(() => {
+    if (microphoneStatus !== undefined) void refresh();
+  }, [microphoneStatus, refresh]);
+
   const onRepaired = useCallback(() => { void refresh(); }, [refresh]);
 
   // Chosen, not derived on every read. `null` means "nobody has chosen", which is the only
@@ -1102,8 +1318,8 @@ export function SetupPanel({
   // explicit request to look at one thing. Keyed on the request id so the same anchor asked
   // for twice still moves the rail back after the operator has clicked elsewhere.
   const jumpFamily = useMemo(
-    () => (jumpAnchor ? familyForAnchor(jumpAnchor, rows) : null),
-    [jumpAnchor, rows],
+    () => (jumpAnchor ? familyForAnchor(jumpAnchor, rows, flagOn) : null),
+    [jumpAnchor, rows, flagOn],
   );
 
   // Applied during render rather than only in the effect below, and both are needed.
@@ -1114,7 +1330,10 @@ export function SetupPanel({
   // The effect is what makes it STICK: the page clears the jump as soon as it has flashed the
   // control, so a family held only by the live prop would snap back the moment it went away.
   const unseenJump = jumpRequestId !== seenRequest ? jumpFamily : null;
-  const active = unseenJump ?? chosen ?? (rows.length > 0 ? defaultFamily(rows) : SETUP_FAMILY_IDS[0]);
+  const picked = unseenJump ?? chosen ?? (rows.length > 0 ? defaultFamily(rows, flagOn) : SETUP_FAMILY_IDS[0]);
+  // A family chosen while its flag was on stops being drawn when the flag goes off; the pane
+  // follows the rail rather than showing a family nothing selects.
+  const active = families.includes(picked) ? picked : families[0] ?? SETUP_FAMILY_IDS[0];
 
   // One effect applying one decision, because the jump and the opening default both write
   // `chosen`: as two effects they fire in the same commit and the loser is decided by
@@ -1133,6 +1352,7 @@ export function SetupPanel({
   const repoIndex = useRepoIndex(active === "repositories");
 
   return (
+    <SetupVoiceContext.Provider value={voice}>
     <SetupTerminalTargetsContext.Provider value={terminalTargets}>
     <section className="settings-section setup-panel">
       {/* No standing intro paragraph. It spent the top of the panel restating the question
@@ -1149,7 +1369,7 @@ export function SetupPanel({
         <nav className="setup-rail" aria-label="Setup families">
           {/* A family emptied by a hidden integration (Pipelines, while ai-conductor is
               hidden) is not drawn at all, rather than drawn as a family with nothing in it. */}
-          {visibleSetupFamilyIds(rows).map((family) => {
+          {families.map((family) => {
             const familyRows = rows.filter((row) => row.family === family);
             const counts = tally(familyRows);
             const label = SETUP_FAMILY_INFO[family].label;
@@ -1268,5 +1488,6 @@ export function SetupPanel({
       </div>
     </section>
     </SetupTerminalTargetsContext.Provider>
+    </SetupVoiceContext.Provider>
   );
 }

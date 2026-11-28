@@ -1,7 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   WINDOW_BACKGROUND_FALLBACK,
@@ -16,6 +15,7 @@ import {
 import { toHexColor } from "../src/web/lib/skin.ts";
 import { startupPage } from "../src/main/startup-page.ts";
 import { SKINS } from "../src/shared/skins.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the desktop window paints before the dashboard has loaded. Under a light
 // skin that first frame has to be the skin's background, or every launch opens on a dark
@@ -23,7 +23,7 @@ import { SKINS } from "../src/shared/skins.ts";
 // bridge's handler only repaints the current window, refusing a value that is not a colour
 // before it reaches `BrowserWindow`, and never writes the file.
 
-const dir = mkdtempSync(join(tmpdir(), "mission-window-background-"));
+const dir = tempDir("mission-window-background-");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 test("a launch with nothing remembered opens in the pre-skin colour", () => {

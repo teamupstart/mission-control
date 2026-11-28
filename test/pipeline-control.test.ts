@@ -4,15 +4,14 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What stops the dashboard reporting that it paused an engine that is still dispatching.
 //
@@ -28,11 +27,11 @@ import { join } from "node:path";
 // a bare positional and `decide-grant` takes exactly three flags, and either mistake produces
 // a zero exit and a refusal nobody asked to read.
 
-const home = mkdtempSync(join(tmpdir(), "mission-pipeline-control-"));
+const home = tempDir("mission-pipeline-control-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_HOME = home;
 
-const binDir = mkdtempSync(join(tmpdir(), "fake-conduct-"));
+const binDir = tempDir("fake-conduct-");
 const fake = join(binDir, "conduct-ts");
 const recorded = join(binDir, "argv.txt");
 const scripted = join(binDir, "script.sh");
@@ -66,7 +65,7 @@ after(() => {
 
 // Through `realpathSync`, because the temp dir is a symlink on macOS and the child reports
 // the resolved path in `$PWD` - the same reason `resolveRepoRoot` hands the daemon a real one.
-const REPO = realpathSync(mkdtempSync(join(tmpdir(), "mission-pipeline-repo-")));
+const REPO = realpathSync(tempDir("mission-pipeline-repo-"));
 after(() => rmSync(REPO, { recursive: true, force: true }));
 
 /** What the engine will print and exit with, for the next invocation. */

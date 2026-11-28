@@ -6,12 +6,13 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkUserMessage,
 } from "../harness/claude/sdk-types.ts";
-import { CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
+import { CLAUDE_AI_CONNECTORS_ENV, CLAUDE_DEFAULT_TIMEOUT_MS, HEADLESS_CWD } from "../claude-cli.ts";
 import { CLAUDE_SANDBOX, claudeGrantDenyRules } from "./claude-grant.ts";
 import { claudeImageUserMessage } from "./claude-input.ts";
 import { validateLlmImages } from "./images.ts";
 import { claudeProviderFailure, ProviderFailure } from "./provider-failure.ts";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
+import { setAwakeTimeout } from "../host-suspend.ts";
 
 // One fresh SDK query for one app-owned model call. This is deliberately separate from
 // `harness/claude/sdk.ts`: that adapter owns a long-lived, human-reachable conversation,
@@ -110,7 +111,8 @@ function resultText(frame: ClaudeSdkMessage, structured: boolean): string {
  * connector's injected instructions make the model call `guide`, the call is denied, and
  * answering the denial needs a second turn that `maxTurns: 1` does not have.
  *
- * Three independent layers close it. `disableClaudeAiConnectors` stops the fetch;
+ * Three independent layers here close it, beside `CLAUDE_AI_CONNECTORS_ENV` in the
+ * options' `env`. `disableClaudeAiConnectors` stops the fetch;
  * `strictMcpConfig` (in the options, with no `mcpServers`) admits no other MCP config
  * either; and the `mcp__*` deny rule removes any MCP tool that a future CLI routes around
  * the first two. A grant's path denials merge into the same payload, because the SDK takes
@@ -161,6 +163,7 @@ export async function runClaudeSdkOneShot(
   // prompt untouched.
   const images = validateLlmImages(opts.images);
 
+  opts.signal?.throwIfAborted();
   const controller = new AbortController();
   let cancelError: Error | null = null;
   let rejectCancelled: (error: Error) => void = () => {};
@@ -176,14 +179,16 @@ export async function runClaudeSdkOneShot(
       rejectCancelled(error);
     },
   };
+  const onAbort = (): void => run.cancel(new Error("Claude Agent SDK run aborted"));
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
   live.add(run);
   hookExitOnce();
 
   const timeoutMs = opts.timeoutMs ?? CLAUDE_DEFAULT_TIMEOUT_MS;
-  const timer = setTimeout(() => {
+  // Awake time, not wall time (see `host-suspend.ts`).
+  const timer = setAwakeTimeout(() => {
     run.cancel(new Error("Claude Agent SDK one-shot timed out"));
   }, timeoutMs);
-  timer.unref?.();
 
   let stderr = "";
   let subprocessEnv: NodeJS.ProcessEnv | undefined;
@@ -199,8 +204,8 @@ export async function runClaudeSdkOneShot(
     // emit JSON, and a crafted transcript must not be able to steer it into invoking tools.
     // `tools: []` alone does not deliver that: MCP tools, the operator's claude.ai account
     // connectors among them, are not in that list and survived it. What keeps them out is
-    // `claudeOneShotSettings` plus `strictMcpConfig` below; read that function's comment
-    // before touching either.
+    // `claudeOneShotSettings`, `strictMcpConfig` and the `CLAUDE_AI_CONNECTORS_ENV` switch
+    // below; read `claudeOneShotSettings`'s comment before touching any of them.
     //
     // ONE tool survives that filter, and only when `outputFormat` is set below: the CLI
     // appends `StructuredOutput` AFTER applying the tool list, so "every tool disabled" is
@@ -298,13 +303,21 @@ export async function runClaudeSdkOneShot(
         // one. Strip every inherited pane identity and add the independent marker that
         // lets a current hook decline the event entirely. Both layers matter because the
         // installed hook may come from an older checkout.
-        env: { ...subprocessEnv, MISSION_HEADLESS: "1" },
+        //
+        // claude.ai connectors are off for the same reason built-in tools are, and also
+        // because their schemas alone can exceed a small model's context (see
+        // `CLAUDE_AI_CONNECTORS_ENV`). A grant holds only built-in tools, so no run here needs
+        // a connector.
+        env: { ...subprocessEnv, MISSION_HEADLESS: "1", [CLAUDE_AI_CONNECTORS_ENV]: "false" },
         abortController: controller,
         stderr: (data) => {
           stderr = (stderr + data).slice(-4_096);
         },
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
+        ...(opts.thinking === "off" ? { thinking: { type: "disabled" as const } } : {}),
+        // A string replaces Claude Code's own system prompt for this one-shot.
+        ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
         ...(opts.maxBudgetUsd !== undefined ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
         ...(opts.schema
           ? { outputFormat: { type: "json_schema" as const, schema: opts.schema } }
@@ -331,7 +344,8 @@ export async function runClaudeSdkOneShot(
     if (cancelError) throw cancelError;
     throw diagnostic(error, stderr);
   } finally {
-    clearTimeout(timer);
+    timer.clear();
+    opts.signal?.removeEventListener("abort", onAbort);
     live.delete(run);
     cleanupAgentSubprocessEnv(subprocessEnv);
   }

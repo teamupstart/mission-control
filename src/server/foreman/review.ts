@@ -2,10 +2,11 @@ import { buildReviewPrompt } from "./prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
+import { parseModelJson, runStructured, parseModelReply } from "../llm/structured.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
-import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
+import { FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 
 // Foreman's triage review: judge ONE session's pending question. A thin caller
 // over runStructured, which owns the fresh tool-less model call (so every session
@@ -27,22 +28,6 @@ export type ReviewResult =
 /** The reviewer's default, unless overridden by config or FOREMAN_REVIEW_MODEL. */
 export const DEFAULT_REVIEW_MODEL = FOREMAN_MODEL_SPECS.review.fallback;
 
-/** The reviewer's model from config, then env, then the Opus default. */
-export function reviewModel(
-  cfg: { reviewModel?: string },
-  /**
-   * The provider this role RESOLVED to, supplied by the caller.
-   *
-   * Required, and not defaulted to `cfg.runner`, for the reason `model` is required on the
-   * call below: the ladder now has three rungs and its bottom one - the app-wide answer -
-   * sits behind an env layer this process cannot see. Re-deriving it here would make the
-   * worker and the settings panel able to disagree about the very pair being spawned.
-   */
-  runner: LlmRunnerId,
-): string {
-  return resolveForemanModel("review", cfg, process.env, runner).id;
-}
-
 /**
  * Review one session with fresh context; never throws (returns `failed` instead).
  *
@@ -50,18 +35,18 @@ export function reviewModel(
  * `planBacklog` takes one: this module is the prompt-and-parse half, and the config that
  * decides the model lives with the caller. It used to be omitted entirely, which meant
  * `runClaudeText` left `--model` off and the reviewer silently ran as whatever the CLI
- * was logged in as - the behaviour `reviewModel` exists to replace. Making it a required
- * parameter is what stops a future call site quietly re-acquiring that default.
+ * was logged in as. A required model keeps its selection with the caller.
  */
 export async function reviewSession(
   input: ReviewInput,
   model: string,
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
+  effort?: ThinkingLevel,
 ): Promise<ReviewResult> {
   const r = await runStructured<typeof VerdictSchema>(
-    (p) => llmRunner(runnerId).run(p, { model, role: "foreman:review" }),
+    (p) => llmRunner(runnerId).run(p, { model, effort, role: "foreman:review" }),
     buildReviewPrompt(input),
-    extractVerdict,
+    (raw) => parseModelReply(raw, VerdictSchema),
     "Foreman review",
   );
   return r.kind === "ok" ? { kind: "verdict", verdict: r.value } : { kind: "failed", reason: r.reason };

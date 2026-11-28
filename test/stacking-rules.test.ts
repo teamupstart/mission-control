@@ -208,6 +208,25 @@ test("declaredBlockersIn: only a stamped, structurally eligible edge stops block
   assert.deepEqual(declaredBlockers(running, [parentA, running]).map((b) => b.taskId), ["A"]);
 });
 
+test("the backlog editor reuses stack readiness only for the stored repository, dependencies and modes", async () => {
+  const { draftFromTask, draftStackStartEdge } = await import("../src/web/lib/task-draft.ts");
+  const task = mkTask({ dependencies: [edge("A", stamp), edge("B", { satisfiedAt: 3, mode: "merge" })] });
+  const draft = draftFromTask(task);
+  const tasks = byId(parentA, task);
+  assert.equal(draftStackStartEdge(task, { ...draft, dependencies: [...draft.dependencies].reverse() }, tasks)?.taskId, "A");
+  assert.equal(draftStackStartEdge(task, { ...draft, repoRoot: "/elsewhere" }, tasks), null);
+  const [a, b] = draft.dependencies;
+  for (const dependencies of [
+    [a!],
+    [a!, { type: "task", taskId: "C", mode: "merge" } as const],
+    [a!, { type: "task", taskId: "B", mode: "stack" } as const],
+    [{ type: "task", taskId: "A", mode: "stack" } as const, b!], // Inherited to explicit.
+  ]) {
+    assert.equal(draftStackStartEdge(task, { ...draft, dependencies }, tasks), null);
+  }
+  assert.equal(draftStackStartEdge(task, draft, new Map()), null, "the prerequisite must still be eligible");
+});
+
 test("expectedStackBase: the parent's branch while it is open, the default branch after", () => {
   assert.equal(expectedStackBase({ state: "OPEN", headRefName: "feat/a" }, "main"), "feat/a");
   assert.equal(expectedStackBase({ state: "MERGED", headRefName: "feat/a" }, "main"), "main");

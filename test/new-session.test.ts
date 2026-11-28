@@ -2,14 +2,14 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const script = join(root, "scripts", "new-session.mjs");
-const fixture = mkdtempSync(join(tmpdir(), "mission-new-session-"));
+const fixture = tempDir("mission-new-session-");
 
 after(() => rmSync(fixture, { recursive: true, force: true }));
 

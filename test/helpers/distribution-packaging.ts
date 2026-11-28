@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { mock, type TestContext } from 'node:test';
@@ -12,6 +11,7 @@ import { FuseV1Options } from '@electron/fuses';
 import { distributionNames } from '../../scripts/distribution-contract.mjs';
 import { binaryPublisherPolicy } from '../../src/shared/binary-publisher-policy.mjs';
 import { UPDATE_HELPER_FILES } from '../../scripts/update-helper-files.mjs';
+import { tempDir } from "../temp-root.mjs";
 
 // Keep the real producer, app/DMG/archive verifiers, fuse reader, bundle hashing,
 // signed-runtime qualifier and publication-input validator. Only external build,
@@ -25,6 +25,7 @@ const policy = binaryPublisherPolicy();
 const commit = 'a'.repeat(40);
 const parentPid = 2_000_000_001, helperPid = 2_000_000_002;
 const realWriteFileSync = fs.writeFileSync;
+const signedEntitlements = '<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>';
 let active: ReturnType<typeof fixture>;
 
 export function installDistributionFixture() {
@@ -36,7 +37,7 @@ export function installDistributionFixture() {
   Object.defineProperty(builder, 'build', {configurable: true, value: (options: any) => active.build(options)});
   mock.method(childProcess, 'execFile', ((command: string, args: string[], _options: unknown, callback: Function) => active.notarize(command, args, callback)) as unknown as typeof childProcess.execFile);
   mock.method(childProcess, 'execFileSync', ((command: string, args: string[], options: any) => active.exec(command, args, options)) as typeof childProcess.execFileSync);
-  mock.method(childProcess, 'spawnSync', ((command: string, args: string[]) => active.run(command, args)) as typeof childProcess.spawnSync);
+  mock.method(childProcess, 'spawnSync', ((command: string, args: string[], options?: {input?: string}) => active.run(command, args, options?.input)) as typeof childProcess.spawnSync);
   mock.method(childProcess, 'spawn', ((command: string, args: string[], options: any) => active.spawn(command, args, options)) as unknown as typeof childProcess.spawn);
   mock.method(fs, 'writeFileSync', ((path: string, ...args: any[]) => {
     active?.beforeWrite(path);
@@ -61,7 +62,7 @@ function put(path: string, body: string | Buffer) {
 }
 
 export function fixture(t: Pick<TestContext, 'after'>, failure = '', channel = 'alpha') {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mission-package-behavior-')));
+  const root = realpathSync(tempDir('mission-package-behavior-'));
   const output = join(root, 'release/distribution');
   const app = join(output, 'mac-arm64/Agent Mission Control.app');
   const roots: string[] = [], mounts: string[] = [], stages: string[] = [], mcpMethods: string[] = [];
@@ -177,7 +178,7 @@ export function fixture(t: Pick<TestContext, 'after'>, failure = '', channel = '
       if (basename(command) === 'Mission Control') return JSON.stringify({electron: '43.0.0', node: '24.0.0'});
       throw new Error(`Unexpected external command: ${command}`);
     },
-    run(command: string, args: string[]) {
+    run(command: string, args: string[], input?: string) {
       assertQualificationBoundary();
       let stdout = '', stderr = '', status = 0;
       if (command === '/usr/sbin/spctl') {
@@ -199,10 +200,17 @@ export function fixture(t: Pick<TestContext, 'after'>, failure = '', channel = '
         }
       } else if (command === '/usr/libexec/PlistBuddy') {
         const key = args[1]!.slice('Print :'.length);
-        stdout = ({CFBundleIdentifier: policy.bundleId, CFBundleExecutable: "Mission Control", CFBundleName: "Agent Mission Control", CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion} as Record<string, string>)[key]!;
+        stdout = ({CFBundleIdentifier: policy.bundleId, CFBundleExecutable: "Mission Control", CFBundleName: "Agent Mission Control",
+          CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion,
+          NSMicrophoneUsageDescription: 'Fixture microphone access'} as Record<string, string>)[key]!;
+      } else if (command === '/usr/bin/plutil') {
+        assert.deepEqual(args, ['-convert', 'json', '-o', '-', '-']);
+        assert.equal(input, signedEntitlements);
+        stdout = JSON.stringify({'com.apple.security.device.audio-input': true});
       } else if (command === '/usr/bin/lipo') stdout = 'arm64';
       else if (command === '/usr/bin/codesign') {
-        if (args[0] === '-d') stderr = 'flags=0x10000(runtime)';
+        if (args[0] === '-d' && args[1] === '--entitlements') stdout = signedEntitlements;
+        else if (args[0] === '-d') stderr = 'flags=0x10000(runtime)';
         else {stages.push('verify-dmg-signature'); if (failure === 'dmg-signature') status = 1;}
       } else if (command === '/usr/bin/hdiutil') {
         if (args[0] === 'attach') {

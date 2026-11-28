@@ -1,8 +1,10 @@
+import type { NamedAgentEnvironment } from "../../executables/named-variable.ts";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import { withAgentTraceContext, type AgentTraceContext } from "../../agent-trace-context.ts";
+import { withWorkUnit } from "../../agent-work-unit.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
 // The ONE module that starts a `codex app-server` process.
@@ -140,21 +142,32 @@ export interface CodexSdkDeps {
     args: readonly string[],
     cwd: string,
     stateHome?: string,
-    options?: { residentStateDir?: string; codexHome?: string; traceContext?: AgentTraceContext | null },
+    options?: {
+      residentStateDir?: string;
+      codexHome?: string;
+      namedEnvironment?: NamedAgentEnvironment;
+      traceContext?: AgentTraceContext | null;
+      /** This session's work unit, or null. One server per session, so it is session-scoped. */
+      workUnitId?: string | null;
+    },
   ): Promise<AppServerTransport>;
 }
 
 /**
  * The app-server's environment: the shared SDK subprocess environment, carrying this
- * session's trace context and no other telemetry setting.
+ * session's trace context and work unit and no other telemetry setting. `codex app-server`
+ * puts the work unit on every request to an MCP server whose config maps a header to it
+ * (`env_http_headers`), and hands it to a stdio server that lists it in `env_vars`.
  */
 export function codexAppServerEnv(
   base: NodeJS.ProcessEnv,
   cwd: string,
   stateHome?: string,
   traceContext?: AgentTraceContext | null,
+  workUnitId?: string | null,
+  namedEnvironment?: NamedAgentEnvironment,
 ): Record<string, string | undefined> {
-  return withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome), traceContext);
+  return withWorkUnit(withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome, namedEnvironment), traceContext), workUnitId);
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
@@ -164,7 +177,7 @@ export const defaultCodexSdkDeps: CodexSdkDeps = {
     // machine-installed hooks firing inside them would all key to that one card. Shared
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
     // environment, not about either harness.
-    const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext);
+    const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext, options?.workUnitId, options?.namedEnvironment);
     if (options?.residentStateDir) env.RESIDENT_STATE_DIR = options.residentStateDir;
     if (options?.codexHome) env.CODEX_HOME = options.codexHome;
     return spawnAppServer(await codexExecutable(), args, cwd, env);

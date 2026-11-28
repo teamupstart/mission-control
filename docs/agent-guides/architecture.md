@@ -178,12 +178,10 @@ An SDK shutdown suspends its session. `taskLiveness` reads persisted rows during
 
 Only one non-terminal task may be bound to a session. Enforce this anywhere the pointer is assigned.
 
-When an agent disappears, settle the task and retain its resources unless final completion or an accepted safe-Kill return authorizes cleanup. Unrequested disappearance alone never authorizes immediate teardown; retained failed and cancelled work follows the 30-day activity policy.
-
-New final completions persist a `task_worktree_returns` obligation in the same transaction as
-the done status and optional session closure. Startup resumes only those explicit obligations;
-historical done tasks are never backfilled and keep the existing retention policy. The obligation
-survives partial return and is cleared when the last checkout returns or the task attempt changes.
+When an agent disappears, settle the task and retain its worktrees. Final completion commits
+the done status and any session closure together. The closure sweep still stops the session.
+Retention adopts pending `task_worktree_returns` obligations atomically on the first successful
+owner-free observation. An accepted Kill enters retention through normal session eviction.
 
 `TaskManager.stop()` detaches its registry subscriptions and stops retry scheduling, then drains
 in-flight scout completions, the closure sweep, and the shared cleanup queue before the allocator
@@ -212,29 +210,21 @@ on the owning row, never current configuration. Native release remains condition
 occupancy-gated, and clearing a task's worktree facts is atomic with recording the successful
 release. Historical rows that name Treehouse retain their provider-specific cleanup path.
 
-Final task completion records done and any session-closure obligation atomically, then uses the
-existing closure sweep and repository cleanup queue to stop, archive, reset and return owned
-worktrees. Initial prompted workflow handoff remains separate. Accepted Kill records a best-effort
-conditional return intent before the session binding disappears; only observed removal, stopped
-runtime, clean and published Git state in every attached tree, exact ownership, and empty known
-occupancy authorize return. Unknown or unsafe Kill checks keep the existing retention policy.
-Reset and Cancel keep their existing semantics. Automatic provider return rechecks policy at the
-destructive boundary, under the native slot lock where applicable; partial returns clear only
-successfully released resource facts.
+The retention ledger records verified owner absence, the aggregate Git-visible activity
+of the primary and attached worktrees, and the deadline for the exact resource generation.
+A return to tracked use revokes both the clock and an outstanding claim synchronously.
+The daemon uses the unfiltered Registry inventory, including lingering exits and hidden cwd
+discoveries, along with durable task, SDK, transfer and check lease records. Path reservations
+exclude daemon launches and cleanup on overlapping physical checkout paths. Discovery must
+have completed before absence can start a clock.
 
-A terminal task that still holds a worktree also carries a durable activity clock. The daemon
-observes the aggregate Git-visible state of its primary and every attached checkout - HEAD, the
-whole index, tracked worktree changes, and non-ignored untracked files - and records the
-fingerprint plus a configurable deadline in `task_worktree_retention`. See the
-[configuration reference](../configuration.md#task-worktree-retention) for the default.
-The daemon reads `worktrees.taskRetentionDays` on each observation. The ledger stores the applied
-window so shortening grants a single six-hour grace period; lengthening preserves existing grace. The clock has one boundary per
-task: the newest change in any of its trees protects the whole set. `tasks.updated_at` is not an
-activity signal and must never be used as one. The observation service reclaims nothing; it is
-structurally incapable of it. The retention cleanup worker consumes the ledger through
-`TaskManager.reclaimForRetention()` and the shared cleanup queue. An unreadable tree records a bounded
-reason and moves no deadline, and a set of resources nothing has successfully observed yet has no
-row at all - a first observation is what starts a window, never a pre-existing timestamp.
+The observer issues claims through `TaskManager`'s shared repository cleanup queue. The
+manager revalidates ownership, the claim, occupancy, Git registration, changed files and
+publication before calling the provider, and at the destructive boundary under the native
+slot lock where applicable. Git fallback removes without force and keeps local branches.
+Archives must settle before teardown. Explicit cleanup and check-lease release retain their
+existing ownership paths. See the [retention policy](../worktrees-and-checks.md#task-worktree-retention)
+and [configuration reference](../configuration.md#task-worktree-retention).
 
 Manual development sessions acquire and return native leases through the daemon's loopback API.
 The client does not create an independent inventory, and shell exit does not imply return.
@@ -260,6 +250,17 @@ After provisioning, dispatch branches once:
 
 - Terminal: home, discovery wait, readiness wait, and intent delivery.
 - SDK: no terminal home, no discovery wait, no terminal readiness wait, and the initial prompt is turn one.
+
+The terminal discovery wait binds only the worker the launch's own spawn started, never the
+first agent in the checkout. A cancelled launch and its replacement can share a worktree while
+the old worker waits to be retired, so `Registry.waitForLaunchedSessionAtCwd` accepts a session
+only through the identity the spawn returned: its terminal resource, or the launch wrapper
+(`launchProcess`, else the one recorded in `launchStateHome`) the agent descends from. The real
+spawner returns `launchStateHome` on every backend, because the wrapper always runs from it. A
+spawn that returns no identity at all fails the dispatch before discovery and leaves its
+terminal standing: when a worker appeared is not evidence of whose it is, since a cancelled
+launch's agent can be discovered late. Prompt acceptance is read from the delivered session
+alone, for the same reason.
 
 An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
 
@@ -375,6 +376,57 @@ unexpired delivery contests both, after first binding what has already landed; t
 controller twice cannot swap names and stays bindable. Withdrawing a send and releasing a
 delivery both call `reconsider`, which clears a contest only when no other send is remembered
 and the remaining unbound deliveries of those words belong to one controller. The text-keyed `injections.ts` label still covers the other origins and Goal suppression.
+
+The binding rule above lives in `delivery-binding.ts` (`DeliveryLedger`), and a second table
+uses it unchanged. Both ledgers are constructed and registered together in `delivery-ledgers.ts`,
+which each table's owner imports, so the shared claim space never depends on import order. The ledgers share one claim space: a turn is bound by at most one row of
+either table, and an unbound row of the same words in the other table is a rival that contests
+both, exactly as two controllers do. Outbox rows the daemon writes about a review
+(`review-continuation:` ids) start with a marker line owned by
+`src/shared/review-message-envelope.ts`: a message-mode answer always, and a call-mode late answer
+or a snooze instruction only while `async-input` is enabled when the row is queued
+(`queueReviewPendingTurn`); with the flag off those two are written unmarked, exactly as before.
+At delivery, `pending-turns.ts` reserves a `session_review_deliveries` row through
+`review-deliveries.ts` for such a row instead of noting another send, and only for a row with
+that id prefix, so an operator message that starts with the marker is noted like any other send.
+`attributeTranscript` gives a bound turn `origin: "harness"` and a `review-message` presentation
+(`envelope`, `reviewIds`) from the row alone; the dashboard draws it as answer cards in
+`mergeConversation`, and a review it cannot find as a `delivered` row ("no longer available",
+or "Couldn't load the question" once the history read was refused or its retries ran out), never as the raw turn. The resolved-reviews route adds every review the
+conversation's deliveries name, bound yet or not (`deliveredReviewIds`), to its capped history, so an old delivered answer keeps its
+card however many newer reviews there are. A delivery's words on a turn no delivery claims drop the live label, as a
+delegated copy does. Bound review rows are never pruned, nor are contested or offset-less ones
+(they keep a turn's "could be Mission Control" doubt); an ordinary unbound row past the
+delivery window is pruned on the goal tick only once a binding walk has expired it (the tick
+walks live conversations itself, so a turn nobody read for a day is bound, not dropped), or once
+no live session holds its conversation and the delivery itself is older than the goal table's prune
+age (the cutoff compares `delivered_at`, not when a session last held the conversation, so an old
+unbound row can go on the first tick after its session exits). A steered delivery's plain echo record (the same words
+right after its mid-turn record, before any agent turn) is found by walking the file from the
+row's offset, so it is answered like its record whichever page holds it. That decision is
+persisted on the row (`steer_echo`), and any other send of the same words - an operator or
+Foreman send through `noteOtherSend`, or a recorded delivery of either ledger through
+`DeliveryLedger.reserve` - settles it from what the file already holds before that send is
+written (`onSend`), so an identical copy that lands right after a steered delivery is never
+taken for its echo. That listener (`review-steer-echo.ts`) is installed in `delivery-ledgers.ts`
+with the review ledger itself, so it runs before every send into the claim space even in a
+process that never imported `review-deliveries.ts`. Only a read that reaches the end of the file settles "no echo"; a failed read
+or a missing transcript decides nothing. Each row also persists the one prompt-hook echo it owes:
+`captureHookGoalPrompt` spends it (together with any in-memory injection claim for the same
+delivery) before an operator follow-up's echo ticket, and the debt clears on the delivery's
+work-cycle completion or `HUMAN_ECHO_TTL_MS` after its turn became next, so N deliveries and M
+operator sends of the same words yield M Goal revisions whenever each delivery's own hook echo
+arrives before its debt clears. A delivery whose echo never arrives leaves its debt standing until
+then, and an operator copy of the same words submitted in that time spends it and is not captured. The debt's turn is stamped when
+the runtime is handed the text (`stampReviewDeliveryHandoff`, at the SDK acceptance guard or the
+terminal write boundary), not at reservation, and no completion or TTL clears it before then.
+That handoff is persisted (`handed_at`) before the write, and only a handed-over delivery's debt
+can be spent, so a reservation a restart interrupted before the handoff never swallows an
+operator prompt;
+the TTL itself restarts at the handoff. Bound rows are kept for good, so a conversation's rows
+grow with its history; the Goal reader and the expiry scan only a per-conversation list of the
+deliveries that still owe an echo, rebuilt from the rows whenever the ledger's caches drop. An arrival that spent the
+echo of a delivery not yet accepted is captured after all if the runtime then refuses it.
 
 Workflow tools reuse the identity-only `sessionControlCaller` verifier through
 `workflows/mcp.ts`. Current binding session and note-key ownership permits self-control;
@@ -600,3 +652,13 @@ attached-PR observations through Registry/SSE; it is not an Inspector finding or
 Foreman's existing PR pass requests a bound CodeRabbit injection. The existing `/inject` route
 rebuilds ownership and consent, assembles the text, claims current root generations atomically,
 and rechecks under the existing terminal/SDK write lock. No other process writes SQLite.
+
+## Workflow repository reviews
+
+`workflowRequiresRepositoryCapture` examines the pinned graph. A read-enabled Persona selects
+the artifact sealing path in `WorkflowManager`. The manager checks reserved evidence and external
+artifact expectations before promoting the candidate. It activates the ready claim before the
+engine schedules a reviewer. The supervisor binds the resolved execution and model call to the
+active submission claim. The isolated SDK process reads a private view through the repository
+MCP and returns its verdict with opaque evidence references. The daemon records sequenced audit
+metadata and validates each reference against the same call. [Repository review workloads](../repository-review-workloads.md)

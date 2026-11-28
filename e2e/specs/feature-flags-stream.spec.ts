@@ -1,13 +1,13 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
 import { buildFeatureFlagsDashboard } from "../fixtures/feature-flags-dashboard.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 let webDir: string;
 test.beforeAll(async () => {
-  webDir = mkdtempSync(join(tmpdir(), "mission-feature-flags-web-"));
+  webDir = tempDir("mission-feature-flags-web-");
   const nodeEnv = process.env.NODE_ENV;
   await buildFeatureFlagsDashboard(webDir);
   expect(process.env.NODE_ENV, "private builds must not contaminate later dev-server specs").toBe(nodeEnv);

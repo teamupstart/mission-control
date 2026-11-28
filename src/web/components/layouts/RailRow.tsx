@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useId, useRef } from "react";
+import type { Stall } from "@shared/stall.ts";
 import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
+import { stalledFactRows } from "../../lib/stalled.ts";
 import { relativeTime, uptime } from "../../lib/format.ts";
 import { ariaKeyshortcuts } from "../../lib/keybindings.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
+import { AwaitingRailMark } from "../SessionAwaiting.tsx";
 import {
   AgentDot,
   WorkflowActionWait,
@@ -19,15 +22,17 @@ import {
   PipelineCommissionRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { ShapingRailMark } from "../ShapingChip.tsx";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
-import { useDisplayItems } from "../../lib/board-card.ts";
+import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
+import { CallSignMark } from "./CallSignMark.tsx";
 import { ResidentChip } from "../../residents/ResidentChip.tsx";
-import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
+import { residentAccentStyle, residentActionName, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -42,6 +47,7 @@ export function RailRow({
   session,
   shortcutChord = null,
   selected,
+  sectionNavigation = false,
   onSelect,
   registerEl,
   workflowRun = null,
@@ -56,9 +62,19 @@ export function RailRow({
   pipelineCommission = null,
   pipelineCommissionRun = null,
   onOpenPipelineCommission,
+  callSign,
+  callSignElement,
   resident = null,
+  stall = null,
 }: {
   session: Session;
+  callSign?: string;
+  /**
+   * The call sign drawn beside the row's title while Always-on listens, as the card draws it
+   * (`SessionTile`'s `callSignElement`). The rail has room for one compact form only, so every
+   * Call sign style but Off draws it.
+   */
+  callSignElement?: string;
   /**
    * The ⌘-number jump chord this rail POSITION answers to, or null when it holds no slot -
    * a thirteenth row, or an operator with the display item switched off.
@@ -69,6 +85,7 @@ export function RailRow({
    */
   shortcutChord?: string | null;
   selected: boolean;
+  sectionNavigation?: boolean;
   onSelect: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
@@ -89,6 +106,11 @@ export function RailRow({
   onOpenPipelineCommission?: (commissionId: string) => void;
   /** The resident this session is, or null. The same mark and gate the Board card reads. */
   resident?: ResidentSessionMark | null;
+  /**
+   * The idle stall this row sits under the Stalled rule for (`idle-stalled`), or null. The rail
+   * shows the first fact below the name. The session detail carries the full sheet and fixes.
+   */
+  stall?: Stall | null;
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
@@ -103,7 +125,10 @@ export function RailRow({
   // rows per screen than either, so it is the surface where "the section rule scrolled
   // away" happens soonest - the row has to carry its own answer here most of all.
   const heldBy = heldByRun(workflowRuns, st.tone);
-  const held = heldBy !== null;
+  // A stalled card is not drawn as held: the ordering takes a held and stalled session out of the
+  // held partition (`orderSessions`), because "a workflow owns the next turn" is exactly what is no
+  // longer true of it. The tag, its tooltip and the held tone would say it anyway.
+  const held = heldBy !== null && !stall;
   const ref = useRef<HTMLButtonElement>(null);
   const setRef = useCallback(
     (el: HTMLButtonElement | null) => {
@@ -116,8 +141,14 @@ export function RailRow({
   // Keep the selected row in view as the arrow keys walk the rail. Local to the row
   // because the rail scrolls independently of the detail beside it.
   useEffect(() => {
-    if (!selected) return;
-    ref.current?.scrollIntoView({ block: "nearest" });
+    const row = ref.current;
+    if (!selected || !row) return;
+    // A status update can remount a repository group. Leave a focused row or heading
+    // visible even if the open conversation's selected row is elsewhere in the Idle rail.
+    const rail = row.closest(".has-idle-sections");
+    const focused = document.activeElement;
+    if (focused !== row && focused?.matches(".rail-row, .idle-rail-section-toggle") && rail?.contains(focused)) return;
+    row.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
   const marks: string[] = [];
@@ -144,9 +175,15 @@ export function RailRow({
   const residentMark = useDisplayItems()("residentMarker") ? resident : null;
   // The priority mark is aria-hidden, and the state word says only "working", so the priority
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
-  const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
+  const ordinaryName = session.name || resident?.name || "(unnamed)";
+  const cardName = residentActionName(resident, ordinaryName, callSign);
+  const callSignShown = useDisplayChoice("callSignCardStyle") !== "off" ? callSignElement : undefined;
+  const description = `${cardName}${callSignShown ? `. Call sign ${callSignShown}` : ""} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
-  }`;
+  }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;
+  const keyshortcuts = [shortcutChord && ariaKeyshortcuts(shortcutChord), sectionNavigation && "Home"]
+    .filter(Boolean).join(" ");
+  const firstFact = stall && stalledFactRows(session, stall)[0];
   const descriptionId = useId();
   const actionWaitId = useId();
   const actionWaitRuns = (workflowRuns ?? (workflowRun ? [workflowRun] : []))
@@ -156,27 +193,29 @@ export function RailRow({
     <>
       <button
         ref={setRef}
-        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}${
+        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${stall ? " is-stalled" : ""}${
+          selected ? " selected" : ""}${
           residentMark ? " is-resident" : ""
         }${session.pause ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
         style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
         aria-current={selected}
-        aria-label={session.name || "(unnamed)"}
+        aria-label={cardName}
         aria-describedby={[descriptionId, ...actionWaitRuns.map(run => `${actionWaitId}-${run.id}`)].join(" ")}
         /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
            the chord is announced here instead - on the control it actually drives, which for
            the rail is the row itself rather than a button stretched over a card. */
-        aria-keyshortcuts={shortcutChord ? ariaKeyshortcuts(shortcutChord) : undefined}
+        aria-keyshortcuts={keyshortcuts || undefined}
         onClick={onSelect}
       >
         <AgentDot agent={session.agent} />
         <Tooltip label={description}>
-          <span className="rail-name">
+          <span className={`rail-name${resident?.sharedListeningTitle ? " rail-name-shared" : ""}${callSignShown ? " has-call-sign" : ""}`}>
             {residentMark && <ResidentChip mark={residentMark} tooltip={false} />}
-            {session.name || "(unnamed)"}
+            {callSignShown ? <span className="rail-name-text">{cardName}</span> : cardName}
+            {callSignShown && <CallSignMark name={callSignShown} style="rail" />}
           </span>
         </Tooltip>
-        <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
+        <span className="rail-sub">{firstFact ? `${firstFact.label}: ${firstFact.value}` : session.goal?.text ?? session.activity ?? ""}</span>
         {/* Two lines, never four: the state, then everything else on one line. Given a
             line each, the marks and the PR chip made a row as tall as three, and a rail
             you can only fit six sessions in has stopped being a rail. */}
@@ -203,6 +242,14 @@ export function RailRow({
                 <span className="rail-held">held</span>
               </Tooltip>
             )}
+            {stall && (
+              <Tooltip label={`Stalled: ${stall.reason}`}>
+                <span className="rail-stalled">stalled</span>
+              </Tooltip>
+            )}
+            {/* A wait qualifies the "idle" beside it the way "held" does: idle on purpose,
+                with how long is left, or overdue. Draws nothing without a declared wait. */}
+            <AwaitingRailMark session={session} />
             <span className="rail-state">{st.label}</span>
           </span>
           <span className="rail-meta">
@@ -221,6 +268,7 @@ export function RailRow({
                 is nothing outstanding. The DECISION and the tooltip are the shared ones;
                 only the rendering is this terse. */}
             <InspectorRailMark session={session} />
+            <ShapingRailMark session={session} />
             <WorkflowRailMark
               run={workflowRun}
               onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SettingsPage } from "../src/web/components/SettingsPage.tsx";
+import { SettingsPageFixture } from "./helpers/settings-page.ts";
 import { CONDUCTOR_INTEGRATION_ENABLED } from "../src/shared/conductor-integration.ts";
 import {
   SETTINGS_CATEGORIES,
@@ -97,12 +97,14 @@ function render(
     onStartTour?: (tourId: TourId) => void;
     flags?: FeatureFlagsConfig;
     shaping?: ShapingSettings;
+    reportMutes?: import("../src/shared/reports.ts").ReportMute[];
   } = {},
 ): string {
   return renderToStaticMarkup(
-    createElement(FeatureFlagsContext.Provider, { value: opts.flags ?? FLAGS_ON }, createElement(SettingsPage, {
+    createElement(FeatureFlagsContext.Provider, { value: opts.flags ?? FLAGS_ON }, createElement(SettingsPageFixture, {
       category,
       shapingSettings: opts.shaping ?? shapingSettings(),
+      ...(opts.reportMutes ? { reportMutes: opts.reportMutes } : {}),
       onNavigate: () => {},
       onLeave: () => {},
       foreman: opts.foreman ?? FOREMAN,
@@ -183,6 +185,35 @@ test("with its flag on, Task shaping is a Sessions category whose panel renders"
   assert.match(html, /No shapers registered\. Import a manifest to add one\./);
   const sessions = visibleSettingsCategories(flags).filter((c) => c.group === "sessions").map((c) => c.id);
   assert.ok(sessions.indexOf("task-shaping") === sessions.indexOf("tasks") + 1, "right after Tasks");
+});
+
+// Reports follows the `inbox` preview flag, exactly as Task shaping follows its own.
+test("with the inbox flag off, Reports is not drawn and naming it renders Display", () => {
+  const html = render("reports", { settingsStatus: status(), flags: FLAGS_OFF });
+  assert.doesNotMatch(railMarkup(html), />Reports</, "no rail row");
+  assert.doesNotMatch(html, /aria-label="Reports"/, "no panel");
+  assert.match(html, LAYOUT_ONLY, "the default panel instead");
+  assert.ok(!visibleSettingsCategories(FLAGS_OFF).some((c) => c.id === "reports"));
+});
+
+test("with the inbox flag on, Reports is a Sessions category with the guidance and the muted agents", () => {
+  const flags = { enableAll: false, overrides: { inbox: true } };
+  const html = render("reports", {
+    settingsStatus: status(),
+    flags,
+    reportMutes: [{ authorKey: "session:s-loud", authorName: "Loud agent", mutedAt: 1 }],
+  });
+  assert.match(railMarkup(html), /settings-nav-item is-active"[^>]*><span[^>]*>✉<\/span>Reports/);
+  assert.match(html, /<section class="settings-section reports-settings" aria-label="Reports">/);
+  for (const anchor of ["reports/guidance", "reports/muted"]) assert.ok(html.includes(`data-anchor="${anchor}"`), `missing ${anchor}`);
+  assert.match(html, /<h4>Report guidance<\/h4>/);
+  assert.match(html, /Reading the report guidance\.\.\./, "the guidance box waits for the daemon's answer");
+  assert.match(html, /<strong>Loud agent<\/strong>/);
+  assert.match(html, /aria-label="Unmute Loud agent"[^>]*>Unmute<\/button>/);
+  const sessions = visibleSettingsCategories(flags).filter((c) => c.group === "sessions").map((c) => c.id);
+  assert.ok(sessions.indexOf("reports") === sessions.indexOf("standing-instructions") + 1, "right after Standing instructions");
+  // Nobody muted says where Mute is.
+  assert.match(render("reports", { settingsStatus: status(), flags }), /No agent is muted\. Mute one from its report card in the inbox\./);
 });
 
 // The ai-conductor integration is hidden behind one build-time switch. While it is, Conductor

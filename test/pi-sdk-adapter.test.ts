@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a managed Pi session that looks dispatched and is running something
 // else - a different model, a different conversation, or nothing at all.
@@ -14,7 +14,7 @@ import { join } from "node:path";
 // no session file is opened, and no token is spent - and the fake has no path to any of
 // those, which is what makes that a property rather than a promise.
 
-const home = mkdtempSync(join(tmpdir(), "pi-sdk-adapter-"));
+const home = tempDir("pi-sdk-adapter-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { piSdkSpec, splitPiModelId, usageFrom, toolActivity } = await import(
@@ -139,6 +139,14 @@ test("the launch effort is handed to Pi verbatim, and null leaves its default al
   assert.equal(high.sdk.created[0]!.thinkingLevel, "high");
   const none = await launch({ effort: null });
   assert.equal(none.sdk.created[0]!.thinkingLevel, null);
+});
+
+test("the launch's work unit is in the environment of Pi's tools, and none leaves it out", async () => {
+  // Pi runs in the daemon's process, so its tools' environment is its launch environment.
+  const tagged = await launch({ workUnitId: "wu_01JD00000000000000000000AA" });
+  assert.equal(tagged.sdk.created[0]!.toolEnv.WORK_UNIT_ID, "wu_01JD00000000000000000000AA");
+  const untagged = await launch({ workUnitId: null });
+  assert.equal("WORK_UNIT_ID" in untagged.sdk.created[0]!.toolEnv, false);
 });
 
 test("a live effort change is applied to the session Pi is running", async () => {

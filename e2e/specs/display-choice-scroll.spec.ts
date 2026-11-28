@@ -95,7 +95,6 @@ test("the board card style lands on the preview the operator stayed to look at",
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await page.screenshot({ path: join(EVIDENCE, "after-picking-medallion.png") });
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/display-choice-scroll/after-picking-medallion.png");
   }
 });

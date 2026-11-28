@@ -2,6 +2,7 @@ import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import type {
   AgentSessionEvent,
   ExtensionUIContext,
+  ExtensionFactory,
   CreateAgentSessionFromServicesOptions,
   PromptOptions,
   AgentSessionRuntime,
@@ -11,7 +12,8 @@ import type {
   AgentSession as VendorSession,
   SessionManager as VendorSessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import { PiSdkError, redact } from "./sdk-errors.ts";
@@ -405,6 +407,13 @@ function projectRuntime(runtime: AgentSessionRuntime, models: () => ModelRuntime
   };
 }
 
+function resolvesToExtension(path: string, canonical: string): boolean {
+  if (path === canonical) return true;
+  if (!isAbsolute(path)) return false;
+  try { return realpathSync(path) === canonical; }
+  catch { return false; }
+}
+
 /**
  * Build one managed Pi runtime for one Mission Control session.
  *
@@ -431,6 +440,16 @@ export async function createRuntime(
     if (!missionExtension && options.missionToolsRequired) {
       throw new PiSdkError("provider-error", "Pi requires a healthy Mission Control extension for this task. Repair the integration in Settings > Setup before retrying.");
     }
+    // Use the installed generation for the managed bridge as well. The default factory
+    // discovered by Pi is for terminal sessions and must not also receive lifecycle events.
+    const extensionPath = missionExtension && options.missionToolCaller ? realpathSync(missionExtension) : null;
+    let managedExtension: ExtensionFactory | undefined;
+    if (extensionPath && options.missionToolCaller) {
+      const { managedMissionExtension } = await import(pathToFileURL(extensionPath).href) as {
+        managedMissionExtension?: (caller: NonNullable<PiRuntimeOptions["missionToolCaller"]>, env: NodeJS.ProcessEnv) => ExtensionFactory;
+      };
+      managedExtension = managedMissionExtension?.(options.missionToolCaller, options.toolEnv);
+    }
     const created = await pi.createAgentSessionServices({
       cwd: target.cwd,
       agentDir: target.agentDir,
@@ -444,7 +463,14 @@ export async function createRuntime(
         return trusted;
       } },
       resourceLoaderOptions: {
-        ...(missionExtension ? { additionalExtensionPaths: [missionExtension] } : {}),
+        ...(managedExtension && extensionPath ? {
+          extensionFactories: [{ name: "mission-control", factory: managedExtension }],
+          extensionsOverride: base => ({
+            ...base,
+            extensions: base.extensions.filter(({ resolvedPath }) =>
+              !resolvesToExtension(resolvedPath, extensionPath)),
+          }),
+        } : missionExtension ? { additionalExtensionPaths: [missionExtension] } : {}),
         // The operator's standing instructions, through the option `--append-system-prompt`
         // itself routes into (`main.ts` hands the flag straight to this field). Passed on
         // EVERY runtime creation rather than only the first, so the rules survive a clear:
@@ -628,11 +654,11 @@ export const defaultPiSdkDeps: PiSdkDeps = {
       createRuntime: (options) => createRuntime(pi, options),
     };
   },
-  toolEnv(cwd, stateHome) {
+  toolEnv(cwd, stateHome, named) {
     // `sdkSubprocessEnv` for exactly the reasons it documents, shared with Claude's and
     // Codex's drivers rather than restated: it is a fact about the DAEMON's environment,
     // not about any one harness. What it removes matters more here than anywhere else,
     // because nothing else stands between this process and the agent's shell.
-    return sdkSubprocessEnv(process.env, cwd, stateHome) as Record<string, string>;
+    return sdkSubprocessEnv(process.env, cwd, stateHome, named) as Record<string, string>;
   },
 };

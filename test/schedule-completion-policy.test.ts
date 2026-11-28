@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -14,6 +13,7 @@ import {
 } from "../src/shared/schedules.ts";
 import type { ScheduleDefinition } from "../src/shared/schedules.ts";
 import { PROMPTED_COMPLETION_OUTCOMES } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: a recurring mission that files work for ever, blocked for ever by one
@@ -38,7 +38,7 @@ import { PROMPTED_COMPLETION_OUTCOMES } from "../src/shared/types.ts";
  * assumed. A fresh-schema test would pass with both `addColumn` calls deleted.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-schedule-completion-"));
+const home = tempDir("mission-schedule-completion-");
 process.env.MISSION_HOME = home;
 
 /**
@@ -127,6 +127,10 @@ const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { processPromptedWrapup } = await import("../src/server/foreman/worker.ts");
+const { decideOverlap } = await import("../src/server/schedules/policy.ts");
+const { ForemanClient } = await import("../src/server/foreman/client.ts");
+const { ForemanConfigSchema } = await import("../src/shared/protocol.ts");
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -544,6 +548,156 @@ test("the prompted-consumption route is what carries the verdict to the task", a
   });
   assert.equal(res.status, 200);
   assert.equal(registry.getTask(taskId)?.status, "done");
+});
+
+/**
+ * The #1807 run's shape: a skip-active, auto-on-conclusion mission task whose SDK session
+ * finished one turn and parked idle, with no blocker, and whose reconciled objective carries
+ * an operator-only handoff. Foreman's real prompted tick runs against the real routes.
+ */
+function heldMissionRun(t: import("node:test").TestContext, prompt: string) {
+  const registry = new Registry();
+  const kill = killRecorder();
+  const tasks = new TaskManager(registry, kill.deps);
+  const queues = new QueueManager(registry);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues });
+
+  const { schedule, occurrenceId, taskId } = filedRun({ completionPolicy: "auto-on-conclusion" });
+  const sessionId = `sdk:${uid("mission")}`;
+  const noteKey = `${sessionId}-thread`;
+  registry.registerSdkSession({
+    id: sessionId, agent: "claude", name: "weekday report", cwd: "/repo",
+    gitBranch: "feat/sweep", gitRoot: "/repo", repoRoot: "/repo",
+  });
+  registry.bindLaunchedAgentSession(sessionId, "claude", noteKey);
+  registry.upsertTask(mkTask({
+    id: taskId, status: "running", sessionId, repoRoot: "/repo",
+    scheduleId: schedule.id, scheduleOccurrenceId: occurrenceId, scheduledFor: T0 + HOUR,
+  }));
+
+  const hook = (event: "UserPromptSubmit" | "PreToolUse" | "Stop", ts: number) => registry.applyHook({
+    agent: "claude", event, sessionId: noteKey, cwd: "/repo", transcriptPath: null, env: {},
+    ...(event === "UserPromptSubmit" ? { prompt } : {}),
+    ...(event === "PreToolUse" ? { toolName: "Write" } : {}), ts,
+  });
+  /** Work, then park: one more completed work cycle, settled past Foreman's settle window. */
+  const workAndPark = (at: number) => {
+    hook("PreToolUse", at);
+    hook("Stop", at + 1);
+  };
+  const at = Date.now() - 60_000;
+  hook("UserPromptSubmit", at);
+  workAndPark(at + 1);
+  // What the goal refiner stores for that prompt: the hold rides along on the objective.
+  registry.upsertGoal(sessionId, {
+    prompt, text: prompt, objective: `${prompt}\nAutomatic handoff: operator only`, focus: prompt,
+    relationship: "initial", rationale: "Initial objective", objectiveVersion: 1,
+    promptRevision: 1, resolvedPromptRevision: 1, pendingPrompts: [], source: "model",
+  });
+
+  const writes: string[] = [];
+  t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
+    const request = new Request(input, init);
+    if (request.method !== "GET") writes.push(new URL(request.url).pathname);
+    request.headers.set("host", "127.0.0.1:7317");
+    return app.request(request);
+  });
+  const cfg = ForemanConfigSchema.parse({
+    enabled: true, mode: "live", repoAllowlist: ["/repo"],
+    wrapup: "pr", wrapupTriggers: ["prompted"], skipReviewArtifactWrapup: true,
+  });
+  const client = new ForemanClient();
+  const tick = () => {
+    const session = registry.getSession(sessionId)!;
+    return processPromptedWrapup(client, cfg, session, [session], registry.getQueue(sessionId), new Set());
+  };
+  /** One tick for any session, against an explicit fleet. */
+  const tickAs = (session: Session, live: Session[]) =>
+    processPromptedWrapup(client, cfg, session, live, null, new Set());
+  return { registry, schedule, taskId, sessionId, noteKey, writes, tick, tickAs, workAndPark };
+}
+
+test("a report run the operator kept off a PR is concluded by Foreman's own tick (#1807)", async (t) => {
+  // The reported failure, end to end through the real worker tick and the real consumption
+  // route: a weekday report mission whose reconciled objective carried "Do not open a PR."
+  // as an operator-only handoff. Before the fix Foreman skipped it on every tick, wrote no
+  // queue row and no log line, and the task stayed running so `skip-active` would refuse the
+  // next occurrence. Its earlier runs, with the same report but no recorded hold, retired.
+  const f = heldMissionRun(t, "Write the weekly dependency report. Do not open a PR.");
+  const session = f.registry.getSession(f.sessionId)!;
+  assert.equal(session.state, "idle", "fixture must actually be idle");
+  assert.equal(session.blocker, null);
+  assert.equal(session.workCycle?.completedAt != null, true, "the turn completed a work cycle");
+  assert.equal(f.registry.getQueue(f.sessionId)?.promptedDecision ?? null, null, "no verdict before the tick");
+  assert.equal(f.registry.getTask(f.taskId)?.completedAt ?? null, null);
+  // While it stays running, the next occurrence of a skip-active mission is refused against it.
+  assert.deepEqual(
+    decideOverlap("skip-active", store.findActiveTaskForSchedule(f.schedule.id)?.id ?? null),
+    { decisionKind: "skipped_overlap", blockingTaskId: f.taskId },
+  );
+
+  assert.equal(await f.tick(), true, "Foreman took the session up instead of skipping it");
+
+  const decision = f.registry.getQueue(f.sessionId)?.promptedDecision;
+  assert.equal(decision?.outcome, "retired");
+  assert.equal(decision?.logicalKey, f.noteKey, "the queue row is the conversation's own");
+  assert.match(decision?.summary ?? "", /review artifact/);
+  const until = Date.now() + 2_000;
+  while (f.registry.getTask(f.taskId)?.status !== "done" && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  const task = f.registry.getTask(f.taskId);
+  assert.equal(task?.status, "done", "the mission run left running");
+  assert.equal(typeof task?.completedAt, "number", "the concluded task records when it finished");
+  assert.match(task?.outcome ?? "", /^Foreman concluded this recurring mission run: /);
+  assert.equal(store.findActiveTaskForSchedule(f.schedule.id), null, "nothing is left in flight");
+  assert.deepEqual(
+    decideOverlap("skip-active", store.findActiveTaskForSchedule(f.schedule.id)?.id ?? null),
+    { decisionKind: "create_task", blockingTaskId: null },
+    "the next occurrence runs instead of being recorded skipped_overlap",
+  );
+});
+
+test("a held shippable run logs its pending handoff once per completed turn, and acts on nothing", async (t) => {
+  // The hold still reserves a shippable completion, and that skip never heals on its own. It
+  // is logged once per generation: silence is what made #1807 invisible, and a line on every
+  // tick would flood the log for as long as the hold stands.
+  const f = heldMissionRun(t, "Add retry handling to the uploader. Do not open a PR.");
+  const lines: string[] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+  const holdLines = () => lines.filter((line) => line.includes("prompted automatic wrap-up pending"));
+  const generation = () => f.registry.getSession(f.sessionId)!.workCycle!.generation;
+
+  const first = generation();
+  for (let i = 0; i < 3; i++) assert.equal(await f.tick(), false, "a held generation is not progress");
+  assert.equal(holdLines().length, 1, "repeated ticks on one held generation log once");
+  assert.match(holdLines()[0]!, /weekday report: .*the operator reserved the completion handoff; send Resume automatic handoff/);
+
+  f.workAndPark(Date.now() - 30_000);
+  assert.equal(generation(), first + 1, "the fixture completed a second work cycle");
+  for (let i = 0; i < 2; i++) assert.equal(await f.tick(), false);
+  assert.equal(holdLines().length, 2, "a new held generation logs once more");
+
+  // The log's memory is bounded by the fleet. A tick whose fleet no longer lists this session
+  // drops its entry, so a session that left and came back logs its standing hold again.
+  const held = f.registry.getSession(f.sessionId)!;
+  const other: Session = {
+    ...held, id: "sdk:another-session", name: "another session", agentSessionId: "another-thread",
+    workCycle: { ...held.workCycle!, logicalKey: "another-thread" },
+  };
+  assert.equal(await f.tickAs(other, [other]), false);
+  assert.equal(holdLines().length, 2, "another session's ordinary skip logs no hold line");
+  assert.equal(await f.tick(), false);
+  assert.equal(holdLines().length, 3, "the departed session's entry was dropped, not retained");
+
+  // An ordinary skip is not a hold: an unsettled turn still says nothing.
+  f.workAndPark(Date.now());
+  assert.equal(await f.tick(), false);
+  assert.equal(holdLines().length, 3, "a skip that heals on its own adds no hold line");
+
+  assert.equal(f.registry.getQueue(f.sessionId)?.promptedDecision ?? null, null, "nothing was consumed");
+  assert.deepEqual(f.writes, [], "the hold reserved the handoff: Foreman wrote and typed nothing");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running", "the operator still owns this completion");
 });
 
 // ---- interaction with the pull-request paths ----

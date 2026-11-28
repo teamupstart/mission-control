@@ -7,13 +7,13 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
 // assignments, so every module below arrives through a dynamic import (see db-isolation.test.ts).
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-check-degrade-")));
+const home = realpathSync(tempDir("mission-check-degrade-"));
 process.env.HARNESS_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");

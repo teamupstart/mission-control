@@ -10,7 +10,9 @@
 // Consumers: `scripts/install-app.mjs` writes it; the packaged main process reads it to
 // decide whether the updater is active at all.
 
+// oxlint-disable-next-line no-restricted-imports -- Native receipt I/O shared by the installer and daemon.
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+// oxlint-disable-next-line no-restricted-imports -- Native receipt I/O shared by the installer and daemon.
 import { dirname, join } from "node:path";
 import { stateDir } from "./harness-runtime.mjs";
 import { validateReceipt } from "./install-receipt-schema.mjs";

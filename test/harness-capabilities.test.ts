@@ -2,8 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentType, Session } from "../src/shared/types.ts";
 // Type-only, so it is erased rather than resolved: a static import of `actions.ts` here
@@ -26,7 +25,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // its refusal is indistinguishable from the pre-existing degradation the code was already
 // tested for.
 
-const home = mkdtempSync(join(tmpdir(), "harness-caps-"));
+const home = tempDir("harness-caps-");
 // Set before importing anything that resolves the state dir (routes.ts reaches the db).
 process.env.HARNESS_HOME = join(home, "state");
 process.env.CODEX_HOME = join(home, "codex");
@@ -47,6 +46,7 @@ const {
 } = await import("../src/shared/harness-capabilities.ts");
 const { HARNESSES, foremanAutomationAuthorized } = await import("../src/server/harness/index.ts");
 import type { RouteDeps } from "../src/server/routes.ts";
+import { tempDir } from "./temp-root.mjs";
 const { buildApp } = await import("../src/server/routes.ts");
 const { ModePicker } = await import("../src/web/components/ModePicker.tsx");
 const { EffortPicker, reconcileOptimisticEffort } = await import("../src/web/components/EffortPicker.tsx");
@@ -631,15 +631,12 @@ test("resident MCP pinning is recorded only where scripts/probe-resident-mcp.ts 
       sources: "user, local, project and plugin MCP servers and claude.ai connectors",
     },
   });
-  // Codex offers only the pinned set: lifting its overlay would load a trusted project's
-  // servers unverified, and it has no account connectors to import.
   assert.deepEqual(HARNESS_CAPABILITIES.codex.mcpSelection, {
     mechanism: "codex-home-overlay",
     secrets: "scoped-launcher",
     allNativeSources: {
       mechanism: "codex-native-home",
       sources: "user, trusted workspace, system, managed and enabled plugin MCP servers",
-      previewFlag: "codex-resident-native-mcp",
     },
   });
   assert.equal(HARNESS_CAPABILITIES.pi.mcpSelection, null);

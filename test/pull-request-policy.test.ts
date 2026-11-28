@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pr-policy-"));
+const home = tempDir("mission-pr-policy-");
 process.env.MISSION_HOME = home;
 for (const agent of ["CLAUDE", "CODEX", "PI"]) process.env[`${agent}_SKILLS_DIR`] = join(home, agent);
 const { Registry } = await import("../src/server/registry.ts");

@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this strategy's product is a set of QUESTIONS put to a person, and every
@@ -22,7 +22,7 @@ import { join } from "node:path";
  * a real model or real Git.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-consensus-"));
+const home = tempDir("mission-ensemble-consensus-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

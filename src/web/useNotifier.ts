@@ -1,13 +1,17 @@
 import { useEffect, useRef } from "react";
-import type { AlertScope } from "@shared/alerts.ts";
+import type { Alert, AlertScope, NotifySwitches } from "@shared/alerts.ts";
 import {
   batchSeverity,
-  deliverable,
   detectAlerts,
+  heldForAway,
+  reportAlert,
+  reportStillOwed,
+  shouldDeliver,
   summarizeAlerts,
   withKnownStalls,
 } from "@shared/alerts.ts";
 import type { AlertSettings } from "./lib/alertSettings.ts";
+import { fetchReport } from "./lib/api.ts";
 import { playChime, recordFallbackSound, unlockAudio } from "./lib/chime.ts";
 
 function canNotify(): boolean {
@@ -19,7 +23,8 @@ function notify(
   body: string,
   tag: string,
   silent: boolean,
-  deepLink?: { workflowRunId?: string | null; ensembleId?: string | null },
+  deepLink?: { workflowRunId?: string | null; ensembleId?: string | null; reportId?: string },
+  onOpenReport?: (reportId: string) => void,
 ): boolean {
   // Some platforms (e.g. Android Chrome) throw from `new Notification` even when
   // permission is granted (they require the service-worker path); never let that
@@ -34,6 +39,10 @@ function notify(
         window.location.hash = `#/runs/${encodeURIComponent(deepLink.workflowRunId)}`;
       } else if (deepLink?.ensembleId) {
         window.location.hash = `#/ensembles/${encodeURIComponent(deepLink.ensembleId)}`;
+      } else if (deepLink?.reportId) {
+        // A report toast opens the inbox at its report. Whether it may (the `inbox` flag) is
+        // decided at the click, not when the toast was raised: the flag can go off in between.
+        onOpenReport?.(deepLink.reportId);
       }
       n.close();
     };
@@ -41,6 +50,49 @@ function notify(
   } catch {
     // No desktop delivery to record in the sound rate gate.
     return false;
+  }
+}
+
+export interface NotifierDelivery {
+  /**
+   * The "What notifies you" switches while the `inbox` flag is on, or null while it is off, when
+   * delivery is exactly `deliverable` (see `shouldDeliver`).
+   */
+  notify: NotifySwitches | null;
+  /**
+   * Away mode as last read from the daemon, or still being left. Reports are held while away.
+   * Null until the daemon's first answer: a report raised then waits for it, and is delivered
+   * then only if you are not away. Every other alert is delivered as it always was.
+   */
+  away: boolean | null;
+  /** What a click on a report notification does, read when the click lands. */
+  onOpenReport: (reportId: string) => void;
+  /**
+   * Author keys whose reports are muted: their report alerts are not raised. Read at delivery, so
+   * a notification raised before the mute stays where it is, and still opens its report.
+   */
+  muted?: ReadonlySet<string>;
+}
+
+const DELIVER_AS_BEFORE: NotifierDelivery = { notify: null, away: false, onOpenReport: () => undefined };
+
+/**
+ * Raise one batch: one chime at its most urgent severity, then a notification per alert. The OS
+ * is a fallback only for unavailable audio, never for Sound off or an intentionally throttled
+ * chime.
+ */
+function raiseBatch(alerts: Alert[], settings: AlertSettings, openReport: (reportId: string) => void): void {
+  if (alerts.length === 0) return;
+  const severity = batchSeverity(alerts);
+  const fallbackSound = settings.sound && playChime(severity) === "unavailable";
+  if (settings.notifications && canNotify()) {
+    for (const [index, a] of alerts.entries()) {
+      const audible = fallbackSound && index === 0;
+      const delivered = notify(a.title, a.body, a.id, !audible, {
+        workflowRunId: a.workflowRunId, ensembleId: a.ensembleId, reportId: a.reportId,
+      }, openReport);
+      if (delivered && audible) recordFallbackSound(severity);
+    }
   }
 }
 
@@ -56,6 +108,10 @@ function notify(
  * than being at the desk - the old behaviour, where flipping AFK on ADDED two alert
  * kinds and fired one notification each.
  *
+ * With the `inbox` flag on, `shouldDeliver` refines that: each "What notifies you" switch can
+ * silence its own kind, and an agent report - info, but worth hearing at the desk - is
+ * delivered unless you are away, when the digest summarises it instead.
+ *
  * Stalls are the one part of the scope that does NOT arrive with the snapshot (they
  * are polled separately - see useStalls), so the first batch of them is adopted into
  * the baseline rather than treated as news; see withKnownStalls for why that matters
@@ -67,9 +123,18 @@ function notify(
  * neither storm (one alert per gap change) nor swallow (miss what happened while
  * away) - we coalesce the attention events missed during the gap into one catch-up.
  */
-export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: boolean): void {
+export function useNotifier(
+  scope: AlertScope,
+  settings: AlertSettings,
+  ready: boolean,
+  delivery: NotifierDelivery = DELIVER_AS_BEFORE,
+): void {
   const prevRef = useRef<AlertScope | null>(null);
   const wasReadyRef = useRef(false);
+  // Read through a ref rather than listed as an effect dependency: flipping a switch or Away mode
+  // changes what the NEXT alert does, and must not re-run detection on a scope that did not move.
+  const deliveryRef = useRef(delivery);
+  deliveryRef.current = delivery;
 
   // Sound defaults on, but a fresh page load starts a suspended AudioContext that
   // only a user gesture can resume. Unlock on the first interaction anywhere, so
@@ -88,7 +153,65 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
     };
   }, []);
 
+  // Report alerts held while this window was away, or did not know yet (`heldForAway`).
+  const heldRef = useRef<Alert[]>([]);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const readyRef = useRef(ready);
+  readyRef.current = ready;
+
+  // Known not to be away: deliver each held report alert the return digest did not cover. One
+  // read or counted meanwhile is dropped; the digest, or the operator, already has it.
+  //
+  // Read from the daemon rather than this window's state. The daemon marks the reports a digest
+  // counted while it closes the window, before it answers the request that ends Away mode, but
+  // the mark reaches this window over the event stream, which is not ordered against that
+  // answer. So by the time this window knows it is back the daemon's copy already says whether
+  // the digest counted the report, and this window's copy may not yet. A report the daemon
+  // cannot be asked about is judged by this window's copy instead.
+  // The window's copy is only trusted while its event stream is connected: a stale copy lacks the
+  // digest's mark, so a report the daemon cannot be asked about while the stream is down waits for
+  // the reconnect snapshot, which re-runs this.
+  const awayOff = delivery.away === false;
   useEffect(() => {
+    if (!awayOff || heldRef.current.length === 0) return;
+    const held = heldRef.current;
+    heldRef.current = [];
+    void Promise.all(held.map(async (alert) => {
+      const answer = alert.reportId ? await fetchReport(alert.reportId) : null;
+      if (!answer && !readyRef.current) return { hold: alert };
+      const report = answer?.report ?? scopeRef.current.reports?.find((r) => r.id === alert.reportId);
+      return report && reportStillOwed(report) ? { report } : {};
+    })).then((results) => {
+      const { notify: switches, away, onOpenReport, muted } = deliveryRef.current;
+      const owed: Alert[] = [];
+      for (const result of results) {
+        if (result.hold) heldRef.current.push(result.hold);
+        if (result.report) owed.push(reportAlert(result.report, scopeRef.current.spokenNames));
+      }
+      // Away again by the time the reads land: hold them once more.
+      if (away !== false) {
+        heldRef.current.push(...owed);
+        return;
+      }
+      raiseBatch(owed.filter((a) => shouldDeliver(a, switches, false, muted)), settingsRef.current, onOpenReport);
+    });
+  }, [awayOff, ready]);
+
+  useEffect(() => {
+    // A report alert raised while this window is away, or does not know yet, is held (see
+    // above); everything else is decided now, exactly as before.
+    const deliver = (a: Alert) => {
+      const { notify: switches, away, muted } = deliveryRef.current;
+      if (heldForAway(a, switches, away)) {
+        heldRef.current.push(a);
+        return false;
+      }
+      return shouldDeliver(a, switches, away ?? false, muted);
+    };
+    const openReport = (reportId: string) => deliveryRef.current.onOpenReport(reportId);
     const justConnected = ready && !wasReadyRef.current;
     wasReadyRef.current = ready;
 
@@ -104,33 +227,26 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
       if (!prev) return;
       // Reconnect: summarize the attention-level events that happened during the
       // gap (coalesced so a long disconnect doesn't storm) instead of dropping them.
-      const missed = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
-      if (missed.length === 0) return;
-      const fallbackSound = settings.sound && playChime("attention") === "unavailable";
-      if (settings.notifications && canNotify()) {
-        const delivered = notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup", !fallbackSound);
-        if (delivered && fallbackSound) recordFallbackSound("attention");
+      const delivered = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliver);
+      // A report keeps its own notification - "<name>'s back: <title>", opening its report -
+      // rather than becoming a line in the catch-up: the wording and the click are the point of
+      // it. One per report, and reports alone; every other missed alert is summarised as before.
+      const reports = delivered.filter((a) => a.kind === "report");
+      const missed = delivered.filter((a) => a.kind !== "report");
+      if (missed.length > 0) {
+        const fallbackSound = settings.sound && playChime("attention") === "unavailable";
+        if (settings.notifications && canNotify()) {
+          const raised = notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup", !fallbackSound);
+          if (raised && fallbackSound) recordFallbackSound("attention");
+        }
       }
+      raiseBatch(reports, settings, openReport);
       return;
     }
 
     const prev = prevRef.current ?? scope;
     prevRef.current = scope;
 
-    const alerts = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
-    if (alerts.length === 0) return;
-    // One chime per batch, at its most urgent severity. The OS is a fallback only
-    // for unavailable audio, never for Sound off or an intentionally throttled chime.
-    const severity = batchSeverity(alerts);
-    const fallbackSound = settings.sound && playChime(severity) === "unavailable";
-    if (settings.notifications && canNotify()) {
-      for (const [index, a] of alerts.entries()) {
-        const audible = fallbackSound && index === 0;
-        const delivered = notify(a.title, a.body, a.id, !audible, {
-          workflowRunId: a.workflowRunId, ensembleId: a.ensembleId,
-        });
-        if (delivered && audible) recordFallbackSound(severity);
-      }
-    }
+    raiseBatch(detectAlerts(withKnownStalls(prev, scope), scope).filter(deliver), settings, openReport);
   }, [scope, settings, ready]);
 }

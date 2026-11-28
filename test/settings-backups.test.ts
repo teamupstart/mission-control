@@ -4,14 +4,12 @@ import {
   chmodSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   canonicalSettingsBackupJson,
@@ -22,15 +20,16 @@ import {
   type SettingsBackupEnvelopeBodyV1,
   type SettingsBackupEnvelopeV1,
 } from "../src/shared/settings-backups.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-settings-backups-"));
+const home = tempDir("mission-settings-backups-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
-const { normalizePersonaName, normalizeSessionActionName, normalizeWorkflowName, WORKFLOW_CHECK_SLOTS } =
+const { emptyWorkflowCommandView, normalizePersonaName, normalizeSessionActionName, normalizeWorkflowName, WORKFLOW_CHECK_SLOTS } =
   await import("../src/shared/workflow.ts");
-const { captureSettingsCatalogs, settingsCatalogCounts } =
+const { captureSettingsCatalogs, settingsCatalogCounts, SettingsBackupWorkflowCommandSchema } =
   await import("../src/server/settings-backups/catalogs.ts");
 const { captureSettingsConfig } = await import("../src/server/settings-backups/config-registry.ts");
 const { createSettingsBackupEnvelope, settingsBackupDigest, settingsBackupFileText } =
@@ -52,6 +51,21 @@ test("the default backup root follows the isolated daemon state home", () => {
   assert.equal(SETTINGS_BACKUPS_DIR, join(process.env.HARNESS_HOME!, "backups", "settings"));
   assert.equal(new SettingsBackupStore().root, SETTINGS_BACKUPS_DIR);
   assert.ok(SETTINGS_BACKUPS_DIR.startsWith(home));
+});
+
+test("settings backups accept custom CodeRabbit commands and reject invalid defaultCommand values", () => {
+  const command = emptyWorkflowCommandView("coderabbit");
+  const valid = { ...command, defaultCommand: ["coderabbit", "review", "--fresh"] };
+  assert.deepEqual(SettingsBackupWorkflowCommandSchema.parse(valid), valid);
+
+  const invalid = SettingsBackupWorkflowCommandSchema.safeParse({
+    ...command,
+    defaultCommand: ["coderabbit", "review", "--use-credits"],
+  });
+  assert.equal(invalid.success, false);
+  assert.deepEqual(invalid.error.issues.map(({ path, message }) => ({ path, message })), [
+    { path: ["defaultCommand"], message: "Invalid default CodeRabbit command" },
+  ]);
 });
 
 const draft = {
@@ -193,6 +207,7 @@ test("daily capture includes archived operator catalogs and excludes built-ins a
   assert.equal(first.snapshot.appVersion, "1.2.3-test");
   assert.deepEqual(first.snapshot.domains.find((entry) => entry.domain === "inspector")?.payload, {
     enabled: true,
+    localReview: false,
     mode: "live",
     repoAllowlist: [],
     maxCommentsPerRound: 8,

@@ -3,11 +3,12 @@ import { runJobStructured } from "../llm/jobs.ts";
 import { createLimiter, parseModelJson } from "../llm/structured.ts";
 import { unref } from "../util/timers.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
-import { GOAL_UNSUPPORTED, goalLine } from "@shared/goal.ts";
+import { GOAL_OPERATOR_HANDOFF_ONLY, GOAL_UNSUPPORTED, goalLine, hasOperatorHandoffHold } from "@shared/goal.ts";
 import type { Registry } from "../registry.ts";
 import type { Session, SessionGoal } from "@shared/types.ts";
 import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
 import { readGoalWindow } from "./source.ts";
+import { contextualHandoffRestriction, explicitHandoffRestriction, isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./handoff-restrictions.ts";
 import { clampPrompt } from "../util/prompt-text.ts";
 
 // Tier 2: reconcile each human prompt with the durable session objective, in captured
@@ -94,6 +95,7 @@ export function startGoalRefiner(registry: Registry): () => void {
    * holding every orphan the table ever accumulated.
    */
   let lastPrune = 0;
+  let spokenPrune: AbortController | undefined;
   const limit = createLimiter(GOAL_CONCURRENCY);
   const debounce = new EvaluationDebounce(GOAL_REFRESH_MS);
   /**
@@ -177,12 +179,31 @@ export function startGoalRefiner(registry: Registry): () => void {
         // And delegated-turn senders, one row per message a controller sent a conversation.
         const delegated = registry.pruneDelegatedTurns(now - GOAL_PRUNE_AGE_MS);
         if (delegated > 0) console.log(`[goal] pruned ${delegated} orphaned delegated-turn sender(s)`);
+        // And review-message deliveries that never found their turn (`review-deliveries.ts`).
+        // Isolated: this prune walks transcripts, and a failure there must not skip the cleanup
+        // below, which `lastPrune` has already scheduled away until the next window.
+        try {
+          const reviewDeliveries = registry.pruneReviewDeliveries(now, now - GOAL_PRUNE_AGE_MS);
+          if (reviewDeliveries > 0) console.log(`[goal] pruned ${reviewDeliveries} unbound review-message deliveries`);
+        } catch (err) {
+          console.error("[goal] review-message delivery prune failed:", err instanceof Error ? err.message : String(err));
+        }
+        if (!spokenPrune) {
+          spokenPrune = new AbortController();
+          void registry.pruneExpiredSpokenTurns(now, now - GOAL_PRUNE_AGE_MS, spokenPrune.signal).then(count => {
+            if (count > 0) console.log(`[voice] pruned ${count} expired spoken reservation(s)`);
+          }).catch(err => console.error("[voice] spoken reservation prune failed:", err)).finally(() => { spokenPrune = undefined; });
+        }
         // And the launch standing-instruction snapshots, which accumulate identically -
         // one row per session that ever received one, up to 8,000 characters each. Same
         // tick, same window, same live-key safety property.
         const standing = registry.pruneStandingInstructions(now - GOAL_PRUNE_AGE_MS);
         if (standing > 0)
           console.log(`[goal] pruned ${standing} orphaned standing-instruction snapshot(s)`);
+        // And launch work unit records, their twin: one row per session whose agent was
+        // started with a work unit. Same tick, same window, same live-key safety property.
+        const launchUnits = registry.pruneLaunchWorkUnits(now - GOAL_PRUNE_AGE_MS);
+        if (launchUnits > 0) console.log(`[goal] pruned ${launchUnits} orphaned launch work unit record(s)`);
         // And session blockers, which ride the same note key. An exit alone never ends one, so
         // only a key no session has held for the window goes.
         const blockers = registry.pruneBlockers(now - GOAL_PRUNE_AGE_MS, now);
@@ -198,6 +219,7 @@ export function startGoalRefiner(registry: Registry): () => void {
   void tick();
   return () => {
     stopped = true;
+    spokenPrune?.abort();
     if (timer) clearTimeout(timer);
   };
 }
@@ -493,21 +515,63 @@ async function refine(
         );
       }
 
-      // A steering or unclear classification is not authorised to shrink the completion
-      // contract. Amend and replace are the only relationships that may change it.
-      const mayChangeObjective =
-        relationship === "amend" || relationship === "replace" || relationship === "initial";
-      const objective = !mayChangeObjective
+      const humanRestriction = explicitHandoffRestriction(prompt.prompt);
+      const priorRestriction = explicitHandoffRestriction(currentObjective);
+      const hadHold = hasOperatorHandoffHold(currentObjective) || Boolean(priorRestriction);
+      // A standalone release lets the operator confirm the reconciled objective. A
+      // combined turn may revise the deliverable, but any model rewrite is insufficient
+      // authority to release its hold before that objective can be reviewed.
+      const requestsRelease = !initial && !humanRestriction
+        && isStandaloneHandoffRelease(prompt.prompt);
+      // A standalone release carries authority to remove the hold from the existing
+      // contract. Disregard a model-proposed deliverable or card title on that turn.
+      const mayChangeObjective = !requestsRelease && (
+        relationship === "amend" || relationship === "replace" || relationship === "initial"
+      );
+      let objective = !mayChangeObjective
         ? currentObjective ?? current.prompt
         : relationship === "amend"
           ? amended
           : r.value.objective;
-      const text = mayChangeObjective ? r.value.goal : current.text;
+      let text = mayChangeObjective ? r.value.goal : current.text;
+      const released = requestsRelease && currentObjective ? withoutHandoffRestrictions(currentObjective) : null;
+      let handoffContractChanged = false;
+      if (released !== null) {
+        handoffContractChanged = released !== objective;
+        objective = released;
+        if (!released) text = null;
+        relationship = handoffContractChanged ? "replace" : "steer";
+        rationale = "The operator explicitly released the completion handoff.";
+      }
+      const preserveHold = hadHold && released === null;
+      const contextualRestriction = !requestsRelease && !hadHold && hasOperatorHandoffHold(r.value.objective)
+        ? contextualHandoffRestriction(prompt.prompt)
+        : undefined;
+      const restriction = humanRestriction
+        ?? explicitHandoffRestriction(objective)
+        ?? (preserveHold ? priorRestriction : contextualRestriction);
+      if ((restriction || preserveHold) && objective && !hasOperatorHandoffHold(objective)) {
+        // The accepted human turn can reserve handoff even when the model misses the
+        // restriction or calls the turn steering. Keep any accepted implementation
+        // objective and record the safety restriction in the same intent revision.
+        const storedRestriction = restriction && restriction.length > 480
+          ? contextualHandoffRestriction(restriction)
+          : restriction;
+        const restrictionLine = storedRestriction && !objective.includes(storedRestriction) ? `\n${storedRestriction}` : "";
+        // The accepted objective is already bounded. Account for the small separate
+        // annotation without clamping away any of the accepted requirements.
+        objective = `${objective}${restrictionLine}\n${GOAL_OPERATOR_HANDOFF_ONLY}`;
+        handoffContractChanged = true;
+        if (relationship === "steer") {
+          relationship = "amend";
+          rationale = "The operator explicitly reserved the completion handoff.";
+        }
+      }
       const objectiveChanged = objective !== current.objective;
       const objectiveVersion =
         relationship === "initial"
           ? Math.max(1, current.objectiveVersion)
-          : relationship === "amend" || relationship === "replace"
+          : mayChangeObjective || handoffContractChanged
             ? current.objectiveVersion + (objectiveChanged ? 1 : 0)
             : current.objectiveVersion;
 
@@ -517,7 +581,9 @@ async function refine(
         source: "model",
         // While a newer instruction waits, the UI keeps showing that latest captured focus.
         // Resolving an older transition must not make the drawer appear to move backwards.
-        focus: current.pendingPrompts.length === 1 ? r.value.focus : current.focus,
+        focus: current.pendingPrompts.length === 1
+          ? requestsRelease ? goalLine(prompt.prompt) : r.value.focus
+          : current.focus,
         relationship,
         rationale,
         objectiveVersion,

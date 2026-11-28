@@ -134,6 +134,10 @@ export function skillsDir(): string {
   return envVar("SKILLS_DIR") ?? fileURLToPath(new URL("../../skills", import.meta.url));
 }
 
+export function speechHelperPath(): string {
+  return fileURLToPath(new URL("../../dist/voice-speaker/synth.mjs", import.meta.url));
+}
+
 /**
  * The SEED for Foreman's instructions setting: `personas/FOREMAN.md` under the app root.
  *
@@ -166,6 +170,10 @@ export function foremanInstructionsPath(): string {
  * Not asserted to exist here - the caller checks, because "the bundle is missing" is the one
  * condition that must disarm the whole ask channel rather than half of it.
  */
+export function repositoryMcpServerPath(): string {
+  return fileURLToPath(new URL("../../dist/repository-mcp/server.mjs", import.meta.url));
+}
+
 export function mcpServerPath(): string {
   return envVar("MCP_SERVER") ?? fileURLToPath(new URL("../../dist/mcp/server.mjs", import.meta.url));
 }

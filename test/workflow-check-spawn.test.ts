@@ -4,18 +4,18 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { spawnCheckProcess } from "../src/server/workflows/check-spawn.ts";
 import { checkGroupAnswers } from "../src/server/workflows/check-group.ts";
 import { onPath } from "../src/server/util/exec.ts";
+import { configureHostSuspendClock } from "../src/server/host-suspend.ts";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 // The streaming adapter, against REAL short-lived processes and no mocks.
 //
@@ -25,7 +25,7 @@ import { onPath } from "../src/server/util/exec.ts";
 
 const dirs: string[] = [];
 function workspace(): string {
-  const dir = mkdtempSync(join(tmpdir(), "mission-check-spawn-"));
+  const dir = tempDir("mission-check-spawn-");
   dirs.push(dir);
   return dir;
 }
@@ -199,6 +199,19 @@ test("a relative ./script in the working directory is found - the onPath trap", 
   });
 });
 
+test("owner cancellation after the launch gate closes the running process group", async () => {
+  const controller = new AbortController();
+  const outcome = await spawnCheckProcess({
+    attemptId: "cancel-live-provider", command: [NODE, "-e", 'console.log("started"); setInterval(() => {}, 1000)'],
+    env: {}, cwd: workspace(), timeoutMs: 10_000, signal: controller.signal, interruptionReason: "Review cancelled",
+    capture: { push: () => controller.abort() },
+  });
+  assert.ok(outcome.supervisor);
+  supervisors.push(outcome.supervisor.pid);
+  assert.deepEqual(outcome.result, { kind: "infrastructure", reason: "Review cancelled" });
+  assert.equal(outcome.emptiness, "empty");
+});
+
 test("a timeout is infrastructure, never a non-zero exit", async () => {
   const { result, emptiness } = await run(["sh", "-c", "sleep 30"], { timeoutMs: 400 });
   assert.equal(result.kind, "infrastructure");
@@ -210,6 +223,61 @@ test("a timeout is infrastructure, never a non-zero exit", async () => {
     `unexpected timeout reason: ${reason}`,
   );
   // And the tree is provably safe to hand back afterwards.
+  assert.equal(emptiness, "empty");
+});
+
+/**
+ * Script a host that slept for `sleptMs` while the check ran, with a timer clock that kept
+ * counting through the sleep (the behavior #1734's wake-aligned timeouts suggest), for the
+ * check's deadlines to read.
+ */
+function scriptSleep(sleptMs: number): () => void {
+  // On `performance.now()`, not `Date.now()`: a deadline of a millisecond or two can come due
+  // before the millisecond wall clock has moved at all, and a clock that reads zero elapsed
+  // reports zero sleep, which would let the timer fire on the wall clock after all.
+  return configureHostSuspendClock({
+    mark: () => ({ at: performance.now(), suspendedMs: 0 }),
+    suspendedMsSince: (since) => Math.min(sleptMs, performance.now() - since.at),
+  });
+}
+
+test("a check the host slept through can still finish after its wall-clock deadline", async (t) => {
+  // A 600 ms deadline, 1.5 s of it asleep: the command needs 1.2 s, which a wall-clock timer
+  // would have killed at 600 ms and which fits easily in the awake time it was owed.
+  t.after(scriptSleep(1_500));
+  const started = Date.now();
+  const { result, emptiness } = await run(["sh", "-c", "sleep 1.2; echo finished"], { timeoutMs: 600 });
+  assert.ok(Date.now() - started >= 1_200, "the command ran its full length");
+  assert.deepEqual(result, { kind: "exited", exitCode: 0, output: "finished\n", truncatedBytes: 0 });
+  assert.equal(emptiness, "empty");
+});
+
+test("a check supervisor that becomes ready after a sleep is not abandoned at the wall-clock ready deadline", async (t) => {
+  // A 1 ms ready deadline no supervisor can meet on the wall clock, with 2 s of it asleep: the
+  // readiness that follows must be accepted, and the command must run to its end.
+  t.after(scriptSleep(2_000));
+  const outcome = await spawnCheckProcess({
+    attemptId: `attempt-${supervisors.length}-ready-after-sleep`,
+    command: ["sh", "-c", "echo ready-after-sleep"],
+    cwd: process.cwd(),
+    env: { PATH: process.env.PATH ?? "" },
+    timeoutMs: 20_000,
+    readyMs: 1,
+  });
+  if (outcome.supervisor) supervisors.push(outcome.supervisor.pid);
+  assert.deepEqual(outcome.result, { kind: "exited", exitCode: 0, output: "ready-after-sleep\n", truncatedBytes: 0 });
+  assert.equal(outcome.emptiness, "empty");
+});
+
+test("a check the host slept through still times out once its awake time is spent", async (t) => {
+  t.after(scriptSleep(1_500));
+  const started = Date.now();
+  const { result, emptiness } = await run(["sh", "-c", "sleep 30"], { timeoutMs: 600 });
+  const elapsed = Date.now() - started;
+  assert.equal(result.kind, "infrastructure");
+  assert.match(result.kind === "infrastructure" ? result.reason : "", /did not finish within 600ms/);
+  // Not at the 600 ms wall-clock deadline, but after the 600 ms of awake time the sleep left it.
+  assert.ok(elapsed >= 600 + 1_500 - 50, `timed out after ${elapsed} ms, before its awake budget`);
   assert.equal(emptiness, "empty");
 });
 
@@ -301,7 +369,7 @@ function processesCarrying(attemptId: string): string[] {
 }
 
 test("a timeout before the supervisor is ready leaves no held shim behind", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mission-check-spawn-"));
+  const dir = tempDir("mission-check-spawn-");
   dirs.push(dir);
   const marker = join(dir, "branch-ran");
   const attemptId = `attempt-early-timeout-${process.pid}`;
@@ -334,7 +402,7 @@ test("an unusable working directory is infrastructure, not a missing executable"
   // command fails the shim's. Spawned directly, both arrive as ENOENT and a missing directory
   // would be reported to the operator as a command they never mistyped.
   const { result, supervisor } = await run(["sh", "-c", "echo hi"], {
-    cwd: join(tmpdir(), "mission-check-spawn-does-not-exist"),
+    cwd: join(testTempRoot(), "mission-check-spawn-does-not-exist"),
   });
   assert.equal(result.kind, "infrastructure");
   assert.equal(supervisor, null, "nothing ran, so there is no owner to record");
@@ -342,10 +410,9 @@ test("an unusable working directory is infrastructure, not a missing executable"
 
 test('a killed owner cannot orphan the shim or its running command', async (t) => {
   const {spawn} = await import('node:child_process');
-  const {mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync} = await import('node:fs');
-  const {tmpdir} = await import('node:os');
+  const {writeFileSync, existsSync, readFileSync, rmSync} = await import('node:fs');
   const {join} = await import('node:path');
-  const dir = mkdtempSync(join(tmpdir(), 'check-owner-loss-'));
+  const dir = tempDir('check-owner-loss-');
   const pidPath = join(dir, 'shim.pid');
   const childPath = join(dir, 'command.pid');
   const module = new URL('../src/server/workflows/check-spawn.ts', import.meta.url).href;
@@ -373,7 +440,7 @@ test('a killed owner cannot orphan the shim or its running command', async (t) =
   owner.kill('SIGKILL');
   const {execFileSync} = await import('node:child_process');
   const alive = (p: number) => {
-    try { return !/^Z/.test(execFileSync('/bin/ps', ['-o','stat=','-p',String(p)], {encoding:'utf8'}).trim()); }
+    try { return !execFileSync('/bin/ps', ['-o','stat=','-p',String(p)], {encoding:'utf8'}).trim().startsWith('Z'); }
     catch { return false; }
   };
   await wait(() => !alive(pid) && !alive(commandPid));

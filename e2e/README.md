@@ -90,6 +90,7 @@ Playwright uses at most four workers, and Mission Control permits one E2E invoca
 a host at a time. This is a shared limit across linked worktrees: a second full or focused run
 waits before Playwright starts any browser workers, prints the PID and checkout holding the lease,
 and begins when that run exits. The kernel releases the lease automatically if its process dies.
+If a probe connection fails, the owner logs the socket error and continues serving waiters.
 If an unrelated process owns the derived lease port, the run refuses promptly instead of waiting.
 
 The resolved worker count is a hard ceiling. A command that asks for more than four workers is
@@ -111,6 +112,9 @@ that snapshot. Vite clears its output during a rebuild; serving that mutable out
 page to receive an index whose JavaScript disappeared before it loaded, surfacing as a missing
 Dispatch button. The snapshot protects in-flight tests from later builds and is removed at
 teardown. This is build isolation, not a retry or a longer readiness timeout.
+
+Where a run's temp files and transform cache live, and how specs create fixture directories,
+is in [Test temp directories](../docs/test-temp-dirs.md).
 
 Useful flags:
 
@@ -2055,6 +2059,29 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### A task handed to a running agent
+
+A dispatched agent can never take a handover (`TaskManager.assign`): its session is an Agent SDK
+one, which `paneAcceptsPrompt` refuses, and it holds its task's worktree, which
+`taskResourceOwnerForSession` refuses. `fixtures/pane-agent.ts` stands up the kind that is
+accepted. `startPaneAgent` runs `fixtures/pane-agent.mjs` in a real tmux pane in the fixture
+repository, under a link named `claude`. Discovery cards it as an idle terminal session, and its
+first hook makes it instrumented. `paneSession` returns that session's id, `handOver` posts the
+assign the board's drop posts, and `sessionIdle` waits for the session to settle between
+handovers. A spec using it sets `test.use(PANE_AGENT_DAEMON)` (discovery on, outside sessions
+shown) and skips with `hasTmux()`. It addresses only its own pane's session, never the fleet.
+
+`startPaneAgent(daemon, { turns: true })` logs each submission's full text for `turns()` and
+reports each turn through `UserPromptSubmit` and `Stop`. In that mode a pending multi-line paste
+is drawn as Claude draws it, `[Pasted text #N +M lines]`. Seeing that placeholder leave the
+composer is how `injectPrompt` verifies a submit. Without it every handover's shaping record
+would read as unconfirmed.
+
+`specs/task-shaping.spec.ts` uses it to hand two tasks in turn to one agent. It asserts that the
+session header chip and "Context this session received" show exactly the section the agent
+received for the second task, and nothing from the first. With `MC_E2E_EVIDENCE=1` it writes
+`handover-chip.png` and `handover-viewer.png` under `e2e/.artifacts/task-shaping/`.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and
@@ -2186,9 +2213,8 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 ## Writing specs
 
-There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
-and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Eight traps, all of which have cost time already:
+Select controls with `getByRole`, `getByLabel`, or `getByPlaceholder` using their existing
+roles, labels, and placeholders. Never add `data-testid`.
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.
@@ -2242,9 +2268,20 @@ depend on running before the spec that dispatches a second.
 
 ## What this layer still cannot see
 
-Playwright drives web contents. Native Electron shell behaviour - drag regions, traffic
-lights, window chrome, vibrancy - is invisible to CDP and to synthetic clicks, and stays a
-manual check.
+Playwright drives web contents. Native Electron shell behaviour such as drag regions,
+traffic lights and vibrancy needs a native fixture or a manual check.
+
+Run `desktop-voice-edge.spec.ts` with the Mac desktop unlocked. AppKit can find
+the view under the edge microphone while the screen is locked, but the fixture
+window needs focus to receive the native clicks. The spec checks mute and
+unmute, then hit-tests the blank title bar below the microphone. Where macOS
+permits desktop input, it also drags the title bar and checks that the window
+moves. To check movement manually on a Mac without that permission, run the
+focused spec and drag the green dot when it appears.
+
+```sh
+MC_E2E_MANUAL_WINDOW_DRAG=1 npm run test:e2e -- desktop-voice-edge.spec.ts
+```
 
 ## Pi installation and terminal dispatch
 
@@ -2275,13 +2312,12 @@ Pi's isolated extensions directory to the installer's isolated directory, proves
 symlink discovery, and tears down only that task's tmux session. Screenshots are written to
 `e2e/.artifacts/pi-extension-setup/` and remain uncommitted.
 
-`feature-flags.spec.ts` covers the shipped registry: the **Codex resident native MCP**,
-**Resident active hours**, **Task shaping** and **Session control requests** rows appear, and toggling each of the first two in
+`feature-flags.spec.ts` covers the shipped registry: the **Resident active hours**, **Task shaping** and **Session control requests** rows appear, and toggling Resident active hours in
 one window changes a second window without a reload. `headless-mode-flag.spec.ts` covers the
 `headless-mode` row, its second window and its daemon gates, and `task-shaping-flag.spec.ts` does
 the same for the Task shaping row and the daemon's `/api/shaping` gate. `feature-flags-populated.spec.ts`
 uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
-`feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
+`feature-flag-registry.ts` replaced by fixture data with preview and default-on flags.
 Use this build when a spec needs populated flag controls, search, palette or daemon writes.
 The spec owns and cleans up its private bundles. Both flag build helpers restore `NODE_ENV`
 after Vite builds, so reused workers still launch real development dashboards. `MC_E2E_EVIDENCE=1` retains panel screenshots

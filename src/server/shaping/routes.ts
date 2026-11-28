@@ -3,16 +3,18 @@ import { basename } from "node:path";
 import type { Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ShapingIntentSchema, ShapingTestRequestSchema } from "@shared/protocol.ts";
-import { DEFAULT_TASK_KIND } from "@shared/types.ts";
-import { registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
+import { DEFAULT_TASK_KIND, type Task } from "@shared/types.ts";
+import { currentShaping, registeredShaperRevision, SHAPING_LIMITS } from "@shared/shaping.ts";
 import { JSON_UTF8_MAX_BYTES_PER_CHAR } from "@shared/workflow.ts";
+import { getTaskShapingText } from "../db.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { insideWorkTree, resolveRepoRoot } from "../repos.ts";
-import { discoverShapers } from "./discovery.ts";
+import { discoverShapers, scanShaperFolder } from "./discovery.ts";
 import { dryRunShaper } from "./engine.ts";
 import { applyShapingIntent, getShapingConfig } from "./index.ts";
+import { taskAfterWorkForReads, taskShapingForReads } from "./reads.ts";
 import { daemonShapingView, issuedByThisDaemon, shapingReviser, UNISSUED_REVISION_REFUSAL } from "./revisions.ts";
 import {
   dropShapingWriteRecords,
@@ -30,15 +32,24 @@ import {
   UNREADABLE_ORDER_REFUSAL,
 } from "./write-order.ts";
 import { referenceStatus } from "./references.ts";
+import { noteShaperFolderScan, shaperSignInEnabled, shaperSignIns } from "./sign-in/index.ts";
+import { registerShaperSignInRoutes, type ShaperSignInRouteDeps } from "./sign-in/routes.ts";
 
 /**
  * Task shaping's API, all behind the `task-shaping` flag: with it off every route answers 404
  * before its handler runs, so nothing reads the stored config.
  *
- * - `GET /api/shaping` returns `{ config, discovered, references }`.
+ * - `GET /api/shaping` returns `{ config, discovered, folder, references, signIns }`, reading the
+ *   shapers folder afresh: `folder` names where it looked and how many entries past the bound it
+ *   left. `signIns` is the sign-in list while `shaper-sign-in` is on, and empty while it is off.
  * - `PUT /api/shaping` applies one intent and returns `{ config }`.
  * - `POST /api/shaping/test` dry-runs one shaper against a repository and returns what dispatch
  *   would have recorded and injected. A failing shaper is an outcome in a 200, never an error.
+ * - `GET /api/tasks/:id/shaping` returns what the task's current session received: the summary,
+ *   the delivered text (`text` null when nothing was kept) and the launch's after-work prompt
+ *   (`afterWork` null until one was written). 404 when `currentShaping` shows nothing,
+ *   including a record that names an earlier session.
+ * - The sign-in routes, behind `shaper-sign-in` as well (`./sign-in/routes.ts`).
  */
 /**
  * Ceilings, not allocations: `bodyLimit` refuses past them while streaming, after the flag's
@@ -91,7 +102,11 @@ export async function checkoutFor(
   return { ok: true, repoRoot };
 }
 
-export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: CheckoutProbes } = {}): void {
+export function registerShapingRoutes(
+  app: Hono,
+  options: { checkoutProbes?: CheckoutProbes; taskById?: (id: string) => Task | undefined; signIns?: ShaperSignInRouteDeps } = {},
+): void {
+  const signIns: ShaperSignInRouteDeps = options.signIns ?? { service: shaperSignIns, noteScan: noteShaperFolderScan };
   const gate = requireFeature("task-shaping");
   // Both writes are refused unless they come from the dashboard, as a dry run executes a shaper.
   // Before the body limit, so a forged request is refused as forbidden whatever its size.
@@ -100,10 +115,31 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
     await next();
   };
 
+  app.get("/api/tasks/:id/shaping", gate, (c) => {
+    const task = options.taskById?.(c.req.param("id"));
+    if (!task) return c.json({ error: "no such task" }, 404);
+    // Through the same projection as every other task read, so a record a failed commit superseded
+    // (its clean-up still pending) is not served as this session's, whether the task came from memory
+    // or from its durable row.
+    const shown = taskShapingForReads(task);
+    const summary = currentShaping(shown);
+    if (!summary) return c.json({ error: "no_shaping", reason: "This task's current session received no task context." }, 404);
+    // The launch's after-work prompt, null until one was written for this session.
+    return c.json({ summary, text: getTaskShapingText(task.id)?.text ?? null, afterWork: taskAfterWorkForReads(shown) });
+  });
+
   app.get("/api/shaping", gate, async (c) => {
     const config = getShapingConfig();
     // The view, never raw envelopes: an unsupported entry leaves as its id, label and reason.
-    return c.json({ config: daemonShapingView(config), discovered: await discoverShapers(), references: referenceStatus(config) });
+    const { shapers: discovered, folder } = await scanShaperFolder({ config });
+    // The scan just read tells the sign-in service which connections the folder's shapers name.
+    signIns.noteScan(discovered);
+    // `references` says whether each environment name a shaper uses is set, never a value.
+    // `signIns` never holds a token, the OAuth `state` parameter or an authorization URL.
+    return c.json({
+      config: daemonShapingView(config), discovered, folder, references: referenceStatus(config, discovered),
+      signIns: shaperSignInEnabled() ? signIns.service.view() : [],
+    });
   });
 
   app.put("/api/shaping", gate, loopbackWrite, limitBody(SHAPING_PUT_BODY_MAX_BYTES), async (c) => {
@@ -145,7 +181,7 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
   app.post("/api/shaping/test", gate, loopbackWrite, limitBody(SHAPING_TEST_BODY_MAX_BYTES), async (c) => {
     const parsed = await parseBody(c, ShapingTestRequestSchema);
     if (!parsed.ok) return parsed.res;
-    const { id, repository, prompt, kind, expect } = parsed.data;
+    const { id, repository, prompt, kind, expect, agent } = parsed.data;
     // One snapshot of the config, taken now, is both what the revision is checked against and what
     // the engine runs. The checkout probes below await Git, and a replacement written during them
     // must not be what runs, so the engine never reads the store again for this request.
@@ -185,8 +221,12 @@ export function registerShapingRoutes(app: Hono, options: { checkoutProbes?: Che
       // Aborted when the client's connection closes before the reply, so a dry run nobody is
       // waiting for stops its shapers' process groups instead of running to their timeout.
       signal: c.req.raw.signal,
+      // A router's skills are rendered for a harness; the request has none of its own.
+      previewAgent: agent ?? "claude",
     }, { config });
     if (!result.ok) return c.json({ error: result.error, reason: result.reason }, result.error === "unknown_shaper" ? 404 : 400);
     return c.json(result.run);
   });
+
+  registerShaperSignInRoutes(app, { shapingGate: gate, loopbackWrite, deps: signIns });
 }

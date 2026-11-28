@@ -1,3 +1,4 @@
+import type { NamedAgentEnvironment } from "../../executables/named-variable.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
 
 // The slice of `@anthropic-ai/claude-agent-sdk` this driver actually speaks.
@@ -21,6 +22,7 @@ import type { ThinkingLevel } from "@shared/types.ts";
 
 /** A user turn as the streaming-input protocol carries it. */
 export interface ClaudeSdkUserMessage {
+  uuid?: string;
   type: "user";
   message: { role: "user"; content: unknown };
   parent_tool_use_id: string | null;
@@ -271,7 +273,7 @@ export interface ClaudeSdkDeps {
   /** The absolute `claude` path to pin the subprocess to. Rejects when it cannot be found. */
   executable(): Promise<string>;
   /** The subprocess environment. See `sdkSubprocessEnv` for what it subtracts and why. */
-  env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
+  env(cwd?: string, stateHome?: string, namedEnvironment?: NamedAgentEnvironment): Record<string, string | undefined>;
   /** How long a resident's start waits to confirm its MCP servers. Production uses the default. */
   residentMcpSettleMs?: number;
   /**

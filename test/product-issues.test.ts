@@ -6,7 +6,6 @@ import {
 } from "node:test";
 import {
   mkdirSync,
-  mkdtempSync,
   realpathSync,
   rmSync,
   statSync,
@@ -14,12 +13,11 @@ import {
   truncateSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Product reports can publish publicly, so this file exercises the service through injected
 // subprocesses and an isolated upload root. No test may inherit the operator's state or gh.
-const home = mkdtempSync(join(tmpdir(), "mission-product-issues-"));
+const home = tempDir("mission-product-issues-");
 process.env.MISSION_HOME = home;
 
 const {
@@ -60,6 +58,7 @@ import type { SavedUpload } from "../src/server/uploads.ts";
 import type { ProductIssueRunner } from "../src/server/product-issues.ts";
 import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
 import type { ProductIssueRequest } from "../src/shared/product-issues.ts";
+import { tempDir } from "./temp-root.mjs";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -278,6 +277,21 @@ test("preview and submission re-derive the agent source and send the body on std
   assert.match(calls[0]!.options?.input ?? "", /Observed: focus disappears/);
   assert.match(calls[0]!.options?.input ?? "", /<!-- mission-control-product-report:v1 -->/);
   assert.ok(!calls[0]!.args.join("\n").includes("Observed: focus disappears"));
+});
+
+test("changing the configured repository after agent preview refuses publication", async () => {
+  let repo = "acme/original";
+  const service = new ProductIssueService({
+    target: () => ({ ok: true, repo }),
+    runner: async () => assert.fail("must refuse before invoking GitHub"),
+  });
+  const report = request();
+  const preview = service.preview("agent", report);
+  assert.equal(preview.outcome, "preview");
+  repo = "acme/replacement";
+  const result = await service.submit("agent", report);
+  assert.equal(result.outcome, "refused");
+  if (result.outcome === "refused") assert.match(result.message, /changed after preview/);
 });
 
 test("retry-safe refusals release a request while unknown outcomes block duplicates", async () => {

@@ -5,18 +5,21 @@
 //   dist/mod/mission-control/.claude-plugin/plugin.json
 //   dist/mod/mission-control/hooks/hooks.json     names ./register.js
 //   dist/mod/mission-control/hooks/register.js    the bundled hooks module
+//   dist/mod/mission-control/hooks/mod-calls.json the bundle hash the source-aware mod-calls check passed
 //   dist/mod/mission-control/types/index.d.ts     the `$.state` contract, named in plugin.json
 //
 // It writes to `dist/mod` by default. `MISSION_MOD_OUT_DIR` may name another directory, but only one
 // inside `dist/` or the temp directory, and never the checkout, one of its ancestors, or a path inside
 // it outside `dist/` (see `resolveOutRoot`). Staging into `{stateDir}/mod/` and installing are P14's.
 import { build } from "esbuild";
+import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MOD_API, MOD_NAME } from "../src/mod/constants.ts";
+import { findDisallowedModCalls } from "./mod-calls.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** The real path of `path`, resolving symlinks in its nearest existing ancestor. */
@@ -80,8 +83,19 @@ await build({
   target: "es2023",
   mainFields: ["module", "main"],
   alias: { "@shared": join(root, "src/shared") },
+  define: { __MOD_VERSION__: JSON.stringify(pkg.version) },
   logLevel: "warning",
 });
+
+// The source-aware `mod-calls` check runs here, where the TypeScript compiler is available, and
+// its verdict travels with the bundle. `mctl doctor` cannot parse source, so it checks that the
+// staged bundle is byte for byte the one this check passed, and fails when it cannot establish that.
+const refused = findDisallowedModCalls(root);
+if (refused.length > 0) {
+  throw new Error(`the mod calls daemon paths outside src/mod/allowed-calls.json: ${refused.map((r) => `${r.path} (${r.file})`).join(", ")}`);
+}
+const bundleSha256 = createHash("sha256").update(await readFile(join(pluginDir, "hooks", "register.js"))).digest("hex");
+await writeFile(join(pluginDir, "hooks", "mod-calls.json"), `${JSON.stringify({ checked: true, bundleSha256 }, null, 2)}\n`);
 
 await cp(join(root, "src/mod/types/index.d.ts"), join(pluginDir, "types", "index.d.ts"));
 await writeFile(join(pluginDir, "hooks", "hooks.json"), `${JSON.stringify({ modules: ["./register.js"] }, null, 2)}\n`);

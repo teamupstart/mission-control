@@ -1,13 +1,12 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { DEFAULT_WORKFLOW_CONFIG } from "../src/shared/workflow.ts";
 import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-retention-"));
+const home = tempDir("mission-workflow-retention-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -19,6 +18,7 @@ const {
 } = await import("../src/server/workflows/store.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { workflowDeliveryLedger, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT } = await import("../src/server/delivery-ledgers.ts");
 const db = openDb();
 const store = new WorkflowStore(db);
 
@@ -243,6 +243,13 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
                'uncertain', 1, 1)`,
   ).run();
   insertRun("failed", "failed", 1);
+  for (const id of ["delivery", "uncertain-delivery"]) {
+    db.prepare(`INSERT INTO workflow_delivery_turns(id, delivery_id, note_key, fingerprint, delivered_at, contested)
+                VALUES (?, ?, 'note', ?, ?, 0)`).run(id, id, id, Date.now());
+  }
+  db.prepare("UPDATE workflow_deliveries SET updated_at = ? WHERE id = 'uncertain-delivery'").run(Date.now());
+  workflowDeliveryLedger.forgetConversation("note");
+  assert.deepEqual(workflowDeliveryLedger.rows("note").map(r => r.id), ["delivery", "uncertain-delivery"]);
   insertRun("blocked", "blocked", null);
   insertRun("active", "running", null);
   insertSubmission("submission-active", "active");
@@ -265,6 +272,8 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
     now: 20,
   });
   assert.deepEqual(result.compactedRunIds, ["compact"]);
+  assert.deepEqual(workflowDeliveryLedger.rows("note").map(r => r.id), ["uncertain-delivery"]);
+  assert.equal(db.prepare("SELECT id FROM workflow_delivery_turns WHERE id = 'delivery'").get(), undefined);
   const submission = store.getSubmission("submission-compact")!;
   const compacted = submission.context as unknown as WorkflowContextSnapshot;
   const retention = compacted.evidence.retention;
@@ -295,7 +304,7 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
   assert.equal(store.getDelivery("delivery")?.payloadPrunedAt, 20);
   const pruneEvent = store.listEvents("compact").at(-1);
   assert.equal(pruneEvent?.kind, "evidence_pruned");
-  assert.equal((pruneEvent?.payload as { textArtifactCount?: number }).textArtifactCount, 1);
+  assert.equal((pruneEvent?.payload as { textArtifactCount?: number })?.textArtifactCount, 1);
   assert.equal((store.getSubmission("submission-uncertain")!.context as typeof context).evidence.diff, "secret diff body");
   assert.equal(store.getDelivery("uncertain-delivery")?.payload, "must remain exact");
   assert.equal(store.getRun("failed")?.evidencePrunedAt ?? null, null);
@@ -319,6 +328,52 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
     store.listEvents("compact").filter((event) => event.kind === "evidence_pruned").length,
     1,
   );
+});
+
+test("a cold receipt lookup keeps active sends and recent uncertainty while excluding expired unresolved history", async t => {
+  const key = "long-receipt-history";
+  const delivery = db.prepare(`INSERT INTO workflow_deliveries
+    (id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256, state, created_at, updated_at, delivered_at)
+    VALUES (?, 'run', 'submission', 'persona_feedback', 'session', ?, 'packet', ?, ?, 1, 1, ?)`);
+  const receipt = db.prepare(`INSERT INTO workflow_delivery_turns
+    (id, delivery_id, note_key, fingerprint, delivered_at, contested) VALUES (?, ?, ?, 'packet', 1, 0)`);
+  for (let i = 0; i < WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT + 2; i++) {
+    const id = String(i);
+    delivery.run(id, key, id, "delivered", i);
+    receipt.run(id, id, key);
+  }
+  delivery.run("pending", key, "pending", "sending", null);
+  receipt.run("pending", "pending", key);
+  const now = Date.now();
+  for (const id of ["recent-uncertain", "old-uncertain", "old-recovered-today", "already-refused"]) {
+    delivery.run(id, key, id, id === "already-refused" ? "refused" : "uncertain", null);
+    receipt.run(id, id, key);
+    if (id !== "old-uncertain") db.prepare("UPDATE workflow_deliveries SET updated_at = ? WHERE id = ?").run(now, id);
+    if (id === "recent-uncertain" || id === "already-refused") {
+      db.prepare("UPDATE workflow_delivery_turns SET delivered_at = ? WHERE id = ?").run(now, id);
+    }
+  }
+  // Existing delivery rows predate the receipt index. The upgrade restores their membership.
+  db.exec("UPDATE workflow_deliveries SET has_transcript_receipt = 0; PRAGMA user_version = 57");
+  const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+  upgradeDatabaseToCurrentSchema(db);
+  const prepare = db.prepare.bind(db);
+  const plans: string[] = [];
+  t.mock.method(db, "prepare", (sql: string) => {
+    if (sql.includes("has_transcript_receipt") && sql.includes("SELECT")) {
+      const parameters = Array.from(sql.matchAll(/\?/g), () => null);
+      plans.push(...prepare("EXPLAIN QUERY PLAN " + sql).all(...parameters).map(row => String(row.detail)));
+    }
+    return prepare(sql);
+  });
+  const ids = workflowDeliveryLedger.rows(key).map(r => r.id);
+  assert.equal(ids.length, WORKFLOW_TRANSCRIPT_ANCHOR_LIMIT + 2);
+  assert.deepEqual(ids.slice(0, 2), ["2", "3"]);
+  assert.deepEqual(ids.slice(-2), ["pending", "recent-uncertain"]);
+  assert.ok(plans.some(p => p.includes("idx_workflow_receipt_unresolved") && p.includes("updated_at")), plans.join("\n"));
+  assert.ok(plans.some(p => p.includes("idx_workflow_receipt_window") && p.includes("session_id>?")), plans.join("\n"));
+  assert.ok(plans.some(p => p.includes("idx_workflow_receipt_window") && p.includes("delivered_at")), plans.join("\n"));
+  assert.ok(!plans.some(p => /SCAN workflow_(deliveries|delivery_turns)/.test(p)), plans.join("\n"));
 });
 
 test("stage one skips non-evidence contexts and isolates malformed rows by run", () => {
@@ -369,8 +424,7 @@ test("stage one skips non-evidence contexts and isolates malformed rows by run",
     {},
   );
   assert.equal(
-    (store.getSubmission("submission-valid")?.context as typeof context)
-      .evidence.retention.state,
+    (store.getSubmission("submission-valid")?.context as typeof context)?.evidence.retention.state,
     "pruned",
   );
   assert.equal(store.getRun("c-malformed")?.evidencePrunedAt, null);
@@ -406,6 +460,30 @@ test("stage two isolates a malformed run and deletes later eligible families", (
     `SELECT 1 FROM workflow_command_artifact_reservations WHERE run_id = 'delete-next'`,
   ).get(), undefined);
   assert.ok(store.getRun("delete-kept"));
+});
+
+test("retention preserves unconfirmed external workloads and local owners until cleanup", () => {
+  const run = "cancelled-repository-run", sub = "retention-sub", attempt = "retention-attempt";
+  insertRun(run, "cancelled", 1);
+  insertSubmission(sub, run);
+  insertCommandArtifact(run, sub, attempt);
+  store.insertLlmCall({
+    id: "retention-call", runId: run, submissionId: sub, nodeAttemptId: attempt, purpose: "persona_review",
+    runner: "claude", model: "fixture", attempt: 1, state: "cancelled", startedAt: 1, finishedAt: 2,
+    durationMs: 1, inputBytes: 0, outputBytes: 0, costUsd: null, errorCode: null,
+  });
+  db.prepare(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
+    VALUES('retention-call',?,'digest','cancellation_pending',1)`).run(attempt);
+  const sweep = () => store.runRetention({ rawEvidenceBefore: 0, completedRunsBefore: 10, maxCompletedRuns: 0, now: 10 }).deletedRunIds;
+  assert.equal(store.workflowStatusCounts().completedRunCount, 0);
+  assert.deepEqual(sweep(), []);
+  db.exec("INSERT INTO workflow_repository_local_owners(workload_id) VALUES('retention-call')");
+  db.exec("UPDATE workflow_repository_workloads SET state='failed' WHERE id='retention-call'");
+  assert.deepEqual(sweep(), []);
+  assert.ok(store.repositoryLocalOwner("retention-call"));
+  db.exec("DELETE FROM workflow_repository_local_owners WHERE workload_id='retention-call'");
+  assert.equal(store.workflowStatusCounts().completedRunCount, 1);
+  assert.deepEqual(sweep(), [run]);
 });
 
 test("stage two keeps the newest cap and never deletes failed or uncertain families", () => {

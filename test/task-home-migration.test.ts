@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Guards the `tmux_session` -> `home_name` rename's one WORKTREE-LOSING edge, which is the
 // whole reason this rename is a migration and not a field swap. A running task on a real
@@ -17,7 +17,7 @@ import { join } from "node:path";
 
 // MISSION_HOME *is* the state dir (harness-runtime's stateDir()), so the db lands at
 // <home>/harness.db - the same file db.ts opens below.
-const home = mkdtempSync(join(tmpdir(), "mission-home-migrate-"));
+const home = tempDir("mission-home-migrate-");
 process.env.MISSION_HOME = home;
 
 /** Write a pre-rename tasks row: the schema had `tmux_session`, never `home_name`. */

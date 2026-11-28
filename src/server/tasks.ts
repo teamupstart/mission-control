@@ -1,3 +1,12 @@
+import { underTestRunner } from "./util/test-runner.ts";
+import { getSdkSession, listSdkSessions, sdkSessionIsLive } from "./sdk/store.ts";
+import { CheckLeaseStore } from "./workflows/check-lease.ts";
+import {
+  noteWorktreeUse, onWorktreeUse, reserveWorktreeCleanup, worktreeCleanupReserved, worktreePathsOverlap, worktreeUseReserved,
+} from "./worktrees/use-reservation.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { selectPinChangeDependencies } from "./plans/pin-change.ts";
 import { run } from "./util/exec.ts";
 import { getInspectorPr } from "./db.ts";
 import { parsePrUrl } from "./inspector/github.ts";
@@ -11,7 +20,7 @@ import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevis
 import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
 import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
 import type { ManagedPlanPolicy, TaskPlanInput } from "@shared/managed-plans.ts";
-import { transferForTask } from "./session-transfers/store.ts";
+import { transferForTask, unresolvedSessionTransfers } from "./session-transfers/store.ts";
 import {
   canRefreshSourceTask, localSourceContent, sameSourceContent, sourceBlockerOf, sourceBlockers, type SourceBlocker, type SourceContent,
 } from "@shared/task-source-sync.ts";
@@ -19,11 +28,11 @@ import { saveSourceSync } from "./task-sources/sync-store.ts";
 import { blockerDependencies } from "./task-sources/relations.ts";
 import { inTransaction } from "./db.ts";
 import { isActiveTask } from "@shared/task-status.ts";
-import { terminalResourceIds } from "@shared/pane.ts";
+import { terminalHomeNames, terminalResourceIds } from "@shared/pane.ts";
 import { observeTaskCreated } from "./telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
   AgentType,
@@ -55,10 +64,10 @@ import {
   type PipelineRun,
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
-import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
+import { isAnnotationOnlyUpdate, TASK_ANNOTATION_FIELDS } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
 import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
-import { canMessage, canRename } from "@shared/pane.ts";
+import { canMessage, canRename, innermostPane, paneToken } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { dependencyInputOf, dependencyKey, isWorkDependency, type WorkDependency } from "@shared/task-dependency.ts";
@@ -77,8 +86,11 @@ import {
   taskKindCreator,
   taskKindPersonaRefusal,
   taskRequeueRefusal,
+  taskKindHasWorkUnit,
   MAX_TASK_DEPENDENCIES,
 } from "@shared/task.ts";
+import { isWorkUnitId, launchWorkUnitConflicts, WORK_UNIT_REUSE_REFUSAL } from "@shared/work-unit.ts";
+import { mintWorkUnitId, sessionWorkUnitId } from "./work-unit.ts";
 import {
   isPersonaLaunchRefusal,
   personaLaunchRefusal,
@@ -92,10 +104,25 @@ import {
   type DispatcherDeps as TaskDispatcherDeps,
   deriveTitle,
   reclaimedFrom,
+  headBranch,
+  headCommit,
   releasedTaskResources,
   teardownWorktree,
+  worktreeSlotPath,
   type TaskDispatchOptions,
+  type TeardownExtensions,
 } from "./dispatcher.ts";
+import {
+  classifyTaskCheckout,
+  orphanedCheckoutEvidence,
+  orphanedCheckoutFingerprint,
+  orphanedWorktreeReclaimMode,
+  proveOrphanedContent,
+  removeOrphanedTaskCheckout,
+  type OrphanReturnEvidence,
+  type RecordedPullRequestLookup,
+} from "./worktrees/orphaned-task-checkout.ts";
+import type { CheckoutPreservation } from "./archives/manager.ts";
 import { WorktreeManager } from "./worktrees/manager.ts";
 import { LegacyTreehouseService } from "./worktrees/legacy-treehouse.ts";
 import {
@@ -112,22 +139,25 @@ import {
   type InjectResult,
 } from "./actions.ts";
 import {
+  claimTaskWorkUnitId,
   clearTaskSessionClosure,
   completeTaskWithSessionClosure,
   getTask as getDurableTask,
   getTaskSessionClosure,
+  holdTaskWorktreeRetention,
   listTaskSessionClosures,
   openDb,
+  pendingTerminalSubmissions,
   recordTaskSessionClosureAttempt,
   settleTaskWithRetentionAdoption,
   taskSessionClosureForSession,
-  taskOwesWorktreeReturn,
   historicalTaskWorkEpisodeBindingsForTask,
   primaryRepoPrForTask,
   reserveRetroFollowup,
   retroFollowupForTask,
   taskReposFor,
   taskWorkEpisodeForTask,
+  taskWorkEpisodeForSession,
   upsertTask as dbUpsertTask,
   workEpisodeRepoPrsForTask,
   updatePipelineCommissionRecovery,
@@ -135,16 +165,17 @@ import {
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { completionPolicyForOccurrence } from "./schedules/store.ts";
-import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict, type TaskRepoRef } from "@shared/task-repos.ts";
 import { appendRank, placeBacklogRank, prependRank } from "./backlog-rank.ts";
 import {
   isRetentionRetryable,
+  taskCheckoutIdentities,
   taskHoldsCleanupResources,
   taskResourceGeneration,
 } from "./task-resource-generation.ts";
-import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
-import { worktreeReturnBlocker } from "./git/worktree-return-safety.ts";
-import { describeWorktreeOccupants, inspectWorktreeOccupancy, pathContains } from "./worktrees/occupancy.ts";
+import { defaultWorktreeActivityDeps, readFailureClass, taskActivityFingerprint, worktreeActivityFingerprint, type ActivityFingerprint } from "./git/worktree-activity.ts";
+import { worktreeRegistrationBlocker, worktreeReturnBlocker, type ReadReturnActivity } from "./git/worktree-return-safety.ts";
+import { inspectWorktreeOccupancy } from "./worktrees/occupancy.ts";
 import { gitInfo } from "./util/git.ts";
 import {
   grillFirstMissionMcpTools,
@@ -156,6 +187,7 @@ import { isPlanTask } from "./plans/prompt.ts";
 import { planDispatchBlock, planSkillsForSession } from "./plans/skills.ts";
 import { grillAction, grillFirstDispatchBlock, grillFirstForSession } from "./grill-first.ts";
 import { provisionScoutSubmissionCredential } from "./scouts/submission-auth.ts";
+import { discardTerminalReceipt, pruneTerminalReceipts, restoredTerminalInactive } from "./terminal/dispatch-observation.ts";
 import { cleanupAgentSubprocessEnv } from "./agent-subprocess-env.ts";
 import { SUBMIT_SCOUT_ARTIFACTS_TOOL } from "./scouts/submission-tool.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./workflows/evidence-tool.ts";
@@ -164,10 +196,20 @@ import {
   freezeScoutPromptBoundary,
 } from "./scouts/prompt-journal.ts";
 import { withTaskKindContract } from "./task-contract.ts";
+import {
+  CHECKOUT_UNVERIFIED_REASON,
+  PANE_UNVERIFIED_REASON,
+  deliveredWithoutContext,
+  launchUnconfirmed,
+  shapeLaunch,
+  withTaskContext,
+} from "./shaping/launch.ts";
+import type { shapeTask } from "./shaping/engine.ts";
+import { appleScriptPasteFits, DRIVER_TURN_ONE, PASTE_TURN_ONE, pasteTravelsAsArgument, platformArgMax } from "./turn-one-budget.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
 import { getSkillsConfig } from "./skills/config.ts";
-import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
+import { newLaunchFailure, UNKNOWN_TERMINAL_GUIDANCE, type PendingTerminalLaunch, type TaskLaunchFailure } from "@shared/launch-failure.ts";
 import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
@@ -226,12 +268,14 @@ import { getShippingConfig } from "./shipping/config.ts";
 import { StackReadiness, UNSTACKED } from "./stacking/readiness.ts";
 import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
 import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
+import { RESIDENT_CALL_SIGN_REFUSAL, taskKindTakesCallSign } from "@shared/voice-names.ts";
 import { unref } from "./util/timers.ts";
-import { homeAlive, killHome } from "./terminal/home.ts";
+import { homeAbsenceEstablished, homeAlive, killHome } from "./terminal/home.ts";
+import { configuredTerminalDeps } from "./terminals-config.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
-import { noteTaskDeparture } from "./telemetry/index.ts";
+import { noteTaskDeparture, sessionTraceContext } from "./telemetry/index.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { getWorkflowPolicy, resolveTaskWorkflowId } from "./workflows/config.ts";
 import { canonicalWorktreePath } from "./worktrees/path.ts";
@@ -272,6 +316,8 @@ export interface CreateTaskInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** Launch with this Library Persona's guidance as standing instructions; omitted is none. */
   personaId?: string;
+  /** A call sign the operator can say to address the session by voice; omitted is none. */
+  callSign?: string;
   /**
    * Published Workflow identity to arm when the launched session appears. Omitted follows
    * the machine default; null explicitly means none.
@@ -401,6 +447,22 @@ export type InternalCreateOptions =
       resident: { runId: string; workspaceDir?: string | null };
     };
 
+/**
+ * Where a new task's work unit id comes from. Internal, like `InternalCreateOptions`, and a
+ * separate argument for the same reason: no request body can name a work unit. Omitted, the
+ * task gets a new one. See `docs/work-units.md`.
+ *
+ *  - `inherit`: the first task in `from` that exists and whose kind has a work unit. A task that
+ *    predates the column is given its id first, and the new task copies it. When no task in
+ *    `from` qualifies the new task gets its own: an automatic inheritor never fails for want of
+ *    a source. A refusal to inherit is the caller's to make before it creates anything.
+ *  - `supplied`: a well-formed id chosen by an internal producer, kept for the later Agent
+ *    Platform handoff. A malformed one is a programming error and throws.
+ */
+export type TaskWorkUnitSource =
+  | { inherit: readonly string[] }
+  | { supplied: string };
+
 /** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
 export class TaskIdCollisionError extends Error {}
 
@@ -448,6 +510,22 @@ function newTaskEdgeRefusal(target: Task, activeSession: Session | undefined): s
 
 /** A chat task was sent through a surface without the manual Dispatch capability. */
 export class TaskKindBacklogError extends Error {}
+
+/**
+ * `stale` with the annotation `current` holds now (`TASK_ANNOTATION_FIELDS`), for a write built
+ * from a copy read before an await: a priority, label or call sign edit that landed meanwhile is
+ * kept rather than written back over. An annotation `current` lacks is absent from the result too,
+ * since absent and null both mean none.
+ */
+export function withCurrentAnnotation(stale: Task, current: Task | undefined): Task {
+  if (!current || current === stale) return stale;
+  const next: Record<string, unknown> = { ...stale };
+  for (const field of TASK_ANNOTATION_FIELDS) {
+    if (field in current) next[field] = current[field];
+    else delete next[field];
+  }
+  return next as unknown as Task;
+}
 
 /** A launch effort named for a harness that cannot be launched with it. */
 export class TaskEffortUnsupportedError extends Error {}
@@ -513,6 +591,8 @@ export interface AutomaticReclaimRequest {
    * the safe place to stop is after it finishes accounting for what it released.
    */
   abandoned?: () => boolean;
+  /** Re-read the durable claim after asynchronous checks and before each provider action. */
+  claimIsCurrent?: () => boolean;
 }
 
 /**
@@ -550,6 +630,13 @@ export interface TaskManagerStartupDeps {
   teardown?: typeof teardownWorktree;
   occupancy?: typeof inspectWorktreeOccupancy;
   returnBlocker?: typeof worktreeReturnBlocker;
+  registrationBlocker?: typeof worktreeRegistrationBlocker;
+  /** Orphaned-checkout evidence, injectable so a test can drive the decision without Git. */
+  orphanEvidence?: typeof orphanedCheckoutEvidence;
+  /** The recorded pull request lookup, injectable so a test needs no episode binding. */
+  orphanPullRequest?: (task: Task, ref: TaskRepoRef) => RecordedPullRequestLookup;
+  /** Positive terminal-home absence, injectable so a test needs no terminal backend. */
+  homeAbsent?: (task: Task) => Promise<boolean>;
   /**
    * The Mission-tools probe an edit awaits after reading its base row. Injectable so a test can
    * hold an edit at exactly that point and land another write underneath it.
@@ -647,6 +734,12 @@ function taskCleanupRepoKeys(task: Task): string[] {
   return [...new Set(
     [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
+}
+
+function pendingTerminalLaunch(task: Task | undefined): PendingTerminalLaunch | undefined {
+  if (task?.status === "failed" && !task.sessionId && !task.homeName && task.launchFailure?.sessionKept) {
+    return task.launchFailure.pendingTerminal;
+  }
 }
 
 function needsStartupReconcile(task: Task): boolean {
@@ -786,6 +879,16 @@ export interface TaskArchiveGate {
   ensureReady(taskId: string): Promise<{ ok: true } | { ok: false; problems: string[] }>;
   /** Publish whatever this task produced before its checkout is destroyed. */
   settleBeforeCleanup(taskId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Archive an orphaned checkout's local-only files, or replay the verification of the bundle
+   * that already holds them. Absent means no orphan with local-only files can be removed.
+   */
+  preserveCheckoutFiles?(input: CheckoutPreservation): Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Run an orphaned checkout's removal while the archive of its local-only files is held
+   * present and re-verified, so an archive delete cannot land between the check and the delete.
+   */
+  withCheckoutFilesHeld?<T>(input: CheckoutPreservation, removal: () => Promise<T>): Promise<T>;
 }
 
 /**
@@ -867,6 +970,11 @@ export interface AssignOptions {
   confirmReset?: boolean;
   /** Deliver the task's intent to the agent. The one call that types. */
   inject?: typeof injectPrompt;
+  /**
+   * Task shaping's engine, for a test that stands in a run. Production takes `shapeTask`, and
+   * calls it only while the `task-shaping` flag is on.
+   */
+  shapeTask?: typeof shapeTask;
   /** Ask whether the pane could take a prompt, before anything is done to the agent. */
   paneReady?: (session: Session) => Promise<ActionResult>;
   /** Hand the agent's checkout back in the shape a fresh one starts in. */
@@ -1140,8 +1248,6 @@ export class TaskManager {
    * are exactly the awaits during which a second caller used to be able to walk in.
    */
   private readonly cleanupReservations = new Set<string>();
-  private readonly nextCompletedReturn = new Map<string, { ownership: string; failures: number; due: number }>();
-  private readonly killedSessionReturns = new Map<string, { taskId: string; ownership: string }>();
   /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
   private readonly pipelineRecoveries = new Set<string>();
   /** One completion in flight per task, so two signals cannot both publish one archive. */
@@ -1161,6 +1267,12 @@ export class TaskManager {
   private readonly subscriptions: (() => void)[] = [];
   private stopping: Promise<void> | null = null;
   private completedInitialSessionSweep = false;
+  /**
+   * The running, sessionless rows this daemon inherited, by object identity: any write that
+   * replaces a row's object is this daemon's lifecycle claiming it. See the constructor and
+   * `reconcileTasksWithNoLiveSession`. `ensureWorkUnit` is the one write that does not count.
+   */
+  private readonly sessionlessAtStartup = new Set<Task>();
   private readonly publicationSettlements = new Map<string, Promise<void>>();
   private readonly publicationSettlementRechecks = new Set<string>();
 
@@ -1171,6 +1283,7 @@ export class TaskManager {
   private residentLaunch?: NonNullable<TaskDispatcherDeps["residentLaunch"]>;
   /** The Library's Persona reader, installed by the daemon once `PersonaManager` exists. */
   private personaLookup?: PersonaLookup;
+  private callSignAllocation?: (task: Task) => string | null;
   private residentMcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>;
   /**
    * Where a completion is announced to the task-source write-back ledger, when the daemon
@@ -1231,6 +1344,7 @@ export class TaskManager {
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
+      workflowName: (workflowId) => this.workflowNameFor(workflowId),
       worktrees: this.worktrees,
       legacy: this.legacyWorktrees,
       // The launch no longer waits for a model to name it, so the name can arrive on either
@@ -1248,16 +1362,38 @@ export class TaskManager {
       residentProfileId: (task) => residentRunForTask(task.id)?.run.profileId ?? null,
       // Late-bound for the same reason: a task naming a Persona is refused without a reader.
       persona: (id) => this.personaLookup?.(id) ?? null,
+      // Late-bound: the voice name registry the choice reads is the daemon's, wired at start.
+      assignCallSign: (task) => this.callSignAllocation?.(task) ?? null,
     });
     // Only unchanged inherited rows are evidence of a lost binding. A task created,
     // assigned, or displaced during restore belongs to this daemon's live lifecycle.
-    const sessionlessAtStartup = new Set(registry.listTasks().filter(
-      (task) => task.status === "running" && task.sessionId === null,
-    ));
+    for (const task of registry.listTasks()) {
+      if (task.status === "running" && task.sessionId === null) this.sessionlessAtStartup.add(task);
+    }
+    const sessionlessAtStartup = this.sessionlessAtStartup;
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (emulator pane identity or mux name).
-    for (const t of registry.listTasks()) {
+    const startupTasks = registry.listTasks();
+    const interruptedSubmissions = pendingTerminalSubmissions();
+    const receipts = new Set<string>();
+    for (const t of startupTasks) {
+      const interrupted = interruptedSubmissions.get(t.id);
+      let pending = pendingTerminalLaunch(t);
+      if (interrupted && t.status === "dispatching" && !t.homeName && !t.sessionId) {
+        // The backend may have started the wrapper before the old daemon lost its reply.
+        // Transfer the receipt to the usual recovery record in the same write that clears the submission.
+        registry.upsertTask({ ...t, status: "failed", updatedAt: Date.now(),
+          error: "terminal dispatch interrupted by a restart" + UNKNOWN_TERMINAL_GUIDANCE,
+          launchFailure: { ...this.launchFailureFor(t, true), pendingTerminal: interrupted } });
+        pending = interrupted;
+      }
+      if (pending) {
+        receipts.add(pending.receipt);
+        // An unconfirmed terminal has no backend identity for the regular home probe.
+        void this.restorePendingTerminal(t.id, pending);
+        continue;
+      }
       const recovery = t.pipelineCommissionId
         ? registry.pipelineCommission(t.pipelineCommissionId)?.recovery
         : null;
@@ -1312,6 +1448,8 @@ export class TaskManager {
       });
     }
 
+    pruneTerminalReceipts(receipts);
+
     // A bound session can also go away while the daemon is UP: the (k) kill, a terminal
     // the operator closed, an agent that exited by itself. Registry emits `session_remove`
     // only from its eviction timer, which is the durable answer - a session marked exited
@@ -1319,6 +1457,13 @@ export class TaskManager {
     // Stack readiness follows the same two signals every other "has the prerequisite
     // finished" question here does: a session changing state, and a task (a dependent or its
     // prerequisite) being edited. One coalesced pass per burst.
+    this.subscriptions.push(onWorktreeUse((paths) => {
+      for (const task of registry.listTasks()) {
+        if (isRetentionRetryable(task) && worktreePathsOverlap(paths, this.cleanupPaths(task))) {
+          holdTaskWorktreeRetention(task.id, "checkout is in use or reserved for launch", Date.now());
+        }
+      }
+    }));
     this.subscriptions.push(registry.subscribe((e) => {
       if (e.type === "session_upsert" || e.type === "task_upsert" || e.type === "session_remove") {
         this.stackReadiness.schedule();
@@ -1336,14 +1481,16 @@ export class TaskManager {
         // that does not.
         this.reconcileMergedTasks();
         this.reconcileTasksBoundTo(e.id);
-        this.returnKilledSessionWorktrees(e.id);
         // Recheck promptly after registry removal. Forced retirement still owes runtime
         // cleanup until discovery or the SDK supervisor confirms that it stopped.
         this.scheduleMissionSessionClosureSweep(0);
       }
       if (e.type === "task_remove") {
         this.autoCompleted.delete(e.id);
-        this.nextCompletedReturn.delete(e.id);
+      }
+      if (e.type === "task_upsert" &&
+          (!isRetentionRetryable(e.task) || (e.task.sessionId && registry.getSession(e.task.sessionId)))) {
+        noteWorktreeUse(this.taskReservedPaths(e.task));
       }
       if (
         e.type === "task_upsert" &&
@@ -1356,6 +1503,15 @@ export class TaskManager {
       // The other end of a merged task's life, for an agent that is still here. See
       // `settleIfEpisodeFinished`.
       if (e.type === "session_upsert") {
+        const sessionPaths = this.sessionCheckoutPaths(e.session);
+        if (e.session.runtime === "sdk") sessionPaths.push(...(getSdkSession(e.session.id)?.extraDirs ?? []));
+        const episodeTask = taskWorkEpisodeForSession(e.session.id)?.taskId;
+        for (const task of registry.listTasks()) {
+          if (episodeTask === task.id || this.sessionOwnsTaskResources(e.session, task)) {
+            sessionPaths.push(...this.cleanupPaths(task));
+          }
+        }
+        noteWorktreeUse(sessionPaths);
         this.rebindTaskAtCwd(e.session);
         this.bindPipelineTask(e.session);
         this.settleIfEpisodeFinished(e.session);
@@ -1382,8 +1538,7 @@ export class TaskManager {
       // one: until the process table has been read, a session missing from the registry has
       // not been observed to be gone. See `sweepMissionSessionClosures`.
       this.scheduleMissionSessionClosureSweep(0);
-      this.resumeCompletedWorktreeReturns();
-    }));
+      }));
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
     this.subscriptions.push(registry.onTaskPrMerged((e) => this.settleMergedTask(e)));
@@ -1704,12 +1859,27 @@ export class TaskManager {
     this.personaLookup = lookup;
   }
 
+  /**
+   * Install the automatic call sign choice a launch asks for a task dispatched without one
+   * (`allocateCallSign`). Absent, as in a focused test's bare manager, no task is named.
+   */
+  useCallSignAllocation(allocate: ((task: Task) => string | null) | undefined): void {
+    this.callSignAllocation = allocate;
+  }
+
   /** Why a task of this kind cannot launch with this Persona, or null when it can. */
   private personaProblem(kind: TaskKind, personaId: string): string | null {
     const refusal = taskKindPersonaRefusal(kind);
     if (refusal) return refusal;
     const resolved = resolveTaskPersona(this.personaLookup, personaId);
     return resolved.ok ? null : resolved.error;
+  }
+
+  private workflowNameFor: (workflowId: string) => string | null = () => null;
+
+  /** Install the workflow name reader task shaping describes the after-work step with. */
+  registerWorkflowNames(resolve: (workflowId: string) => string | null): void {
+    this.workflowNameFor = resolve;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -2166,9 +2336,7 @@ export class TaskManager {
       this.closureSweep = null;
       const urgent = this.sweepUrgentlyRequested;
       this.sweepUrgentlyRequested = false;
-      this.resumeCompletedWorktreeReturns();
-      for (const sessionId of this.killedSessionReturns.keys()) this.returnKilledSessionWorktrees(sessionId);
-      if (listTaskSessionClosures().length > 0 || this.registry.listTasks().some(taskOwesWorktreeReturn)) {
+      if (listTaskSessionClosures().length > 0) {
         this.scheduleMissionSessionClosureSweep(urgent ? 0 : MISSION_SESSION_CLOSURE_RETRY_MS);
       }
     }
@@ -2220,7 +2388,6 @@ export class TaskManager {
     }
     if (!target) {
       this.dropMissionSessionClosure(row.taskId);
-      if (taskHasWorktrees(task)) this.enqueueFinishedWorktreeReturn(task, "complete");
       return;
     }
     // Already on its way out - the stop landed and the registry is lingering the card before
@@ -3303,6 +3470,7 @@ export class TaskManager {
     internal?: InternalCreateOptions,
     manualDispatch?: symbol,
     creationPolicy?: TaskCreationPolicy,
+    workUnit?: TaskWorkUnitSource,
   ): Task {
     const creator = taskKindCreator(input.kind);
     const refusal = taskKindBacklogRefusal(input.kind);
@@ -3334,6 +3502,11 @@ export class TaskManager {
         input.source !== undefined || (input.dependencies?.length ?? 0) > 0)
     ) {
       throw new TaskKindBacklogError(refusal);
+    }
+    // The rule `update` holds, held here too, where every creator arrives, the resident launch
+    // included: the dispatch and MCP schemas refuse a resident kind before it gets this far.
+    if (input.callSign && !taskKindTakesCallSign(input.kind)) {
+      throw new TaskKindBacklogError(RESIDENT_CALL_SIGN_REFUSAL);
     }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
@@ -3464,8 +3637,12 @@ export class TaskManager {
     // would put a number in the column that means nothing. `reschedule` is what gives one
     // to a task that arrives in the backlog later.
     const backlogRank = backlogged ? this.allocateBacklogRank("bottom") : null;
+    // Last, after every refusal above: inheriting can give an older parent its id, and a
+    // creation that is then refused should not have written to another task.
+    const workUnitId = taskKindHasWorkUnit(input.kind) ? this.creationWorkUnitId(workUnit) : null;
     const task: Task = {
       id,
+      workUnitId,
       title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
@@ -3492,6 +3669,8 @@ export class TaskManager {
       // An id, read again at launch like model and effort: a Persona edited while the task
       // waits reaches it, and the launch's standing-instruction snapshot pins what was sent.
       personaId: input.personaId ?? null,
+      // Present only when given, so a task with none carries no key, as a stored row reads back.
+      ...(input.callSign ? { callSign: input.callSign } : {}),
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -3560,6 +3739,48 @@ export class TaskManager {
     return task;
   }
 
+  /** The work unit id a task being created gets from `source`. See `TaskWorkUnitSource`. */
+  private creationWorkUnitId(source: TaskWorkUnitSource | undefined): string {
+    if (source && "supplied" in source) {
+      if (!isWorkUnitId(source.supplied)) throw new TypeError(`not a work unit id: ${source.supplied}`);
+      return source.supplied;
+    }
+    for (const taskId of source?.inherit ?? []) {
+      const parent = this.registry.getTask(taskId) ?? getDurableTask(taskId);
+      if (!parent || !taskKindHasWorkUnit(parent.kind)) continue;
+      const inherited = this.ensureWorkUnit(parent).workUnitId;
+      if (inherited) return inherited;
+    }
+    return mintWorkUnitId();
+  }
+
+  /**
+   * `task` with the work unit id it has once this returns. A task that predates the column, and
+   * whose kind has a work unit, is given one here and the row is saved before this returns, so
+   * whatever reads the task next - a launch, an assign, a child inheriting from it - sees it.
+   *
+   * The write is conditional (`claimTaskWorkUnitId`) and the stored value is what is returned,
+   * never the id minted here: when two operations reach the same task at once, the first write
+   * wins and every other one uses it. A null in this copy is not trusted either, because the
+   * copy may have been read before another operation gave the id.
+   */
+  ensureWorkUnit(task: Task): Task {
+    if (task.workUnitId !== null || !taskKindHasWorkUnit(task.kind)) return task;
+    const stored = claimTaskWorkUnitId(task.id, mintWorkUnitId());
+    if (stored === null) return task;
+    const live = this.registry.getTask(task.id);
+    if (live && live.workUnitId !== stored) {
+      // Already saved, so broadcast without writing the row again.
+      this.registry.publishPersistedTask({ ...live, workUnitId: stored }, []);
+      // An id is not a lifecycle change. A row restart reconciliation is still waiting to
+      // judge keeps its place under the object the board now holds, or a dispatch or assign
+      // that reached it before the first sweep would leave it running with no session.
+      const published = this.registry.getTask(task.id);
+      if (published && this.sessionlessAtStartup.delete(live)) this.sessionlessAtStartup.add(published);
+    }
+    return { ...task, workUnitId: stored };
+  }
+
   /**
    * Create or recover the one post-merge retro task owned by a source work episode.
    *
@@ -3588,6 +3809,9 @@ export class TaskManager {
         backlog: true,
       },
       { id: reserved.retroTaskId },
+      undefined,
+      undefined,
+      { inherit: [input.sourceTask.id] },
     );
     // A completed source may remain clickable after the bounded board projection evicted this
     // older follow-up. Re-admit the durable row before `dispatch` inspects it; the upsert does
@@ -3760,8 +3984,14 @@ export class TaskManager {
   async dispatch(id: string, options: DispatchOptions = {}): Promise<DispatchOutcome> {
     await this.titling.get(id);
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
-    const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task" };
+    const found = this.registry.getTask(id);
+    if (!found) return { ok: false, error: "no such task" };
+    if (worktreeCleanupReserved(this.cleanupPaths(found))) {
+      return { ok: false, error: "automatic cleanup currently owns a task checkout", task: found };
+    }
+    // First, before anything in this dispatch reads the task: an older row gets its work unit
+    // here (decision D3), and the launch that follows reads it.
+    const t = this.ensureWorkUnit(found);
     if (this.assigningTasks.has(id)) {
       return { ok: false, error: "task is being assigned", task: t };
     }
@@ -4351,7 +4581,7 @@ export class TaskManager {
     id: string,
     patch: UpdateTask,
     options: { backlogOnly?: boolean } = {},
-  ): Promise<Ok & { task?: Task }> {
+  ): Promise<Ok & { task?: Task; before?: Task }> {
     // Preparation can await tool availability or the plan-storage lock after reading its base
     // row, and writing the prepared row would undo anything written meanwhile, a dispatch
     // included. A dashboard edit prepares once more from the newer row, which re-runs every
@@ -4365,8 +4595,8 @@ export class TaskManager {
         return { ok: false, error: `task is ${current.status}, not in the backlog` };
       }
       if (current === prepared.base) {
-        this.registry.upsertTask(prepared.task);
-        return { ok: true, task: prepared.task };
+        if (!patch.previewOnly) this.registry.upsertTask(prepared.task);
+        return { ok: true, task: prepared.task, ...(patch.previewOnly ? { before: prepared.base } : {}) };
       }
       if (options.backlogOnly || attempt > 0) {
         return { ok: false, error: "task changed while preparing the update; retry" };
@@ -4389,6 +4619,56 @@ export class TaskManager {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    let planChangeDependencies: TaskDependency[] | undefined;
+    if (patch.planInputChange || patch.previewOnly) {
+      if (!featureEnabled(PINNED_PLAN_CHANGE_FLAG_ID)) return { ok: false, error: "Change pinned plan revision preview is disabled" };
+      if (t.status !== "backlog") return { ok: false, error: "task is not in the backlog" };
+    }
+    if (patch.planInputChange) {
+      if (patch.planInputs !== undefined || patch.dependencies !== undefined) return { ok: false, error: "Use planInputChange separately from planInputs and dependencies" };
+      try {
+        const { from, to, expectedUpdatedAt } = patch.planInputChange;
+        if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== t.updatedAt) throw new PlanStoreError("Task changed; reopen the editor and preview again");
+        const index = (t.planInputs ?? []).findIndex(input => input.repoKey === from.repoKey && input.planId === from.planId && input.revision === from.revision && JSON.stringify(input.files) === JSON.stringify(from.files));
+        if (index < 0) throw new PlanStoreError("Pinned input changed; reopen the editor and preview again");
+        validatePlanInputs([to], [t.repoRoot, ...t.extraRepos.map(r => r.repoRoot)]);
+        const planInputs = [...t.planInputs!];
+        planInputs[index] = to;
+        const saved = planRevisionRecord(to.planId, to.revision);
+        const source = saved.task_id ? this.getDurable(saved.task_id) ?? null : null;
+        const selection = selectPinChangeDependencies({
+          current: t.dependencies,
+          from: { input: from, origin: planRevisionRecord(from.planId, from.revision) },
+          to: { input: to, origin: saved },
+          remainingPins: planInputs.map(input => ({ input, origin: planRevisionRecord(input.planId, input.revision) })),
+          storage: readPlanRevision(to.planId, to.revision).manifest.policy.storage,
+          published: Boolean(publicationReceipt(to)),
+          source,
+          bindings: saved.task_id
+            ? [taskWorkEpisodeForTask(saved.task_id), ...historicalTaskWorkEpisodeBindingsForTask(saved.task_id)]
+              .filter((binding): binding is TaskWorkEpisodeBinding => binding !== null)
+            : [],
+          now: Date.now(),
+        });
+        const { dependencies, addition, mergeCandidate } = selection;
+        if (addition) {
+          const candidates = [...dependencies];
+          if (mergeCandidate) {
+            const mergedUrl = this.mergeUrlForDependency(mergeCandidate.edge, "");
+            if (mergedUrl) candidates.push({ ...mergeCandidate.edge, prUrl: mergedUrl,
+              satisfiedAt: mergeCandidate.mergedAt ?? Date.now() });
+          }
+          if (addition.type === "task" && source?.status === "done"
+            && !candidates.some(edge => dependencyKey(edge) === dependencyKey(addition))) {
+            throw new PlanStoreError(`Completed replacement origin ${JSON.stringify(source.title)} has no merge proof for work episode ${saved.episode_id ?? "unknown"}. Select a revision with verified merge proof.`);
+          }
+          dependencies.push(...this.resolveDependencies([addition], t.id, candidates));
+        }
+        if (dependencies.length > MAX_TASK_DEPENDENCIES) throw new TaskDependencyError("Too many task dependencies");
+        planChangeDependencies = dependencies;
+        patch = { ...patch, planInputs, dependencies: dependencies.map(dependencyInputOf) };
+      } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+    }
     if (this.assigningTasks.has(id) && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: "task is being assigned" };
     }
@@ -4407,6 +4687,10 @@ export class TaskManager {
     }
     if (!isAnnotationOnlyUpdate(patch) && !taskAllowsBacklog({ kind: patch.kind ?? t.kind, scheduleId: t.scheduleId })) {
       return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
+    }
+    // Checked here because only the stored row knows its kind. Taking one off stays allowed.
+    if (patch.callSign && !taskKindTakesCallSign(patch.kind ?? t.kind)) {
+      return { ok: false, error: RESIDENT_CALL_SIGN_REFUSAL };
     }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();
@@ -4554,7 +4838,7 @@ export class TaskManager {
     }
     try {
       if (patch.dependencies !== undefined) {
-        dependencies = this.resolveDependencies(patch.dependencies, t.id, t.dependencies);
+        dependencies = this.resolveDependencies(patch.dependencies, t.id, planChangeDependencies ?? t.dependencies);
         validatePlanInputDependencies({ planInputs: patch.planInputs ?? t.planInputs, dependencies });
       }
     } catch (error) {
@@ -4610,6 +4894,9 @@ export class TaskManager {
       effort,
       advisorModel,
       personaId,
+      // Annotation, like priority: `undefined` leaves it and `null` takes it off, and either may
+      // reach a running task (`isAnnotationOnlyUpdate`).
+      ...(patch.callSign === undefined ? {} : { callSign: patch.callSign }),
       // A recorded Persona refusal is answered by choosing another Persona (or none), so that
       // edit returns the task to autopilot. Any other recorded error is left for its own fix.
       ...(personaId !== t.personaId && isPersonaLaunchRefusal(t.error) ? { error: null } : {}),
@@ -4975,8 +5262,10 @@ export class TaskManager {
    * window they hold open is where this method's ordering rules can be broken.
    */
   async assign(id: string, sessionId: string, opts: AssignOptions = {}): Promise<AssignOutcome> {
-    const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task", scope: "task" };
+    const found = this.registry.getTask(id);
+    if (!found) return { ok: false, error: "no such task", scope: "task" };
+    // First, as in `dispatch`: an older row gets its work unit before this assign reads it.
+    const t = this.ensureWorkUnit(found);
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
     }
@@ -5052,6 +5341,18 @@ export class TaskManager {
 
     const s = this.registry.getSession(sessionId);
     if (!s) return { ok: false, error: "no such session", scope: "session" };
+    // Decision D7. The agent's environment was fixed when it started, and an assign starts no
+    // process, so an agent started with one work unit would tag this task's MCP calls with
+    // that one. Asked of the launch record, never of the flag: the environment is already
+    // set, so this holds after the preview is switched off too. An agent started with none
+    // takes any task, which then emits nothing until the agent's next start.
+    //
+    // First among the session refusals, because it is the only PERMANENT one: an agent that is
+    // busy or mid-handover frees up, and saying so would send the operator to wait for an agent
+    // that will refuse this task all the same.
+    if (launchWorkUnitConflicts(s.launchWorkUnitId, t.workUnitId)) {
+      return { ok: false, error: WORK_UNIT_REUSE_REFUSAL, scope: "session" };
+    }
     if (this.assigningTasks.has(id)) {
       return { ok: false, error: "task is already being assigned", scope: "task" };
     }
@@ -5434,89 +5735,240 @@ export class TaskManager {
     // this path. It matters more on an assignment than on a dispatch - the session already
     // holds a conversation, so the offset recorded now is the only thing that later
     // separates this scout's follow-ups from whatever the agent was doing beforehand.
-    const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
-    // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
-    // a refusal does - the task stays in the backlog, so a surviving row would claim an
-    // episode saw a task nobody has been given. `inject` is injectable here and the guard
-    // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
-    // reject; the dispatcher's seam guards the same risk the same way.
-    let r: InjectResult;
-    try {
-      // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
-      // refuses a multi-repo task and stands in the session's own checkout - so the only
-      // thing that could have is the configuration, and a live process's system prompt
-      // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
-      // one mid-session semantic and the pairs without one another, for the same feature.
-      // One boundary instead: a session keeps the standing instructions it launched with.
-      //
-      // So this replays the session's own launch snapshot, and only for a session whose
-      // pair had no out-of-band channel. On the three pairs that do, the block is still
-      // installed on that process - that is what "durable" means - and prefixing it again
-      // would have the agent read the same rule twice. A session with no snapshot acquires
-      // nothing mid-life.
-      const launched = this.registry.standingInstructionsFor(s.id);
-      const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
-      r = await inject(
-        this.registry.getSession(s.id) ?? s,
-        withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
-          fallbackRoot: s.cwd,
-          planDiscovery,
-          planSkills: planSkills?.ok ? planSkills.commands : null,
-          grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
-          workflowEvidence,
-        }),
-        undefined,
-        () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id),
-      );
-    } catch (err) {
-      discardScoutPromptBoundary(boundary);
-      throw err;
-    }
-    // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
-    // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
-    // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
-    // of unreadable captures - and both mean the Enter went out while the text may still be
-    // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
-    // has: reversing that would change what assignment MEANS, which is not archive
-    // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
-    // prompt, and an unconfirmed paste cannot support that claim.
+    // The turn this handover types, before any task context: composed once, so the shaping
+    // step's last check and the inject below see the same text.
     //
-    // The cost of being wrong this way is a scout that loses its frozen title and anchor and
-    // falls back to the legacy task title with an honestly truncated trail. The cost of being
-    // wrong the other way is an archive anchored into a conversation that never started.
-    if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
-    if (!r.ok) {
-      // Nothing was typed, and the task stays droppable. A boundary left behind would claim
-      // an episode saw a task that is still sitting in the backlog.
-      return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
-    }
-
-    // Merge onto the LATEST snapshot, not the one read before the injection, for the
-    // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
-    // for a retriage to land, and priority/labels stay editable in every status - so a
-    // stale spread here writes yesterday's priority back over one just set on the card,
-    // silently, on a gesture that was only meant to hand the task to an agent.
-    const cur = this.registry.getTask(t.id) ?? t;
-    const now = Date.now();
-    this.registry.upsertTask({
-      ...cur,
-      status: "running",
-      sessionId: s.id,
-      dispatchedAt: now,
-      updatedAt: now,
+    // AN ASSIGNMENT RESOLVES NOTHING. The repository cannot have changed - `assign`
+    // refuses a multi-repo task and stands in the session's own checkout - so the only
+    // thing that could have is the configuration, and a live process's system prompt
+    // cannot be rewritten. Re-resolving here would give the pairs with a durable channel
+    // one mid-session semantic and the pairs without one another, for the same feature.
+    // One boundary instead: a session keeps the standing instructions it launched with.
+    //
+    // So this replays the session's own launch snapshot, and only for a session whose
+    // pair had no out-of-band channel. On the three pairs that do, the block is still
+    // installed on that process - that is what "durable" means - and prefixing it again
+    // would have the agent read the same rule twice. A session with no snapshot acquires
+    // nothing mid-life.
+    const launched = this.registry.standingInstructionsFor(s.id);
+    const standingPrefix = launched?.mechanism === "prompt-prefix" ? launched.text : "";
+    const unshapedTurn = withTaskKindContract(ready, withStandingInstructions(standingPrefix, ready.intent), {
+      fallbackRoot: s.cwd,
+      planDiscovery,
+      planSkills: planSkills?.ok ? planSkills.commands : null,
+      grillFirst: grillFirst?.ok ? grillFirst.delivery : null,
+      workflowEvidence,
     });
-    this.registry.bindTaskToWorkEpisode(t.id, s.id);
-    // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
-    // Last, and after the claim: it is the one step here that changes nothing about
-    // whether the task is running, so it must not sit in front of anything that does.
-    await this.renameForTask(
-      // Re-read for the same reason the task is: the reset detached the checkout and the
-      // injection took a round trip, and `rename` targets the terminal home BY NAME.
-      this.registry.getSession(s.id) ?? s,
-      this.registry.getTask(t.id) ?? cur,
-      doRename,
-    );
-    return { ok: true };
+    // Task shaping on the handover, the second call site beside `Dispatcher.dispatch`: the same
+    // input builder and section helper, awaited before the turn is typed. The repository is the
+    // session's own checkout, which is the one slot `assign` allows, on the branch and commit the
+    // reset above left it on. Its trace context is the one the session's agent was launched
+    // with - an embedded session's own, none for a pane. A message to a live session has no byte
+    // ceiling unless its pane pastes through AppleScript, which is checked. The step itself never
+    // throws; the handover stops only if the task was edited while shapers ran.
+    const live = this.registry.getSession(s.id) ?? s;
+    const shapingOn = featureEnabled("task-shaping");
+    // What the shapers are told is what the agent is handed: these fields of the task, read now.
+    const inputs = (task: Task) => JSON.stringify([task.intent, task.title, task.kind, task.labels, task.priority,
+      task.workflowId, task.repoRoot, task.planInputs ?? null, task.grillFirst]);
+    const shapedFrom = inputs(ready);
+    const writePane = innermostPane(live);
+    // The pane the paste budget was checked for; a section is only sent into that same pane.
+    const shapedPane = paneToken(live);
+    // The baseline is read before the step's own clock starts, so it gets a short bound of its
+    // own: a Git probe that hangs leaves the baseline unknown rather than the session waiting.
+    // A turn the operator starts and finishes while shapers run leaves the session idle again, so
+    // its state alone cannot tell; any departure from idle after the reset is recorded here, until
+    // the delivery's own guard has had its say.
+    let leftIdle = false;
+    const watchTurns = (event: { type: string; session?: { id: string; state: string } }) => {
+      if (event.type === "session_upsert" && event.session?.id === s.id && event.session.state !== "idle") leftIdle = true;
+    };
+    if (shapingOn) this.registry.on("event", watchTurns);
+    const stopWatching = () => { this.registry.off("event", watchTurns); };
+    // Released however the handover ends: a refusal, a probe or delivery that throws, or success.
+    try {
+      // Branch and commit read from the same post-reset checkout, not the registry's cached branch,
+      // which a reset that detached HEAD leaves on the previous one until discovery catches up.
+      const checkout = shapingOn && live.cwd
+        ? await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS)
+        : { baseSha: null, branch: live.gitBranch ?? null };
+      let shaping = await shapeLaunch({
+        // The baseline is the commit the reset left the checkout on, read only when shaping runs.
+        task: { ...ready, worktreePath: live.cwd, branch: checkout.branch, baseSha: checkout.baseSha },
+        runtime: live.runtime,
+        workflowName: () => (ready.workflowId ? this.workflowNameFor(ready.workflowId) : null),
+        trace: live.runtime === "sdk" ? sessionTraceContext(live.id) : null,
+        // No process starts here, so the work unit is the one the agent was started with, from
+        // its launch record, while the task has that same id - never the preview as it reads
+        // now. The reuse guard above already refused an agent started for another work unit,
+        // so this is the task's id or, for an agent started with none, nothing.
+        workUnitId: sessionWorkUnitId(live, ready),
+        delivery: live.runtime === "sdk" ? DRIVER_TURN_ONE : PASTE_TURN_ONE,
+        turnOnes: [],
+        launch: null,
+        stillDispatching: () => this.registry.getTask(t.id)?.status === "backlog",
+        onShaping: (active) => this.registry.setTaskShapingContext(t.id, active),
+        // The session's own pane decides how the paste travels, as `Dispatcher` checks a launch.
+        ...(live.runtime !== "sdk" && writePane?.kind === "emulator" && pasteTravelsAsArgument(writePane.backend)
+          ? { finalCheck: async (section: string) => appleScriptPasteFits(withTaskContext(unshapedTurn, section), process.env, await platformArgMax())
+            ? null
+            : "the pane paste travels as an AppleScript argument that would not fit this platform's argument limit with the context" }
+          : {}),
+      }, { shapeTask: opts.shapeTask, enabled: shapingOn });
+      // Whether the turn carries context. The session and task checks below are cheap and run whenever
+      // the handover waited on shaping at all; the extra pane probe and checkout comparison guard the
+      // context itself, so they run only when there is a section to deliver. A run that added nothing
+      // - no shaper applied, or one failed or timed out - goes on with the original prompt, and its
+      // record is still settled after the inject.
+      const carriesContext = shapingOn && shaping.section.length > 0;
+      const after = this.registry.getTask(t.id);
+      if (after?.status !== "backlog") {
+        return { ok: false, error: "the task left the backlog while its context was being shaped", scope: "task" };
+      }
+      // An edit made while shapers ran would be handed over as the older text with context chosen
+      // for it, while the card shows the newer one. The task stays in the backlog to be handed
+      // over again, as it is for every other refusal after the reset.
+      if (inputs(after) !== shapedFrom) {
+        return { ok: false, error: "the task was edited while its context was being shaped, so it was not typed - hand it over again", scope: "task" };
+      }
+      // The session was checked before the reset, and shapers can take seconds: an operator who
+      // started a turn in the meantime, or a review that arrived, makes it no longer a session to
+      // type into. Asked again only when shaping ran, so a handover with the flag off is unchanged.
+      // Asked here, and again by the guard `inject` runs at the instant of delivery, since the pane
+      // probe below is itself an await a turn could start during.
+      const sessionChanged = (): string | null => {
+        if (!shapingOn) return null;
+        // The task too: still in the backlog, with the inputs its context was chosen for.
+        const current = this.registry.getTask(t.id);
+        if (current?.status !== "backlog") return "the task left the backlog while its context was being shaped";
+        if (inputs(current) !== shapedFrom) return "the task was edited while its context was being shaped, so it was not typed - hand it over again";
+        const receiving = this.registry.getSession(s.id);
+        const changed = !receiving ? "went away"
+          // The context, its baseline and the checkout checks were all taken for this directory.
+          : receiving.cwd !== live.cwd ? "moved to another checkout"
+          // A section sized for one pane is not pasted into another (an AppleScript pane has its own limit).
+          : shaping.section && paneToken(receiving) !== shapedPane ? "moved to another pane"
+          : receiving.state !== "idle" ? `became ${receiving.state.replace("_", " ")}`
+          : leftIdle ? "took a turn"
+          : receiving.pendingReviews > 0 ? "got a review waiting on you"
+          : null;
+        return changed && `that agent ${changed} while the task's context was being shaped, so it was not typed - hand it over again`;
+      };
+      if (shapingOn) {
+        const changed = sessionChanged();
+        if (changed) return { ok: false, error: changed, scope: "session" };
+      }
+      if (carriesContext) {
+        const receiving = this.registry.getSession(s.id);
+        if (!receiving) {
+          return { ok: false, error: "that agent went away while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+        // A probe that throws is inconclusive rather than a "no": the session is already reset, so
+        // the original prompt goes ahead without the context, through the delivery's own guard.
+        const stillReady = await paneReady(receiving).catch(() => null);
+        if (stillReady === null) {
+          shaping = deliveredWithoutContext(shaping, PANE_UNVERIFIED_REASON);
+        } else if (!stillReady.ok) {
+          return { ok: false, error: stillReady.error ?? "that agent's pane cannot take a prompt", scope: "session" };
+        }
+      }
+      // The context was chosen for this branch and commit; another terminal in the same checkout
+      // could have moved it while shapers ran or the pane was probed. Read last, as the final await
+      // before delivery: the session and task are then rechecked by the guard `inject` runs at the
+      // write itself, which cannot run Git.
+      // Asked of the section as it now stands: one the probe above dropped has nothing left to verify.
+      if (carriesContext && shaping.section && live.cwd) {
+        const now = await boundedCheckoutState(live.cwd, HANDOVER_BASELINE_TIMEOUT_MS);
+        if (now.baseSha === null || checkout.baseSha === null) {
+          // Unreadable is not changed: with either read unknown nothing can be compared, and the agent
+          // is already reset, so the original prompt goes ahead without context that could not be
+          // confirmed to fit this checkout. Only two known states that differ refuse.
+          shaping = deliveredWithoutContext(shaping, CHECKOUT_UNVERIFIED_REASON);
+        } else if (now.baseSha !== checkout.baseSha || now.branch !== checkout.branch) {
+          return { ok: false, error: "that agent's checkout changed while the task's context was being shaped, so it was not typed - hand it over again", scope: "session" };
+        }
+      }
+      const boundary = freezeScoutPromptBoundary(this.registry, ready, s.id, "current");
+      // A THROW is a failed delivery too, and it has to undo the boundary for the same reason
+      // a refusal does - the task stays in the backlog, so a surviving row would claim an
+      // episode saw a task nobody has been given. `inject` is injectable here and the guard
+      // callback runs inside it, so neither is bound to resolve `{ ok: false }` rather than
+      // reject; the dispatcher's seam guards the same risk the same way.
+      let r: InjectResult;
+      try {
+        r = await inject(
+          this.registry.getSession(s.id) ?? s,
+          withTaskContext(unshapedTurn, shaping.section),
+          undefined,
+          () => taskPlanInputProblem(ready) ?? this.registry.promptResourceBlockerForSession(s.id) ?? sessionChanged(),
+        );
+      } catch (err) {
+        discardScoutPromptBoundary(boundary);
+        throw err;
+      }
+      // The boundary is discarded on anything short of a VERIFIED submit, which is a wider
+      // refusal than the task's own. `injectPrompt` returns `{ ok: true, submitVerified: false }`
+      // on two reachable paths - a harness that renders no pending-paste placeholder, and a run
+      // of unreadable captures - and both mean the Enter went out while the text may still be
+      // sitting in the composer. The task still proceeds on `ok` alone, exactly as it always
+      // has: reversing that would change what assignment MEANS, which is not archive
+      // bookkeeping's call to make. But a boundary is a claim that this episode was handed this
+      // prompt, and an unconfirmed paste cannot support that claim.
+      //
+      // The cost of being wrong this way is a scout that loses its frozen title and anchor and
+      // falls back to the legacy task title with an honestly truncated trail. The cost of being
+      // wrong the other way is an archive anchored into a conversation that never started.
+      if (!r.ok || !r.submitVerified) discardScoutPromptBoundary(boundary);
+      if (!r.ok) {
+        // Nothing was typed, and the task stays droppable. A boundary left behind would claim
+        // an episode saw a task that is still sitting in the backlog.
+        return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
+      }
+
+      // Merge onto the LATEST snapshot, not the one read before the injection, for the
+      // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
+      // for a retriage to land, and priority/labels stay editable in every status - so a
+      // stale spread here writes yesterday's priority back over one just set on the card,
+      // silently, on a gesture that was only meant to hand the task to an agent.
+      // The turn reached the session: only now does this handover's shaping record replace the
+      // task's last one, stamped with the session it was delivered to and this delivery's id.
+      // Settled whether or not shaping ran, so a handover nothing shaped clears an earlier
+      // record, as a launch does. The row naming the receiving session is written in the same
+      // transaction, so a stop between the two can never leave one without the other; and a
+      // record that cannot be committed still binds the task under this delivery's id, so the
+      // record an earlier delivery to this same session left never reads as this one's.
+      // A paste whose submit was not seen may still be sitting in the composer: the assignment
+      // proceeds as it always has, but its context is recorded as unconfirmed rather than delivered.
+      // Only a turn that carried a section has anything to confirm; an empty run keeps its outcome.
+      const delivered = r.submitVerified || !shaping.section ? shaping : launchUnconfirmed(shaping);
+      const cur = this.registry.getTask(t.id) ?? t;
+      const now = Date.now();
+      // Handed to an agent without a call sign, it takes one in this claim, as a launch does.
+      const callSign = this.callSignAllocation?.(cur) ?? null;
+      this.registry.commitTaskShaping(t.id, s.id, delivered.summary, delivered.section, {
+        ...cur,
+        ...(callSign ? { callSign } : {}),
+        status: "running",
+        sessionId: s.id,
+        dispatchedAt: now,
+        updatedAt: now,
+      });
+      this.registry.bindTaskToWorkEpisode(t.id, s.id);
+      // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
+      // Last, and after the claim: it is the one step here that changes nothing about
+      // whether the task is running, so it must not sit in front of anything that does.
+      await this.renameForTask(
+        // Re-read for the same reason the task is: the reset detached the checkout and the
+        // injection took a round trip, and `rename` targets the terminal home BY NAME.
+        this.registry.getSession(s.id) ?? s,
+        this.registry.getTask(t.id) ?? cur,
+        doRename,
+      );
+      return { ok: true };
+    } finally {
+      stopWatching();
+    }
   }
 
   /**
@@ -5607,7 +6059,7 @@ export class TaskManager {
       if (!stopped.ok) throw new Error(stopped.error ?? "could not stop the task agent");
       return;
     }
-    const alive = await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
+    const alive = await homeAlive(t.homeName, configuredTerminalDeps, t.homeBackend ?? null, t.terminalResourceId);
     if (alive === false) return;
     const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
     if (!stopped.asked || !stopped.ok) {
@@ -6134,10 +6586,6 @@ export class TaskManager {
     }
     const merged = this.mergeOutcomeFor(updated);
     if (input.satisfyDependents || merged) this.satisfyDeclaredEdgesTo(id, now, merged?.url, !input.satisfyDependents);
-    if (taskHasWorktrees(updated) && !closeSessionId && this.completedInitialSessionSweep) {
-      this.enqueueFinishedWorktreeReturn(updated, "complete");
-      this.scheduleMissionSessionClosureSweep();
-    }
     return updated;
   }
 
@@ -6593,6 +7041,302 @@ export class TaskManager {
     return this.cleanupReservations.has(id);
   }
 
+  private cleanupPaths(task: Task): string[] {
+    return taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [canonicalWorktreePath(ref.worktreePath)] : []);
+  }
+
+  private taskReservedPaths(task: Task): string[] {
+    const paths = this.cleanupPaths(task);
+    const hibernatedPath = task.hibernation?.checkout?.path;
+    if (hibernatedPath) paths.push(canonicalWorktreePath(hibernatedPath));
+    return paths;
+  }
+
+  private sessionCheckoutPaths(session: Session): string[] {
+    return [session.cwd, session.gitRoot, session.workspaceRoot]
+      .filter((path): path is string => Boolean(path)).map(canonicalWorktreePath);
+  }
+
+  private sessionOwnsTaskResources(session: Session, task: Task): boolean {
+    return task.sessionId === session.id || this.registry.sdkLaunchTaskId(session.id) === task.id ||
+      (task.terminalResourceId !== null && terminalResourceIds(session).has(task.terminalResourceId)) ||
+      (task.homeName !== null && terminalHomeNames(session).has(task.homeName));
+  }
+
+  /** Account for all tracked users and durable reservations before observing a departure. */
+  backgroundWorktreeUseBlocker(task: Task): string | null {
+    if (!this.registry.sessionsObserved()) return "session discovery has not completed";
+    const paths = this.cleanupPaths(task);
+    if (getTaskSessionClosure(task.id)) return "task session closure is still pending";
+    if (task.sessionId && this.supervisor?.handleFor(task.sessionId)) return "task session runtime is still present";
+    if (task.hibernation || this.completing.has(task.id) || this.pipelineRecoveries.has(task.id) ||
+        worktreeUseReserved(paths)) return "checkout is reserved for another operation";
+    const { sessions, hiddenCwds } = this.registry.worktreeSessionInventory();
+    const episode = taskWorkEpisodeForTask(task.id);
+    if (sessions.some((session) => this.sessionOwnsTaskResources(session, task) ||
+        episode?.sessionId === session.id || worktreePathsOverlap(paths, this.sessionCheckoutPaths(session))) ||
+        worktreePathsOverlap(paths, [...hiddenCwds].map(canonicalWorktreePath))) {
+      return "a tracked session still uses a checkout";
+    }
+    if (this.registry.listTasks().some((other) =>
+        other.id !== task.id && worktreePathsOverlap(paths, this.taskReservedPaths(other)))) {
+      return "another task owns or reserves a checkout";
+    }
+    if (listSdkSessions().some((row) =>
+        (row.status === null || row.status === "hibernated" || sdkSessionIsLive(row) ||
+          this.supervisor?.handleFor(row.id) || sessions.some((session) => session.id === row.id)) &&
+        (row.taskId === task.id || row.extraDirs === null ||
+          worktreePathsOverlap(paths, [row.cwd, ...(row.extraDirs ?? [])].map(canonicalWorktreePath))))) {
+      return "an embedded session still holds a checkout or may resume there";
+    }
+    if (unresolvedSessionTransfers().some((transfer) => transfer.taskId === task.id ||
+        worktreePathsOverlap(paths, [canonicalWorktreePath(transfer.facts.cwd)]))) {
+      return "a session transfer still reserves a checkout";
+    }
+    if (worktreePathsOverlap(paths, new CheckLeaseStore().livePaths().map(canonicalWorktreePath))) {
+      return "a workflow check still leases a checkout";
+    }
+    return null;
+  }
+
+  async backgroundWorktreeOccupancyBlocker(task: Task, path?: string): Promise<string | null> {
+    const occupied = await this.processOccupancyBlocker(path ? [path] : this.cleanupPaths(task));
+    if (occupied) return occupied;
+    if (task.homeName && await homeAlive(task.homeName, configuredTerminalDeps, task.homeBackend ?? null,
+        task.terminalResourceId ?? null) !== false && !(await this.terminalHomeProvedAbsent(task))) {
+      return "the task's terminal home is present or its absence could not be verified";
+    }
+    return null;
+  }
+
+  private async processOccupancyBlocker(paths: readonly string[]): Promise<string | null> {
+    const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths).catch(() => null);
+    for (const checkout of paths) {
+      const state = occupancy?.get(checkout);
+      if (state?.status !== "known") return "checkout process occupancy could not be verified";
+      if (state.occupants.length) return "a process still uses a checkout";
+    }
+    return null;
+  }
+
+  /**
+   * The one addition orphaned-checkout reclaim makes to terminal homes: a home `homeAlive`
+   * cannot identify counts as gone only when its recording backend positively answers that no
+   * server is running and no process of it runs (`homeAbsenceEstablished`). Off with the flag.
+   */
+  private async terminalHomeProvedAbsent(task: Task): Promise<boolean> {
+    if (!task.homeName || orphanedWorktreeReclaimMode() === "off") return false;
+    if (this.startupDeps.homeAbsent) return this.startupDeps.homeAbsent(task);
+    return homeAbsenceEstablished(task.homeName, configuredTerminalDeps, task.homeBackend ?? null,
+      task.terminalResourceId ?? null);
+  }
+
+  /**
+   * Retention's activity probe. The ordinary fingerprint, except that while orphaned-checkout
+   * reclaim is evaluated, a disposable checkout Git no longer knows is read through its own
+   * read-only fingerprint (content against the recorded base commit) instead of failing.
+   */
+  backgroundWorktreeActivity(task: Task): Promise<ActivityFingerprint> {
+    return taskActivityFingerprint(task, defaultWorktreeActivityDeps, (ref) => this.orphanedActivity(task, ref));
+  }
+
+  private async orphanedActivity(task: Task, ref: TaskRepoRef): Promise<ActivityFingerprint | null> {
+    if (orphanedWorktreeReclaimMode() === "off" || ref.provider !== "git" || !ref.worktreePath) return null;
+    return orphanedCheckoutFingerprint(ref, worktreeSlotPath(task.id, ref.position));
+  }
+
+  /** The pull request the daemon recorded for this task's branch in this repository. */
+  private orphanPullRequest(task: Task, ref: TaskRepoRef): RecordedPullRequestLookup {
+    if (this.startupDeps.orphanPullRequest) return this.startupDeps.orphanPullRequest(task, ref);
+    const bindings = [taskWorkEpisodeForTask(task.id), ...historicalTaskWorkEpisodeBindingsForTask(task.id)]
+      .filter((binding): binding is NonNullable<typeof binding> =>
+        // Exactly this checkout's branch: a binding with no recorded branch cannot prove that
+        // its pull request is the one this checkout's content came from.
+        binding !== null && binding.branch !== null && binding.branch === ref.branch);
+    const records = ref.role === "primary"
+      ? bindings.flatMap((binding) => binding.prUrl
+        ? [{ url: binding.prUrl, headSha: binding.prHeadSha, merged: binding.mergedAt !== null }] : [])
+      : workEpisodeRepoPrsForTask(task.id)
+        .filter((pr) => pr.repoRoot === ref.repoRoot && bindings.some((binding) => binding.episodeId === pr.episodeId))
+        .map((pr) => ({ url: pr.prUrl, headSha: pr.prHeadSha, merged: pr.mergedAt !== null || pr.prState === "merged" }));
+    const merged = records.filter((record) => record.merged);
+    if (merged.length === 0) return null;
+    if (new Set(merged.map((record) => record.headSha)).size > 1) return "ambiguous";
+    return merged[0]!;
+  }
+
+  private orphanEvidence(task: Task, ref: TaskRepoRef, fetchRemote: boolean): Promise<OrphanReturnEvidence> {
+    return (this.startupDeps.orphanEvidence ?? orphanedCheckoutEvidence)({
+      ref,
+      slotPath: worktreeSlotPath(task.id, ref.position),
+      fetchRemote,
+      pullRequest: () => this.orphanPullRequest(task, ref),
+    });
+  }
+
+  /** What one orphaned checkout's local-only files are archived as. */
+  private checkoutPreservation(task: Task, ref: TaskRepoRef,
+    evidence: Pick<Extract<OrphanReturnEvidence, { kind: "orphaned" }>, "commit" | "localOnly">): CheckoutPreservation {
+    return {
+      taskId: task.id,
+      title: `Local files left in ${task.title}`.slice(0, 200),
+      repoLabel: basename(ref.repoRoot) || null,
+      checkout: ref.worktreePath!,
+      commit: evidence.commit,
+      files: evidence.localOnly,
+    };
+  }
+
+  /**
+   * The orphaned-checkout half of `backgroundWorktreeSafety`, or undefined for a checkout the
+   * ordinary registered rules own. `final` is the provider boundary, after the archive step:
+   * only there must local-only files already be held by a verified archive.
+   */
+  private async orphanedCheckoutSafety(
+    task: Task,
+    ref: TaskRepoRef,
+    fetch: boolean,
+    readActivity: ReadReturnActivity | undefined,
+    final: boolean,
+  ): Promise<string | null | undefined> {
+    if (orphanedWorktreeReclaimMode() === "off") return undefined;
+    // The scratch fetch of a pull request head never touches the user's repository, so the
+    // provider boundary may make it even when the ordinary origin refresh is not repeated.
+    // Report-only never reaches the network.
+    const evidence = await this.orphanEvidence(task, ref, (fetch || final) && orphanedWorktreeReclaimMode() === "enforce");
+    if (evidence.kind === "registered") return undefined;
+    if (evidence.kind === "held") return evidence.reason;
+    if (readActivity) {
+      const activity = await readActivity();
+      if ("blocker" in activity) return activity.blocker;
+    }
+    if (evidence.kind === "absent" || !final || evidence.localOnly.length === 0) return null;
+    const preserved = await this.archives?.preserveCheckoutFiles?.(this.checkoutPreservation(task, ref, evidence));
+    return preserved?.ok ? null : preserved?.error ?? "local-only files in the orphaned checkout need the archive library";
+  }
+
+  /**
+   * The read-only report for one due checkout in report-only mode, or null for the ordinary
+   * "passed read-only eligibility checks" line. Never archives and never fetches.
+   */
+  async backgroundWorktreeReportOnly(task: Task, path: string): Promise<string | null> {
+    const ref = taskRepoRefs(task).find((entry) => entry.worktreePath === path);
+    const blocked = await this.backgroundWorktreeSafety(task, path, false);
+    if (blocked || !ref || ref.provider !== "git" || orphanedWorktreeReclaimMode() === "off") return blocked;
+    const evidence = await this.orphanEvidence(task, ref, false);
+    if (evidence.kind === "absent") return "report only: the checkout is already gone; its record would be released";
+    if (evidence.kind !== "orphaned") return null;
+    return evidence.localOnly.length > 0
+      ? `report only: orphaned checkout would be removed after archiving ${evidence.localOnly.length} local-only file(s)`
+      // Only a merged-head proof names the pull request. `local-only` with no files is a base
+      // comparison whose only differences are deleted tracked files, which the base still holds.
+      : `report only: orphaned checkout matches its ${evidence.proof === "merged-pr" ? "merged pull request head" : "base commit"} and would be removed`;
+  }
+
+  /**
+   * Archive every orphaned checkout's local-only files before guard 2. The same settlement
+   * rule as `settleArchivesBeforeTeardown`: a refusal stops the cleanup and holds the task.
+   */
+  private async preserveOrphanedCheckouts(task: Task): Promise<Ok> {
+    if (orphanedWorktreeReclaimMode() !== "enforce") return { ok: true };
+    for (const ref of taskRepoRefs(task)) {
+      if (ref.provider !== "git" || !ref.worktreePath) continue;
+      const evidence = await this.orphanEvidence(task, ref, true);
+      if (evidence.kind === "held") return { ok: false, error: evidence.reason };
+      if (evidence.kind !== "orphaned" || evidence.localOnly.length === 0) continue;
+      if (!this.archives?.preserveCheckoutFiles) {
+        return { ok: false, error: "local-only files in the orphaned checkout need the archive library" };
+      }
+      const preserved = await this.archives.preserveCheckoutFiles(this.checkoutPreservation(task, ref, evidence));
+      if (!preserved.ok) return preserved;
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Teardown's extensions for this class, or none while it is not enforced. `claimed` is the
+   * per-checkout digest the cleanup claim was taken against, which removal must still find.
+   */
+  private retentionTeardownExtensions(
+    task: Task,
+    claimed: (path: string) => string | undefined,
+    /** Receives a removal refusal's bounded, path-free reason, so it becomes the row's blocker. */
+    refused: (reason: string) => void,
+  ): TeardownExtensions {
+    if (orphanedWorktreeReclaimMode() !== "enforce") return {};
+    return {
+      unregistered: (path) => this.removeOrphanedForRetention(task, path, claimed).catch((error: unknown) => {
+        refused(error instanceof Error ? error.message.slice(0, 200) : "orphaned checkout removal was refused");
+        throw error;
+      }),
+      homeAbsent: () => this.terminalHomeProvedAbsent(task),
+    };
+  }
+
+  /** `unregistered` for one checkout. Every message it throws is a bounded sentence with no path. */
+  private async removeOrphanedForRetention(
+    task: Task,
+    path: string,
+    claimed: (path: string) => string | undefined,
+  ): Promise<"removed" | "absent" | "registered"> {
+        const ref = taskRepoRefs(task).find((entry) => entry.worktreePath === path && entry.provider === "git");
+        if (!ref) return "registered";
+        const slot = worktreeSlotPath(task.id, ref.position);
+        const checkout = await classifyTaskCheckout(ref, slot);
+        if (checkout.kind === "registered") return "registered";
+        if (checkout.kind === "unproven") throw new Error(checkout.reason);
+        // The guard runs on the set-aside directory, after every identity and content check, so
+        // the local-only set it archives is computed from the exact bytes the delete removes,
+        // and that archive is held - present and re-verified - until the delete has finished.
+        return removeOrphanedTaskCheckout(ref, slot, claimed(path), (at) => this.processOccupancyBlocker([at]),
+          async (aside, commonDir, finish) => {
+            const proof = await proveOrphanedContent({ ref, commonDir, contentPath: aside, fetchRemote: true,
+              pullRequest: () => this.orphanPullRequest(task, ref) });
+            if (proof.kind === "held") throw new Error(proof.reason);
+            if (proof.localOnly.length === 0) return finish();
+            if (!this.archives?.withCheckoutFilesHeld) {
+              throw new Error("local-only files in the orphaned checkout need the archive library");
+            }
+            return this.archives.withCheckoutFilesHeld(this.checkoutPreservation(task, ref, proof), finish);
+          });
+  }
+
+  async backgroundWorktreeSafety(
+    task: Task,
+    path: string,
+    fetch: boolean,
+    readActivity?: ReadReturnActivity,
+    /** The provider boundary, after the archive step. See `orphanedCheckoutSafety`. */
+    final = false,
+  ): Promise<string | null> {
+    const ref = taskRepoRefs(task).find((entry) => entry.worktreePath === path);
+    if (!ref) return "task checkout ownership changed";
+    if (ref.provider === "git") {
+      const expected = worktreeSlotPath(task.id, ref.position);
+      if (join(canonicalWorktreePath(dirname(expected)), basename(expected)) !== canonicalWorktreePath(path)) {
+        return "disposable checkout path does not match its task";
+      }
+      const orphaned = await this.orphanedCheckoutSafety(task, ref, fetch, readActivity, final);
+      if (orphaned !== undefined) return orphaned;
+    } else if (ref.provider === "mission") {
+      if (!ref.worktreeLeaseId || this.worktrees?.lookupLease({
+        leaseId: ref.worktreeLeaseId, path, owner: { kind: "task", key: `${task.id}:${ref.position}` },
+      }).state !== "active") return "native task lease could not be verified";
+    } else if (ref.provider === "treehouse") {
+      const identity = await this.legacyWorktrees.ownership({
+        kind: "task", id: task.id, position: ref.position, path, leaseId: ref.worktreeLeaseId,
+      });
+      if (identity.state !== "exact") return "legacy task lease could not be verified";
+    } else {
+      return "task checkout provider is unknown";
+    }
+    const registration = await (this.startupDeps.registrationBlocker ?? worktreeRegistrationBlocker)(path, ref.repoRoot);
+    if (registration) return registration;
+    return (this.startupDeps.returnBlocker ?? worktreeReturnBlocker)(path, {
+      fetch, strictIndex: true, readActivity, expectedBranch: ref.provider === "git" ? ref.branch : undefined,
+    });
+  }
+
   /**
    * The ownership facts a reserved cleanup must find UNCHANGED at its destructive boundary.
    *
@@ -6611,13 +7355,7 @@ export class TaskManager {
     return JSON.stringify({
       status: task.status,
       dispatchedAt: task.dispatchedAt,
-      repos: taskRepoRefs(task).map((ref) => [
-        ref.position,
-        ref.repoRoot,
-        ref.worktreePath,
-        ref.provider,
-        ref.worktreeLeaseId,
-      ]),
+      repos: taskCheckoutIdentities(task),
     });
   }
 
@@ -6646,6 +7384,11 @@ export class TaskManager {
    * abandons, and an unreadable tree or a refusing provider retries.
    */
   async reclaimForRetention(request: AutomaticReclaimRequest): Promise<AutomaticReclaimOutcome> {
+    // Legacy ledger/queue fixtures can exercise teardown accounting without a live inventory.
+    // Every daemon call requires the departure-aware claim, including the configured window.
+    if (!request.claimIsCurrent && !underTestRunner()) {
+      return { kind: "validation-unknown", detail: "verified departure claim is required" };
+    }
     const { taskId } = request;
     return this.withCleanupReservation<AutomaticReclaimOutcome>(
       taskId,
@@ -6661,11 +7404,13 @@ export class TaskManager {
          * the trees that are already gone and refuse the attempt that finishes the release,
          * forever. Ownership and generation are still checked, both times.
          */
+        let checkoutActivity: ReadonlyMap<string, string> | undefined;
         const activityUnchanged = async (t: Task): Promise<AutomaticReclaimOutcome | null> => {
           if (!taskHasWorktrees(t)) return null;
           const read = await request.probe(t);
           if (read.kind === "unknown") return { kind: "validation-unknown", detail: read.reason };
           if (read.digest !== request.fingerprint) return { kind: "activity-changed" };
+          checkoutActivity = read.checkouts;
           return null;
         };
 
@@ -6679,19 +7424,51 @@ export class TaskManager {
         if (taskResourceGeneration(before) !== request.generation) {
           return { kind: "ownership-changed", detail: "task resources were replaced" };
         }
+        const paths = taskRepoRefs(before).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
+        using pathReservation = request.claimIsCurrent ? reserveWorktreeCleanup(paths) : null;
+        const lifecycleBlocker = (task: Task): string | null => {
+          if (!request.claimIsCurrent) return null;
+          if (!pathReservation || !request.claimIsCurrent()) return "checkout retention claim was invalidated";
+          return this.backgroundWorktreeUseBlocker(task);
+        };
+        const ownership = this.stableCleanupOwnership(before);
+        const stillOwns = (task: Task | undefined): task is Task =>
+          !!task && this.stableCleanupOwnership(task) === ownership &&
+          (!request.claimIsCurrent || taskResourceGeneration(task) === request.generation);
+        const checkOwner = (): string | null => {
+          const task = getDurableTask(taskId);
+          return stillOwns(task) ? lifecycleBlocker(task) : "task checkout ownership changed";
+        };
+        let blocked = lifecycleBlocker(before);
+        if (blocked) return { kind: "validation-unknown", detail: blocked };
         const preflight = await activityUnchanged(before);
         if (preflight) return preflight;
-        const ownership = this.stableCleanupOwnership(before);
+        if (request.claimIsCurrent) {
+          blocked = await this.backgroundWorktreeOccupancyBlocker(before) ?? checkOwner();
+          if (blocked) return { kind: "validation-unknown", detail: blocked };
+          for (const path of paths) {
+            blocked = await this.backgroundWorktreeSafety(before, path, true) ?? checkOwner();
+            if (blocked) return { kind: "validation-unknown", detail: blocked };
+          }
+        }
 
         // --- the reserved cleanup itself, which may legitimately move terminal identity ---
         try {
-          await this.quiesceLaunchedAgentBeforeCapture(before);
+          if (!request.claimIsCurrent) await this.quiesceLaunchedAgentBeforeCapture(before);
         } catch (error) {
           return { kind: "failed", detail: `could not stop the task agent (${readFailureClass(error)})` };
         }
         const archived = await this.settleArchivesBeforeTeardown(taskId);
         if (!archived.ok) {
           return { kind: "archive-refused", detail: "this task's archive could not be published" };
+        }
+        // Local-only files of an orphaned checkout are archived on the same terms, before guard
+        // 2 and the provider boundary that re-proves them archived.
+        if (request.claimIsCurrent) {
+          const preserved = await this.preserveOrphanedCheckouts(this.registry.getTask(taskId) ?? before);
+          if (!preserved.ok) {
+            return { kind: "archive-refused", detail: preserved.error ?? "local-only files could not be archived" };
+          }
         }
 
         // --- guard 2: the trees about to be removed, and what is in them, right now ---
@@ -6704,6 +7481,35 @@ export class TaskManager {
         }
         const final = await activityUnchanged(current);
         if (final) return final;
+        blocked = checkOwner();
+        if (blocked) return { kind: "ownership-changed", detail: blocked };
+
+        // The aggregate probe covers the whole task before any provider runs. Per-checkout
+        // probes let the provider recheck activity even after a sibling has already returned.
+        const beforeReturn = request.claimIsCurrent ? async (path: string): Promise<string | null> => {
+          const refusal = checkOwner();
+          if (refusal) return (blocked = refusal);
+          const safety = await this.backgroundWorktreeSafety(current, path, true, undefined, true);
+          if (safety) return (blocked = safety);
+          const occupied = await this.backgroundWorktreeOccupancyBlocker(current, path);
+          if (occupied) return (blocked = occupied);
+          const gitRef = taskRepoRefs(current).find((ref) => ref.worktreePath === path && ref.provider === "git");
+          const readActivity: ReadReturnActivity = async () => {
+            const orphaned = gitRef ? await this.orphanedActivity(current, gitRef) : null;
+            const activity = orphaned ?? await worktreeActivityFingerprint(path, defaultWorktreeActivityDeps);
+            if (activity.kind === "unknown") return { blocker: activity.reason };
+            if (!orphaned && !activity.head) return { blocker: "checkout HEAD could not be verified" };
+            if (activity.digest !== checkoutActivity?.get(path)) return { blocker: "Git activity changed during cleanup" };
+            return { head: activity.head ?? null };
+          };
+          const finalSafety = await (gitRef
+            ? this.backgroundWorktreeSafety(current, path, false, readActivity, true)
+            : worktreeReturnBlocker(path, { strictIndex: true, readActivity }));
+          if (finalSafety) return (blocked = finalSafety);
+          const finalBlocker = checkOwner();
+          if (finalBlocker) blocked = finalBlocker;
+          return finalBlocker;
+        } : undefined;
 
         // Past the last guard, and only now. `autoCompleted` is a one-way in-memory drop that
         // makes an inferred completion irreversible, and doing it above would mean an attempt
@@ -6713,11 +7519,16 @@ export class TaskManager {
           // `background`, unlike every manual path's `foreground`. The native allocator uses
           // that to let an operator's dispatch acquire ahead of maintenance, which is the
           // ordering that keeps a large stale fleet from standing in front of live work.
-          const teardown = this.startupDeps.teardown ?? ((target, legacy, priority) =>
-            teardownWorktree(target, legacy ?? this.legacyWorktrees, priority, this.worktrees));
-          await teardown(current, this.legacyWorktrees, "background");
+          const teardown = this.startupDeps.teardown ?? teardownWorktree;
+          await teardown(current, this.legacyWorktrees, "background", this.worktrees, beforeReturn,
+            request.claimIsCurrent
+              ? this.retentionTeardownExtensions(current, (path) => checkoutActivity?.get(path), (reason) => { blocked ??= reason; })
+              : {});
         } catch (error) {
-          const partial = this.registry.getTask(taskId) ?? current;
+          const partial = getDurableTask(taskId);
+          if (!stillOwns(partial)) {
+            return { kind: "ownership-changed", detail: "task checkout ownership changed during provider return" };
+          }
           // Every durable resource fact this attempt did not actually release SURVIVES,
           // terminal identity included. A teardown that handed back the last checkout and then
           // failed on the home leaves that home genuinely still there, so clearing the field
@@ -6731,9 +7542,12 @@ export class TaskManager {
           // Deliberately NOT written onto `task.error`. That field is this task's own record
           // of why the work failed, and a maintenance failure overwriting it would destroy the
           // only account of the run. The bounded explanation rides `automaticCleanup` instead.
-          return { kind: "failed", detail: `could not release this task's resources (${readFailureClass(error)})` };
+          return { kind: "failed", detail: blocked ?? `could not release this task's resources (${readFailureClass(error)})` };
         }
-        const after = this.registry.getTask(taskId) ?? current;
+        const after = getDurableTask(taskId);
+        if (!stillOwns(after)) {
+          return { kind: "ownership-changed", detail: "task checkout ownership changed during provider return" };
+        }
         this.registry.upsertTask({
           ...after,
           ...releasedTaskResources(after, null),
@@ -6798,188 +7612,9 @@ export class TaskManager {
 
   /** Drain producers first: an empty queue alone says nothing about a pending closure/archive. */
   async settleWorktreeReturns(): Promise<void> {
-    await Promise.allSettled([...this.completing.values()]);
+    await Promise.allSettled(this.completing.values());
     await this.closureSweep;
     await this.cleanupQueue.settled();
-  }
-
-  private worktreeOwnership(task: Task): string {
-    return JSON.stringify({
-      dispatchedAt: task.dispatchedAt,
-      repos: taskRepoRefs(task).map((ref) => [ref.position, ref.repoRoot, ref.worktreePath,
-        ref.provider, ref.worktreeLeaseId]),
-    });
-  }
-
-  /** Capture before the stop, which can synchronously remove the session and its binding. */
-  prepareKilledSessionReturn(session: Session): () => void {
-    const owners = this.registry.listTasks().filter((task) => taskHasWorktrees(task) &&
-      (task.sessionId === session.id || taskRepoRefs(task).some((ref) =>
-        ref.worktreePath !== null && ref.worktreePath === session.cwd)));
-    if (owners.length !== 1) return () => {};
-    const task = owners[0]!;
-    const intent = { taskId: task.id, ownership: this.worktreeOwnership(task) };
-    return () => {
-      this.killedSessionReturns.set(session.id, intent);
-      if (!this.registry.getSession(session.id)) this.returnKilledSessionWorktrees(session.id);
-    };
-  }
-
-  private returnKilledSessionWorktrees(sessionId: string): void {
-    const intent = this.killedSessionReturns.get(sessionId);
-    if (!intent || this.registry.getSession(sessionId)) return;
-    const task = this.registry.getTask(intent.taskId) ?? getDurableTask(intent.taskId);
-    if (!task || this.worktreeOwnership(task) !== intent.ownership || task.status === "done") {
-      this.killedSessionReturns.delete(sessionId);
-      return;
-    }
-    if (this.enqueueFinishedWorktreeReturn(task, "kill", sessionId)) {
-      this.killedSessionReturns.delete(sessionId);
-    } else {
-      // Startup or retention may already own this queue slot. Keep the exact intent and
-      // retry through the existing sweep instead of requiring another session_remove.
-      this.scheduleMissionSessionClosureSweep();
-    }
-  }
-
-  private resumeCompletedWorktreeReturns(): void {
-    if (this.closuresStopped) return;
-    for (const task of this.registry.listTasks()) {
-      if (taskOwesWorktreeReturn(task) && !getTaskSessionClosure(task.id)) {
-        this.enqueueFinishedWorktreeReturn(task, "complete");
-      }
-    }
-  }
-
-  private enqueueFinishedWorktreeReturn(
-    task: Task, reason: "complete" | "kill", stoppedSessionId?: string,
-  ): boolean {
-    if (this.closuresStopped) return false;
-    if (reason === "complete" && !taskOwesWorktreeReturn(task)) return false;
-    const ownership = this.worktreeOwnership(task);
-    const retry = this.nextCompletedReturn.get(task.id);
-    if (reason === "complete" && retry?.ownership === ownership && retry.due > Date.now()) return false;
-    return this.cleanupQueue.enqueue({
-      taskId: task.id,
-      repoKeys: taskCleanupRepoKeys(task),
-      run: async () => {
-        const context = { taskId: task.id, reason };
-        console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_started", ...context })}`);
-        let outcome: "returned" | "retained" | "failed" = "failed";
-        let detail: string | undefined;
-        try {
-          const result = await this.returnFinishedWorktrees(task.id, ownership, reason, stoppedSessionId);
-          outcome = result.ok ? "returned" : "retained";
-          detail = result.error;
-          if (result.ok) this.nextCompletedReturn.delete(task.id);
-        } catch (error) {
-          detail = readFailureClass(error);
-          throw error;
-        } finally {
-          let retryAt: number | undefined;
-          if (reason === "complete" && outcome !== "returned") {
-            const current = this.registry.getTask(task.id);
-            if (current && taskOwesWorktreeReturn(current)) {
-              const remaining = this.worktreeOwnership(current);
-              // Progress (including a partial provider return) and a new attempt start fresh.
-              const failures = remaining === ownership && retry?.ownership === ownership
-                ? Math.min(retry.failures + 1, 7) : 1;
-              retryAt = Date.now() + Math.min(30_000 * 2 ** (failures - 1), 1_800_000);
-              this.nextCompletedReturn.set(task.id, { ownership: remaining, failures, due: retryAt });
-            } else this.nextCompletedReturn.delete(task.id);
-          }
-          console.info(`[tasks] ${JSON.stringify({ event: "worktree_return_completed", ...context, outcome, detail, retryAt })}`);
-        }
-      },
-    });
-  }
-
-  private async returnFinishedWorktrees(
-    id: string, ownership: string, reason: "complete" | "kill", stoppedSessionId?: string,
-  ): Promise<Ok> {
-    const current = () => this.registry.getTask(id) ?? getDurableTask(id);
-    const owned = (): Task | null => {
-      const task = current();
-      return task && this.worktreeOwnership(task) === ownership &&
-        (reason === "complete" ? taskOwesWorktreeReturn(task) : ["failed", "cancelled"].includes(task.status))
-        ? task : null;
-    };
-    const before = owned();
-    if (!before || !taskHasWorktrees(before)) return { ok: false, error: "task ownership changed" };
-    const paths = taskRepoRefs(before).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []);
-    const guard = async (): Promise<string | null> => {
-      const task = owned();
-      if (!task) return "task ownership changed";
-      if (stoppedSessionId && this.supervisor?.handleFor(stoppedSessionId)) {
-        return "killed session runtime has not stopped";
-      }
-      if (task.sessionId && (this.registry.getSession(task.sessionId) || this.supervisor?.handleFor(task.sessionId))) {
-        return "task session has not stopped";
-      }
-      if (this.registry.snapshot().sessions.some((session) =>
-        session.cwd && paths.some((path) => pathContains(canonicalWorktreePath(path), canonicalWorktreePath(session.cwd!))))) {
-        return "another session still uses a checkout";
-      }
-      const occupancy = await (this.startupDeps.occupancy ?? inspectWorktreeOccupancy)(paths);
-      for (const path of paths) {
-        const state = occupancy.get(path);
-        if (!state || state.status === "unknown") return `checkout occupancy is unknown: ${state?.reason.slice(0, 1024) ?? "not observed"}`;
-        if (state.occupants.length) return `a process still uses a checkout: ${describeWorktreeOccupants(state.occupants)}`;
-      }
-      return owned() ? null : "task ownership changed";
-    };
-    let blocked = await guard();
-    if (blocked) return { ok: false, error: blocked };
-    const probe = this.startupDeps.returnBlocker ?? worktreeReturnBlocker;
-    if (reason === "kill") {
-      // All repos must pass before the first return. Fresh refs cannot vouch for a branch
-      // deleted upstream; an offline or unreachable origin retains the entire set.
-      for (const path of paths) {
-        blocked = await probe(path, { fetch: true });
-        if (blocked) return { ok: false, error: blocked };
-      }
-    }
-    // Read-only eligibility must not stand in front of a confirmed manual Clean up. In
-    // particular a dirty Kill should not reserve resources it will never be allowed to return.
-    return this.withCleanupReservation<Ok>(
-      id,
-      { ok: false, error: "another cleanup owns the task" },
-      async () => {
-        if (!owned()) return { ok: false, error: "task ownership changed" };
-        const archived = await this.settleArchivesBeforeTeardown(id);
-        if (!archived.ok) return archived;
-        const beforeReturn = async (path: string): Promise<string | null> => {
-          const refusal = await guard();
-          if (refusal) return refusal;
-          // Upstream refs may disappear after eligibility or archive capture. Refresh and
-          // prune here too; non-native providers do not refresh origin before teardown.
-          const unsafe = reason === "kill" ? await probe(path, { fetch: true }) : null;
-          return unsafe ?? (owned() ? null : "task ownership changed");
-        };
-        blocked = await guard();
-        if (blocked) return { ok: false, error: blocked };
-        const target = owned()!;
-        try {
-          await (this.startupDeps.teardown ?? teardownWorktree)(
-            target, this.legacyWorktrees, "background", this.worktrees, beforeReturn,
-          );
-        } catch (error) {
-          const partial = owned();
-          if (partial) this.registry.upsertTask({
-            ...partial, ...releasedTaskResources(partial, reclaimedFrom(error)), updatedAt: Date.now(),
-          });
-          return { ok: false, error: `provider return failed (${readFailureClass(error)})` };
-        }
-        const after = owned();
-        if (!after) return { ok: false, error: "task ownership changed" };
-        this.autoCompleted.delete(id);
-        this.registry.upsertTask({
-          ...after, ...releasedTaskResources(after, null), homeName: null, homeBackend: null,
-          terminalResourceId: null, sessionId: null, updatedAt: Date.now(),
-        });
-        return { ok: true };
-      },
-    );
   }
 
   /**
@@ -7103,6 +7738,25 @@ export class TaskManager {
     return { ok: true };
   }
 
+  /** Use only this failed attempt's durable proof. The restart policy retains every checkout,
+   * so changing the launch outcome neither tears down resources nor resets the retention clock. */
+  private async restorePendingTerminal(taskId: string, pending: PendingTerminalLaunch): Promise<void> {
+    const ownsFailure = () => {
+      return !this.stopping && pendingTerminalLaunch(this.registry.getTask(taskId))?.receipt === pending.receipt
+        && !transferForTask(taskId);
+    };
+    const inactive = await restoredTerminalInactive(pending, ownsFailure);
+    if (inactive && ownsFailure()) {
+      const current = this.registry.getTask(taskId)!;
+      this.registry.upsertTask({
+        ...current, updatedAt: Date.now(),
+        error: current.error?.endsWith(UNKNOWN_TERMINAL_GUIDANCE) ? current.error.slice(0, -UNKNOWN_TERMINAL_GUIDANCE.length) : current.error,
+        launchFailure: { ...current.launchFailure!, sessionKept: false, terminalInactive: true, pendingTerminal: undefined },
+      });
+    }
+    if (pendingTerminalLaunch(this.registry.getTask(taskId))?.receipt !== pending.receipt) discardTerminalReceipt(pending.receipt);
+  }
+
   /**
    * Reconcile a resource-holding task after a restart. If its agent's terminal home
    * survived, keep it (a `running`/`failed` task re-binds to its rediscovered
@@ -7193,7 +7847,7 @@ export class TaskManager {
       }
     }
     const alive = embedded ?? (
-      t.homeName ? await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId) : null
+      t.homeName ? await homeAlive(t.homeName, configuredTerminalDeps, t.homeBackend ?? null, t.terminalResourceId) : null
     );
     if (alive !== false) {
       if (t.status === "dispatching") {
@@ -7334,9 +7988,11 @@ export class TaskManager {
     // behavior it always had: stop the home, clear its identity, and settle. Retention is a
     // worktree policy, and holding a ledger row open for a shell would be inventing one.
     const archived = await this.settleArchivesBeforeTeardown(t.id);
+    // Each write below is built from `t`, read before these awaits, so each takes the annotation
+    // the task holds when it is written: an edit that landed meanwhile is not undone.
     if (!archived.ok) {
       this.registry.upsertTask({
-        ...t,
+        ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
         ...interrupted,
         status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
@@ -7352,7 +8008,7 @@ export class TaskManager {
     } catch (error) {
       const now = Date.now();
       this.registry.upsertTask({
-        ...t,
+        ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
@@ -7368,7 +8024,7 @@ export class TaskManager {
       return;
     }
     this.registry.upsertTask({
-      ...t,
+      ...withCurrentAnnotation(t, this.registry.getTask(t.id)),
       ...interrupted,
       status: settledStatus,
       error: settledError,
@@ -7379,5 +8035,29 @@ export class TaskManager {
       sessionId: null,
       updatedAt: Date.now(),
     });
+  }
+}
+
+/** How long a handover waits for its checkout's HEAD before shaping with an unknown baseline. */
+const HANDOVER_BASELINE_TIMEOUT_MS = 2000;
+
+/**
+ * The checkout's commit and branch (null when detached), read together; both unknown once `ms`
+ * pass first or either read fails. The timer never outlives the race.
+ */
+async function boundedCheckoutState(dir: string, ms: number): Promise<{ baseSha: string | null; branch: string | null }> {
+  const unknown = { baseSha: null, branch: null };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      // A branch that could not be read makes the whole state unknown, as an unreadable commit does,
+      // so it takes the original-prompt fallback rather than passing for "detached" on both reads.
+      Promise.all([headCommit(dir), headBranch(dir)])
+        .then(([baseSha, branch]) => (baseSha === null || branch === undefined ? unknown : { baseSha, branch }))
+        .catch(() => unknown),
+      new Promise<typeof unknown>((resolve) => { timer = setTimeout(() => resolve(unknown), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }

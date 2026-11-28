@@ -1,11 +1,12 @@
 import { z } from "zod";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 import { workflowEvidenceRequirement, type TaskCompletionContract } from "@shared/task-completion.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
 import { DEFAULT_LLM_RUNNER_ID, llmRunner } from "../llm/index.ts";
-import { parseModelJson, runStructured } from "../llm/structured.ts";
+import { parseModelJson, runStructured, parseModelReply } from "../llm/structured.ts";
 import { formatTranscript } from "./prompt.ts";
 
 const INSTRUCTION_MAX = 1_200;
@@ -74,16 +75,18 @@ export async function reviewShipRecovery(
   input: ShipRecoveryReviewInput,
   model: string,
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
+  effort?: ThinkingLevel,
 ): Promise<ShipRecoveryReviewResult> {
   const schema = providerJsonSchema(ShipRecoveryReviewWireSchema);
   const result = await runStructured<typeof ShipRecoveryReviewSchema>(
     (prompt) => llmRunner(runnerId).run(prompt, {
       model,
+      effort,
       role: "foreman:ship-recovery",
       schema,
     }),
     buildShipRecoveryReviewPrompt(input),
-    extractShipRecoveryReview,
+    (raw) => parseModelReply(raw, ShipRecoveryReviewSchema),
     "Foreman ship recovery",
   );
   if (result.kind !== "ok") return { kind: "failed", reason: result.reason };

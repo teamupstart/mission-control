@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execPath } from "node:process";
 import type { Locator, Page } from "@playwright/test";
@@ -17,6 +16,7 @@ import {
 import { selectConductorRepo, toggleConductorObservation } from "../fixtures/conductor-panel.ts";
 
 import { CONDUCTOR_INTEGRATION_ENABLED } from "../../src/shared/conductor-integration.ts";
+import { tempDir } from "../../test/temp-root.mjs";
 
 test.skip(!CONDUCTOR_INTEGRATION_ENABLED, "the ai-conductor integration is temporarily hidden");
 
@@ -93,7 +93,7 @@ interface Pane {
  * earlier run - can never be the card this spec drives.
  */
 function startPane(cwd: string, tag: string): Pane {
-  const dir = mkdtempSync(join(tmpdir(), "mc-e2e-engine-"));
+  const dir = tempDir("mc-e2e-engine-");
   const bin = join(dir, "fake-bin");
   mkdirSync(bin);
   // argv0's basename is what `harnessOf` matches, so the LINK's name is the whole disguise.
@@ -128,7 +128,6 @@ async function shoot(page: Page, target: Page | Locator, name: string): Promise<
   // on top of the chip being photographed.
   await page.mouse.move(0, 0);
   await target.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/session-driven-by-engine/${name}.png`);
 }
 

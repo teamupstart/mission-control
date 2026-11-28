@@ -166,3 +166,100 @@ windows through it. Identical frames are suppressed by canonical JSON. The confi
 `SHAPING_LIMITS`, 32 shapers of at most 16 KiB and 128 choices, below 560 KiB serialized at the
 maximum. It is not a `LINE_INPUT_EVENTS` member: shapers are read at dispatch, and no Line stage
 folds them. See [Task shaping](task-shaping.md#settings).
+
+`shaping_sign_ins` carries `{ signIns }`, shaper sign-in's list: one
+`{ id, url, scope, issuer, state, storage, expiresAt, attempt, reason, shapers }` per connection, where
+`state` is the connection's status (`signed_out`, `pending`, `signed_in` or `renewing`). While a
+sign-in is pending, `attempt` is the number its `POST /api/shaping/sign-in` reply carried, and
+null otherwise, so a sign-in that replaces a pending one is a frame of its own and a window can
+tell its own pending attempt from another window's. It never
+holds a token, a code, the OAuth `state` parameter, a verifier or an authorization URL. The event
+and the reconnect snapshot's `shapingSignIns` field are both behind `task-shaping` and
+`shaper-sign-in`. While both are on, the list is sent on every change to it, such as a sign-in started, completed, renewed or
+ended. While either is off the snapshot has no field. A flag change sends the list only when it
+differs from the last list sent, and the daemon counts the empty list as already sent. Turning
+either flag off sends one empty list, which clears every window, unless the last list sent was
+already empty, when every window already holds an empty list and nothing is sent. Likewise a
+daemon that starts with a flag off sends nothing, and turning both flags on while no connection
+is listed sends nothing. Repeats are
+suppressed by canonical JSON. `wireShapingSignInEvents` in
+`src/server/shaping/sign-in/events.ts` is the one bridge, and `MissionState.shapingSignIns` the
+only browser owner, empty before the snapshot and while a flag is off. It is not a
+`LINE_INPUT_EVENTS` member. See
+[Signing in over the API](task-shaping.md#signing-in-over-the-api).
+
+## Voice
+
+While voice is enabled, `voiceIndicators` in the snapshot carries the saved indicator IDs.
+After a preference write commits, `voice_indicators` carries the full selection to connected
+windows. A window that missed the write receives the saved selection when it reconnects.
+
+`voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
+`mode`, `reasons`, `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`. It is sent whenever the
+state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
+or one of them lapsed, which a daemon timer publishes with no request, or the speech model's
+state moved. A model download publishes its progress at most every 250 ms, so a download is a
+few frames a second for as long as it runs. The reconnect snapshot's
+`voice` field is present only while the `voice` flag is on, computed at that moment. While the
+flag is off no frame is sent, except one with the mode `off` when it is switched off: the desktop
+shell reads no feature flag, so that frame is how it learns voice is off. Identical frames are
+suppressed by a canonical form. `MissionState.voice` is the only browser owner, null before the
+snapshot and while the flag was off at connect time. `wireVoiceStateEvents` in
+`src/server/voice/state.ts` is the one bridge, wired once at daemon start. The state is a handful
+of scalars, at most seven capabilities with bounded reasons, and the roster. It is not a
+`LINE_INPUT_EVENTS` member.
+
+`voice_card` carries `{ card }` whenever an utterance opens a card or changes its state.
+Consumers replace the card by id. A model step that takes a second publishes a `resolving`
+card. A faster decision publishes `pending` or `unsure` directly. A split is one card with two
+targets in its `parts`. While delivery is in progress the card has state `pending`, reason
+`delivering` and a null deadline. Its card actions are closed. A reconnect snapshot carries
+both open cards and in-flight deliveries in `voiceCards`
+while voice is enabled. The daemon drops them and the dashboard clears its map when voice turns
+off. Recently heard stays in daemon memory and is read separately through the voice routes.
+
+`voice_roster` carries `{ roster }`, who can be addressed (`SpokenName[]` in
+`src/shared/voice-names.ts`), whenever it changes: a resident profile or run, a task's call sign,
+or a session starting or stopping a task with a call sign. It replaces `VoiceState.roster` and
+nothing else, and a roster change sends no `voice_state` frame: the canonical form that suppresses
+repeated states leaves the roster out, so the shell, which follows the mode, is not woken by an
+agent starting. Each `voice_state` frame still carries the roster as it stands. Sent only while the
+`voice` flag is on, and only when the roster changed. `wireVoiceNameEvents` in
+`src/server/voice/names.ts` is the one bridge. It is bounded by the live resident profiles (at most
+200) and the launched tasks with a call sign that are running, hibernated, or recently stopped and
+still kept by the roster's retention rules ([who can be addressed](voice.md#who-can-be-addressed)):
+a hibernated task stays however long it sleeps, and a stopped one leaves when its retention ends
+or sooner when another agent takes its name. It
+is not a `LINE_INPUT_EVENTS` member: the Line reads the task and session frames it is computed
+from. See [Voice addressing](voice.md#spoken-names).
+
+## Agent reports
+
+`report_upsert` carries `{ report }`, one whole `ReportItem` (`src/shared/reports.ts`), whenever a
+report is posted, first opened, marked read, or replaced; when its notification wording is
+stamped (`announcedAs`, which is what raises its notification); and when an Away return digest
+marks it counted (`countedInDigestAt`, so no window notifies about it afterwards). There is no
+remove frame: a report is never deleted and outlives the session that posted it, so a read or
+replaced report is upserted with its new state, and the dashboard drops it from its state on that
+frame (`withReportUpserted` in `src/web/lib/report-state.ts`). An open window therefore holds only
+the reports waiting to be read, however many it has seen. Replacing a report sends two frames, the
+replaced report with its `supersededBy` set and then its successor.
+
+The reconnect snapshot's `reports` field holds every report waiting to be read: unread, and the
+latest of its chain. It is bounded by what the operator has not read yet. A session's whole
+history, older versions and read reports included, is read on demand from
+`GET /api/sessions/:id/reports` rather than carried here.
+
+Both are behind the `inbox` flag. While it is off the snapshot has no `reports` field and no
+`report_upsert` is sent. Turning the flag on sends a `report_upsert` for every report waiting to be
+read, so an open window fills its Reports section and **to read** figure with no reload.
+`report_mutes` carries `{ mutes }`, the whole list of muted report authors (`ReportMute` in
+`src/shared/reports.ts`), after every mute and unmute. It is sent whole because the list is small
+and applying it twice ends in the same state. The snapshot's `reportMutes` field holds the same
+list. A muted author's reports still arrive in `reports` and `report_upsert`: the dashboard's
+inbox fold leaves them out, so an unmute lists them again without a fetch. Both follow the
+`inbox` flag like `reports`; turning the flag on sends `report_mutes` before the reports it
+resends. `MissionState.reportMutes` is their only browser owner.
+
+`MissionState.reports` is the only browser owner. It is not a `LINE_INPUT_EVENTS` member: no Line
+stage folds reports.

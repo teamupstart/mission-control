@@ -11,7 +11,24 @@ import {
 
 test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
   assert.deepEqual(Object.keys(SETUP_DEPENDENCY_INFO), [...SETUP_DEPENDENCY_IDS]);
-  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-6), ["coderabbit-cli", "claude-mcp-trust", "codex-mcp-trust", "acli-cli", "acli-auth", "coderabbit-auth"], "new persisted ids append after existing entries");
+  assert.deepEqual(SETUP_DEPENDENCY_IDS.slice(-10), ["coderabbit-cli", "claude-mcp-trust", "codex-mcp-trust", "acli-cli", "acli-auth", "coderabbit-auth", "voice-previews", "voice-model", "voice-microphone", "macos-terminal"], "new persisted ids append after existing entries");
+  // The speech model and the microphone are Voice rows too, optional like the previews row, with
+  // remedies the dashboard runs itself rather than a command.
+  for (const id of ["voice-model", "voice-microphone"] as const) {
+    assert.equal(SETUP_DEPENDENCY_INFO[id].family, "voice", id);
+    assert.equal(SETUP_DEPENDENCY_INFO[id].requirement, "optional", id);
+  }
+  assert.equal(SETUP_DEPENDENCY_INFO["voice-model"].remedy.kind, "voice-model-download");
+  assert.equal(SETUP_DEPENDENCY_INFO["voice-microphone"].remedy.kind, "microphone-access");
+  // Voice's previews row turns flags on, naming exactly the flags voice depends on.
+  assert.deepEqual(SETUP_DEPENDENCY_INFO["voice-previews"].remedy, {
+    kind: "feature-flags",
+    flags: ["async-input", "inbox", "filed-plan-decisions"],
+    label: "Turn on the previews voice needs",
+    note: "Turn on Ask without stopping, Reports and inbox upgrades and File plan decisions in Settings > Feature flags.",
+  });
+  assert.equal(SETUP_DEPENDENCY_INFO["voice-previews"].family, "voice");
+  assert.equal(SETUP_DEPENDENCY_INFO["voice-previews"].requirement, "optional");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-cli"].requirement, "required");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-auth"].requirement, "required");
   assert.deepEqual(SETUP_DEPENDENCY_INFO.iterm.remedy, {

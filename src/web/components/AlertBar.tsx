@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { AwayConfig } from "@shared/protocol.ts";
 import type { AwayBufferSummary } from "@shared/away-buffer.ts";
 import type { AlertSettings } from "../lib/alertSettings.ts";
+import { INBOX_FLAG } from "@shared/inbox.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { playChime, unlockAudio } from "../lib/chime.ts";
 import { elapsed, reachability } from "../lib/reachability.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -57,6 +59,52 @@ function ChannelRow({
   );
 }
 
+/** The "What notifies you" switches, as `ui.alerts` stores them. */
+export type NotifySettings = Pick<AlertSettings, "notify" | "reportsInInbox">;
+
+/**
+ * The five "What notifies you" switches (`inbox` flag), in R20's order. A notify switch only stops
+ * the notification - the item still reaches the inbox - while the listing switch takes reports out
+ * of the inbox list and the to read figure and leaves them in each conversation.
+ */
+const NOTIFY_SWITCHES: ReadonlyArray<{
+  key: keyof AlertSettings["notify"] | "reportsInInbox";
+  glyph: string;
+  label: string;
+  tip: string;
+}> = [
+  {
+    key: "blockingQuestions",
+    glyph: "?",
+    label: "Blocking questions notify",
+    tip: "Notify when an agent stops and waits on your answer. Off, the question still reaches the inbox",
+  },
+  {
+    key: "filedQuestions",
+    glyph: "✎",
+    label: "Questions filed while working notify",
+    tip: "Notify when an agent files a question and keeps working. Off, the question still reaches the inbox",
+  },
+  {
+    key: "reports",
+    glyph: "▤",
+    label: "Agent reports notify",
+    tip: "Notify when an agent posts a report. Off, the report still reaches the inbox",
+  },
+  {
+    key: "reportsInInbox",
+    glyph: "☰",
+    label: "Agent reports are listed in the inbox",
+    tip: "List reports in the inbox and count them in to read. Off, they stay in each conversation and are not marked read",
+  },
+  {
+    key: "stuck",
+    glyph: "⚠",
+    label: "Stuck sessions notify",
+    tip: "Notify when a session looks stuck. Off, it still shows on the board",
+  },
+];
+
 /**
  * The popover's contents, split by what OWNS each piece of state.
  *
@@ -81,11 +129,13 @@ export function AlertPanel({
   buffered,
   now,
   preview,
+  notifySettings = null,
   onEnable,
   onFlipDesktop,
   onFlipSound,
   onFlipAway,
   onTogglePreview,
+  onFlipNotify = () => undefined,
 }: {
   perm: NotificationPermission;
   /** Desktop notifications wanted AND permitted - the effective state. */
@@ -97,11 +147,14 @@ export function AlertPanel({
   buffered: AwayBufferSummary | null;
   now: number;
   preview: boolean;
+  /** The "What notifies you" switches while the `inbox` flag is on; null hides the group. */
+  notifySettings?: NotifySettings | null;
   onEnable: () => void;
   onFlipDesktop: (next: boolean) => void;
   onFlipSound: (next: boolean) => void;
   onFlipAway: (next: boolean) => void;
   onTogglePreview: () => void;
+  onFlipNotify?: (patch: Partial<NotifySettings>) => void;
 }): React.JSX.Element {
   const isAway = Boolean(away?.away);
   const awayMs = isAway && away?.awaySince != null ? Math.max(0, now - away.awaySince) : null;
@@ -149,6 +202,28 @@ export function AlertPanel({
         tip="Play a chime when a session needs you"
         onFlip={onFlipSound}
       />
+
+      {notifySettings && (
+        <>
+          <span className="alert-sec">What notifies you</span>
+          {NOTIFY_SWITCHES.map(({ key, glyph, label, tip }) => {
+            const on = key === "reportsInInbox" ? notifySettings.reportsInInbox : notifySettings.notify[key];
+            return (
+              <ChannelRow
+                key={key}
+                glyph={glyph}
+                label={label}
+                on={on}
+                tip={tip}
+                onFlip={(next) =>
+                  onFlipNotify(key === "reportsInInbox"
+                    ? { reportsInInbox: next }
+                    : { notify: { ...notifySettings.notify, [key]: next } })}
+              />
+            );
+          })}
+        </>
+      )}
 
       {/* Away mode is not a third channel, so it is not a third row. Server state, its
           own card, and the card carries the consequences of being in it. */}
@@ -258,6 +333,7 @@ export function AlertBar({
   const [now, setNow] = useState(() => Date.now());
   /** Whether the buffered preview is unfolded. Collapses with the popover. */
   const [preview, setPreview] = useState(false);
+  const inboxOn = useFeatureFlag(INBOX_FLAG);
 
   useEffect(() => {
     function onDoc(e: MouseEvent): void {
@@ -326,6 +402,8 @@ export function AlertBar({
           buffered={buffered}
           now={now}
           preview={preview}
+          notifySettings={inboxOn ? { notify: settings.notify, reportsInInbox: settings.reportsInInbox } : null}
+          onFlipNotify={update}
           onEnable={() => void enable()}
           onFlipDesktop={(next) => update({ notifications: next })}
           onFlipSound={(next) => {

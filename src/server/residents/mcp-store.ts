@@ -207,6 +207,7 @@ function collision(
   }
   for (const agent of harnesses) {
     if (globals.get(agent)?.has(lower)) {
+      // oxlint-disable-next-line repository/agent-comparison -- This error names the native MCP settings owner.
       return `${agent === "claude" ? "Claude Code" : "Codex"} already has a global MCP server named ${name}; choose another name`;
     }
   }

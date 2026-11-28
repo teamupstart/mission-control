@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   findRolloutForSession,
@@ -15,6 +14,7 @@ import {
 } from "../src/server/harness/codex/rollout.ts";
 import { codexTranscript } from "../src/server/harness/codex/transcript.ts";
 import type { Session } from "@shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Records shaped like real Codex rollout JSONL lines.
 const sessionMeta = (cwd: string, ts: string): string =>
@@ -57,7 +57,7 @@ test("parseSessionMeta reads cwd + start, rejects other records", () => {
 });
 
 test("readHeadLine preserves a real-sized session header with embedded instructions", () => {
-  const root = mkdtempSync(join(tmpdir(), "codex-head-"));
+  const root = tempDir("codex-head-");
   const path = join(root, "rollout.jsonl");
   const header = JSON.stringify({
     timestamp: "2026-07-12T10:00:00.000Z",
@@ -105,7 +105,7 @@ test("context uses current-turn usage, not cumulative usage, and can reset after
 });
 
 test("passive reads retain Codex model and effort after they leave the tail window", () => {
-  const root = mkdtempSync(join(tmpdir(), "codex-meta-tail-"));
+  const root = tempDir("codex-meta-tail-");
   const path = join(root, "rollout.jsonl");
   writeFileSync(path, [
     sessionMeta("/repo/app", "2026-07-12T10:00:00.000Z"),
@@ -135,7 +135,7 @@ test("Codex rate limits retain their declared duration and source", () => {
 });
 
 test("a pane-less Codex SDK session reads runway from its reported rollout path", async () => {
-  const root = mkdtempSync(join(tmpdir(), "codex-sdk-limits-"));
+  const root = tempDir("codex-sdk-limits-");
   process.env.MISSION_HOME = join(root, "state");
   const { Registry } = await import("../src/server/registry.ts");
   const { startRuntimeMetaPoller } = await import("../src/server/runtime-meta.ts");
@@ -245,7 +245,7 @@ const codexSession = (over: Partial<Session>): Session =>
   ({ agent: "codex", cwd: "/repo/app", startedAt: null, ...over }) as Session;
 
 function seedRollouts(): string {
-  const root = mkdtempSync(join(tmpdir(), "codex-sess-"));
+  const root = tempDir("codex-sess-");
   const day = join(root, "2026", "07", "12");
   mkdirSync(day, { recursive: true });
   writeFileSync(

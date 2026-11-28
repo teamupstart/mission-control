@@ -1,3 +1,5 @@
+import { workflowCommandName } from "@shared/workflow.ts";
+import { useWorkflowCommandSlots } from "./useWorkflowCommandSlots.ts";
 import type {
   PersonaView,
   SessionAction,
@@ -10,7 +12,6 @@ import type {
   WorkflowEvidenceReadinessPolicy,
 } from "@shared/workflow.ts";
 import {
-  WORKFLOW_CHECK_SLOTS,
   CODERABBIT_COMMAND_STATUS_NOTE,
   WORKFLOW_LIMITS,
   personaChoiceLabel,
@@ -361,6 +362,7 @@ export function WorkflowProperties({
   onConfirm: (request: WorkflowConfirmRequest) => void;
   roundLimit?: WorkflowRoundLimitControl;
 }): React.JSX.Element {
+  const visibleCommandSlots = useWorkflowCommandSlots();
   const selectedNode = selection?.kind === "node" ? workflow.draft.nodes.find((node) => node.id === selection.id) : null;
   const selectedEdge = selection?.kind === "edge" ? workflow.draft.edges.find((edge) => edge.id === selection.id) : null;
   const scoped = diagnostics.filter((item) =>
@@ -513,7 +515,8 @@ export function WorkflowProperties({
               <label>Command
                 <Tooltip label="Which deterministic gate this node runs">
                   <select disabled={readOnly} value={selectedNode.slot} onChange={(event) => replaceNode({ ...selectedNode, slot: event.target.value as WorkflowCheckSlot })}>
-                    {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+                    {selectedNode.slot === "inspector" && !visibleCommandSlots.some(slot => slot === "inspector") && <option value="inspector">Local Inspector (preview off)</option>}
+                    {visibleCommandSlots.map((slot) => <option key={slot} value={slot}>{workflowCommandName(slot)}</option>)}
                   </select>
                 </Tooltip>
               </label>
@@ -530,6 +533,7 @@ export function WorkflowProperties({
                 </Tooltip>{" "}
                 configures for that slot here. {selectedNode.slot === "coderabbit"
                   ? CODERABBIT_COMMAND_STATUS_NOTE
+                  : selectedNode.slot === "inspector" ? "Enabled reviews read the submitted checkout. If access is unavailable, the stage waits for operator action."
                   : "An unconfigured or unauthorized Command, or one this build cannot run, passes with a note saying which."}
               </p>
             </>

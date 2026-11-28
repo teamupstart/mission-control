@@ -1,13 +1,12 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: Pause all and priority hold the backlog autopilot's launches, and a person's
 // own launches go through. The hold has its OWN override, separate from the parked-task one,
@@ -15,7 +14,7 @@ import type { Task } from "../src/shared/types.ts";
 // during a pause, and launching during a pause is not consent to start a parked task. A Foreman
 // worker that claims neither is held by both, which is what stops one older than this change.
 
-const home = mkdtempSync(join(tmpdir(), "mission-task-pause-hold-"));
+const home = tempDir("mission-task-pause-hold-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");

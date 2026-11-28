@@ -36,7 +36,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   const path = `${EVIDENCE}${name}.png`;
   if (target) await target.screenshot({ path, animations: "disabled" });
   else await page.screenshot({ path, animations: "disabled" });
-  // oxlint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/dispatch-persona/${name}.png`);
 }
 

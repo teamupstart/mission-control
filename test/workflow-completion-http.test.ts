@@ -1,11 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { SessionIntentGuard } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const PROMPTED_INTENT: SessionIntentGuard = {
   objective: "Finish the prompted workflow",
@@ -14,7 +13,7 @@ const PROMPTED_INTENT: SessionIntentGuard = {
   episodeKey: "intent:1:1",
 };
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-completion-http-"));
+const home = tempDir("mission-workflow-completion-http-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -345,6 +344,40 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     mode: "live",
     repoAllowlist: ["/repo"],
   });
+
+  for (const retire of [undefined, true]) {
+    const response = await app.request("/api/sessions/claimed/queue/wrapup/drain", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedIntent: { ...PROMPTED_INTENT, objective: "The discarded Goal" },
+        retire,
+      }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal(registry.getQueue("claimed")?.wrapupAskedAt, null);
+    assert.equal(registry.getQueue("claimed")?.wrapupAnswer, null);
+  }
+  const unguardedDrain = await app.request("/api/sessions/claimed/queue/wrapup/drain", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ retire: true }),
+  });
+  assert.equal(unguardedDrain.status, 400);
+  assert.equal(registry.getQueue("claimed")?.wrapupAskedAt, null);
+
+  const releaseOnly = registry.registerSdkSession({
+    id: "sdk:release-only", agent: "claude", name: "release only", cwd: "/repo", agentSessionId: "release-only",
+  });
+  registry.captureAcceptedPrompt(releaseOnly.id, "Resume automatic handoff.", "release-only");
+  assert.equal(registry.getGoal(releaseOnly.id)?.objective, null);
+  const releaseOnlyDrain = await app.request(`/api/sessions/${encodeURIComponent(releaseOnly.id)}/queue/wrapup/drain`, {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ expectedIntent: null, retire: true }),
+  });
+  assert.equal(releaseOnlyDrain.status, 200);
+  assert.equal(registry.getQueue(releaseOnly.id)?.wrapupAnswer, "foreman:automatic-wrapup-skipped");
 
   const bindingsBeforeUnbound = workflows.store.listBindings().length;
   assert.deepEqual(await (await request(app, "unbound", "0".repeat(64))).json(), {

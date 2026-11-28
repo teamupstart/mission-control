@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { McpListTasks, McpTaskSnapshot } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { taskAfterWorkForReads, taskShapingForReads } from "./shaping/reads.ts";
 import { listTasks, primaryRepoPrForTask } from "./db.ts";
 
 const CursorSchema = z.object({
@@ -25,7 +26,14 @@ export function taskReadSnapshot(task: Task): McpTaskSnapshot {
   // taskReposByTask already load extraRepos' PR bindings from work_episode_prs.
   // The callback supplies only live review feedback, never the attached PR URLs;
   // omit that session-private feedback while preserving the durable PR projection.
-  return { ...task, prUrl, repoPrs: taskRepoPrSummaries(task, { ...primary, prUrl }, () => null) };
+  const shown = taskShapingForReads(task);
+  const afterWork = taskAfterWorkForReads(shown);
+  return {
+    ...shown,
+    ...(afterWork ? { shapingAfterWork: afterWork } : {}),
+    prUrl,
+    repoPrs: taskRepoPrSummaries(task, { ...primary, prUrl }, () => null),
+  };
 }
 
 /** Reads durable rows, including completed tasks no longer in the Registry. */
@@ -33,7 +41,7 @@ export function readTaskPage(query: McpListTasks) {
   const filters = createHash("sha256").update(JSON.stringify({
     status: query.status, kind: query.kind, repository: query.repository,
     labels: [...new Set(query.labels ?? [])].sort(), priority: query.priority,
-    enabled: query.enabled, dependsOnTaskId: query.dependsOnTaskId,
+    enabled: query.enabled, dependsOnTaskId: query.dependsOnTaskId, workUnitId: query.workUnitId,
   })).digest("hex");
   let after: z.infer<typeof CursorSchema> | undefined;
   if (query.cursor) {
@@ -54,6 +62,7 @@ export function readTaskPage(query: McpListTasks) {
     (query.priority === undefined || task.priority === query.priority) &&
     (query.enabled === undefined || task.enabled === query.enabled) &&
     (query.dependsOnTaskId === undefined || task.dependencies.some((edge) => edge.type === "task" && edge.taskId === query.dependsOnTaskId)) &&
+    (query.workUnitId === undefined || task.workUnitId === query.workUnitId) &&
     (!after || task.createdAt < after.createdAt || (task.createdAt === after.createdAt && task.id < after.id)),
   ).sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   const tasks = matching.slice(0, query.limit);

@@ -1,10 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { tempDir, testTempRoot } from "./temp-root.mjs";
 
 // What is at stake: the operator's real settings database.
 //
@@ -30,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // guard is deliberately not trusted to make the bootstrap redundant. Each is tested on its
 // own, because the whole point of having two is that either one can be broken alone.
 
-const home = mkdtempSync(join(tmpdir(), "mission-db-isolation-"));
+const home = tempDir("mission-db-isolation-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -648,7 +649,9 @@ test("a worker that sets nothing is isolated by the bootstrap alone", () => {
   const state = openedStateDir(runChild(OPEN_AND_REPORT, {}, { bootstrap: true }));
 
   assert.match(state, /mission-test-state-/, "the worker did not land in a bootstrap dir");
-  assert.ok(state.startsWith(tmpdir()), `${state} is not under ${tmpdir()}`);
+  // Inside this worker's temp root: the child's own root is nested in it, so the child's
+  // state dir is removed with the child, and with this worker if the child is killed.
+  assert.ok(state.startsWith(testTempRoot()), `${state} is not under ${testTempRoot()}`);
   assert.equal(
     existsSync(join(home, ".mission-control")),
     false,

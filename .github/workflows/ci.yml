@@ -17,6 +17,9 @@ name: CI
 # matrices split both suites far enough that slower runs preserve their diagnostics instead of
 # being terminated by an aggressive timeout.
 #
+# The dedicated Linux voice job caches the recognition and synthesis models (about 625 MB).
+# Only that job may fetch missing test models. Unit shards check cached models offline.
+#
 # The one macOS job, `package`, runs only on `workflow_dispatch`, never on a push. A push run's
 # conclusion is the readiness signal `distribution.yml` consumes: it signs and publishes a
 # commit only after push CI for that exact commit and ref concludes `success`. A job that
@@ -122,6 +125,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v5
@@ -141,6 +146,18 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check structural conventions
+        run: npm run konsistent
+        env:
+          KONSISTENT_NO_UPDATE_CHECK: 'true'
+
+      - name: Check documentation links
+        run: node scripts/check-doc-links.mjs
+
+      - name: Check pull request policy
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-pull-request-policy.mjs "$GITHUB_EVENT_PATH"
+
       # The packaged app's `package.json` version is what the updater compares against a
       # release tag, so a tag that disagrees produces a release the updater either never offers
       # or offers forever. Failing the tag's push CI here stops distribution before it signs
@@ -149,6 +166,45 @@ jobs:
       - name: Assert the tag, package.json, and lockfile agree
         if: startsWith(github.ref, 'refs/tags/')
         run: node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"
+
+  voice-recognizer:
+    name: voice recognizer (Linux)
+    needs: dependencies-node-24
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MISSION_VOICE_RECOGNIZER_JOB: '1'
+      MISSION_VOICE_SPEECH_TEST_MODEL_DIR: ${{ github.workspace }}/.tmp/voice-speech-model
+      MISSION_VOICE_TEST_MODEL_DIR: ${{ github.workspace }}/.tmp/voice-recognizer-model
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Restore node_modules
+        uses: actions/cache/restore@v5
+        with:
+          path: node_modules
+          key: dependencies-${{ runner.os }}-${{ runner.arch }}-node-24-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - name: Key the model cache by its pinned files
+        id: model
+        run: |
+          node --import tsx --input-type=module >> "$GITHUB_OUTPUT" <<'JS'
+          import { createHash } from "node:crypto";
+          import { VOICE_TEST_MODEL, VOICE_SPEECH_MODELS } from "./src/shared/voice-models.ts";
+          const files = [...VOICE_TEST_MODEL.files, ...VOICE_SPEECH_MODELS["supertonic-3"].files].map(({ path, sha256 }) => [path, sha256]);
+          console.log("digest=" + createHash("sha256").update(JSON.stringify(files)).digest("hex"));
+          JS
+      - uses: actions/cache@v5
+        with:
+          path: |
+            .tmp/voice-recognizer-model
+            .tmp/voice-speech-model
+          # Bump the generation to retire a damaged immutable cache for these model pins.
+          key: voice-recognizer-${{ steps.model.outputs.digest }}-v1
+          restore-keys: voice-recognizer-${{ steps.model.outputs.digest }}
+      - run: node --test --test-concurrency=1 --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts test/voice-speech-synth.test.ts
 
   # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used
   # unflagged from Node 24); this pins the supported floor and the current release. Node 25
@@ -342,6 +398,9 @@ jobs:
   package:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
+    # The voice-listener manifest requires Swift tools 6.2.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     name: package (macOS arm64)
     timeout-minutes: 60
     steps:

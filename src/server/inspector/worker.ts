@@ -1,3 +1,5 @@
+import { resolveMaxDiffBytes, runInspectorReview, INSPECTOR_VERDICT_JSON_SCHEMA } from "./review-core.ts";
+import { INSPECTOR_DENY_PATHS } from "@shared/repository-policy.ts";
 import { codeRabbitEnabled } from "../shipping/config.ts";
 import { observeCodeRabbit } from "./code-rabbit.ts";
 import { recordCodeRabbit, failCodeRabbit } from "../db.ts";
@@ -15,12 +17,12 @@ import {
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
-import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
+import { createLimiter, runStructured, parseModelReply } from "../llm/structured.ts";
 import { llmRunner } from "../llm/index.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import type { LlmSpendRole } from "@shared/llm-spend.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
-import { readStandards } from "../standards.ts";
+import type { WorkflowLocalReviewMatch } from "@shared/workflow.ts";
 import { unref } from "../util/timers.ts";
 import {
   INSPECTOR_LIMITS,
@@ -36,10 +38,10 @@ import type {
 } from "@shared/types.ts";
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
-import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts";
+import { getInspectorConfig, inspectorExecution } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
-import { buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "./prompt.ts";
+import { buildReplyPrompt, promptedOpenRows } from "./prompt.ts";
 import {
   CLEAN_REVIEW_FINGERPRINT,
   formatMarker,
@@ -53,7 +55,7 @@ import { reviewBaseChanged } from "@shared/shipping.ts";
 import { activeStackGitHub, useStackGitHub, type StackGitHub } from "../stacking/github.ts";
 import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
 import { observeClosedStackChildren, observeStackLifecycle, type StackLifecycleContext } from "../stacking/state.ts";
-import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
+import { InspectorReplySchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
@@ -87,7 +89,6 @@ import type {
   ThreadSnapshot,
 } from "./github.ts";
 
-const INSPECTOR_VERDICT_JSON_SCHEMA = providerJsonSchema(InspectorVerdictSchema);
 const INSPECTOR_REPLY_JSON_SCHEMA = providerJsonSchema(InspectorReplySchema);
 
 // The Inspector's tick: review the pull requests we opened, answer follow-ups in our own
@@ -133,43 +134,31 @@ function notifyInspection(
  *
  * Measured on one 10.7KB, five-file diff (44.6KB prompt): 225s / 13 turns on Opus, 272s
  * / 23 turns on Sonnet. So the floor is ~4-5 MINUTES for a small PR on a repo with a
- * standards bundle, and a bigger diff is worse. 600s leaves real headroom above that
+ * standards bundle, and a bigger diff is worse. 600s left real headroom above that
  * while still bounding a run that has genuinely hung.
+ *
+ * Those timings are at the provider's default effort. A review now runs at
+ * `INSPECTOR_REVIEW_EFFORT`, which takes longer and has not been measured, so the ceiling
+ * is doubled to 1200s rather than left where a thorough review of a large diff would
+ * plausibly reach it.
  *
  * The reason a generous ceiling is affordable: nothing waits on this. One PR is reviewed
  * at a time (`createLimiter(1)`), the sweep is 90s, and a slow round delays the next
  * poll rather than a person. A timeout here should mean "something is wrong", not
  * "review of an ordinary pull request".
  */
-export const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 600_000);
+export const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 1_200_000);
 /**
  * A follow-up reply is a smaller job than a review - one thread to answer rather than a
- * whole diff to judge - so it keeps its own, tighter wire. Half the review's, and moved
- * with it: the 90s here came from the same guess as the 180s above, and it carries the
+ * whole diff to judge - so it keeps its own, tighter wire. It runs at the provider's
+ * default effort, so it did not move when the review's ceiling doubled for `xhigh`. It was
+ * half the review's and moved with it before that: the 90s here came from the same guess as the 180s above, and it carries the
  * SAME shape (the diff in the prompt, the same three tools, the same repo to read), so
  * whatever made the review overrun applies to it too. Unmeasured, unlike the review, and
  * marked as such rather than dressed up.
  */
 export const REPLY_TIMEOUT_MS = Number(envVar("INSPECTOR_REPLY_TIMEOUT_MS") ?? 300_000);
-/**
- * Cap on the diff we put in a prompt. A 2MB refactor is not reviewable in one pass anyway.
- *
- * BYTES, and `fetchDiff` applies it as such - it read as UTF-16 code units, which let a
- * diff of CJK or box-drawing content through at ~3x this.
- *
- * `INSPECTOR_MAX_DIFF_BYTES` is the documented override and is read BARE, with the
- * `MISSION_` / `FLEET_` / `HARNESS_` spellings `envVar` resolves still winning ahead of
- * it so no existing setting stops working. The bare alias is granted HERE, on this one
- * setting, and deliberately NOT added to `envVar`'s chain: that chain also serves
- * `envVar("HOME")` and `envVar("PORT")`, so a bare tier in it would let the `HOME` every
- * shell exports relocate the state directory and a stray `PORT` move the daemon off
- * 7317. This name is specific enough to carry no such collision.
- */
-export function resolveMaxDiffBytes(): number {
-  return Number(
-    envVar("INSPECTOR_MAX_DIFF_BYTES") ?? process.env.INSPECTOR_MAX_DIFF_BYTES ?? 400_000,
-  );
-}
+export { resolveMaxDiffBytes } from "./review-core.ts";
 const MAX_DIFF_BYTES = resolveMaxDiffBytes();
 /**
  * Replies we will write in one thread before we stop.
@@ -183,18 +172,6 @@ const MAX_REPLIES_PER_THREAD = 6;
  * is a bug somewhere, and this is what stops that bug being expensive and public.
  */
 /**
- * The model both the review and the follow-up replies run on: config, then
- * `MISSION_INSPECTOR_MODEL`, then the spec's shipped default.
- *
- * One resolver, in `config.ts`, because the settings panel prints this same answer
- * through `/api/inspector/status` and the two must not be able to disagree about it. See
- * `INSPECTOR_MODEL_SPEC` for why the default is named at all rather than left to the CLI.
- */
-function reviewModel(cfg: InspectorConfig): string {
-  return inspectorModel(cfg).id;
-}
-
-/**
  * `role` rides alongside `timeoutMs` rather than being derived here, because the two calls
  * this builds for are different jobs with different prices - a full review carries the
  * largest prompt in the system, a follow-up reply a third of it - and folding them into one
@@ -207,14 +184,14 @@ function inspectorRunOptions(
   role: LlmSpendRole,
   schema?: Record<string, unknown>,
 ) {
-  // `inspectorRunner`, not `cfg.runner ?? "claude"`: an unset provider inherits the app-wide
-  // ladder, and resolving it here a second way is how the worker and the panel come to print
-  // different providers for the same call.
-  const runner = llmRunner(inspectorRunner(cfg).id);
+  // A full review and a follow-up reply default to different efforts, so the role decides.
+  const execution = inspectorExecution(cfg, role === "inspector:reply" ? "reply" : "review");
+  const runner = llmRunner(execution.runner.id);
   return {
     runner,
     options: {
-      model: reviewModel(cfg),
+      model: execution.model.id,
+      effort: execution.effort,
       timeoutMs,
       role,
       ...(schema ? { schema } : {}),
@@ -311,23 +288,7 @@ export const REVIEW_TOOLS = "Read,Grep,Glob";
  * protects nothing it names; `Glob` confirms the files exist. The grant is what pays
  * for the tool access, so it has to cover the whole grant.
  */
-export const DENY_PATHS = [
-  "**/.env",
-  "**/.env.*",
-  "**/*.pem",
-  "**/*.key",
-  "**/*.p12",
-  "**/id_rsa*",
-  "**/id_ed25519*",
-  "**/.git/config",
-  "**/.npmrc",
-  "**/.netrc",
-  "**/credentials*",
-  "//Users/*/.aws/**",
-  "//Users/*/.ssh/**",
-  "//Users/*/.claude/**",
-  "//Users/*/.mission-control/**",
-];
+export const DENY_PATHS = INSPECTOR_DENY_PATHS;
 
 /**
  * Exported alongside `REVIEW_TOOLS` and `DENY_PATHS` so `llm-runner-contract.test.ts` can
@@ -381,13 +342,9 @@ function liveDir(pr: InspectorPr): string | null {
 /**
  * What one PR's pass through the tick has already done to its row.
  *
- * The tick reads `InspectorPr` once and then writes to it from several places, so the
- * pre-tick snapshot goes stale the first time anything fails. Two things went wrong
- * without this: a second failure in the same pass re-derived `failCount` from the stale
- * snapshot and so never got past 1, and the "nothing pushed" branch cleared a failure
- * that had been recorded seconds earlier in the same pass - which made the backoff
- * oscillate between one interval and an immediate retry on the exact case it exists
- * for, a PR whose head never moves and whose replies keep failing.
+ * A reply can be posted successfully and then fail to resolve its thread.
+ * Track the failure separately from whether any work was done, so the pass
+ * stops spending model calls and leaves the newly recorded backoff in force.
  */
 interface TickState {
   /** Set by `noteFailure`. Nothing may clear the failure state while this is true. */
@@ -410,15 +367,17 @@ interface TickState {
 function noteFailure(
   pr: InspectorPr,
   reason: string,
-  now: number,
   tick: TickState,
   kind: InspectorFailKind = "persistent",
 ): false {
+  // Start the wait at the failure itself. A slow call may outlast the entire
+  // backoff interval measured from the start of the PR's pass.
+  const now = Date.now();
   recordAutomationTransition(`${pr.key}:${now}`, { feature: "inspector", action: "review", outcome: "failed", coverage: "owner_transition" },
     { kind: "system", origin: "daemon", basis: "owner" }, now);
   tick.failed = true;
-  // Re-read rather than trusting the snapshot: an earlier failure in this same pass has
-  // already written a higher count, and incrementing the stale one would discard it.
+  // The durable count can differ from the snapshot, for example when a completed
+  // review resets it before a pending resolution or clean publication fails.
   const failCount = (getInspectorPr(pr.key)?.failCount ?? pr.failCount) + 1;
   const wait = kind === "push-fixable" ? BACKOFF_CEILING_MS : backoffMs(failCount);
   updateInspectorPr(
@@ -658,7 +617,7 @@ function recordPrObservation(key: string, s: PrSnapshot, now: number, reopen = f
 
 /** What an on-demand read of one adopted pull request found. */
 export type InspectorReobservation =
-  | { ok: true; state: PrSnapshot["state"] }
+  | { ok: true; state: PrSnapshot["state"]; mergedCiWitness?: PrSnapshot["mergedCiWitness"] }
   | { ok: false; error: string };
 
 /**
@@ -687,7 +646,7 @@ export async function reobserveInspectorPr(
   recordPrObservation(prKey, snap.value, now, true);
   registry.refreshInspections();
   notifyInspection(registry, prKey, snap.value.headSha || null, snap.value.state, now);
-  return { ok: true, state: snap.value.state };
+  return { ok: true, state: snap.value.state, ...(snap.value.mergedCiWitness ? { mergedCiWitness: snap.value.mergedCiWitness } : {}) };
 }
 
 /** Run one PR through the whole cycle. Returns true when it did something. */
@@ -695,8 +654,10 @@ async function processPr(
   cfg: InspectorConfig,
   pr: InspectorPr,
   now: number,
+  replyRetryOrder: Map<string, Set<string>>,
   onObserved: ((snapshot: PrSnapshot, observedAt: number) => void) | null = null,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
+  localReview: LocalReviewMatcher = noLocalReview,
 ): Promise<boolean> {
   const tick: TickState = { failed: false };
   const backedOff = pr.nextAttemptAt !== null && now < pr.nextAttemptAt;
@@ -706,7 +667,7 @@ async function processPr(
     if (codeRabbitEnabled()) failCodeRabbit(pr.key, "The owning checkout is unavailable", now);
     if (!cfg.enabled) return false;
     if (backedOff) return false;
-    return noteFailure(pr, "the checkout this PR was opened from is gone", now, tick);
+    return noteFailure(pr, "the checkout this PR was opened from is gone", tick);
   }
 
   // Read the PR even while backed off. The backoff is there to stop paying for repeated
@@ -719,7 +680,7 @@ async function processPr(
     if (codeRabbitEnabled()) failCodeRabbit(pr.key, snap.error ?? "Could not read PR", now);
     if (!cfg.enabled) return false;
     if (backedOff) return false;
-    return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
+    return noteFailure(pr, snap.error ?? "could not read the pull request", tick);
   }
   const s = snap.value;
   if (codeRabbitEnabled()) {
@@ -758,6 +719,7 @@ async function processPr(
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it
   // keeps the audit trail of what was said on a PR that has since landed.
   if (s.state !== "OPEN") {
+    replyRetryOrder.delete(pr.key);
     updateInspectorPr(
       pr.key,
       {
@@ -816,56 +778,89 @@ async function processPr(
   // the backoff applies rather than us re-asking every poll.
   const login = await authenticatedLogin(dir, now);
   if (!login) {
-    return noteFailure(pr, "could not confirm which GitHub account gh speaks for", now, tick);
+    return noteFailure(pr, "could not confirm which GitHub account gh speaks for", tick);
   }
 
   const rows = existingByFingerprint(pr.key);
   recordFindingUrls(rows, snapshotLinkSources(s), login);
   const posture = inspectorPosture(cfg, pr.cwd, pr.repoRoot);
   const post = posture === "live";
+  // A head whose tree a passed Local Inspector review already read. The workflow manager is
+  // the one owner of that answer; a failure to get it is no match, which keeps the GitHub
+  // review. A matched head gets no review, no reply and no post below - observation, the
+  // CodeRabbit follow-up, the stack lifecycle and the merge check above and below still run.
+  const localMatch = s.headSha
+    ? await localReview(pr.key, { headSha: s.headSha, baseRefName: s.baseRefName || null }).catch((error: unknown) => {
+      console.error("[inspector] local review match failed:", pr.key, error);
+      return null;
+    })
+    : null;
   const readDiff = diffOncePerTick(dir, pr);
   let acted = false;
   const resolvedThreadIds = new Set<string>();
-  // A review or reply may have succeeded before resolving its thread failed. Its durable marker
-  // authorizes retrying that mutation, without treating an operator's ledger override
-  // as permission to close GitHub threads.
-  for (const [fingerprint, thread] of ourThreads(s, login)) {
-    if (!post) break;
-    if (!rows.get(fingerprint)?.resolutionPending) continue;
-    const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
-    if (!resolved.ok) return noteFailure(pr, "could not resolve the answered thread", now, tick);
-    resolvedThreadIds.add(thread.threadId);
-    closeRow(rows, fingerprint, now);
-    acted = true;
-  }
 
-  // 1. Answer anyone waiting on us. Before the re-review, because a question asked three
-  //    pushes ago should not queue behind a fresh review of a big diff.
-  //    Only when we could actually send the answer: a reply has no `drafted` state, so
-  //    running one we cannot post spends a model call to produce nothing.
-  const waiting = post ? threadsAwaitingUs(s, rows, login) : [];
-  if (waiting.length) {
-    const diff = await readDiff();
-    for (const w of waiting) {
-      const replied = await answerFollowUp(
-        cfg,
-        pr,
-        dir,
-        w,
-        rows,
-        diff.value?.diff ?? "",
-        diff.value?.truncated ?? false,
-        post,
-        login,
-        now,
-        tick,
-        resolvedThreadIds,
-      );
-      if (replied) acted = true;
+  // 1. Give waiting questions and outstanding resolutions a turn before re-reviewing.
+  // Both share a queue so a model failure and a GitHub refusal follow the same retry order.
+  const work = new Map<string, () => Promise<string | null>>();
+  const resolutionKey = (threadId: string) => `resolve:${threadId}`;
+  if (post && !localMatch) {
+    for (const w of threadsAwaitingUs(s, rows, login)) {
+      if (w.newest.databaseId === null) continue;
+      const key = `reply:${w.newest.databaseId}`;
+      work.set(key, async () => {
+        const diff = await readDiff();
+        const replied = await answerFollowUp(
+          cfg, pr, dir, { ...w, row: rows.get(w.row.fingerprint) ?? w.row }, rows,
+          diff.value?.diff ?? "", diff.value?.truncated ?? false,
+          post, login, now, tick, resolvedThreadIds,
+        );
+        if (replied) acted = true;
+        if (!tick.failed) return null;
+        // A reply that posted is complete. Only the resolution needs another turn.
+        return replied ? resolutionKey(w.thread.id) : key;
+      });
+    }
+    // Only a previously authorized resolution on an owned thread may be retried.
+    for (const [fingerprint, thread] of ourThreads(s, login)) {
+      const pending = rows.get(fingerprint);
+      if (!pending?.resolutionPending) continue;
+      const key = resolutionKey(thread.threadId);
+      work.set(key, async () => {
+        // A new reply may have superseded this intent after the snapshot was read.
+        if (rows.get(fingerprint) !== pending) return null;
+        const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
+        if (!resolved.ok) {
+          noteFailure(pr, "could not resolve the answered thread", tick);
+          return key;
+        }
+        resolvedThreadIds.add(thread.threadId);
+        closeRow(rows, fingerprint, now);
+        acted = true;
+        return null;
+      });
     }
   }
 
-  if (tick.failed) return acted;
+  const order = new Set(post && !localMatch ? [...(replyRetryOrder.get(pr.key) ?? []), ...work.keys()] : []);
+  if (post && !localMatch) replyRetryOrder.delete(pr.key);
+  for (const key of order) {
+    const run = work.get(key);
+    if (run && inspectorPosture(getInspectorConfig(), pr.cwd, pr.repoRoot) !== "live") {
+      // A settings change pauses the queue without moving the current slot or adding backoff.
+      replyRetryOrder.set(pr.key, order);
+      return acted;
+    }
+    order.delete(key);
+    if (!run) continue;
+    const failure = await run();
+    if (failure === null) continue;
+    // Keep the remaining work ahead of the failure across sweeps, even if GitHub
+    // reorders threads or more questions arrive.
+    order.delete(failure);
+    order.add(failure);
+    replyRetryOrder.set(pr.key, order);
+    return acted;
+  }
 
   // 2. Ship it, if YOLO mode says every gate is green.
   //
@@ -906,14 +901,17 @@ async function processPr(
   if (baseReview === "unknown") {
     // Neither merge on a review that may describe another diff nor spend a review on a
     // question GitHub did not answer: try again on a later tick.
-    return noteFailure(pr, "could not confirm the reviewed diff's merge base with GitHub", now, tick) || acted;
+    return noteFailure(pr, "could not confirm the reviewed diff's merge base with GitHub", tick) || acted;
   }
   // Incomplete provenance must recover before it can authorize Shipping too.
   if (
     baseReview === "current" &&
     gated.reviewComplete !== false &&
-    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)
+    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate, localMatch,
+      () => localReview(pr.key, { headSha: s.headSha, baseRefName: s.baseRefName || null }))
   ) return true;
+
+  if (localMatch) return recordLocalReview(pr, s, posture, now) || acted;
 
   // 3. Nothing pushed: reuse the completed review and finish any pending publication.
   //
@@ -923,9 +921,7 @@ async function processPr(
   // no-op behavior: repeatedly reviewing a head we still cannot publish buys nothing.
   //
   // Reaching the no-op branch having failed nothing means the PR is healthy again, so a
-  // stale error from an earlier tick is cleared. `tick.failed` rather than the pre-tick
-  // snapshot, because a reply that failed moments ago is this tick's news and clearing
-  // it would hand the backoff back its own reset button.
+  // stale error from an earlier tick is cleared unless this publication attempt fails.
   if (
     s.headSha &&
     s.headSha === pr.headSha &&
@@ -934,6 +930,11 @@ async function processPr(
     !reviewBaseChanged(pr.reviewedBaseRef ?? null, s.baseRefName || null, s.defaultBranch || null) &&
     // ...and the same base name over a moved merge base is a different diff too.
     baseReview === "current" &&
+    // A head recorded from a local match is not a GitHub review. A matched head returned above,
+    // so one that reaches here no longer matches - Local review switched off, a newer run
+    // without the stage, a newer run that did not pass - and is reviewed on GitHub in every
+    // posture, Dry run included, rather than reused as if it had been reviewed.
+    pr.localReviewHeadSha !== pr.headSha &&
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
     // A legacy or incomplete review cannot certify safety. Once its retained findings
     // are resolved, review again on this head; only complete provenance can be reused.
@@ -954,10 +955,51 @@ async function processPr(
   }
 
   if (pr.round >= INSPECTOR_LIMITS.maxRounds) {
-    return noteFailure(pr, `stopped after ${INSPECTOR_LIMITS.maxRounds} rounds`, now, tick);
+    return noteFailure(pr, `stopped after ${INSPECTOR_LIMITS.maxRounds} rounds`, tick);
   }
   const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick, readDiff, resolvedThreadIds);
   return acted || reviewed;
+}
+
+/** The workflow manager's answer to "does this head match a passed local review". */
+export type LocalReviewMatcher = (
+  prKey: string,
+  head: { headSha: string; baseRefName: string | null },
+) => Promise<WorkflowLocalReviewMatch | null>;
+
+const noLocalReview: LocalReviewMatcher = async () => null;
+
+/**
+ * Record a head the Local Inspector passed, with no GitHub review behind it.
+ *
+ * `local` only under a Live Inspector. In Dry run or for a repository not on the Inspector's
+ * list the current posture is recorded instead, as a dry review is, so Dry run never produces
+ * a `local` head; the first sweep after a switch to Live finds the match still holds and
+ * records `local`, again without a GitHub review. Returns whether the row changed.
+ */
+function recordLocalReview(
+  pr: InspectorPr,
+  s: PrSnapshot,
+  posture: ReturnType<typeof inspectorPosture>,
+  now: number,
+): boolean {
+  const reviewPosture = posture === "live" ? "local" : posture;
+  const current = getInspectorPr(pr.key) ?? pr;
+  if (current.headSha === s.headSha && current.localReviewHeadSha === s.headSha
+    && current.reviewPosture === reviewPosture && current.lastError === null) return false;
+  updateInspectorPr(pr.key, {
+    headSha: s.headSha,
+    localReviewHeadSha: s.headSha,
+    reviewPosture,
+    reviewComplete: true,
+    reviewedBaseRef: s.baseRefName || null,
+    reviewedBaseSha: s.baseSha || null,
+    lastError: null,
+    failCount: 0,
+    lastFailKind: null,
+    nextAttemptAt: null,
+  }, now);
+  return true;
 }
 
 async function answerFollowUp(
@@ -1005,14 +1047,15 @@ async function answerFollowUp(
   const result = await runStructured<typeof InspectorReplySchema>(
     (p) => run.runner.run(p, run.options),
     prompt,
-    (raw) => parseModelJson(raw, InspectorReplySchema),
+    (raw) => parseModelReply(raw, InspectorReplySchema),
     "The inspector",
   );
-  if (result.kind !== "ok") return noteFailure(pr, `reply failed: ${result.reason}`, now, tick);
+  if (result.kind !== "ok") return noteFailure(pr, `reply failed: ${result.reason}`, tick);
   const answer = result.value as InspectorReply;
 
   const reply = scrubSecrets(answer.reply.trim());
   if (!reply) return false;
+  if (inspectorPosture(getInspectorConfig(), pr.cwd, pr.repoRoot) !== "live") return false;
 
   // Same marker fingerprint as the thread it belongs to, so a reply of ours is
   // recognisable as ours on the next read - which is what stops us answering our own
@@ -1025,7 +1068,7 @@ async function answerFollowUp(
   ].join("\n");
 
   const res = await replyToComment(dir, pr.owner, pr.repo, pr.number, w.newest.databaseId, body);
-  if (!res.ok) return noteFailure(pr, res.error ?? "reply failed", now, tick);
+  if (!res.ok) return noteFailure(pr, res.error ?? "reply failed", tick);
 
   // Stamp AFTER the send, never before: a failed post that had already recorded the
   // answer would leave someone's question permanently unanswered and invisible.
@@ -1044,13 +1087,18 @@ async function answerFollowUp(
   // it belongs to closes - the reverse reads as a thread closed without an answer.
   //
   // AFTER the reply is stamped, so a failure here cannot cost a duplicate public comment.
-  if (answer.resolved) {
-    const resolved = w.thread.isResolved ? { ok: true } : await resolveThread(dir, w.thread.id);
+  // A thread that looked resolved before the model ran may have reopened. Leave its
+  // intent pending for the next snapshot instead of closing the row from the old state.
+  if (
+    answer.resolved && !w.thread.isResolved && !resolvedThreadIds.has(w.thread.id)
+    && inspectorPosture(getInspectorConfig(), pr.cwd, pr.repoRoot) === "live"
+  ) {
+    const resolved = await resolveThread(dir, w.thread.id);
     if (resolved.ok) {
       closeRow(rows, w.row.fingerprint, now);
       resolvedThreadIds.add(w.thread.id);
     } else {
-      noteFailure(pr, resolved.error ?? "could not resolve the answered thread", now, tick);
+      noteFailure(pr, resolved.error ?? "could not resolve the answered thread", tick);
     }
   }
   return true;
@@ -1075,23 +1123,23 @@ async function publishCleanReview(
   if (!consent.enabled || inspectorPosture(consent, pr.cwd, pr.repoRoot) !== "live") return false;
 
   const fresh = await fetchPr(dir, pr.owner, pr.repo, pr.number);
-  if (!fresh.ok || !fresh.value) return noteFailure(pr, fresh.error ?? "could not confirm current PR head", now, tick);
+  if (!fresh.ok || !fresh.value) return noteFailure(pr, fresh.error ?? "could not confirm current PR head", tick);
   if (fresh.value.state !== "OPEN" || fresh.value.headSha !== snapshot.headSha) return false;
   const input = { cwd: dir, owner: pr.owner, repo: pr.repo, number: pr.number, snapshot: fresh.value, login,
     headSha: snapshot.headSha, resolvedThreadIds };
   const pages = linkCapturingLoaders(dir, pr, fresh.value, rows, login);
   const threads = await ownedThreadsResolved(input, pages.threads);
-  if (!threads.ok) return noteFailure(pr, threads.error ?? "could not inspect review threads", now, tick);
+  if (!threads.ok) return noteFailure(pr, threads.error ?? "could not inspect review threads", tick);
   if (!threads.value) return false;
   const bodyOnly = await hasBodyOnlyFindings(input, pages.reviews);
-  if (!bodyOnly.ok) return noteFailure(pr, bodyOnly.error ?? "could not inspect body-only findings", now, tick);
+  if (!bodyOnly.ok) return noteFailure(pr, bodyOnly.error ?? "could not inspect body-only findings", tick);
   if (bodyOnly.value) return false;
   const existing = await cleanReviewExists(input, pages.reviews);
-  if (!existing.ok) return noteFailure(pr, existing.error ?? "could not inspect clean reviews", now, tick);
+  if (!existing.ok) return noteFailure(pr, existing.error ?? "could not inspect clean reviews", tick);
   if (!existing.value) {
     const body = renderCleanReview(formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round: pr.round }), pr.round);
     const sent = await postReview(dir, pr.owner, pr.repo, pr.number, body, [], snapshot.headSha);
-    if (!sent.ok) return noteFailure(pr, sent.error ?? "could not post the clean review", now, tick);
+    if (!sent.ok) return noteFailure(pr, sent.error ?? "could not post the clean review", tick);
   }
   updateInspectorPr(pr.key, { cleanReviewHeadSha: snapshot.headSha, lastError: null,
     failCount: 0, nextAttemptAt: null, lastFailKind: null }, now);
@@ -1124,7 +1172,6 @@ async function reviewRound(
     return noteFailure(
       pr,
       diffRes.error ?? "could not read the diff",
-      now,
       tick,
       diffRes.tooLarge ? "push-fixable" : "persistent",
     );
@@ -1134,13 +1181,14 @@ async function reviewRound(
   if (paths.length === 0) {
     // Retrying an incomplete Live review must not spin on an unchanged empty diff.
     // Surface the reason and use the existing push-fixable backoff until work changes.
-    if (post) return noteFailure(pr, "no reviewable files in the PR diff", now, tick, "push-fixable");
+    if (post) return noteFailure(pr, "no reviewable files in the PR diff", tick, "push-fixable");
     // Nothing reviewable (an empty or purely-binary diff). Still advance the head, or
     // every tick forever would re-fetch and re-decide the same nothing.
     updateInspectorPr(
       pr.key,
       {
         headSha: s.headSha,
+        localReviewHeadSha: null,
         reviewedBaseRef: s.baseRefName || null,
         reviewedBaseSha: s.baseSha || null,
         reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
@@ -1158,35 +1206,18 @@ async function reviewRound(
   }
 
   const open = [...rows.values()].filter((c) => c.status !== "resolved");
-  const prompt = buildReviewPrompt({
-    brief: readBrief(pr.repoRoot),
-    standards: readStandards(pr.repoRoot, paths),
-    prTitle: s.title,
-    prBody: s.body,
-    diff,
-    diffTruncated: truncated,
-    changedPaths: paths,
-    open,
-    round: pr.round + 1,
+  let invocation: ReturnType<typeof inspectorRunOptions> | undefined;
+  const result = await runInspectorReview({
+    repoRoot: pr.repoRoot, prTitle: s.title, prBody: s.body,
+    diff, diffTruncated: truncated, changedPaths: paths, open, round: pr.round + 1,
+  }, (prompt) => {
+    const run = invocation ??= inspectorRunOptions(cfg, TIMEOUT_MS, dir, "inspector:review", INSPECTOR_VERDICT_JSON_SCHEMA);
+    return run.runner.run(prompt, run.options);
   });
-
-  const run = inspectorRunOptions(
-    cfg,
-    TIMEOUT_MS,
-    dir,
-    "inspector:review",
-    INSPECTOR_VERDICT_JSON_SCHEMA,
-  );
-  const result = await runStructured<typeof InspectorVerdictSchema>(
-    (p) => run.runner.run(p, run.options),
-    prompt,
-    (raw) => parseModelJson(raw, InspectorVerdictSchema),
-    "The inspector",
-  );
   if (result.kind !== "ok") {
     // A transient failure must NEVER advance the head sha: doing so would record this
     // push as reviewed and the PR would never be looked at again.
-    return noteFailure(pr, result.reason, now, tick);
+    return noteFailure(pr, result.reason, tick);
   }
 
   const round = pr.round + 1;
@@ -1301,6 +1332,7 @@ async function reviewRound(
     pr.key,
     {
       headSha: s.headSha,
+      localReviewHeadSha: null,
       // The base this diff was taken against. A later base change under the same head is
       // a different diff, so it is reviewed again rather than trusted (`reviewBaseChanged`).
       reviewedBaseRef: s.baseRefName || null,
@@ -1318,7 +1350,7 @@ async function reviewRound(
   );
   recordAutomationTransition(`${pr.key}:${s.headSha}:${round}`, { feature: "inspector", action: "review", outcome: "applied", coverage: "owner_transition" },
     { kind: "system", origin: "daemon", basis: "owner" }, now);
-  if (resolutionError) return noteFailure(pr, resolutionError, now, tick);
+  if (resolutionError) return noteFailure(pr, resolutionError, tick);
   await publishCleanReview(getInspectorPr(pr.key)!, dir, s, existingByFingerprint(pr.key),
     post, login, now, tick, resolvedThreadIds);
   return true;
@@ -1385,13 +1417,13 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
   // round's reconciliation to find, so left in `posting` they would be promoted to `open` and
   // never actually said. Everything else stays in `posting` for the live thread read to
   // adjudicate.
-  if (!wasRefused(first)) return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+  if (!wasRefused(first)) return noteFailure(pr, first.error ?? "could not post the review", tick);
 
   const carried = p.planned.filter((row) => p.carried.has(row.fingerprint));
   const fresh = p.planned.filter((row) => !p.carried.has(row.fingerprint));
   if (carried.length === 0 || (await classifyReviewRefusal(first, headUnmoved(p))) === "whole-review") {
     writeRows(p, p.planned, { status: "drafted" });
-    return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+    return noteFailure(pr, first.error ?? "could not post the review", tick);
   }
 
   if (fresh.length > 0) {
@@ -1402,7 +1434,7 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
       // again either way. The new findings follow `wasRefused`, exactly as above.
       writeRows(p, carried, { status: "drafted" });
       if (wasRefused(retry)) writeRows(p, fresh, { status: "drafted" });
-      return noteFailure(pr, retry.error ?? "could not post the review", now, tick);
+      return noteFailure(pr, retry.error ?? "could not post the review", tick);
     }
     writeRows(p, fresh, confirmedPost(now));
   }
@@ -1464,7 +1496,7 @@ async function pinRefusal(
       settleCharges();
       // This draft may have landed and stays `posting`, for its thread to answer.
       writeRows(p, untried, { status: "drafted" });
-      return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+      return noteFailure(pr, res.error ?? "could not post the review", tick);
     }
     if ((await classifyReviewRefusal(res, headUnmoved(p))) === "validation") {
       charged.push([row, res]);
@@ -1472,7 +1504,7 @@ async function pinRefusal(
     }
     settleCharges();
     writeRows(p, [row, ...untried], { status: "drafted" });
-    return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+    return noteFailure(pr, res.error ?? "could not post the review", tick);
   }
   settleCharges();
   return true;
@@ -1636,6 +1668,8 @@ function reconcilePosting(
  */
 export interface InspectorStartOptions {
   workflowGate?: (prKey: string) => WorkflowGateStanding;
+  /** The workflow manager's local review match; absent means no head is ever matched. */
+  localReview?: LocalReviewMatcher;
 }
 
 export function startInspector(registry: Registry, options: InspectorStartOptions = {}): () => void {
@@ -1644,6 +1678,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // One PR at a time. A review is an Opus run with tool round-trips inside it; a
   // dashboard with six open PRs must not fork six of them.
   const limit = createLimiter(1);
+  const replyRetryOrder = new Map<string, Set<string>>();
 
   // The hook's signal is transient, so it has to be caught as it happens.
   //
@@ -1692,7 +1727,6 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      const cfg = getInspectorConfig();
       // Stacked children are observed even with both review sources off: a child keeps its
       // lifecycle (base reconciliation, broken-stack detection, the prompts it needs) whatever
       // any setting says. Only rows with lineage, so the Inspector being off still costs
@@ -1715,6 +1749,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
             getInspectorConfig(),
             fresh,
             Date.now(),
+            replyRetryOrder,
             (snapshot, observedAt) => {
               observed.value = { headSha: snapshot.headSha, state: snapshot.state, at: observedAt };
               notifyInspection(registry, fresh.key, snapshot.headSha, snapshot.state, observedAt);
@@ -1723,6 +1758,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
               if (codeRabbitEnabled()) registry.refreshInspections();
             },
             options.workflowGate ?? (() => "none"),
+            options.localReview ?? noLocalReview,
           ));
           // Re-read after every completed review or failure. The immediate signal above
           // reports the fetched GitHub head; this one carries the resulting durable ledger.

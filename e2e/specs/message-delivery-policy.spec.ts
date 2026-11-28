@@ -1,11 +1,14 @@
 import { mkdirSync } from "node:fs";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { say } from "../fixtures/voice.ts";
+import { VOICE_REQUIRED_FLAGS } from "../../src/shared/voice.ts";
+import type { Session } from "../../src/shared/types.ts";
 
 // The fake stays busy long enough to prove that steering reaches it before completion.
 test.use({ daemonEnv: { MC_E2E_CODEX_HELD_TURN_MS: "180000", MC_E2E_CLAUDE_HELD_TURN_MS: "180000" } });
 
-async function openSession(dashboard: import("@playwright/test").Page, daemon: import("../fixtures/daemon.ts").DaemonHandle, agent = "codex") {
+async function openSession(dashboard: import("@playwright/test").Page, daemon: import("../fixtures/daemon.ts").DaemonHandle, agent = "codex", callSign?: string) {
   await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
   const modal = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await modal.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -13,6 +16,11 @@ async function openSession(dashboard: import("@playwright/test").Page, daemon: i
   await modal.getByPlaceholder("What should this agent do?").fill("exercise the message delivery policy");
   await modal.locator("select").filter({ hasText: "Claude Code" }).selectOption(agent);
   await modal.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  if (callSign) {
+    const advanced = modal.getByRole("button", { name: /^Advanced/ });
+    if (await advanced.getAttribute("aria-expanded") !== "true") await advanced.click();
+    await modal.getByRole("textbox", { name: "Call sign", exact: true }).fill(callSign);
+  }
   await modal.getByRole("button", { name: "Dispatch now" }).click();
   await expect(modal).toBeHidden();
   const rail = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
@@ -26,6 +34,40 @@ async function openSession(dashboard: import("@playwright/test").Page, daemon: i
   await expect(composer).toHaveValue("");
   return { card, composer, rail };
 }
+
+test("a busy agent's spoken row waits for idle and only the typed row offers delivery overrides", async ({ dashboard, daemon, request }) => {
+  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"]) {
+    expect((await request.put(`${daemon.baseURL}/api/feature-flags`, { data: { kind: "flag", id, enabled: true } })).ok()).toBe(true);
+  }
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: false } } })).ok()).toBe(true);
+  const { card, composer, rail } = await openSession(dashboard, daemon, "codex", "Steve");
+  await rail.focus();
+  const words = "inspect the build";
+  expect(await (await say(daemon, `Steve, ${words}`)).json()).toEqual({ accepted: true });
+  const spoken = card.locator(".pending-turn").filter({ hasText: words });
+  await expect(spoken).toBeVisible();
+  await composer.fill("typed correction");
+  await composer.press("Enter");
+  const typed = card.locator(".pending-turn").filter({ hasText: "typed correction" });
+  for (const name of ["Steer now", "Interrupt and deliver"]) {
+    await expect(typed.getByRole("button", { name, exact: true })).toBeEnabled();
+    await expect(spoken.getByRole("button", { name, exact: true })).toHaveCount(0);
+  }
+  const sessions = await (await request.get(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+  const session = sessions.find(s => s.task?.callSign === "Steve")!;
+  const row = session.pendingTurns.find(turn => turn.spokenWords === words)!;
+  for (const action of ["steer", "interrupt"]) {
+    const response = await request.post(`${daemon.baseURL}/api/sessions/${session.id}/pending-turns/${row.id}/deliver`, { data: { revision: row.revision, action } });
+    expect(response.status()).toBe(409);
+  }
+  await expect(rail.locator(".rail-state")).toHaveText("working");
+  await expect(spoken).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = artifactsDir("voice-idle-only");
+    mkdirSync(dir, { recursive: true });
+    await spoken.screenshot({ path: `${dir}spoken-pending.png` });
+  }
+});
 
 for (const agent of ["claude", "codex"]) {
 test(`${agent}: the send box offers no delivery choice, and interrupt-and-deliver preserves other queued messages`, async ({ dashboard, daemon }) => {

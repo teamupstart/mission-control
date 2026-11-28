@@ -239,6 +239,14 @@ planning workflows keep their artifact and approval contracts without requiring 
 Read more in [Skills and settings](docs/skills-and-settings.md) and
 [Configuration](docs/configuration.md#repository-standing-instructions).
 
+## Change settings from a session
+
+With **Session settings through MCP** enabled and desktop consent granted in **Settings > Trust**,
+ask a registered session to switch Mission Control to Daylight. The same `mission_settings` tool
+finds and edits installation preferences through their Settings owners. Trust grants, credentials
+and actions that require confirmation stay with the operator. Turn off access in Trust to
+revoke it for running sessions. [Skills and settings](docs/skills-and-settings.md#let-a-session-change-the-theme)
+
 ## Mission Control skills
 
 On a new installation, Mission Control enables its shipped skills for Claude Code, Codex,
@@ -278,6 +286,8 @@ requirements and limits.
 SDK launches receive a private `MISSION_SCOUT_SESSION_LOCATOR` from the daemon; it is an
 internal launch secret, not a setting to configure. Public session IDs cannot select report
 credentials. See [Configuration](docs/configuration.md) for the launch boundary.
+
+Enable the [Agent environment preview](docs/configuration.md#agent-environment) to pass named login-shell variables to new agent sessions. Configure the names in Settings > Harnesses.
 
 ## Backlog and sources
 
@@ -474,8 +484,8 @@ repository:
   optional source/tool prerequisite. An adopted standalone daemon retains its own runtime.
   **Agent extensions → Install Claude integrations** repairs owned hooks, statusline wrappers and
   MCP registrations while preserving custom commands. See the [runtime inventory](docs/owned-runtimes.md).
-  To track unreleased builds, enable **Alpha updates** in **Settings → Setup → Application
-  updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
+  To track unreleased builds, enable **Alpha updates** at the top of **Settings → Setup**.
+  This defaults off. Alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
   **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
   You can still check for updates manually at any time. Updating drains owned background

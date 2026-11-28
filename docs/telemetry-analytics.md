@@ -117,7 +117,9 @@ identifies the binary producing the calculation. These have different meanings. 
 source events, resources, times and trace context stay immutable; cohort gauges contain no
 run/task/session/PR IDs. Use source traces and their audience-scoped `mission.ref.*` attributes
 for drill-down, filtered by time, environment and installation. Sampled/missing traces never
-change the metric denominator.
+change the metric denominator. The one unhashed join id is a session's `work_unit_id` span
+attribute, identical in every lane, which finds every source trace of one piece of work; no
+cohort carries it ([Work unit id](observability.md#work-unit-id)).
 
 ## Receiver names and coherent queries
 
@@ -213,7 +215,8 @@ consume the real Phase 4 fake-agent repair fixture and Phase 3 retained PR obser
 ownership invalidation, including restart and a merge after the outcome horizon. Neither
 late facts nor replay change operational task status or restore ownership.
 
-Run the focused tests with the root `AGENTS.md` test-runner contract:
+Run the focused tests with the root `AGENTS.md` test-runner contract. Their fixtures live in
+each worker's [test temp root](test-temp-dirs.md):
 
 ```sh
 node --test --test-concurrency=4 --import ./test/setup-state.mjs --import tsx test/telemetry-*.test.ts

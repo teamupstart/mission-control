@@ -3,8 +3,7 @@
 // types and settles the claim on the outcome. The operator's manual send uses the same route.
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkMuxHandle, mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
@@ -23,6 +22,7 @@ import { openDb } from "../src/server/db.ts";
 import { useStackGitHub, type StackGitHub } from "../src/server/stacking/github.ts";
 import { reportBucket } from "../src/shared/session.ts";
 import type { PrRefs } from "../src/server/inspector/github.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /** A GitHub seam that answers only the parent read the route's recovery recheck makes. */
 function parentReads(parent: PrRefs | null): StackGitHub {
@@ -111,7 +111,7 @@ function terminalFixture(t: TestContext) {
   f.session.runtime = "terminal";
   f.session.terminals = [mkMuxHandle({ session: "stacking", paneId: "%92" })];
   f.refresh();
-  const dir = mkdtempSync(join(tmpdir(), "mission-stack-terminal-"));
+  const dir = tempDir("mission-stack-terminal-");
   const bin = join(dir, "tmux.cjs");
   const previous = process.env.MISSION_TMUX_BIN;
   t.after(() => {

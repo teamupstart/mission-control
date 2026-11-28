@@ -2,15 +2,14 @@ import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   chmodSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // One diff subprocess per tick, and zero on the steady-state tick.
 //
@@ -27,19 +26,20 @@ import type { Registry } from "../src/server/registry.ts";
 //
 // Environment overrides must be installed before importing the worker: its runner and
 // poll interval are resolved at module load.
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-diff-once-"));
+const temp = tempDir("mission-inspector-diff-once-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const claudePath = join(binDir, "claude");
 const ghPath = join(binDir, "gh");
 const project = fileURLToPath(new URL("..", import.meta.url));
+const pollMs = 25;
 
 await import("node:fs").then(({ mkdirSync }) => mkdirSync(binDir, { recursive: true }));
 process.env.MISSION_HOME = join(temp, "state");
 process.env.MISSION_CLAUDE_BIN = claudePath;
-process.env.MISSION_INSPECTOR_POLL_MS = "25";
+process.env.MISSION_GH_BIN = ghPath;
+process.env.MISSION_INSPECTOR_POLL_MS = String(pollMs);
 process.env.FAKE_GITHUB_STATE = statePath;
-process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
 
 // Both jobs answer with JSON, and they answer with DIFFERENT json - a review returns a
 // verdict, a follow-up returns `{reply, resolved}`. The reply prompt's output contract is
@@ -61,7 +61,7 @@ process.stdin.on("end", () => {
 );
 chmodSync(claudePath, 0o755);
 
-const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
+const { claudeRunner, configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const restoreTransport = configureClaudeRunnerTransport(() => "print");
 
 // The fake `gh` records every snapshot read and every diff read in the state file.
@@ -106,32 +106,31 @@ const withState = (mutate) => {
 
 if (args[0] === "api" && args[1] === "user") {
   process.stdout.write("operator\\n");
+} else if (args.some((arg) => arg.startsWith("query=mutation") && arg.includes("resolveReviewThread"))) {
+  const thread = args.find((arg) => arg.startsWith("threadId=")).slice("threadId=".length);
+  const state = withState((draft) => {
+    draft.actions.push((draft.resolutionSucceeds ? "resolved " : "failed to resolve ") + thread);
+  });
+  process.stdout.write(JSON.stringify(state.resolutionSucceeds
+    ? { data: { resolveReviewThread: { thread: { isResolved: true } } } }
+    : { errors: [{ message: "fake thread resolution failure" }] }));
 } else if (args.includes("graphql")) {
   const state = withState((draft) => { draft.snapshots += 1; });
-  const comments = [];
-  if (state.threadBody) comments.push({
-    databaseId: 101,
-    body: state.threadBody,
-    createdAt: "2026-07-30T12:00:00Z",
-    author: { login: "operator" }
-  });
-  if (state.followUpBody) comments.push({
-    databaseId: 202,
-    body: state.followUpBody,
-    createdAt: "2026-07-30T13:00:00Z",
-    author: { login: "reviewer" }
-  });
-  const threads = comments.length ? [{
-    id: "T_1",
-    isResolved: false,
+  const number = args.find((arg) => arg.startsWith("number=")).slice("number=".length);
+  const threads = state.threadsByPr[number].map(({ id, marker, question }) => ({
+    id: "T_" + id,
+    isResolved: state.resolvedThread === id,
     path: "src/example.ts",
-    comments: { nodes: comments }
-  }] : [];
+    comments: { nodes: [
+      { databaseId: 101 + id, body: marker, createdAt: "2026-07-30T12:00:00Z", author: { login: "operator" } },
+      { databaseId: 202 + id, body: question, createdAt: "2026-07-30T13:00:00Z", author: { login: "reviewer" } }
+    ] }
+  }));
   process.stdout.write(JSON.stringify({
     data: {
       repository: {
         pullRequest: {
-          state: "OPEN",
+          state: Number(number) === state.closedPr ? "CLOSED" : "OPEN",
           headRefOid: state.headSha,
           baseRefName: "main",
           repository: { defaultBranchRef: { name: "main" } },
@@ -185,18 +184,27 @@ if (args[0] === "api" && args[1] === "user") {
 );
 chmodSync(ghPath, 0o755);
 
-const { openDb, getInspectorPr, loadInspectorComments, upsertInspectorComment } = await import(
+const { openDb, getInspectorPr, loadInspectorComments, updateInspectorPr, upsertInspectorComment } = await import(
   "../src/server/db.ts"
 );
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { formatMarker } = await import("../src/server/inspector/marker.ts");
 const { resetAuthenticatedLogin } = await import("../src/server/inspector/github.ts");
+const { setShippingConfig } = await import("../src/server/shipping/config.ts");
+
+interface FakeThread {
+  id: number;
+  marker: string;
+  question: string;
+}
 
 interface FakeGithubState {
   headSha: string;
-  threadBody: string | null;
-  followUpBody: string | null;
+  threadsByPr: Record<number, FakeThread[]>;
+  closedPr?: number;
+  resolutionSucceeds?: boolean;
+  resolvedThread?: number;
   diffTooLarge: boolean;
   snapshots: number;
   diffCalls: number;
@@ -211,11 +219,11 @@ function readGithubState(): FakeGithubState {
   return JSON.parse(readFileSync(statePath, "utf8")) as FakeGithubState;
 }
 
-function registryStub(): Registry {
+function registryStub(refreshInspections = () => {}): Registry {
   return {
     onPrOpened: () => () => {},
     onPipelineRun: () => () => {},
-    refreshInspections: () => {},
+    refreshInspections,
     snapshot: () => ({ sessions: [] }),
   } as unknown as Registry;
 }
@@ -226,35 +234,34 @@ function registryStub(): Registry {
  * nothing, while ten seconds was routinely exceeded under the full suite's concurrency.
  */
 async function waitFor(description: string, predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
+  const deadline = performance.now() + 60_000;
+  while (performance.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.fail(`timed out waiting for ${description}`);
 }
 
-function adopt(number: number): string {
+function adopt(number: number, adoptedAt = Date.now()): string {
   const key = `mission/control#${number}`;
   assert.equal(
     adoptPr(
       `https://github.com/mission/control/pull/${number}`,
       { sessionId: null, cwd: project, repoRoot: project },
       "hook",
-      Date.now(),
+      adoptedAt,
     ),
     true,
   );
   return key;
 }
 
-const fingerprint = "prior-finding";
-const priorMarker = formatMarker({ id: "prior-1", fingerprint, round: 1 });
-
-/** The ledger row behind the fake thread, so `threadsAwaitingUs` finds a reply to owe. */
-function seedThreadRow(key: string): void {
+/** Pair the fake GitHub thread with its owned finding in the ledger. */
+function seedThread(key: string, id: number, question: string): FakeThread {
+  const fingerprint = `prior-finding-${id}`;
+  const marker = formatMarker({ id: `prior-${id}`, fingerprint, round: 1 });
   upsertInspectorComment({
-    id: "prior-1",
+    id: `prior-${id}`,
     prKey: key,
     fingerprint,
     path: "src/example.ts",
@@ -269,11 +276,20 @@ function seedThreadRow(key: string): void {
     createdAt: 1,
     updatedAt: 1,
   });
+  return { id, marker, question };
 }
 
 beforeEach(() => {
   openDb().exec("DELETE FROM inspector_prs; DELETE FROM inspector_comments; DELETE FROM app_config");
   resetAuthenticatedLogin();
+  setShippingConfig({ codeRabbitAutoResolve: false });
+  setInspectorConfig({
+    enabled: true,
+    mode: "live",
+    runner: "claude",
+    repoAllowlist: [project],
+    maxCommentsPerRound: 8,
+  });
 });
 
 after(() => {
@@ -281,44 +297,38 @@ after(() => {
   rmSync(temp, { recursive: true, force: true });
 });
 
-test("a tick that replies AND reviews fetches the diff once; steady state fetches none", async (t) => {
+test("a healthy tick answers multiple replies and reviews with one diff; steady state fetches none", async (t) => {
+  const key = adopt(7);
   writeGithubState({
     headSha: "head-1",
-    threadBody: priorMarker,
-    followUpBody: "Why is this change safe?",
+    threadsByPr: { 7: [0, 1, 2].map((id) => seedThread(key, id, "Why is this change safe?")) },
     diffTooLarge: false,
     snapshots: 0,
     diffCalls: 0,
     actions: [],
   });
-  setInspectorConfig({
-    enabled: true,
-    mode: "live",
-    repoAllowlist: [project],
-    maxCommentsPerRound: 8,
-  });
-  const key = adopt(7);
-  seedThreadRow(key);
 
   // Stopped on every exit path. A failed wait used to skip the `stop()` below and leave this
   // worker polling into the next test, where its extra diff fetch read as a second failure.
-  const stop = startInspector(registryStub());
+  let firstSweep: FakeGithubState | undefined;
+  const stop = startInspector(registryStub(() => { firstSweep ??= readGithubState(); }));
   t.after(stop);
   await waitFor(
     "the combined reply-and-review tick to finish the head",
-    () => getInspectorPr(key)?.headSha === "head-1",
+    () => firstSweep !== undefined,
   );
 
-  const active = readGithubState();
-  assert.deepEqual(active.actions, ["replied to comment 202"], "the follow-up was answered");
+  const active = firstSweep!;
+  assert.deepEqual(active.actions, ["replied to comment 202", "replied to comment 203", "replied to comment 204"]);
+  assert.equal(active.snapshots, 1, "all healthy replies and the review completed in one pass");
+  assert.equal(getInspectorPr(key)?.headSha, "head-1");
   assert.equal(getInspectorPr(key)?.round, 1, "the review round completed in the same tick");
   assert.equal(
     active.diffCalls,
     1,
     "answering a follow-up and reviewing in one tick must share a single diff fetch",
   );
-  const row = loadInspectorComments(key).find((c) => c.fingerprint === fingerprint);
-  assert.equal(row?.answeredCommentId, 202, "the reply was stamped off the shared diff");
+  assert.deepEqual(loadInspectorComments(key).map((c) => c.answeredCommentId).sort(), [202, 203, 204]);
 
   // Steady state: nothing pushed and nobody waiting. Wait for the SNAPSHOT count to
   // prove two more full sweeps genuinely ran, rather than sleeping and hoping, then
@@ -330,26 +340,19 @@ test("a tick that replies AND reviews fetches the diff once; steady state fetche
   );
   stop();
   assert.equal(readGithubState().diffCalls, 1, "a steady-state tick must fetch zero diffs");
+  assert.deepEqual(readGithubState().actions, active.actions, "answered replies were not reposted");
 });
 
 test("a tooLarge shared fetch still parks push-fixable while the reply carries on", async (t) => {
+  const key = adopt(8);
   writeGithubState({
     headSha: "head-big",
-    threadBody: priorMarker,
-    followUpBody: "Can you double-check this?",
+    threadsByPr: { 8: [seedThread(key, 0, "Can you double-check this?")] },
     diffTooLarge: true,
     snapshots: 0,
     diffCalls: 0,
     actions: [],
   });
-  setInspectorConfig({
-    enabled: true,
-    mode: "live",
-    repoAllowlist: [project],
-    maxCommentsPerRound: 8,
-  });
-  const key = adopt(8);
-  seedThreadRow(key);
 
   const stop = startInspector(registryStub());
   t.after(stop);
@@ -369,4 +372,318 @@ test("a tooLarge shared fetch still parks push-fixable while the reply carries o
   const row = getInspectorPr(key);
   assert.match(row?.lastError ?? "", /too large/);
   assert.equal(row?.headSha, null, "a failed round never advances the head");
+});
+
+test("a failed reply yields to the next PR and retries pending replies from the failure deadline", async (t) => {
+  const startedAt = Date.now();
+  const modelDuration = 500;
+  let now = startedAt;
+  t.mock.method(Date, "now", () => now);
+
+  const failing = adopt(9, startedAt - 2);
+  const later = adopt(10, startedAt - 1);
+  writeGithubState({
+    headSha: "head-reply-batch",
+    threadsByPr: {
+      9: [0, 1, 2].map((id) => seedThread(failing, id, `Blocked question ${id}`)),
+      10: [seedThread(later, 3, "Healthy question")],
+    },
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+
+  const calls: string[] = [];
+  const firstOutcomeAt = startedAt + modelDuration;
+  const firstDeadline = firstOutcomeAt + pollMs;
+  const secondOutcomeAt = firstDeadline + modelDuration;
+  const secondDeadline = secondOutcomeAt + 2 * pollMs;
+  // Move the clock at the transport outcome. The duration exceeds the initial backoff
+  // without relying on how fast a test worker or subprocess is scheduled.
+  t.mock.method(claudeRunner, "run", async (prompt: string) => {
+    const blocked = prompt.match(/Blocked question \d/);
+    if (blocked) {
+      calls.push(blocked[0]);
+      if (blocked[0] === "Blocked question 1" || now >= secondDeadline) {
+        return JSON.stringify({ reply: "The guard still applies.", resolved: false });
+      }
+      now += modelDuration;
+      throw new Error("fake reply timeout");
+    }
+    if (prompt.includes("Healthy question")) {
+      calls.push("healthy reply");
+      return JSON.stringify({ reply: "The guard still applies.", resolved: false });
+    }
+    calls.push("review");
+    return JSON.stringify({ summary: "No additional findings.", findings: [], resolved: [] });
+  });
+
+  type LedgerRow = NonNullable<ReturnType<typeof getInspectorPr>>;
+  let pendingAfterFailures: ReturnType<typeof loadInspectorComments> = [];
+  const sweeps: { failed: LedgerRow; later: LedgerRow; calls: string[] }[] = [];
+  const stop = startInspector(registryStub(() => {
+    const observed = getInspectorPr(later)!;
+    // The closed-stack pass can also refresh the registry after this same sweep.
+    if (observed.observedAt === sweeps.at(-1)?.later.observedAt) return;
+    sweeps.push({ failed: getInspectorPr(failing)!, later: observed, calls: calls.splice(0) });
+    if (sweeps.length === 1) now = firstDeadline - 1;
+    if (sweeps.length === 2) now = firstDeadline;
+    if (sweeps.length === 3) {
+      pendingAfterFailures = loadInspectorComments(failing);
+      // Return the remaining threads in the opposite order to their failures.
+      const github = readGithubState();
+      github.threadsByPr[9]!.reverse();
+      writeGithubState(github);
+      now = secondDeadline;
+    }
+    if (sweeps.length === 4) stop();
+  }));
+  t.after(stop);
+  await waitFor("the sweep that retries both deferred replies", () => sweeps.length === 4);
+
+  const [initial, backedOff, retry] = sweeps;
+  assert.ok(initial && backedOff && retry);
+  assert.deepEqual(sweeps.map(({ calls }) => calls), [
+    ["Blocked question 0", "healthy reply", "review"],
+    [],
+    ["Blocked question 1", "Blocked question 2"],
+    ["Blocked question 0", "Blocked question 2", "review"],
+  ], "untried replies go first, then deferred replies retry in failure order");
+  assert.deepEqual(
+    sweeps.slice(0, 3).map(({ failed }) => [failed.failCount, failed.updatedAt, failed.nextAttemptAt]),
+    [
+      [1, firstOutcomeAt, firstDeadline],
+      [1, firstDeadline - 1, firstDeadline],
+      [2, secondOutcomeAt, secondDeadline],
+    ],
+    "failure timestamps and the doubling retry wait start at the outcome",
+  );
+  assert.equal(initial.failed.observedAt, startedAt);
+  assert.equal(backedOff.failed.observedAt, firstDeadline - 1, "backoff still allows observations");
+  assert.equal(initial.later.observedAt, firstOutcomeAt);
+  assert.equal(initial.later.observedHeadSha, "head-reply-batch");
+  assert.equal(initial.later.headSha, "head-reply-batch", "the later PR completed its review in the first sweep");
+  assert.equal(retry.failed.lastFailKind, "persistent");
+  assert.match(retry.failed.lastError ?? "", /fake reply timeout/);
+  assert.equal(retry.failed.headSha, null, "reply failure never certifies a review");
+  assert.equal(pendingAfterFailures.length, 3);
+  for (const finding of pendingAfterFailures) {
+    const answered = finding.id === "prior-1";
+    assert.equal(finding.answeredCommentId, answered ? 203 : null);
+    assert.equal(finding.replies, answered ? 1 : 0);
+    assert.equal(finding.status, "open");
+  }
+  assert.deepEqual(readGithubState().actions, [
+    "replied to comment 205", "replied to comment 203", "replied to comment 202", "replied to comment 204",
+  ]);
+  assert.deepEqual(loadInspectorComments(failing).map((row) => row.answeredCommentId).sort(), [202, 203, 204]);
+});
+
+test("waiting replies and failed resolutions both get a turn on eligible sweeps", async (t) => {
+  const adoptedAt = Date.now();
+  let now = adoptedAt;
+  t.mock.method(Date, "now", () => now);
+  const failing = adopt(11, adoptedAt);
+  const later = adopt(12, adoptedAt + 1);
+  writeGithubState({
+    headSha: "head-resolution-failure",
+    threadsByPr: {
+      11: [
+        seedThread(failing, 0, "First question"),
+        seedThread(failing, 1, "Second question"),
+        seedThread(failing, 2, "Third question"),
+      ],
+      12: [],
+    },
+    closedPr: 12,
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+
+  const model = t.mock.method(claudeRunner, "run", async (prompt: string) => {
+    if (prompt.includes("Third question")) throw new Error("fake reply timeout");
+    return JSON.stringify({ reply: "I checked the guard.", resolved: prompt.includes("First question") });
+  });
+  const sweeps: { calls: number; actions: string[]; resolutionPending: boolean | undefined }[] = [];
+  const stop = startInspector(registryStub(() => {
+    if (getInspectorPr(failing)?.observedAt !== now) return;
+    const github = readGithubState();
+    const first = loadInspectorComments(failing).find((row) => row.id === "prior-0");
+    sweeps.push({ calls: model.mock.callCount(), actions: [...github.actions], resolutionPending: first?.resolutionPending });
+    if (sweeps.length === 2) {
+      github.resolutionSucceeds = true;
+      writeGithubState(github);
+    }
+    if (sweeps.length === 3) stop();
+    now += sweeps.length * pollMs;
+  }));
+  t.after(stop);
+  await waitFor("three eligible sweeps through resolution recovery", () => sweeps.length === 3);
+
+  assert.deepEqual(sweeps[0], {
+    calls: 1,
+    actions: ["replied to comment 202", "failed to resolve T_0"],
+    resolutionPending: true,
+  });
+  assert.deepEqual(sweeps[1], {
+    calls: 3,
+    actions: ["replied to comment 202", "failed to resolve T_0", "replied to comment 203"],
+    resolutionPending: true,
+  });
+  assert.deepEqual(sweeps[2], {
+    calls: 4,
+    actions: ["replied to comment 202", "failed to resolve T_0", "replied to comment 203", "resolved T_0"],
+    resolutionPending: undefined,
+  });
+  assert.deepEqual(model.mock.calls.map((call) => call.arguments[0].match(/\b(First|Second|Third) question/)?.[0]),
+    ["First question", "Second question", "Third question", "Third question"]);
+
+  const findings = loadInspectorComments(failing);
+  const answered = findings.find((row) => row.id === "prior-0");
+  const second = findings.find((row) => row.id === "prior-1");
+  assert.equal(answered?.answeredCommentId, 202, "the posted reply stays recorded");
+  assert.equal(answered?.status, "resolved", "resolution retries despite the other failing reply");
+  assert.equal(second?.answeredCommentId, 203);
+  assert.equal(second?.replies, 1);
+  assert.equal(getInspectorPr(failing)?.failCount, 3);
+  assert.match(getInspectorPr(failing)?.lastError ?? "", /fake reply timeout/);
+  assert.equal(getInspectorPr(later)?.observedHeadSha, "head-resolution-failure");
+  assert.equal(getInspectorPr(later)?.observedState, "CLOSED", "the later PR was observed in the same sweep");
+});
+
+test("a newly arrived question gets its turn behind a repeatedly refused resolution", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const key = adopt(13, now);
+  const newThread = seedThread(key, 1, "New question");
+  writeGithubState({
+    headSha: "head-repeated-resolution-failure",
+    threadsByPr: { 13: [seedThread(key, 0, "Original question")] },
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+
+  const failureCountsAtReply: number[] = [];
+  const model = t.mock.method(claudeRunner, "run", async (prompt: string) => {
+    failureCountsAtReply.push(getInspectorPr(key)!.failCount);
+    return JSON.stringify({ reply: "I checked the guard.", resolved: prompt.includes("Original question") });
+  });
+  const sweeps: string[][] = [];
+  const stop = startInspector(registryStub(() => {
+    const row = getInspectorPr(key);
+    if (row?.observedAt !== now) return;
+    const github = readGithubState();
+    sweeps.push(github.actions);
+    if (sweeps.length === 1) {
+      github.threadsByPr[13]!.push(newThread);
+      writeGithubState(github);
+    }
+    if (sweeps.length === 3) stop();
+    now = row.nextAttemptAt ?? now + pollMs;
+  }));
+  t.after(stop);
+  await waitFor("the late question to get a turn after resolution refusals",
+    () => sweeps.length === 3);
+
+  assert.deepEqual(sweeps, [
+    ["replied to comment 202", "failed to resolve T_0"],
+    ["replied to comment 202", "failed to resolve T_0", "failed to resolve T_0"],
+    ["replied to comment 202", "failed to resolve T_0", "failed to resolve T_0",
+      "replied to comment 203", "failed to resolve T_0"],
+  ]);
+  assert.equal(model.mock.callCount(), 2);
+  assert.match(model.mock.calls[1]!.arguments[0], /New question/);
+  assert.deepEqual(failureCountsAtReply, [0, 2], "the new reply starts before the persistent failure cap");
+  const findings = loadInspectorComments(key);
+  const original = findings.find((row) => row.id === "prior-0");
+  const answered = findings.find((row) => row.id === "prior-1");
+  assert.equal(original?.answeredCommentId, 202);
+  assert.equal(original?.resolutionPending, true);
+  assert.equal(answered?.answeredCommentId, 203);
+  assert.equal(answered?.replies, 1);
+  assert.equal(getInspectorPr(key)?.failCount, 3);
+});
+
+test("revoking live consent during a reply pauses the pending resolution without backoff", async (t) => {
+  const key = adopt(14);
+  const threads = [seedThread(key, 0, "Answered question"), seedThread(key, 1, "Waiting question")];
+  const answered = loadInspectorComments(key).find((row) => row.id === "prior-0")!;
+  upsertInspectorComment({ ...answered, answeredCommentId: 202, replies: 1, resolutionPending: true });
+  writeGithubState({
+    headSha: "head-pause-resolution",
+    threadsByPr: { 14: threads },
+    resolutionSucceeds: true,
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+  const model = t.mock.method(claudeRunner, "run", async () => {
+    setInspectorConfig({ enabled: false });
+    return JSON.stringify({ reply: "I checked the guard.", resolved: false });
+  });
+
+  let done = false;
+  const stop = startInspector(registryStub(() => {
+    stop();
+    done = true;
+  }));
+  t.after(stop);
+  await waitFor("the paused reply queue", () => done);
+
+  assert.equal(model.mock.callCount(), 1);
+  assert.deepEqual(readGithubState().actions, [], "no reply or resolution is sent after revocation");
+  assert.equal(loadInspectorComments(key).find((row) => row.id === "prior-0")?.resolutionPending, true);
+  assert.equal(loadInspectorComments(key).find((row) => row.id === "prior-1")?.answeredCommentId, null);
+  assert.equal(getInspectorPr(key)?.nextAttemptAt, null);
+  assert.equal(getInspectorPr(key)?.failCount, 0);
+});
+
+test("a thread reopened while a reply runs stays pending until the next GitHub snapshot", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const key = adopt(15, now);
+  const headSha = "head-reopened-thread";
+  updateInspectorPr(key, { headSha, reviewedBaseRef: "main", reviewPosture: "live", reviewComplete: true }, now);
+  seedThread(key, 1, "Another open finding");
+  writeGithubState({
+    headSha,
+    threadsByPr: { 15: [seedThread(key, 0, "Check the fix")] },
+    resolvedThread: 0,
+    resolutionSucceeds: true,
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+  const model = t.mock.method(claudeRunner, "run", async () => {
+    const github = readGithubState();
+    delete github.resolvedThread;
+    writeGithubState(github);
+    return JSON.stringify({ reply: "The guard is fixed.", resolved: true });
+  });
+
+  const finding = () => loadInspectorComments(key).find((row) => row.id === "prior-0");
+  const sweeps: { status: string | undefined; pending: boolean | undefined; actions: string[] }[] = [];
+  const stop = startInspector(registryStub(() => {
+    if (getInspectorPr(key)?.observedAt !== now) return;
+    const row = finding();
+    sweeps.push({ status: row?.status, pending: row?.resolutionPending, actions: readGithubState().actions });
+    if (sweeps.length === 2) stop();
+    now += pollMs;
+  }));
+  t.after(stop);
+  await waitFor("the next snapshot and confirmed resolution", () => sweeps.length === 2);
+
+  assert.deepEqual(sweeps, [
+    { status: "open", pending: true, actions: ["replied to comment 202"] },
+    { status: "resolved", pending: undefined, actions: ["replied to comment 202", "resolved T_0"] },
+  ]);
+  assert.equal(model.mock.callCount(), 1);
+  assert.equal(finding()?.answeredCommentId, 202);
 });

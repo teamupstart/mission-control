@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: every route here is a mutating one, and the two that can go wrong
 // quietly are the ones the phase plan names - queueing a thread (one route, not the status
@@ -10,7 +9,7 @@ import { join } from "node:path";
 // committed to the outbox). This drives all of them through `buildApp()`, including the
 // loopback guard and the 503 the routes answer when the manager is absent.
 
-const home = mkdtempSync(join(tmpdir(), "mission-file-comments-http-"));
+const home = tempDir("mission-file-comments-http-");
 process.env.MISSION_HOME = home;
 
 const { buildApp } = await import("../src/server/routes.ts");

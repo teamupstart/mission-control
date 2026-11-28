@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+if (process.env.CODEX_HOME?.endsWith("/provider") && process.env.CODEX_HOME.includes("/mission-repository-workload-")) {
+  const { runFakeRepositoryReview } = await import("./fake-repository-review.mjs");
+  await runFakeRepositoryReview("codex", process.argv.slice(2));
+  await new Promise(resolve => process.stdout.write("", resolve));
+  process.exit(0);
+}
+
 /**
  * A stand-in for the `codex` binary, speaking enough of `codex app-server` for the daemon's
  * Codex SDK driver to bind a thread, run turns, and go idle.
@@ -39,6 +46,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { fixtureSplitAnswer } from "./voice-split-answer.ts";
 
 /** Stable per fake process, so one spec can hold two independent Codex sessions at once. */
 const DEFAULT_THREAD_ID = `01999999-0000-7000-8000-${String(process.pid).padStart(12, "0").slice(-12)}`;
@@ -145,7 +153,16 @@ if (recordDir) {
   mkdirSync(join(recordDir, "codex"), { recursive: true });
   writeFileSync(
     join(recordDir, "codex", `invocation-${Date.now()}-${process.pid}.json`),
-    JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), residentStateDir: process.env.RESIDENT_STATE_DIR ?? null }, null, 2),
+    JSON.stringify({
+      argv: process.argv.slice(2),
+      cwd: process.cwd(),
+      residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
+      // The variable a real `codex app-server` turns into the header of an MCP server whose
+      // config maps one to it (`env_http_headers`).
+      listedEnvironmentMatches: process.env.E2E_LISTED_TOKEN === "synthetic-profile-credential",
+      unlistedEnvironmentAbsent: process.env.E2E_UNLISTED_TOKEN === undefined,
+      workUnitId: process.env.WORK_UNIT_ID ?? null,
+    }, null, 2),
   );
 }
 
@@ -257,7 +274,32 @@ function rasterMimeType(bytes) {
   return null;
 }
 
+/**
+ * The voice-routing job (voice Phase 4): every question answered, deterministically. A split
+ * question is "split" when the speech turns to the second name with a comma ("…, and Alice,
+ * review the PR"), else "mention"; any other question is "not sure".
+ */
+function voiceRoutingAnswer(prompt) {
+  const answers = {};
+  const speech = new Map();
+  for (const [, names, text] of prompt.matchAll(/^Speech for (q\d+(?:, q\d+)*): (".*")$/gm)) {
+    for (const id of names.split(", ")) speech.set(id, JSON.parse(text));
+  }
+  for (const block of prompt.split(/\n(?=Question q\d+ \()/)) {
+    const head = /^Question (q\d+) \((who|split|option)\):/m.exec(block);
+    if (!head) continue;
+    const text = speech.get(head[1]) ?? "";
+    const choice = head[2] === "split" ? fixtureSplitAnswer(block, text, prompt, head[1]) : "not sure";
+    answers[head[1]] = { choice, confidence: choice === "not sure" ? 0 : 0.99 };
+  }
+  return JSON.stringify({ answers });
+}
+
 function codexWorkflowAnswer(prompt) {
+  if (prompt.includes("You settle doubts in voice commands")) return voiceRoutingAnswer(prompt);
+  if (process.env.MC_E2E_BACKGROUND_EFFORT === "1" && prompt.startsWith("You name coding tasks")) {
+    return JSON.stringify({ title: "Verify background reasoning" });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",

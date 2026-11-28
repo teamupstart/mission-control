@@ -15,7 +15,7 @@ import {
   nothingPostedLine,
 } from "../src/web/components/InspectorFindingsModal.tsx";
 import { inspectorPrClosedAs } from "../src/web/lib/pr-standing.ts";
-import { INSPECTOR_MODEL_SPEC } from "../src/shared/inspector.ts";
+
 import { InspectorConfigSchema } from "../src/shared/protocol.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
 import type { InspectorComment, InspectorInspection } from "../src/shared/types.ts";
@@ -346,6 +346,11 @@ test("the dry-run line appears only when the posture was not live and nothing re
     "Dry run: nothing on this pull request was posted",
   );
   assert.equal(nothingPostedLine(row({ reviewPosture: "live" }), drafts), null);
+  // A head the Local Inspector passed is not a dry run: it was never sent to GitHub at all.
+  assert.equal(
+    nothingPostedLine(row({ reviewPosture: "local" }), []),
+    "Reviewed locally before the pull request opened: nothing on this pull request was posted",
+  );
   // A null posture is a row from an older build, which may have been live.
   assert.equal(nothingPostedLine(row({ reviewPosture: null }), drafts), null);
   // Reviewed live first, then in dry run: the earlier round's comments are on GitHub.

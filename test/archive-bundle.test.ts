@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { verifyArchiveBundle } from "../src/server/archives/bundle.ts";
@@ -9,6 +8,7 @@ import { extractVisibleText, validateStaticReportHtml } from "../src/server/arch
 import { loadArchiveProducer } from "../src/server/archives/producer.ts";
 import { mediaTypeForArchivePath, resolveArchiveFile, ArchivePathError } from "../src/server/archives/paths.ts";
 import { writeScoutBundle } from "./helpers/archive-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Verification: what turns a manifest's CLAIMS into facts, and what it refuses.
@@ -18,7 +18,7 @@ import { writeScoutBundle } from "./helpers/archive-fixture.ts";
  * exist as a value that can be asserted on.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-bundle-"));
+const home = tempDir("mission-scout-bundle-");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 function library(name: string): string {

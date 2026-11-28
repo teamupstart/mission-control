@@ -1,9 +1,7 @@
-// The findings section of a message that hands GitHub Inspector findings to a session.
+// The findings section of a message that hands Inspector findings to a session.
 //
-// Its two callers are the workflow `inspector_feedback` packet and Foreman's review
-// follow-through, so the two say the same thing about the same finding: how severe it is,
-// where it is, whether it is on GitHub, and what it says. Each caller keeps its own header and closing; this module owns only the findings
-// in between.
+// Workflow and Foreman packets share the severity, location, body and fingerprint of a
+// finding. The GitHub packet also reports publication status.
 //
 // Pure, and deliberately so. It imports nothing that opens the database or the network, so
 // Foreman's worker (which never touches SQLite) can load it as readily as the daemon does.
@@ -49,6 +47,9 @@ const BLOCK_SEPARATOR = "\n\n";
 const LEGACY_BODY =
   "Legacy finding detail is unavailable. Use the severity, title, and location above.";
 
+type FindingText = Pick<InspectorComment, "path" | "line" | "title" | "body" | "severity" | "fingerprint">;
+type PostingLine<T> = (finding: T, bound: (value: string) => string) => string;
+
 /**
  * One finding per fingerprint, in the shared comparator's order.
  *
@@ -61,8 +62,8 @@ const LEGACY_BODY =
  * (status, `postedAt`, `githubUrl`, `legacyPosted`) still resolve the same way in any input
  * order. An absent field and a null one stay distinct, as `findingPublication` reads them.
  */
-export function dedupeInspectorFindings(findings: readonly InspectorComment[]): InspectorComment[] {
-  const stableFinding = (row: InspectorComment): string => JSON.stringify([
+export function dedupeInspectorFindings<T extends FindingText & { id?: string }>(findings: readonly T[]): T[] {
+  const stableFinding = (row: T): string => JSON.stringify([
     row.path,
     row.line,
     row.title,
@@ -70,11 +71,11 @@ export function dedupeInspectorFindings(findings: readonly InspectorComment[]): 
     row.severity,
     row.id,
     ...Object.keys(row)
-      .filter((key) => row[key as keyof InspectorComment] !== undefined)
+      .filter((key) => row[key as keyof T] !== undefined)
       .sort()
-      .map((key) => [key, row[key as keyof InspectorComment]]),
+      .map((key) => [key, row[key as keyof T]]),
   ]);
-  const unique = new Map<string, InspectorComment>();
+  const unique = new Map<string, T>();
   for (const finding of findings) {
     const prior = unique.get(finding.fingerprint);
     if (!prior || stableFinding(finding) < stableFinding(prior)) {
@@ -208,9 +209,24 @@ export function renderInspectorFindings(
   findings: readonly InspectorComment[],
   opts: RenderInspectorFindingsOptions,
 ): RenderedInspectorFindings {
+  return renderFindings(findings, opts, inspectorFindingPostedLine);
+}
+
+export function renderLocalInspectorFindings(
+  findings: readonly FindingText[],
+  opts: RenderInspectorFindingsOptions,
+): RenderedInspectorFindings {
+  return renderFindings(findings, opts);
+}
+
+function renderFindings<T extends FindingText>(
+  findings: readonly T[],
+  opts: RenderInspectorFindingsOptions,
+  postedLine?: PostingLine<T>,
+): RenderedInspectorFindings {
   const budget = Math.max(0, Math.floor(opts.budgetBytes));
   const reserve = Math.max(0, Math.floor(opts.truncationReserveBytes ?? 0));
-  const blocks = dedupeInspectorFindings(findings).map(renderBlock);
+  const blocks = dedupeInspectorFindings(findings).map(finding => renderBlock(finding, postedLine));
   const total = blocks.length;
   if (total === 0) return { text: "", shown: 0, omitted: 0, truncated: false };
 
@@ -259,7 +275,7 @@ interface FindingBlock {
   truncated: boolean;
 }
 
-function renderBlock(finding: InspectorComment): FindingBlock {
+function renderBlock<T extends FindingText>(finding: T, postedLine?: PostingLine<T>): FindingBlock {
   let truncated = false;
   const bounded = (value: string): string => {
     const result = clipPacketField(value);
@@ -272,7 +288,7 @@ function renderBlock(finding: InspectorComment): FindingBlock {
   const head = sanitizeWorkflowFeedback([
     `## ${finding.severity.toUpperCase()} - ${bounded(finding.title)}`,
     `Location: ${bounded(location)}`,
-    inspectorFindingPostedLine(finding, bounded),
+    ...(postedLine ? [postedLine(finding, bounded)] : []),
   ].join("\n"));
   const body = bounded(finding.body ?? LEGACY_BODY);
   const tail = sanitizeWorkflowFeedback(`Fingerprint: ${finding.fingerprint}`);

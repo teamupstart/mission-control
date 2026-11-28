@@ -12,6 +12,7 @@ import { inspectMigrationIntegrations, repairMigrationIntegrations } from "./mig
 // hides-on-close and keeps a menu-bar presence so alerts fire with no window
 // open. The daemon and UI are reused unchanged.
 
+import { registerVoiceCardNotifications } from "./voice-card-notification.ts";
 import { app, dialog, ipcMain, Notification, session, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
@@ -30,12 +31,15 @@ import { announceStartupNotice } from "./startup-notice.ts";
 import { showStartupNoticeWindow } from "./startup-notice-window.ts";
 import { holdQuitUntilDrained } from "./quit-drain.ts";
 import { startForeman, type ForemanController } from "./foreman.ts";
+import { foremanLogPath } from "../server/foreman/decision-log.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
-import { createTray, destroyTray } from "./tray.ts";
+import { createTray, destroyTray, setTrayVoice } from "./tray.ts";
+import { shellVoiceSigner } from "./voice-signing.ts";
+import { startShellVoice } from "./voice-state.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
-import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
+import { armResidentLaunchAuthorization, armSessionControlAuthorization, armSessionSettingsAuthorization } from "./session-control-authorization.ts";
 import { serveDashboardClick } from "./dashboard-click-ipc.ts";
 import { registerWindowBackgroundIpc } from "../server/window-background.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
@@ -119,6 +123,7 @@ const paths = {
   trayIcon: join(appRoot, "build", "trayTemplate.png"),
 };
 
+let voice: ReturnType<typeof startShellVoice> | null = null;
 let backgroundStart: BackgroundStartOwnership<DaemonController, ForemanController> | null = null;
 let updater: UpdateController | null = null;
 let stopUpdateSubscription: (() => void) | null = null;
@@ -226,6 +231,18 @@ function pushUpdateSnapshot(snapshot: UpdateSnapshot): void {
 }
 
 function registerIpc(updateController: UpdateController): void {
+  registerVoiceCardNotifications(ipcMain, getMainWindow, Notification);
+  ipcMain.handle("mission:voice-microphone", (event, action?: string) => {
+    if (event.sender === getMainWindow()?.webContents && event.senderFrame === event.sender.mainFrame) {
+      if (!voice) return "unavailable";
+      return action === "check" ? voice.checkMicrophone() : voice.fixMicrophone();
+    }
+    return "unavailable";
+  });
+  ipcMain.on("mission:voice-reveal-dashboard", event => {
+    const owner = getMainWindow()?.webContents;
+    if (owner && event.sender === owner && event.senderFrame === owner.mainFrame) showWindow(paths.preload);
+  });
   ipcMain.handle("mission:version", () => app.getVersion());
   ipcMain.handle("mission:open-external", (_e, url: string) => shell.openExternal(url));
   ipcMain.handle("mission:install-integrations", () => {
@@ -241,6 +258,7 @@ function registerIpc(updateController: UpdateController): void {
   const dashboard = () => getMainWindow()?.webContents;
   serveDashboardClick(ipcMain, "mission:product-issue-report-click", dashboard, armProductIssueAuthorization);
   serveDashboardClick(ipcMain, "mission:session-control-click", dashboard, armSessionControlAuthorization);
+  serveDashboardClick(ipcMain, "mission:session-settings-click", dashboard, armSessionSettingsAuthorization);
   serveDashboardClick(ipcMain, "mission:resident-launch-click", dashboard, armResidentLaunchAuthorization);
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
@@ -319,8 +337,8 @@ function stopShell(): void {
  * where workflow checks are torn down. `holdQuitUntilDrained` (`quit-drain.ts`) says why every
  * quit must wait for it.
  */
-function drainBackground(): Promise<void> {
-  return drainBackgroundStart(backgroundStart, BACKGROUND_DRAIN_TIMEOUT_MS).then((result) => {
+async function drainBackground(): Promise<void> {
+  return drainBackgroundStart(backgroundStart, BACKGROUND_DRAIN_TIMEOUT_MS, voice).then((result) => {
     if (result === "timed-out") logMain(`background processes did not exit within ${BACKGROUND_DRAIN_TIMEOUT_MS}ms of quitting; leaving them to Electron`);
   });
 }
@@ -396,11 +414,13 @@ app.whenReady().then(async () => {
   const launchWarning = runningBundle && process.platform === "darwin" ? await unmanagedLaunchMessage(runningBundle) : null;
   if (launchWarning) logMain(`unmanaged app launch: ${launchWarning}`);
 
+  let voiceSigner: Awaited<ReturnType<typeof shellVoiceSigner>>;
   backgroundStart = ownElectronBackgroundStart(
     process.env.MISSION_DEV_SERVER_URL,
     () =>
       startDaemon({
         serverEntry: paths.serverEntry,
+        voiceVerifier: process.platform === "darwin" ? () => voiceSigner?.daemonEnv.MISSION_VOICE_SHELL_PUBLIC_KEY : undefined,
         webDir: paths.webDir,
         // Logs live beside the daemon's own state (honors MISSION_HOME), matching where
         // it keeps its db + token.
@@ -411,7 +431,7 @@ app.whenReady().then(async () => {
       startForeman({
         workerEntry: paths.foremanEntry,
         cwd: appRoot,
-        logPath: join(stateDir(), "foreman.log"),
+        logPath: foremanLogPath(),
       }),
   );
 
@@ -455,7 +475,9 @@ app.whenReady().then(async () => {
   const onCheckForUpdates = () => void updater?.checkForUpdates();
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });
-  createTray(paths.trayIcon, {
+  createTray(paths.trayIcon, join(appRoot, "dist", "main"), {
+    onRecentlyHeard: () => getMainWindow()?.webContents.send("mission:recently-heard"),
+    setMuted: async muted => voice?.mute(muted) ?? false,
     onOpen: () => showWindow(paths.preload),
     onCheckForUpdates,
     onInstallIntegrations: () => {
@@ -471,6 +493,10 @@ app.whenReady().then(async () => {
       app.quit();
     },
   });
+  if (process.platform === "darwin" && !isQuitting()) {
+    voice = startShellVoice(join(appRoot, "dist", "native", "voice-listener"), setTrayVoice, undefined,
+      async () => voiceSigner = await shellVoiceSigner());
+  }
   void updaterStart;
 
   // Retain startup failure handling and process ownership; the window owns health polling.

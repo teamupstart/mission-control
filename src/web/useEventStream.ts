@@ -1,5 +1,11 @@
+import { invalidateSettingsConfig } from "./lib/settings-config-refresh.ts";
+import type { ReportItem, ReportMute } from "@shared/reports.ts";
+import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { ShapingConfigView } from "@shared/shaping.ts";
+import type { ShapingConfigView, ShapingSignInView } from "@shared/shaping.ts";
+import { receiveVoiceCard, receiveVoiceCountdown, VoiceCardClock, type DashboardVoiceAnswer, type DashboardVoiceCard, type VoiceCardRetention } from "./lib/voice-card-clock.ts";
+import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
+import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -43,12 +49,15 @@ import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
-import { forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
+import { fetchVoiceCardTime, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
+import { applyVoiceIndicatorSelection, refreshUiPreferences, refreshUiSkin } from "./lib/uiConfig.ts";
+import { invalidateSessionSettingsAccess } from "./lib/session-settings-access.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
   settingsRestoreMarkerChanged,
 } from "./lib/settings-restore-coordinator.ts";
+import { NO_SHAPING_SIGN_INS, shapingSignInsAfter } from "./lib/shaping-sign-ins.ts";
 
 /**
  * Unknown event types already warned about. A version-skewed daemon emitting an
@@ -82,6 +91,17 @@ export interface MissionState {
   /** Inert startup rows only; real sessions with the same stable id always suppress them. */
   restoringSessions: RestoringSession[];
   reviews: ReviewItem[];
+  /**
+   * Agent reports waiting to be read: the snapshot's, kept current by `report_upsert`. A report
+   * that is read or replaced leaves (`withReportUpserted`), so this never grows past what the
+   * inbox can show. A session's full history is read from `GET /api/sessions/:id/reports`.
+   */
+  reports: ReportItem[];
+  /**
+   * Muted report authors: the snapshot's, replaced whole by `report_mutes`. `reports` still holds
+   * a muted author's reports; the fold leaves them out, so Unmute brings them straight back.
+   */
+  reportMutes: ReportMute[];
   tasks: Task[];
   personas: PersonaView[];
   /** The SessionAction catalog, archived rows included so a node can always name its source. */
@@ -192,6 +212,29 @@ export interface MissionState {
   /** Observe each confirmed shaping config, as `subscribeFeatureFlags` does for flags. */
   subscribeShaping: (listener: (config: ShapingConfigView | null) => void) => () => void;
   /**
+   * Shaper sign-in's list from SSE. Empty before the first snapshot and whenever `task-shaping`
+   * or `shaper-sign-in` is off: the daemon sends it only while both are on, and clears it with an
+   * empty frame when either turns off. It never holds an authorization URL: a sign-in's link is
+   * only in the reply of the request that started it.
+   */
+  shapingSignIns: ShapingSignInView[];
+  /**
+   * The daemon's voice state (contract B of the voice plan). Null before the first snapshot and
+   * while the `voice` flag is off at connect time. Mute replies and stream frames share a mode
+   * revision. The stream supplies the remaining fields, including roster-only updates (contract C).
+   */
+  voice: VoiceState | null;
+  acknowledgeVoiceMode: (ack: VoiceState) => void;
+  voiceWindowId?: string;
+  voiceAnswers: Map<string, DashboardVoiceAnswer>;
+  openVoiceQuestion: { sessionId: string; reviewId: string } | null;
+  consumeVoiceQuestion: (request: { reviewId: string }) => void;
+  voiceCards: Map<string, DashboardVoiceCard>;
+  fadingVoiceCards: ReadonlySet<string>;
+  setVoiceCardRetention: (id: string, retention: VoiceCardRetention) => void;
+  /** Close one settled receipt now. Other cards keep their own expiry timers. */
+  dismissVoiceCard: (id: string) => void;
+  /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
    * surface re-polls for them. Null until the first snapshot lands, which is "unknown",
@@ -260,6 +303,13 @@ export interface MissionState {
   hasSnapshot: boolean;
 }
 
+// A mute reply confirms the mode. The stream owns the roster, shortcut and capabilities.
+function withNewerVoiceMode(base: VoiceState | null, candidate: VoiceState | null): VoiceState | null {
+  if (!base?.modeVersion || !candidate?.modeVersion || base.modeVersion.source !== candidate.modeVersion.source
+    || base.modeVersion.revision >= candidate.modeVersion.revision) return base;
+  return { ...base, transcript: undefined, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
+}
+
 /**
  * Subscribe to the daemon's SSE stream and maintain a live view of sessions and
  * reviews. The browser's EventSource auto-reconnects on drop; we surface that
@@ -274,6 +324,8 @@ export function useEventStream(): MissionState {
     new Map(),
   );
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
+  const [reports, setReports] = useState<ReadonlyMap<string, ReportItem>>(new Map());
+  const [reportMutes, setReportMutes] = useState<ReportMute[]>([]);
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
   const [sessionActions, setSessionActions] = useState<Map<string, SessionAction>>(new Map());
@@ -311,6 +363,77 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const [shapingSignIns, setShapingSignIns] = useState<ShapingSignInView[]>(NO_SHAPING_SIGN_INS);
+  const [voiceWindowId, setVoiceWindowId] = useState<string>();
+  const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, DashboardVoiceAnswer>());
+  const [openVoiceQuestion, setOpenVoiceQuestion] = useState<{ sessionId: string; reviewId: string } | null>(null);
+  const consumeVoiceQuestion = useCallback((request: { reviewId: string }) => {
+    setOpenVoiceQuestion(current => current === request ? null : current);
+  }, []);
+  const [voiceCards, setVoiceCards] = useState(new Map<string, DashboardVoiceCard>());
+  const [fadingVoiceCards, setFadingVoiceCards] = useState(new Set<string>());
+  const setVoiceCardFading = useCallback((id: string, fading: boolean) => {
+    setFadingVoiceCards(current => {
+      if (current.has(id) === fading) return current;
+      const next = new Set(current);
+      if (fading) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  const voiceExpiry = useRef(new Map<string, { card: VoiceCard; retention: VoiceCardRetention; timer: number | null; fadeTimer?: number }>()).current;
+  const limitVoiceOutcomes = useCallback((cards: Map<string, DashboardVoiceCard>) => {
+    if (cards.size <= 50) return cards;
+    const completed = [...cards.values()].filter(card => voiceCardCanExpire(card) && voiceExpiry.get(card.id)?.retention !== "in-use");
+    if (completed.length <= 50) return cards;
+    const next = new Map(cards);
+    for (const card of completed.slice(0, completed.length - 50)) next.delete(card.id);
+    return next;
+  }, [voiceExpiry]);
+  const scheduleVoiceExpiry = useCallback((card: VoiceCard, retention: VoiceCardRetention = voiceExpiry.get(card.id)?.retention ?? "reading") => {
+    const previous = voiceExpiry.get(card.id);
+    window.clearTimeout(previous?.timer ?? undefined);
+    window.clearTimeout(previous?.fadeTimer);
+    setVoiceCardFading(card.id, false);
+    voiceExpiry.delete(card.id);
+    if (!voiceCardCanExpire(card)) return;
+    const duration = retention === "hidden-feedback" ? 60_000 : 8000;
+    const fadeTimer = retention === "reading" ? window.setTimeout(() => setVoiceCardFading(card.id, true), duration - 300) : undefined;
+    const timer = retention === "in-use" ? null : window.setTimeout(() => {
+      voiceExpiry.delete(card.id);
+      setVoiceCardFading(card.id, false);
+      setVoiceCards(current => {
+        if (current.get(card.id) !== card) return current;
+        const next = new Map(current);
+        next.delete(card.id);
+        return next;
+      });
+    }, duration);
+    voiceExpiry.set(card.id, { card, retention, timer, fadeTimer });
+  }, [voiceExpiry, setVoiceCardFading]);
+  const setVoiceCardRetention = useCallback((id: string, retention: VoiceCardRetention) => {
+    const expiry = voiceExpiry.get(id);
+    if (!expiry || expiry.retention === retention) return;
+    scheduleVoiceExpiry(expiry.card, retention);
+    if (expiry.retention === "in-use") setVoiceCards(limitVoiceOutcomes);
+  }, [scheduleVoiceExpiry, voiceExpiry, limitVoiceOutcomes]);
+  const dismissVoiceCard = useCallback((id: string) => {
+    const expiry = voiceExpiry.get(id);
+    // Only a settled receipt leaves early; a countdown or recipient choice stays with the daemon.
+    if (!expiry || !voiceCardCanExpire(expiry.card)) return;
+    window.clearTimeout(expiry.timer ?? undefined);
+    window.clearTimeout(expiry.fadeTimer);
+    voiceExpiry.delete(id);
+    setVoiceCardFading(id, false);
+    setVoiceCards(current => {
+      if (!current.has(id)) return current;
+      const next = new Map(current);
+      next.delete(id);
+      return next;
+    });
+  }, [voiceExpiry, setVoiceCardFading]);
+  const [voice, setVoice] = useState<VoiceState | null>(null);
+  const acknowledgeVoiceMode = useCallback((ack: VoiceState) => setVoice(current => withNewerVoiceMode(current, ack)), []);
   const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
   const subscribeShaping = useCallback((listener: (config: ShapingConfigView | null) => void) => {
     shapingListeners.current.add(listener);
@@ -333,8 +456,56 @@ export function useEventStream(): MissionState {
   const latestSettingsRestoreRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let windowId: string | undefined;
+    let connectionStartedAt = performance.now();
     const es = new EventSource("/events");
     esRef.current = es;
+    let voiceClock = new VoiceCardClock();
+    let clockProbe: AbortController | undefined;
+    let lastProbeAt = -Infinity;
+    function sampleCardClock(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }, hasCountdown: boolean) {
+      const now = performance.now();
+      const stamp = frame.voiceServerTime ?? Date.now();
+      const sample = voiceClock.observeStream(connectionStartedAt, now, frame.voiceStreamStartedAt ?? stamp, stamp);
+      // A long SSE handshake does not tell us which direction was slow. Take an
+      // independent timestamped read and refine only the windows still using that estimate.
+      if (hasCountdown && sample.uncertain && !clockProbe && now - lastProbeAt > 1000) {
+        const epoch = voiceClock.epoch;
+        const probe = new AbortController();
+        clockProbe = probe;
+        lastProbeAt = now;
+        void fetchVoiceCardTime(AbortSignal.any([probe.signal, AbortSignal.timeout(5000)])).then(stamp => {
+          if (clockProbe !== probe || stamp === null || voiceClock.epoch !== epoch) return;
+          const refined = voiceClock.observe(now, performance.now(), stamp, stamp);
+          setVoiceAnswers(current => new Map([...current].map(([id, answer]) =>
+            [id, answer.provisionalDeadline ? receiveVoiceCountdown(answer, refined, answer) : answer])));
+          setVoiceCards(current => {
+            const next = new Map(current);
+            for (const [id, card] of current) {
+              if (card.provisionalDeadline) next.set(id, receiveVoiceCard(card, refined, card));
+            }
+            return next;
+          });
+        }).finally(() => { if (clockProbe === probe) clockProbe = undefined; });
+      }
+      return sample;
+    }
+    function cancelClockProbe() {
+      clockProbe?.abort();
+      clockProbe = undefined;
+      lastProbeAt = -Infinity;
+    }
+    function clearVoiceTimers() {
+      setOpenVoiceQuestion(null);
+      cancelClockProbe();
+      voiceClock = new VoiceCardClock();
+      for (const { timer, fadeTimer } of voiceExpiry.values()) {
+        window.clearTimeout(timer ?? undefined);
+        window.clearTimeout(fadeTimer);
+      }
+      voiceExpiry.clear();
+      setFadingVoiceCards(new Set());
+    }
 
     es.onopen = () => {
       if (esRef.current !== es) return;
@@ -353,6 +524,9 @@ export function useEventStream(): MissionState {
     };
     es.onerror = () => {
       if (esRef.current !== es) return;
+      cancelClockProbe();
+      setOpenVoiceQuestion(null);
+      connectionStartedAt = performance.now(); // EventSource will retry after this point.
       observeBrowserConnection(false);
       setConnected(false);
       // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
@@ -367,8 +541,9 @@ export function useEventStream(): MissionState {
       setSettingsStatus(null);
       // And the keep-awake status, under the same contract with a sharper edge: `on` is a
       // claim about a live OS power assertion, and the daemon restarting - the one event
-      // most likely to have severed this stream - is exactly what resets that assertion
-      // to off. Unknown disables the toggle; the reconnect snapshot restores the truth.
+      // most likely to have severed this stream - releases that assertion until the new
+      // daemon has reacquired it. Unknown disables the toggle; the reconnect snapshot
+      // restores the truth.
       setKeepAwakeStatus(null);
     };
 
@@ -392,6 +567,13 @@ export function useEventStream(): MissionState {
           if (msg.changed) setLatestSessionTransfer(msg.changed);
           break;
         case "snapshot":
+          const reconnecting = windowId !== undefined;
+          windowId = msg.windowId;
+          setVoiceWindowId(windowId);
+          void refreshUiSkin();
+          void refreshUiPreferences();
+          invalidateSessionSettingsAccess();
+          if (reconnecting) invalidateSettingsConfig();
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
@@ -400,6 +582,9 @@ export function useEventStream(): MissionState {
             new Map((msg.restoringSessions ?? []).map((session) => [session.id, session])),
           );
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
+          // Absent while the `inbox` flag is off, which is no reports at all.
+          setReports(new Map((msg.reports ?? []).map((report) => [report.id, report])));
+          setReportMutes(msg.reportMutes ?? []);
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setPersonas(new Map(msg.personas.map((persona) => [persona.id, persona])));
           setSessionActions(new Map(msg.sessionActions.map((action) => [action.id, action])));
@@ -455,6 +640,28 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which is the same answer as a cleared frame.
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
+          // Absent while either flag is off, which is the same answer as a cleared frame.
+          setShapingSignIns((prev) => shapingSignInsAfter(prev, msg));
+          if (msg.voice && msg.voice.mode !== "off") {
+            // A reconnect also carries receipts missed since this stream's last event ID.
+            // Previously seen outcomes keep their local timers and any in-use recovery action.
+            const active = msg.voiceCards ?? [];
+            const answers = msg.voiceAnswers ?? [];
+            const sample = sampleCardClock(msg, answers.length > 0 || active.some(card => card.state === "pending" && card.deadline !== null));
+            setVoiceAnswers(current => new Map(answers.map(a => [a.reviewId, receiveVoiceCountdown(a, sample, current.get(a.reviewId))])));
+            active.forEach(card => scheduleVoiceExpiry(card));
+            setVoiceCards(current => {
+              const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
+              for (const card of active) next.set(card.id, receiveVoiceCard(card, sample, current.get(card.id)));
+              return next;
+            });
+          } else {
+            setVoiceAnswers(new Map());
+            clearVoiceTimers();
+            setVoiceCards(new Map());
+          }
+          setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
+          if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion, msg.voiceConfirmation);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -529,6 +736,12 @@ export function useEventStream(): MissionState {
             next.delete(msg.id);
             return next;
           });
+          break;
+        case "report_upsert":
+          setReports((prev) => withReportUpserted(prev, msg.report));
+          break;
+        case "report_mutes":
+          setReportMutes(msg.mutes);
           break;
         case "task_upsert":
           setTasks((prev) => new Map(prev).set(msg.task.id, msg.task));
@@ -706,6 +919,72 @@ export function useEventStream(): MissionState {
           setShaping(msg.config);
           for (const listener of shapingListeners.current) listener(msg.config);
           break;
+        case "shaping_sign_ins":
+          setShapingSignIns((prev) => shapingSignInsAfter(prev, msg));
+          break;
+        case "voice_state":
+          setVoice(current => withNewerVoiceMode(msg.state, current));
+          if (msg.state.mode === "off") {
+            setVoiceAnswers(new Map());
+            clearVoiceTimers();
+            setVoiceCards(new Map());
+          }
+          break;
+        case "voice_indicators":
+          applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
+          break;
+        case "voice_form_fill":
+        case "voice_form_submit":
+        case "voice_inbox_action":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-inbox-event", { detail: msg }));
+          break;
+        case "voice_open_question":
+          if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
+          break;
+        case "voice_dictation":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-dictation", { detail: msg }));
+          break;
+        case "voice_dictation_probe":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-dictation-probe", { detail: msg }));
+          break;
+        case "voice_confirm_focus":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-confirm-focus", { detail: msg }));
+          break;
+        case "voice_answer": {
+          const answer = msg.answer;
+          const sample = answer && sampleCardClock(msg, true);
+          setVoiceAnswers(prev => {
+            const next = new Map(prev);
+            if (answer && sample) next.set(msg.reviewId, receiveVoiceCountdown(answer, sample, prev.get(msg.reviewId)));
+            else next.delete(msg.reviewId);
+            return next;
+          });
+          break;
+        }
+        case "voice_card_remove":
+          setVoiceCards(prev => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
+        case "voice_card": {
+          const sample = sampleCardClock(msg, msg.card.state === "pending" && msg.card.deadline !== null);
+          scheduleVoiceExpiry(msg.card);
+          setVoiceCards((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.card.id);
+            next.set(msg.card.id, receiveVoiceCard(msg.card, sample, prev.get(msg.card.id)));
+            return limitVoiceOutcomes(next);
+          });
+          break;
+        }
+        // Who can be addressed moved: replace the roster inside the state. A frame that lands
+        // while no state is held (voice was off at connect) has nothing to update; the frame
+        // that switches voice on carries the roster itself.
+        case "voice_roster":
+          setVoice((prev) => (prev ? { ...prev, roster: msg.roster } : prev));
+          break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
           break;
@@ -752,7 +1031,18 @@ export function useEventStream(): MissionState {
         case "archive_changed":
           setArchivesRevision((n) => n + 1);
           break;
+        case "ui_skin_changed":
+          void refreshUiSkin();
+          break;
+        case "settings_config_changed":
+          if (msg.domain === "ui") void refreshUiPreferences();
+          invalidateSettingsConfig(msg.domain);
+          break;
+        case "session_settings_access_changed":
+          invalidateSessionSettingsAccess();
+          break;
         case "settings_restored":
+          void refreshUiSkin();
           // A restore can replace the indexed directories along with everything else.
           forgetCachedRepos();
           latestSettingsRestoreRequestIdRef.current = msg.requestId;
@@ -779,10 +1069,11 @@ export function useEventStream(): MissionState {
     };
 
     return () => {
+      clearVoiceTimers();
       es.close();
       esRef.current = null;
     };
-  }, []);
+  }, [scheduleVoiceExpiry, voiceExpiry, limitVoiceOutcomes]);
 
   // Every Map above is replaced wholesale only when ITS OWN events change it - `setSessions`
   // on a `session_upsert`, `setTasks` on a task event, and so on. Spreading each one straight
@@ -803,6 +1094,7 @@ export function useEventStream(): MissionState {
     [restoringSessions, sessions],
   );
   const reviewsList = useMemo(() => [...reviews.values()], [reviews]);
+  const reportsList = useMemo(() => [...reports.values()], [reports]);
   const tasksList = useMemo(() => [...tasks.values()], [tasks]);
   const personasList = useMemo(() => [...personas.values()], [personas]);
   const sessionActionsList = useMemo(() => [...sessionActions.values()], [sessionActions]);
@@ -847,6 +1139,8 @@ export function useEventStream(): MissionState {
     sessions: sessionsList,
     restoringSessions: restoringSessionsList,
     reviews: reviewsList,
+    reports: reportsList,
+    reportMutes,
     tasks: tasksList,
     personas: personasList,
     sessionActions: sessionActionsList,
@@ -868,6 +1162,13 @@ export function useEventStream(): MissionState {
     subscribeFeatureFlags,
     shaping,
     subscribeShaping,
+    shapingSignIns,
+    voice,
+    acknowledgeVoiceMode,
+    voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
+    fadingVoiceCards,
+    setVoiceCardRetention,
+    dismissVoiceCard,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

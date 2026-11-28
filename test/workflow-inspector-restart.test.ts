@@ -1,17 +1,16 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InspectorComment, InspectorPr } from "../src/shared/types.ts";
 import type { WorkflowContextSnapshot, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the default findings policy must really rerun the immutable graph.
 // An approval of the failed head cannot leak across that repair into the second gate.
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-restart-"));
+const home = tempDir("mission-workflow-inspector-restart-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

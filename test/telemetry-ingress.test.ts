@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The typed browser ingress, from the daemon's side.
 //
@@ -17,7 +17,7 @@ import { join } from "node:path";
 // is attributed to comes from the request, never from the body, and the basis attached to it
 // says how much that attribution is worth.
 
-const home = mkdtempSync(join(tmpdir(), "mission-telemetry-ingress-"));
+const home = tempDir("mission-telemetry-ingress-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { closeDb, openDb } = await import("../src/server/db.ts");

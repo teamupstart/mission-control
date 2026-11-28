@@ -1,15 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { headlessTranscriptDir, pruneHeadlessTranscripts } from "../src/server/goal/prune.ts";
 import { HEADLESS_CWD } from "../src/server/claude-cli.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // This module DELETES files, so the tests are about what it must never touch at least as much
 // as about what it removes.
 
-const root = mkdtempSync(join(tmpdir(), "prune-"));
+const root = tempDir("prune-");
 after(() => rmSync(root, { recursive: true, force: true }));
 
 const DAY = 24 * 60 * 60 * 1000;

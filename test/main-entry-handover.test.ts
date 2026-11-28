@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { migrationPlanFixture } from "./helpers/migration-plan.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const MAIN_BUNDLE = join(REPO_ROOT, "dist", "main", "index.cjs");
@@ -59,7 +59,7 @@ interface Observed {
  * replaced.
  */
 function fixture(): { home: string; state: string; personal: string } {
-  const root = mkdtempSync(join(tmpdir(), "mission-entry-"));
+  const root = tempDir("mission-entry-");
   const home = join(root, "home");
   const state = join(root, "state");
   const personal = join(home, "Applications", "Mission Control.app");
@@ -193,7 +193,7 @@ test("the entry point launches nothing when it is already the installed app", ()
 
 test("an unmanaged entry point is untouched by any of this", () => {
   // No receipt at all, which is every install made outside the managed path.
-  const root = mkdtempSync(join(tmpdir(), "mission-entry-bare-"));
+  const root = tempDir("mission-entry-bare-");
   const result = spawnSync(process.execPath, [HARNESS], {
     encoding: "utf8",
     timeout: 120_000,

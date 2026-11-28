@@ -1,8 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import type { PrRefs, PrSnapshot } from "../src/server/inspector/github.ts";
@@ -19,6 +17,7 @@ import {
   stackPromptNeed,
   type StackObservation,
 } from "../src/shared/stacking.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A stacked child merged by hand into its parent's branch after that parent had already merged
 // (the #1416 / #1417 incident): the lifecycle reads it as Broken with its own reason, offers the
@@ -26,7 +25,7 @@ import {
 // the merge as a release. The poller half - that such a merge completes nothing - is in
 // `stacking-stray-merge-poller.test.ts`.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-stray-merge-"));
+const home = tempDir("mission-stacking-stray-merge-");
 process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
 const { observeClosedStackChildren, observeStackLifecycle } = await import("../src/server/stacking/state.ts");

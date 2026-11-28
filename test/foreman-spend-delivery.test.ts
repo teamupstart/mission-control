@@ -5,14 +5,12 @@ import { createServer } from "node:http";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerResponse } from "node:http";
 import type {
@@ -20,6 +18,7 @@ import type {
   ClaudeSdkOneShotDeps,
 } from "../src/server/harness/claude/sdk-types.ts";
 import type { LlmSpendReport } from "../src/shared/llm-spend.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a headless run's cost exists exactly once, and only for as long as it
 // takes to deliver it.
@@ -48,7 +47,7 @@ import type { LlmSpendReport } from "../src/shared/llm-spend.ts";
 let port = 0;
 // Same reasoning for the spool: `stateDir()` honours MISSION_HOME, and without an override
 // these tests would write their outbox into the real install's state dir.
-const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
+const home = tempDir("foreman-spend-");
 process.env.MISSION_HOME = home;
 
 /** What the fake daemon does to the next request. */
@@ -180,7 +179,7 @@ afterEach(async () => {
   // Then wait for any child the case left running. Released first, deliberately: a reporter
   // parked on the response above cannot exit until it gets one, so awaiting before releasing
   // would trade a poisoned next test for a hung file.
-  await Promise.allSettled([...liveChildren]);
+  await Promise.allSettled(liveChildren);
   for (const path of spoolFiles()) if (path !== SPOOL) rmSync(path, { force: true });
 });
 

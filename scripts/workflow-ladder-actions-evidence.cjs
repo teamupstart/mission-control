@@ -1,5 +1,4 @@
-/* eslint-disable no-console */
-const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
 const { createHash } = require("node:crypto");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");

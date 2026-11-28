@@ -1,6 +1,6 @@
 import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, type ResidentRunSummary } from "@shared/residents.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
-import type { ReviewItem, Session, Task } from "@shared/types.ts";
+import type { ReviewItem, Session, SessionControlRequestView, Task } from "@shared/types.ts";
 import {
   pipelineCommissionAttention,
   pipelineCommissionAttentionEntries,
@@ -13,7 +13,11 @@ import {
 } from "@shared/pipeline.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
+import { reportAuthorLabel, reportToRead, type ReportItem } from "@shared/reports.ts";
+import { legacyStallFingerprint, type Stall } from "@shared/stall.ts";
+import type { ObservedStall } from "./stalls.ts";
 import { stateDisplay } from "./format.ts";
+import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
 
 /**
  * The one display rule for a session correlated with a Pipeline commission.
@@ -70,6 +74,7 @@ function isSettling(session: Session): boolean {
 
 /** One thing to act on. Ordered by SECTION first (see `foldAttention`), never interleaved. */
 export type AttentionItem =
+  | { kind: "session_control_request"; id: string; session: Session; request: SessionControlRequestView }
   | {
       kind: "pipeline_commission";
       id: string;
@@ -150,12 +155,74 @@ export type AttentionItem =
       activity: string | null;
     }
   | {
+      /**
+       * A session the daemon's stall rules flagged (`inbox` flag). One row per stuck session,
+       * naming the rule that fired and carrying its facts, so the card offers the fix in place.
+       * It claims its session before the backstop runs, so a stuck session that is also amber is
+       * drawn here and not again under Waiting on you.
+       */
+      kind: "session_stuck";
+      id: string;
+      session: Session;
+      stall: Stall;
+      context: string | null;
+    }
+  | {
       kind: "parked_finalization";
       id: string;
       runId: string;
       summary: EnsembleSummary;
       error: string;
+    }
+  | {
+      /**
+       * One agent's reports waiting to be read (`inbox` flag). Something to READ, never something
+       * owed: these rows count toward `toRead` and never toward `total`, and they claim no session,
+       * so a report can neither turn a session amber nor hide one from the backstop.
+       *
+       * Keyed by the report's author rather than its session: every run of one resident is one
+       * author, and a report outlives the session that posted it, so there may be no live session
+       * to name at all. The name is the one the report recorded when it was posted.
+       */
+      kind: "agent_reports";
+      /** `agent-reports:<authorKey>`. */
+      id: string;
+      authorKey: string;
+      authorName: string;
+      /** This author's reports waiting to be read, each chain at its first report's place. */
+      reports: ReportItem[];
     };
+
+/**
+ * The inbox's sections, in the order they are drawn: the one rule the fold emits by. Derivation
+ * order is a separate matter (the backstop must run after every section that claims a session),
+ * so the fold builds its rows in whatever order it must and then sorts them by this.
+ *
+ * A later section is inserted at its fixed place, never appended by push order: Stuck goes
+ * directly after Waiting on you, and Reports directly after Stuck finalizations as the final
+ * entry. Snoozed is not a fold kind: the inbox draws it after every fold section, so Reports
+ * always sits immediately before it.
+ */
+export const INBOX_SECTION_ORDER = [
+  "ensemble_decision",
+  "session_reviews",
+  "session_control_request",
+  "session_dialog",
+  "pipeline_commission",
+  "pipeline_halt",
+  "session_blocked",
+  "session_stuck",
+  "parked_finalization",
+  "agent_reports",
+] as const satisfies readonly AttentionItem["kind"][];
+
+// Every kind has a place: a kind missing from the order fails to compile here.
+const _everyKindOrdered: Exclude<AttentionItem["kind"], (typeof INBOX_SECTION_ORDER)[number]> extends never ? true : never = true;
+void _everyKindOrdered;
+
+const SECTION_RANK: ReadonlyMap<AttentionItem["kind"], number> = new Map(
+  INBOX_SECTION_ORDER.map((kind, rank) => [kind, rank]),
+);
 
 export interface AttentionFold {
   items: AttentionItem[];
@@ -178,6 +245,12 @@ export interface AttentionFold {
    * operator did not choose to hide. The invariant holds for every row nobody dismissed.
    */
   total: number;
+  /**
+   * How many agent reports are waiting to be read: the top bar's `to read` figure. A separate
+   * figure from `total` on purpose - a report asks the operator to read something, not to
+   * answer it - so a report never adds to `total` and never claims a session.
+   */
+  toRead: number;
 }
 
 /**
@@ -202,6 +275,7 @@ export function ensembleRunContext(
 }
 
 export interface AttentionInput {
+  sessionControlRequestsEnabled?: boolean;
   residentRuns?: readonly ResidentRunSummary[];
   sessions: readonly Session[];
   /**
@@ -235,6 +309,23 @@ export interface AttentionInput {
    * that predates dismissal already gets.
    */
   dismissed?: ReadonlyMap<string, string>;
+  /**
+   * Agent reports the dashboard holds. Read and replaced ones are left out here, so a caller
+   * may pass every report it has. Optional, and absent means no Reports section.
+   */
+  reports?: readonly ReportItem[];
+  /**
+   * Author keys whose reports are muted (`report_mutes`). Their reports are left out of the
+   * Reports section and `toRead`, and are not marked read: drop a key and they are listed again.
+   * Optional, and absent means nobody is muted.
+   */
+  mutedAuthors?: ReadonlySet<string>;
+  /**
+   * The daemon's current stalls (`GET /api/away/stalls`), passed only while the `inbox` flag is
+   * on. Absent, or with stall detection off, the fold draws no Stuck rows and is the fold every
+   * caller that predates them already gets.
+   */
+  stalls?: readonly Stall[];
 }
 
 /**
@@ -284,7 +375,49 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
       return [{ itemId: item.id, occurrence: occurrenceOf(item.session.state, item.activity) }];
     case "parked_finalization":
       return [{ itemId: item.id, occurrence: occurrenceOf(item.error) }];
+    case "session_control_request":
+      // The inbox is the only answer surface. Decline settles the waiting MCP call.
+      return [];
+    case "agent_reports":
+      // Mark read is a report row's dismissal; there is nothing to dismiss without reading.
+      return [];
+    case "session_stuck":
+      return [stallDismissalKey(item.session.id, item.stall)];
   }
+}
+
+/**
+ * The one key a stall is dismissed under, whether the operator dismissed it as the inbox's Stuck
+ * row or as a card in Idle's Stalled section (`idle-stalled`). One key for both, so a stall hidden
+ * on one surface is not drawn again on the other when the flag is switched.
+ *
+ * The rule and its clock-free facts, never the sentence: the sentence carries the minutes, so a
+ * dismissal keyed on it would come back every minute. A stall from a daemon that predates
+ * fingerprints uses its work identity and any available session episode data.
+ */
+export function stallDismissalKey(
+  sessionId: string,
+  stall: Stall,
+): AttentionDismissalKey {
+  return { itemId: `stuck:${sessionId}`, occurrence: occurrenceOf(stall.kind, stall.fingerprint ?? legacyStallFingerprint(stall)) };
+}
+
+/** Read pre-upgrade reason hashes only for stalls that arrived without a daemon fingerprint.
+ * New writes always use the stable occurrence from stallDismissalKey. */
+export function isStallDismissed(stall: ObservedStall, dismissed: ReadonlyMap<string, string> | null): boolean {
+  if (!dismissed?.size) return false;
+  const key = stallDismissalKey(stall.sessionId, stall);
+  const stored = dismissed.get(key.itemId);
+  return stored === key.occurrence || (
+    (!stall.fingerprint || stall.legacy === true) && stored === occurrenceOf(stall.kind, stall.reason)
+  );
+}
+
+/** Only an exact pre-upgrade match can be rewritten to this episode's stable key. */
+export function legacyStallDismissalUpgrade(stall: ObservedStall, stored: ReadonlyMap<string, string>): AttentionDismissalKey | null {
+  if (!stall.legacy) return null;
+  const key = stallDismissalKey(stall.sessionId, stall);
+  return stored.get(key.itemId) !== key.occurrence && isStallDismissed(stall, stored) ? key : null;
 }
 
 /** A question's own dismissal key, separate from its session's row so each is dismissed alone. */
@@ -325,6 +458,7 @@ function occurrenceOf(...parts: (string | null | undefined)[]): string {
 }
 
 function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>): boolean {
+  if (item.kind === "session_stuck") return isStallDismissed(item.stall, dismissed);
   const keys = attentionDismissalKeys(item);
   return keys.length > 0 && keys.every((key) => dismissed.get(key.itemId) === key.occurrence);
 }
@@ -333,16 +467,25 @@ function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>
  * The queue, in the order it is drained.
  *
  * Sections are fixed and never interleave, because they are different kinds of obligation and
- * a mixed list would sort a one-click gate above a run that has been parked for an hour:
+ * a mixed list would sort a one-click gate above a run that has been parked for an hour. The
+ * order is `INBOX_SECTION_ORDER`:
  *
  *  1. **Ensemble decisions** - a run parked on you; nothing else in the run moves until it is answered.
  *  2. **Session reviews** - answerable inline, right here, which is what makes this an inbox.
+ *     Sessions stopped on their questions lead it; one still working past message-mode
+ *     questions follows (`stoppedOnQuestions`).
  *  3. **Pane dialogs** - a TUI menu, answered on the card (see the inbox's comment).
- *  4. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
- *  5. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
- *  6. **Parked finalizations** - a stuck destructive step.
+ *  4. **Pipeline lifecycle** - a commission whose provider lifecycle needs a person.
+ *  5. **Pipeline halts** - an external engine stopped a feature and is waiting for a person.
+ *  6. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
+ *  7. **Stuck sessions** - the daemon's stall rules fired (`inbox` flag); derived before the
+ *     backstop so a stuck session is not drawn twice.
+ *  8. **Parked finalizations** - a stuck destructive step.
+ *  9. **Reports** - agent reports waiting to be read, grouped by author. Last, so the inbox's own
+ *     Snoozed heading always follows it, and counted in `toRead` rather than `total`. A muted
+ *     author's reports are left out (`mutedAuthors`) without being marked read.
  *
- * The five that predate pipelines keep their relative order exactly: the new section was
+ * The five that predate pipelines keep their relative order exactly: the pipeline sections were
  * inserted, never interleaved, so a fleet observing no engine renders the identical list.
  *
  * Within a section the oldest wait leads, so draining top-to-bottom answers whoever has been
@@ -354,7 +497,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   const dismissed = input.dismissed ?? NOTHING_DISMISSED;
   const sessionById = new Map(input.sessions.map((s) => [s.id, s]));
   const summaryByRun = new Map(input.ensembles.map((e) => [e.id, e]));
-  /** Sessions that already own a row, so the section (4) backstop cannot double-count them. */
+  /** Sessions that already own a row, so the section (6) backstop cannot double-count them. */
   const represented = new Set<string>();
   const contextFor = (session: Session): string | null => {
     const link = session.task?.ensemble ?? null;
@@ -386,7 +529,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // A question the operator dismissed is dropped here, one question at a time, so a new one on
   // the same session is still shown. Its session is still CLAIMED, though: a session whose
   // every question was dismissed is amber, and leaving it unclaimed would let the backstop in
-  // section (5) redraw it as "Waiting on you" - the dismissed row popping back under a new name.
+  // section (6) redraw it as "Waiting on you" - the dismissed row popping back under a new name.
   const bySession = new Map<string, ReviewItem[]>();
   for (const review of input.reviews) {
     const session = sessionById.get(review.sessionId);
@@ -399,12 +542,23 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     if (group) group.push(review);
     else bySession.set(review.sessionId, [review]);
   }
-  const groups = [...bySession.entries()].map(([sessionId, reviews]) => ({
-    session: sessionById.get(sessionId)!,
-    reviews: [...reviews].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)),
-  }));
+  // Sessions that have stopped on their questions lead, then oldest question first. A row of
+  // message-mode questions (`async-input`) whose agent is still working past them waits below
+  // every stopped one: it is owed an answer, but nothing has stopped for it yet. With the flag off
+  // every review is one its agent waits on inside a call, so every row is stopped and the order
+  // is oldest first, exactly as before.
+  const pausedResidents = pausedResidentSessionIds(input.residentRuns, input.sessions);
+  const groups = [...bySession.entries()].map(([sessionId, reviews]) => {
+    const session = sessionById.get(sessionId)!;
+    return {
+      session,
+      stopped: stoppedOnQuestions(asQuestionAgent(session, pausedResidents), reviews),
+      reviews: [...reviews].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)),
+    };
+  });
   groups.sort(
     (a, b) =>
+      Number(b.stopped) - Number(a.stopped) ||
       (a.reviews[0]?.createdAt ?? 0) - (b.reviews[0]?.createdAt ?? 0) ||
       (a.session.id < b.session.id ? -1 : 1),
   );
@@ -417,6 +571,13 @@ export function foldAttention(input: AttentionInput): AttentionFold {
       reviews: group.reviews,
       context: contextFor(group.session),
     });
+  }
+
+  if (input.sessionControlRequestsEnabled) {
+    for (const item of controlRequestItems(input.sessions)) {
+      represented.add(item.session.id);
+      items.push(item);
+    }
   }
 
   // (3) Any session parked on a TUI/driver menu. A deep link, not an answer surface: a pane
@@ -445,7 +606,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (4) Pipelines an external engine stopped for a person.
+  // (4) and (5) Pipelines whose lifecycle or engine stopped for a person.
   //
   // BEFORE the backstop below, deliberately. The backstop's whole job is to claim what
   // nothing else did, so any section derived after it would be a section whose rows had
@@ -489,7 +650,35 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (5) The backstop: sessions the fleet paints amber that nothing above accounts for. See
+  // (7) Sessions the daemon's stall rules flagged, while the `inbox` flag passes them in. Derived
+  // BEFORE the backstop for the reason the pipeline sections are: the backstop claims what
+  // nothing else did, and a stuck session it had already drawn as "Waiting on you" would be one
+  // problem shown twice. A session with questions keeps its question row; only the backstop
+  // yields. A stall for a session the fleet no longer holds, or one on its way out, is dropped:
+  // there is nothing left to nudge. Longest stuck leads; ties break on the session id.
+  for (const stall of [...(input.stalls ?? [])].sort(
+    (a, b) => b.forMs - a.forMs || (a.sessionId < b.sessionId ? -1 : 1),
+  )) {
+    const session = sessionById.get(stall.sessionId);
+    if (!session || isSettling(session)) continue;
+    const item: AttentionItem = {
+      kind: "session_stuck",
+      id: stallDismissalKey(session.id, stall).itemId,
+      session,
+      stall,
+      context: contextFor(session),
+    };
+    // A dismissed Stuck row keeps claiming its session only while the session is not amber. The
+    // stall's fingerprint does not follow the session's state, so an escalation dismissed here and
+    // then a permission prompt on the same session would otherwise leave an amber session with
+    // no row at all: the backstop draws it under Waiting on you instead, as it would without
+    // the stall.
+    if (isDismissed(item, dismissed) && stateDisplay(session).tone === "attention") continue;
+    represented.add(session.id);
+    items.push(item);
+  }
+
+  // (6) The backstop: sessions the fleet paints amber that nothing above accounts for. See
   // the `session_blocked` doc for the two populations this catches. Ordered by name then id
   // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
   // A `needs-you` pause is not a reason of its own. Older daemons wrote it to mirror the session,
@@ -513,7 +702,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
-  // (6) A finalization that stopped on an error. The run is past its decision and holding a
+  // (8) A finalization that stopped on an error. The run is past its decision and holding a
   // half-finished destructive step, which is a retry only a person can ask for.
   for (const summary of [...input.ensembles]
     .filter((e) => e.status === "finalizing" && e.error)
@@ -527,19 +716,75 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     });
   }
 
+  // (8) Agent reports waiting to be read, one row per author. A report that replaced another keeps
+  // the place of the first report of its chain (`rootCreatedAt`), so an update does not jump the
+  // queue; authors are ordered by their oldest report, so the longest wait still leads.
+  const reportsByAuthor = new Map<string, ReportItem[]>();
+  for (const report of input.reports ?? []) {
+    if (!reportToRead(report) || input.mutedAuthors?.has(report.author.key)) continue;
+    const group = reportsByAuthor.get(report.author.key);
+    if (group) group.push(report);
+    else reportsByAuthor.set(report.author.key, [report]);
+  }
+  const byQueuePlace = (a: ReportItem, b: ReportItem) =>
+    a.rootCreatedAt - b.rootCreatedAt || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
+  for (const [authorKey, reports] of [...reportsByAuthor.entries()]
+    .map(([key, group]) => [key, [...group].sort(byQueuePlace)] as const)
+    .sort(([keyA, a], [keyB, b]) => byQueuePlace(a[0]!, b[0]!) || (keyA < keyB ? -1 : 1))) {
+    const newest = reports.reduce((latest, report) => (report.createdAt > latest.createdAt ? report : latest));
+    items.push({ kind: "agent_reports", id: `agent-reports:${authorKey}`, authorKey, authorName: reportAuthorLabel(newest.author), reports });
+  }
+
   // Every other dismissed row leaves LAST, after every section has claimed its sessions, for
   // the reason section (2) gives: a dismissed menu or Pipeline row filtered out any earlier
   // would leave its session unclaimed, and the backstop would draw it again as "Waiting on you".
   // Questions were already filtered one by one above, so their rows are never dropped here.
+  // Drawn in the section order, whatever order the sections had to be derived in. The sort is
+  // stable, so each section keeps the order it was built in.
+  items.sort((a, b) => SECTION_RANK.get(a.kind)! - SECTION_RANK.get(b.kind)!);
   const visible =
     dismissed.size === 0
       ? items
-      : items.filter((item) => item.kind === "session_reviews" || !isDismissed(item, dismissed));
-  const total = visible.reduce(
-    (sum, item) => sum + (item.kind === "session_reviews" ? item.reviews.length : 1),
-    0,
-  );
-  return { items: visible, total };
+      // Report rows are never dismissed: Mark read is how a report leaves, and their empty key
+      // list must never be read as "every key dismissed" by a later change to `isDismissed`.
+      : items.filter((item) => item.kind === "session_reviews" || item.kind === "agent_reports" || !isDismissed(item, dismissed));
+  let total = 0;
+  let toRead = 0;
+  for (const item of visible) {
+    if (item.kind === "agent_reports") toRead += item.reports.length;
+    else total += item.kind === "session_reviews" ? item.reviews.length : 1;
+  }
+  return { items: visible, total, toRead };
+}
+
+function controlRequestItems(sessions: readonly Session[]) {
+  return sessions.flatMap((session) => {
+    const ask = session.sessionControlRequest;
+    if (!ask || session.sessionControlEnabled || isSettling(session)) return [];
+    return [{ kind: "session_control_request" as const, id: `control-request:${ask.id}`, session, request: ask }];
+  }).sort((a, b) => a.request.requestedAt - b.request.requestedAt || a.id.localeCompare(b.id));
 }
 
 const NOTHING_DISMISSED: ReadonlyMap<string, string> = new Map();
+
+/**
+ * The fold while the operator's dismissals are unknown: still loading, or unreadable for as long
+ * as the read keeps failing. Every row that can be dismissed is held back, because drawing one
+ * over "nothing dismissed" would bring back rows the operator hid. Session control requests and reports have their
+ * own resolution actions and stay available while dismissals load.
+ */
+export function foldWhileDismissalsUnknown(
+  reports?: readonly ReportItem[],
+  controlRequestSessions: readonly Session[] = [],
+  mutedAuthors?: ReadonlySet<string>,
+): AttentionFold {
+  const reportFold = foldAttention({
+    sessions: [],
+    reviews: [],
+    ensembles: [],
+    ...(reports ? { reports } : {}),
+    ...(mutedAuthors ? { mutedAuthors } : {}),
+  });
+  const requests = controlRequestItems(controlRequestSessions);
+  return { ...reportFold, items: [...requests, ...reportFold.items], total: requests.length };
+}

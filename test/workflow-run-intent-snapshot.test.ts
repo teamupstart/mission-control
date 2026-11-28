@@ -15,8 +15,7 @@
  */
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REVIEW_LIMITS, REVIEW_TRUNCATION_MARKER } from "../src/shared/review.ts";
 import { clampPrompt } from "../src/server/util/prompt-text.ts";
@@ -27,8 +26,9 @@ import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
 import type { WorkflowRunIntentInput } from "../src/server/workflows/intent-fingerprint.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-run-intent-"));
+const home = tempDir("mission-workflow-run-intent-");
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 

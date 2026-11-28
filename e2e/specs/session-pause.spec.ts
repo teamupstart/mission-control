@@ -90,7 +90,11 @@ async function fakeAgentStates(daemon: DaemonHandle): Promise<string[]> {
       }
     }
   }
-  return table.filter((p) => under.has(p.pid) && /fake-claude/.test(p.command)).map((p) => p.state);
+  // The state LETTER only. `ps` appends flags after it (`N` for a process running at lowered
+  // priority, `+`, `s`, ...), and the OS sets some of them on its own under load: a stopped
+  // agent reads `TN` as well as `T`, and a running one `SN` as well as `S`. Comparing the
+  // whole field missed the stopped state and let "not stopped" pass for any flagged state.
+  return table.filter((p) => under.has(p.pid) && /fake-claude/.test(p.command)).map((p) => p.state.charAt(0));
 }
 
 async function shoot(page: Page, target: Locator | Page, name: string): Promise<void> {
@@ -101,7 +105,6 @@ async function shoot(page: Page, target: Locator | Page, name: string): Promise<
   await page.mouse.move(0, 0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/session-pause/${name}.png`);
 }
 

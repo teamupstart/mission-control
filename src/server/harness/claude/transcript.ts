@@ -544,8 +544,10 @@ export function launchScanCostSoFar(): { scans: number; bytes: number; checked: 
 export const claudeTranscript: TranscriptSpec = {
   metaSource: "transcript",
   locate: (session) => resolveTranscriptPath(session),
+  locateByConversation: (session) => resolveTranscriptPath({ ...session, transcriptPath: null }),
   passiveRead: claudePassiveRead,
   messages: jsonlMessages({ parse: toMessage, narration: readCurrentTodo }),
+  userMessageText: conversationText,
   // Locating is two `existsSync` calls off fields the session already carries, so there
   // is nothing worth caching and nothing to prune.
   retain: null,

@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: this is the engine that turns a compiled plan into real agents on an operator's
@@ -13,7 +13,7 @@ import { join } from "node:path";
  * state machine can be exercised deterministically, without spawning an agent or touching Git.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-engine-"));
+const home = tempDir("mission-ensemble-engine-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -156,7 +156,7 @@ test("a test strategy runs two waves, the second pinned to the first wave's arti
 
   // Settle both wave-one members.
   const attempts = () => store.listAttempts(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     const memberId = attempts().find((a) => a.taskId === dispatch.taskId)!.memberId;
     await activate(engine, gateway, run.id, dispatch.taskId);
     await submit(engine, run.id, memberId);
@@ -440,7 +440,7 @@ test("completing a run stops its submitted members' live agents while keeping th
   const { store, gateway, engine } = harness();
   const { run } = store.createRun(runInsert(singleWavePlan(2)));
   await engine.launch(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;
     await activate(engine, gateway, run.id, dispatch.taskId);
     await submit(engine, run.id, memberId);

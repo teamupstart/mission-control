@@ -1,12 +1,11 @@
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const home = mkdtempSync(join(tmpdir(), "mission-review-snooze-"));
+const home = tempDir("mission-review-snooze-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -37,6 +36,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager, ReviewResolutionError, SnoozeActorRefusal } = await import("../src/server/reviews.ts");
 const { reviewToolResult } = await import("../src/shared/review-item.ts");
 import type { PlanDecision } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const HOUR = 60 * 60_000;
 const linter: PlanDecision[] = [
@@ -402,7 +402,8 @@ for (const state of ["sending", "uncertain"] as const) {
     const review = f.reviews.create(f.id, "input", "Still needed?", "Still needed?", null, {
       snoozable: true, waitMode: "message",
     });
-    f.reviews.snooze(review.id, HOUR);
+    // Hold, because a message-mode judgment snooze ("Keep doing what it said") sends nothing.
+    f.reviews.snooze(review.id, HOUR, { mode: "hold" });
     const noteKey = f.turns()[0]!.noteKey;
     const claimed = claimNextPendingTurn(noteKey, Date.now())!;
     assert.equal(claimed.id, `review-continuation:snooze:${review.id}`);
@@ -436,7 +437,29 @@ test("an owed instruction that could not be handed over yet is delivered when re
 });
 
 
-for (const mode of ["judgment", "option", "hold"] as const) {
+test("a message-mode judgment snooze sends nothing, and the resolved answer arrives on its own", () => {
+  // "Keep doing what it said": the agent was told to carry on when it filed the question, so a
+  // snooze that changes nothing about its work owes it no message (`snoozeReviewRow`).
+  const f = fixture("message-snooze-judgment");
+  const review = f.reviews.create(f.id, "input", "Which linter?", "Which linter?", linter, {
+    snoozable: true, waitMode: "message", meanwhile: "Prepare tests without applying the configuration",
+  });
+  f.reviews.snooze(review.id, HOUR, { mode: "judgment" });
+  assert.equal(f.registry.getReview(review.id)?.status, "snoozed");
+  assert.deepEqual(f.registry.outstandingReviews(f.id).map((r) => r.id), [review.id]);
+  assert.deepEqual(f.turns(), [], "no instruction is queued");
+  const stored = openDb().prepare("SELECT snooze_instruction_owed_at, continuation_queued_at FROM reviews WHERE id = ?").get(review.id);
+  assert.deepEqual({ ...stored }, { snooze_instruction_owed_at: null, continuation_queued_at: null });
+
+  f.reviews.resolve(review.id, "answer", "Use eslint", "human");
+  assert.deepEqual(f.turns().map((turn) => turn.id), [`review-continuation:answer:${review.id}`]);
+  // The marker line, then exactly the answer text the agent always received.
+  assert.match(f.turns()[0]!.text, new RegExp(`^\\[mission-control:answer review=${review.id}\\]\n\nMission Control answer to question`));
+  assert.match(f.turns()[0]!.text, /Use eslint/);
+  assert.deepEqual(f.registry.outstandingReviews(f.id), []);
+});
+
+for (const mode of ["option", "hold"] as const) {
   test(`a message-mode snooze sends an unanswered ${mode} instruction, then a separate resolved answer`, () => {
     const f = fixture(`message-snooze-${mode}`);
     const review = f.reviews.create(f.id, "input", "Which linter?", "Which linter?", linter, {
@@ -447,10 +470,11 @@ for (const mode of ["judgment", "option", "hold"] as const) {
     assert.deepEqual(f.registry.outstandingReviews(f.id).map((r) => r.id), [review.id]);
     assert.deepEqual(f.turns().map((turn) => turn.id), [`review-continuation:snooze:${review.id}`]);
     const instruction = f.turns()[0]!.text;
+    assert.match(instruction, new RegExp(`^\\[mission-control:remind-later review=${review.id}\\]\n\n`));
     assert.match(instruction, /Not answered yet/);
     assert.doesNotMatch(instruction, /Mission Control answer to question/);
     assert.match(instruction, mode === "hold" ? /Do not do any work that depends on this answer/
-      : mode === "option" ? /"eslint" as a provisional answer/ : /proceed on your best judgment/);
+      : /"eslint" as a provisional answer/);
     const stored = openDb().prepare("SELECT status, continuation_queued_at FROM reviews WHERE id = ?").get(review.id);
     assert.equal(stored?.status, "snoozed");
     assert.equal(stored?.continuation_queued_at, null, "the snooze does not claim an answer was queued");
@@ -461,7 +485,7 @@ for (const mode of ["judgment", "option", "hold"] as const) {
       `review-continuation:answer:${review.id}`,
     ]);
     assert.equal(f.turns()[0]!.text, instruction, "answering does not rewrite or combine with the instruction");
-    assert.match(f.turns()[1]!.text, /^Mission Control answer to question/);
+    assert.match(f.turns()[1]!.text, new RegExp(`^\\[mission-control:answer review=${review.id}\\]\n\nMission Control answer to question`));
     assert.match(f.turns()[1]!.text, /Use eslint/);
     assert.match(f.turns()[1]!.text, /Prepare tests without applying the configuration/);
     assert.deepEqual(f.registry.outstandingReviews(f.id), []);

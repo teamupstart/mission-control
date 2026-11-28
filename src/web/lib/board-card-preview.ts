@@ -137,6 +137,8 @@ export function previewSession(now: number): Session {
       checkedAt: null,
       reply: { flaggedAt: now - 600_000, flaggedBy: "operator", note: null, referenceUrl: null },
     },
+    // A session stands on a blocker OR a declared wait, never both, so the preview shows none.
+    awaiting: null,
     pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
@@ -309,3 +311,15 @@ export const PREVIEW_RESIDENT: ResidentSessionMark = {
   changedTo: null,
   controlOtherSessions: false,
 };
+
+export const PREVIEW_RESIDENT_WITH_CALL_SIGN: ResidentSessionMark = {
+  ...PREVIEW_RESIDENT,
+  listeningTitle: '"Scout"',
+};
+
+/**
+ * The call sign the Display panel's second preview card draws beside its title, as an
+ * Always-on card would, in whichever Call sign style is chosen. A dictionary name, so the
+ * picture shows the kind of name a dispatched task is given.
+ */
+export const PREVIEW_CALL_SIGN = "Juniper";

@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { WorkflowCommandView } from "../src/shared/workflow.ts";
 import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the Command catalog is SSE state, not a second polling subsystem. A
 // reconnect snapshot and the incremental stream must converge on the same built-in slots, and
@@ -13,7 +13,7 @@ import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 // only carried the written slots would make "no command here" and "not loaded yet" the same
 // observation for the surface that has to draw four cards.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-commands-sse-"));
+const home = tempDir("mission-workflow-commands-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

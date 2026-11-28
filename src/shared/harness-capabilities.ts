@@ -13,7 +13,6 @@ import type {
 // Phase 0 collapsed.
 import { AGENT_IDENTITY } from "./agent.ts";
 import type { StandingInstructionsMechanism } from "./standing-instructions.ts";
-import type { FeatureFlagId } from "./feature-flags.ts";
 
 // The Harness axis' PURE half: what an agent can do, spelled as data, with no `node:`
 // imports and no filesystem.
@@ -145,7 +144,6 @@ export interface AllNativeMcpSourcesSpec {
   mechanism: "lift-strict-mcp-config" | "codex-native-home";
   /** What the harness then loads on its own, as the editor and its confirmation name it. */
   sources: string;
-  previewFlag?: FeatureFlagId;
 }
 
 /**
@@ -210,6 +208,13 @@ export interface SkillsSpec {
    * `RETIRED_WRAPUP_PAYLOADS` (`@shared/queue.ts`) rather than dropped.
    */
   invoke: ((name: string) => string) | null;
+  /**
+   * How prose NAMES a skill for this harness, as opposed to `invoke`, the line that is typed to
+   * run it: the sigil and the name, with nothing after them. Turn one's "Skills for this task"
+   * section says which skill to use and when, and Codex's invocation clause ("run this skill
+   * now") would contradict a line that says not to run it yet. Null exactly when `invoke` is.
+   */
+  reference: ((name: string) => string) | null;
   /**
    * Env var naming the skills directory outright, overriding both paths below. A test (or
    * an operator) that wants a specific directory names it and gets it.
@@ -683,6 +688,7 @@ export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   // submits. Claude also verifies its own submits (`pastePlaceholder` is non-null here),
   // so this line does not have to survive a single unverified Enter the way Codex's does.
   invoke: (name) => `/${name}`,
+  reference: (name) => `/${name}`,
   dirEnvVar: "CLAUDE_SKILLS_DIR",
   homeDir: [".claude", "skills"],
   isolatedDirName: "claude-skills",
@@ -903,7 +909,6 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       allNativeSources: {
         mechanism: "codex-native-home",
         sources: "user, trusted workspace, system, managed and enabled plugin MCP servers",
-        previewFlag: "codex-resident-native-mcp",
       },
     },
     skills: {
@@ -914,6 +919,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // purpose: it has to read correctly for whatever skill a caller names, and its job
       // is the space in front of it.
       invoke: (name) => `$${name} - run this skill now.`,
+      reference: (name) => `$${name}`,
       dirEnvVar: "CODEX_SKILLS_DIR",
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
@@ -1057,6 +1063,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // queue and raises no wrap-up), but the answer is measured rather than left out:
       // a null here would claim pi cannot run a skill by name, which is false.
       invoke: (name) => `/skill:${name}`,
+      reference: (name) => `/skill:${name}`,
       dirEnvVar: "PI_SKILLS_DIR",
       homeDir: [".pi", "agent", "skills"],
       isolatedDirName: "pi-skills",
@@ -1428,6 +1435,15 @@ export function skillLoadingAgents(): AgentType[] {
  */
 export function skillCommand(agent: AgentType, name: string): string | null {
   return HARNESS_CAPABILITIES[agent].skills?.invoke?.(name) ?? null;
+}
+
+/**
+ * How prose names one skill for this agent, such as `/retro` or `$retro`: the sigil and the
+ * name and nothing else, for a sentence that says when to use it. Null when the agent has no
+ * way to invoke a skill by name. Never typed: `skillCommand` is the line that runs one.
+ */
+export function skillReference(agent: AgentType, name: string): string | null {
+  return HARNESS_CAPABILITIES[agent].skills?.reference?.(name) ?? null;
 }
 
 /**

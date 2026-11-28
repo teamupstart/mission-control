@@ -1,5 +1,5 @@
-import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
-import { codeRabbitChangedPaths } from "./coderabbit.ts";
+import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS } from "./coderabbit-result.ts";
+import { reviewChangedPaths, type ReviewChangedPaths } from "./review-comparison.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { WORKFLOW_COMMAND_INTERPRETERS, type WorkflowCommandArtifactDescriptor } from "@shared/workflow.ts";
 import type {
@@ -149,8 +149,8 @@ export interface CheckRuntimeDeps {
   db?: DatabaseSync;
   /** Defaults to asking git. See `resolveCapturedCommit`. */
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
-  /** Defaults to asking git. See `codeRabbitChangedPaths`. */
-  changedPaths?: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
+  /** Defaults to asking git. See `reviewChangedPaths`. */
+  changedPaths?: (repoRoot: string, mergeBase: string, head: string) => Promise<ReviewChangedPaths>;
   artifacts?: WorkflowCommandArtifactService;
   /** Defaults to `claimInputsChangedSinceMergeBase`. Asked only after a failed dependency claim. */
   claimInputsChanged?: typeof claimInputsChangedSinceMergeBase;
@@ -168,7 +168,7 @@ export class CheckRuntime {
   private readonly timeoutMs: number | undefined;
   private readonly teardown: CheckGroupTeardownOptions | undefined;
   private readonly resolveCommit: (repoRoot: string, headSha: string) => Promise<string>;
-  private readonly changedPaths: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
+  private readonly changedPaths: (repoRoot: string, mergeBase: string, head: string) => Promise<ReviewChangedPaths>;
   private readonly artifacts: WorkflowCommandArtifactService;
   private readonly claimInputsChanged: typeof claimInputsChangedSinceMergeBase;
 
@@ -192,7 +192,7 @@ export class CheckRuntime {
     this.timeoutMs = deps.timeoutMs;
     this.teardown = deps.teardown;
     this.resolveCommit = deps.resolveCommit ?? resolveCapturedCommit;
-    this.changedPaths = deps.changedPaths ?? codeRabbitChangedPaths;
+    this.changedPaths = deps.changedPaths ?? reviewChangedPaths;
     this.artifacts = deps.artifacts ?? new WorkflowCommandArtifactService(deps.db);
     this.claimInputsChanged = deps.claimInputsChanged ?? claimInputsChangedSinceMergeBase;
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
@@ -247,7 +247,7 @@ export class CheckRuntime {
 
     // Resolved before a tree is leased, so a failure costs nothing to unwind. A CLI that
     // reports `reviewedFiles` is checked against these rather than trusted.
-    let changedPaths: CodeRabbitChangedPaths | null = null;
+    let changedPaths: ReviewChangedPaths | null = null;
     if (request.coderabbit) {
       const { mergeBase, head } = request.coderabbit;
       try {
@@ -415,7 +415,7 @@ export class CheckRuntime {
     const review = this.retainReview(attempt, request, parser, artifacts, cleanup.ok,
       outcome.result.kind === "exited" ? outcome.result.exitCode : 1);
     if (!cleanup.ok) {
-      return { kind: "infrastructure",
+      return { kind: "infrastructure", cleanupFailed: true,
         reason: `the ${request.slot} check ran and ${describeResult(outcome.result)}, but its result is withheld because its pooled worktree could not be accounted for: ${cleanup.reason}`,
         artifacts, review };
     }

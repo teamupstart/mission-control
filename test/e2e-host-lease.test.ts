@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { once } from "node:events";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -11,9 +11,10 @@ import {
   E2E_MAX_WORKERS,
   type E2eHostLease,
 } from "../e2e/host-lease.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 async function fixture(): Promise<{ root: string; metadataPath: string }> {
-  const root = await mkdtemp(join(tmpdir(), "mission-e2e-lease-test-"));
+  const root = await tempDirAsync("mission-e2e-lease-test-");
   return { root, metadataPath: join(root, "owner.json") };
 }
 
@@ -66,6 +67,64 @@ test("a second E2E suite waits until the host lease is released", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const timing of ["on connect", "after the protocol line"] as const) {
+  test(`the owner logs the socket error and keeps its lease when a probe resets ${timing}`, async (t) => {
+    const warnings = t.mock.method(console, "warn");
+    const { root, metadataPath } = await fixture();
+    const lease = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
+    const { port, token } = lease.owner;
+    const probe = connect({ host: "127.0.0.1", port, allowHalfOpen: true });
+    try {
+      const closed = once(probe, "close");
+      let response = "";
+      if (timing === "on connect") {
+        probe.once("connect", () => probe.resetAndDestroy());
+      } else {
+        probe.setEncoding("utf8").on("data", (chunk) => {
+          response += chunk;
+          if (response.includes("\n")) probe.resetAndDestroy();
+        });
+        probe.on("end", () => probe.destroy());
+      }
+      await closed;
+      if (timing === "after the protocol line") {
+        assert.equal(response, `mission-control-e2e-lease-v1:${token}\n`);
+      }
+
+      // A normal waiter must still recognize the original listener and its metadata.
+      await assert.rejects(acquireE2eHostLease({
+        metadataPath, port, workers: 1, waitTimeoutMs: 0,
+        onWait: (owner) => assert.equal(owner?.token, token),
+      }), /Timed out waiting.*held by pid/);
+      await lease.release();
+      // Release drains accepted sockets, so the owner has observed the peer's reset.
+      const diagnostic = warnings.mock.calls.find(
+        ({ arguments: args }) => args[0] === "[e2e] host lease probe socket failed:",
+      );
+      assert.ok(diagnostic, `missing socket warning for reset ${timing}`);
+      const error: NodeJS.ErrnoException = diagnostic.arguments[1];
+      assert.ok(error instanceof Error);
+      if (timing === "after the protocol line") {
+        assert.equal(error.syscall, "read");
+        assert.equal(error.code, "ECONNRESET");
+      } else {
+        // The kernel can report the immediate disconnect on either side of the reply.
+        assert.match(`${error.syscall} ${error.code}`, /^(write (EPIPE|ECONNRESET)|read ECONNRESET)$/);
+      }
+      const successor = await acquireE2eHostLease({ metadataPath, port, workers: 1 });
+      try {
+        assert.notEqual(successor.owner.token, token);
+      } finally {
+        await successor.release();
+      }
+    } finally {
+      probe.destroy();
+      await lease.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("a crashed owner leaves no kernel lease to reclaim", async () => {
   const { root, metadataPath } = await fixture();

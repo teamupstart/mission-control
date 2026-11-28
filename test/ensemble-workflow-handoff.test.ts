@@ -1,7 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -14,7 +13,7 @@ import { join } from "node:path";
  * WorkflowManager, and asserts the exactly-once, exact-clean, block-visibly contract.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-handoff-"));
+const home = tempDir("mission-ensemble-handoff-");
 process.env.HARNESS_HOME = join(home, "state");
 
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -26,6 +25,7 @@ const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { FakeGateway, FakeFinalize, FakeWorkflow, stubAdapters, decidePlan, runInsert } = await import("./ensemble-fixture.ts");
 import type { EnsembleWorkflowHandoff } from "../src/shared/ensemble.ts";
+import { tempDir } from "./temp-root.mjs";
 
 function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -77,7 +77,7 @@ function harness(finalize: InstanceType<typeof FakeFinalize>) {
 async function driveToDecision(store: InstanceType<typeof EnsembleStore>, gateway: InstanceType<typeof FakeGateway>, engine: InstanceType<typeof EnsembleEngine>, handoff: EnsembleWorkflowHandoff | null) {
   const { run } = store.createRun(runInsert(decidePlan(3, 2), { workflowHandoff: handoff }));
   await engine.launch(run.id);
-  for (const dispatch of [...gateway.dispatched]) {
+  for (const dispatch of Array.from(gateway.dispatched)) {
     gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
     await engine.wake(run.id);
     const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;

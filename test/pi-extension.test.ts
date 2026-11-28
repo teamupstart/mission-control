@@ -1,8 +1,7 @@
 // A malformed bridge must cost the integration, never the Pi session or its TUI.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { McpClient } from "../src/pi/mcp-client.ts";
@@ -13,8 +12,9 @@ import { HookIngestSchema, StatusLineIngestSchema } from "../src/shared/protocol
 import { THINKING_LEVELS } from "../src/shared/types.ts";
 import extension, { missionControlBuild } from "../src/pi/extension.ts";
 import type { PiContext, PiEvent, PiTool } from "../src/pi/api.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "pi-extension-"));
+const root = tempDir("pi-extension-");
 after(() => rmSync(root, { recursive: true, force: true }));
 let seq = 0;
 function stub(code: string): string {

@@ -1,12 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { tempDir } from "./temp-root.mjs";
 
 ensureNativeStateLockAddon();
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-files-list-http-")));
+const home = realpathSync(tempDir("mission-files-list-http-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -42,8 +42,9 @@ test("Files preserves the depth-limit response from an actual resident directory
 test("Files preserves an exhausted directory scan's time-budget response", async (t) => {
   const root = join(home, "slow");
   mkdirSync(root);
-  let reads = 0;
-  t.mock.method(performance, "now", () => reads++ === 0 ? 0 : 15_001);
+  // Request setup may read the clock before the directory scan starts.
+  let now = 0;
+  t.mock.method(performance, "now", () => (now += 15_001));
   const response = await appFor(root).request("/api/sessions/live/files", { headers });
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /time budget/);

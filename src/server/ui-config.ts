@@ -1,3 +1,5 @@
+import { persistConfigPatch } from "./config-patch-storage.ts";
+import { randomUUID } from "node:crypto";
 import {
   seedHiddenDisplayItems,
   SkinIdSchema,
@@ -6,9 +8,13 @@ import {
 } from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
+import { SKIN_SETTING } from "@shared/session-settings-metadata.ts";
+import type { SettingDescriptor } from "./settings-dispatcher.ts";
+import { SKINS, isSkinId, skinById, type SkinId } from "@shared/skins.ts";
 import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import { VOICE_FLAG, VOICE_INDICATORS_MAX, VOICE_UI_DEFAULTS, VoiceUiConfigSchema, type VoiceIndicatorId, type VoiceRevision } from "@shared/voice.ts";
 import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
@@ -21,6 +27,38 @@ import { rememberWindowBackground, windowBackgroundPath } from "./window-backgro
 // to keep them somewhere that is actually per-machine - which the daemon already is.
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.ui;
+const skinListeners = new Set<() => void>();
+
+export function onUiSkinChanged(listener: () => void): () => void {
+  skinListeners.add(listener);
+  return () => { skinListeners.delete(listener); };
+}
+
+const indicatorListeners = new Set<(indicators: string[]) => void>();
+const indicatorSource = randomUUID();
+let lastIndicators: string | undefined;
+let indicatorRevision = 0;
+
+/** Reads share a version. A committed choice supersedes older requests even if the value is unchanged. */
+export function voiceIndicatorVersion(voice: UiConfig["voice"], committed = false): VoiceRevision {
+  const key = JSON.stringify([voice.indicators, voice.confirmation]);
+  if (committed || key !== lastIndicators) {
+    lastIndicators = key;
+    indicatorRevision++;
+  }
+  return { source: indicatorSource, revision: indicatorRevision };
+}
+
+export function onVoiceIndicatorsChanged(listener: (indicators: string[]) => void): () => void {
+  indicatorListeners.add(listener);
+  return () => { indicatorListeners.delete(listener); };
+}
+
+/** Reading the event-stream snapshot must not depend on unrelated dashboard preferences. */
+export function storedVoiceUi() {
+  const voice = VoiceUiConfigSchema.safeParse(getAppConfig(CONFIG_ENTRY)?.voice);
+  return voice.success ? voice.data : { ...VOICE_UI_DEFAULTS, indicators: [...VOICE_UI_DEFAULTS.indicators] };
+}
 
 /**
  * Cards was persisted as `grid` before that layout was retired. Keep the compatibility
@@ -97,7 +135,7 @@ function unshippedStoredSkin(stored: unknown): string | null {
  */
 function persistUiConfig(config: UiConfig, stored: unknown, choosesSkin: boolean): void {
   const unshipped = choosesSkin ? null : unshippedStoredSkin(stored);
-  setAppConfig(CONFIG_ENTRY, unshipped === null ? config : ({ ...config, skin: unshipped } as unknown as UiConfig));
+  setAppConfig(CONFIG_ENTRY, { ...getAppConfig(CONFIG_ENTRY), ...config, ...(unshipped !== null && { skin: unshipped }) } as UiConfig);
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
@@ -128,7 +166,13 @@ export function getUiConfig(persistMigration = true): UiConfig {
  * would call that unset and let the dashboard adopt stale `localStorage` over it.
  */
 export function uiConfigView(): UiConfigView {
-  return { configured: getAppConfig(CONFIG_ENTRY) !== undefined, config: getUiConfig() };
+  const configured = getAppConfig(CONFIG_ENTRY) !== undefined;
+  const config = getUiConfig();
+  if (featureEnabled(VOICE_FLAG)) return { configured, config, voiceIndicatorVersion: voiceIndicatorVersion(config.voice) };
+  // Behind its flag like every voice surface: with it off the response is the one an install
+  // without voice gave. The stored value is kept, and returns with the flag.
+  const { voice: _withheld, ...withoutVoice } = config;
+  return { configured, config: withoutVoice };
 }
 
 /**
@@ -146,10 +190,51 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
   // the route's patch schema does, so no caller can write a skin by accident.
   if (patch.skin !== undefined) SkinIdSchema.parse(patch.skin);
   const stored = getAppConfig(CONFIG_ENTRY);
-  const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
-  persistUiConfig(next, stored, patch.skin !== undefined);
+  const current = getUiConfig();
+  const next = UiConfigSchema.parse({ ...current, ...patch });
+  persistConfigPatch(CONFIG_ENTRY, current, next, patch, ["alerts"]);
+  if (patch.voice) {
+    voiceIndicatorVersion(next.voice, true);
+    for (const listener of indicatorListeners) {
+      try { listener(next.voice.indicators); }
+      catch (error) { console.warn("[voice] indicator listener failed:", error); }
+    }
+  }
   if (patch.skin !== undefined) syncWindowBackground(next.skin);
+  if (patch.skin !== undefined && stored?.skin !== next.skin) {
+    for (const listener of skinListeners) {
+      try { listener(); }
+      catch { console.warn("[ui-config] could not publish the skin change"); }
+    }
+  }
   return next;
+}
+
+export const uiSkinSetting: SettingDescriptor = {
+  ...SKIN_SETTING,
+  control: "skin",
+  access: "read-write",
+  replacement: "scalar",
+  schema: SkinIdSchema,
+  constraints: { choicesOnly: true },
+  choices: () => SKINS.map(({ id, label }) => ({ value: id, label })),
+  read: () => getUiConfig(false).skin,
+  write: value => setUiConfig({ skin: SkinIdSchema.parse(value) }).skin,
+};
+
+/** Merge a placement change with the latest indicator selection. */
+export function setVoiceConfirmation(confirmation: UiConfig["voice"]["confirmation"]): UiConfig["voice"] {
+  const current = storedVoiceUi();
+  return setUiConfig({ voice: { ...current, confirmation } }).voice;
+}
+
+/** The daemon reads and writes synchronously, so independent checkbox edits compose. */
+export function setVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): UiConfig["voice"] | null {
+  const voice = getUiConfig().voice;
+  if (voice.indicators.includes(id) === enabled) return voice;
+  if (enabled && voice.indicators.length >= VOICE_INDICATORS_MAX) return null;
+  const indicators = enabled ? [...voice.indicators, id] : voice.indicators.filter(item => item !== id);
+  return setUiConfig({ voice: { ...voice, indicators } }).voice;
 }
 
 /**

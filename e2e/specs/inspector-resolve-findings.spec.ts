@@ -44,7 +44,6 @@ async function shoot(page: Page, name: string, region?: Locator): Promise<void> 
   // Scoped to a region when the claim is about one, which is what makes the fold frame
   // readable: a whole 420px page is mostly the control column above the table it is about.
   await (region ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/inspector-resolve-findings/${name}.png`);
 }
 

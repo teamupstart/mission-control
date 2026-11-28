@@ -1,10 +1,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: a conversation's ARMED workflow is a different fact from its runs, and it
 // is the fact every "is a review coming" surface reads. Under the `foreman_complete` trigger a
@@ -12,7 +12,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // only streamed runs reported every armed session as unarmed - which is exactly how an
 // operator came to believe a dispatch had attached the wrong workflow.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-binding-sse-"));
+const home = tempDir("mission-workflow-binding-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

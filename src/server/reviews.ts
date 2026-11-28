@@ -9,7 +9,12 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
-import { ASYNC_INPUT_FLAG, asyncInputAnswer, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion } from "@shared/async-input.ts";
+import {
+  ASYNC_INPUT_FLAG, asyncInputAnswer, asyncInputReceipt, filedPlanAnswer, filedPlanReceipt,
+  isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion,
+  type ReviewWaitResponse, withdrawnByItsAgent,
+} from "@shared/async-input.ts";
+import { isStandingFollowUp } from "./plans/publication.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -17,10 +22,15 @@ import {
   snoozedInstructionText,
   type ReviewSnoozeMeanwhile,
 } from "@shared/review-snooze.ts";
-import type { Registry } from "./registry.ts";
+import { noteKeyFor, type Registry } from "./registry.ts";
 import {
+  blockReviewVoiceConversion,
+  fileReviewByVoice,
+  hasQueuedSpeechForReview,
   inTransaction,
   insertReview,
+  loadReview,
+  reviewRevisedBy,
   transferPendingReviews,
   loadReviewContinuationCandidates,
   loadSnoozeInstructionCandidates,
@@ -57,7 +67,18 @@ export const PARALLEL_ASK_WINDOW_MS = 30_000;
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
-type Waiter = (r: ReviewItem) => void;
+type Waiter = { convertible: boolean; finish: (r: ReviewWaitResponse) => void };
+
+export function filedReviewReceipt(review: ReviewItem): string {
+  return isFiledGate(review)
+    ? filedPlanReceipt(review, { bundleApproved: isStandingFollowUp(review.id) })
+    : asyncInputReceipt(review);
+}
+
+function convertedResponse(review: ReviewItem): ReviewWaitResponse {
+  return { ...review, converted: { receipt: filedReviewReceipt(review) } };
+}
+
 /**
  * Which review message is being handed to the outbox: a human resolution that arrived after the
  * agent's wait ended, or a snoozed question's "carry on" instruction that the agent never got
@@ -66,8 +87,32 @@ type Waiter = (r: ReviewItem) => void;
 export type ReviewContinuationKind = "answer" | "snooze-instruction";
 type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
+const voiceFilingVeto = Symbol("voice filing veto");
+
 export class ReviewResolutionError extends Error {}
+class VoiceFiledCallRefusal extends ReviewResolutionError {
+  constructor(id: string) {
+    super(`Review ${id} was already filed by voice. Its answer is delivered as a message in the conversation.`);
+  }
+}
 export class OpenQuestionLimitError extends Error {}
+
+/**
+ * A `revises` that names no form this ask may revise. Nothing was filed, and the message says why
+ * in words the agent can act on.
+ */
+export class RevisionRefusal extends Error {}
+
+/**
+ * The review manager's agent withdrawal in two halves, like `mergeClosure`: `persist` writes the
+ * status `withdrawn` with the reason and cancels an unclaimed snooze instruction, and must run
+ * inside a transaction; `publish` broadcasts it, refreshes the pending turn and releases the
+ * waiters, and runs only after the commit.
+ */
+type AgentWithdrawal = { persist: () => void; publish: () => ReviewItem };
+
+/** What a valid `revises` resolves to: the link to store, and the open form to withdraw with it. */
+type Revision = { link: NonNullable<ReviewItem["revision"]>; withdrawal: AgentWithdrawal | null };
 
 /** A merge could not close a session's questions yet (a runtime transfer is moving them). */
 export class MergeClosureDeferred extends Error {}
@@ -105,6 +150,29 @@ function canonical(value: unknown): string {
     entries.sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
     return Object.fromEntries(entries);
   });
+}
+
+/** Why a settled filed plan form that its agent did not withdraw cannot be revised. */
+function revisionRefusalFor(target: ReviewItem): string {
+  switch (target.status) {
+    case "answered":
+    case "approved":
+    case "rejected":
+      return "was already answered. File the new plan as a new form, without revises.";
+    case "dismissed":
+      return "the operator dismissed. File the new plan as a new form, without revises.";
+    case "orphaned":
+      return target.closedReason === "merged"
+        ? "was closed when the task's pull request merged. File the new plan as a new form, without revises."
+        : "was closed when its session went away. File the new plan as a new form, without revises.";
+    case "superseded":
+      return "was replaced by a reworded retry. File the new plan as a new form, without revises.";
+    case "withdrawn":
+      return "was not withdrawn by its own agent, so it cannot be revised. File the new plan as a new form, without revises.";
+    case "pending":
+    case "snoozed":
+      return "is not open for revision. File the new plan as a new form, without revises.";
+  }
 }
 
 export class ReviewManager {
@@ -197,7 +265,10 @@ export class ReviewManager {
     // Only settled, deliverable answers use the answer formatter. Snooze instructions have
     // their own delivery path and must never acquire an answer heading.
     const answer = review.waitMode === "message" && deliversContinuation(review);
-    return (answer ? asyncInputAnswer(review) : `${lead}\n\n${result.text}`) + addenda.map((text) => `\n\n${text}`).join("");
+    // A filed plan form's agent stopped on it, so its answer restates the plan and each decision
+    // rather than reconciling work done meanwhile.
+    const text = !answer ? `${lead}\n\n${result.text}` : isFiledGate(review) ? filedPlanAnswer(review) : asyncInputAnswer(review);
+    return text + addenda.map((addendum) => `\n\n${addendum}`).join("");
   }
 
   private deliverContinuation(review: ReviewItem): void {
@@ -299,9 +370,10 @@ export class ReviewManager {
       snoozable?: boolean;
       now?: number;
       /**
-       * `"message"`: the agent's `request_input` call returns at once and the answer reaches it
-       * as a message (`async-input`). Decided by the route (`decideWaitMode`), applied only to
-       * `request_input`'s own asks; absent is today's call-mode wait.
+       * `"message"`: the agent's call returns at once and the answer reaches it as a message.
+       * Decided by the route (`decideWaitMode`), applied only to `request_input`'s own asks
+       * (`async-input`) and to plan forms (`filed-plan-decisions`); absent is today's call-mode
+       * wait.
        */
       waitMode?: "message";
       /** The agent's one line on what it does while a message-mode question is open. */
@@ -311,6 +383,14 @@ export class ReviewManager {
        * build, which never says `asyncCapable` and cannot read a receipt.
        */
       callerPolls?: boolean;
+      /** The caller can recover a receipt committed by spoken conversion. */
+      convertible?: boolean;
+      /**
+       * The review id of the filed plan form this one revises (`request_plan_decisions`). Checked
+       * by `revisionFor`, which refuses with `RevisionRefusal` and writes nothing; an open target
+       * is withdrawn in the same transaction as this form is inserted.
+       */
+      revises?: string;
     } = {},
   ): ReviewItem {
     // An MCP process may still be running a previous build. Compare retries using the form
@@ -319,16 +399,27 @@ export class ReviewManager {
     // A SNOOZED twin is the same question too. Its agent was told not to ask again, and one that
     // does anyway is handed the parked row back, whose wait returns at once with the same
     // "carry on" it already got, rather than putting a second card in front of the operator.
+    // With `revises`, only the revision this same request already filed is that ask: a retry of it
+    // is handed back, and any other identical open form is not, so a new revision is always
+    // validated, linked and numbered, and its open target withdrawn.
     const existing = this.registry
       .outstandingReviews(sessionId)
-      .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions));
+      .find((r) => r.kind === kind && r.title === title && r.body === body && sameDecisions(r.decisions, decisions)
+        && (options.revises === undefined || r.revision?.previousId === options.revises));
     if (existing) {
+      if (existing.filedByVoiceAt != null) {
+        if (options.convertible !== true) throw new VoiceFiledCallRefusal(existing.id);
+        return existing;
+      }
       // An older child re-asked a filed question (`async-input`) and is about to long-poll it.
       // Attach the row now, before this response leaves, so an answer given before its first
       // poll arrives is that poll's result and is never also queued as a message.
       return existing.waitMode === "message" && options.callerPolls === true ? this.attachCall(existing) : existing;
     }
 
+    // Validated after the re-attach, so a retried revision is handed the revision it already filed
+    // rather than refused because its target is now revised.
+    const revision = options.revises === undefined ? null : this.revisionFor(sessionId, kind, options.revises);
     const review: ReviewItem = {
       id: randomUUID(),
       sessionId,
@@ -341,11 +432,13 @@ export class ReviewManager {
       selections: null,
       resolvedBy: null,
       ...(options.snoozable === true && kind === "input" ? { snoozable: true } : {}),
-      ...(options.waitMode === "message" && options.snoozable === true && kind === "input" ? { waitMode: "message" as const } : {}),
+      ...(options.waitMode === "message" && ((options.snoozable === true && kind === "input") || kind === "plan-decisions")
+        ? { waitMode: "message" as const } : {}),
       // Only a filed question keeps it: a question its agent waits on inside the call must not
       // tell the operator the agent is carrying on.
       ...(options.meanwhile && options.waitMode === "message" && options.snoozable === true && kind === "input"
         ? { meanwhile: options.meanwhile } : {}),
+      ...(revision ? { revision: revision.link } : {}),
       createdAt: options.now ?? Date.now(),
       resolvedAt: null,
     };
@@ -369,7 +462,15 @@ export class ReviewManager {
       }
       insertReview(review);
       for (const older of replaced) updateReviewStatus(older.id, "superseded", null, resolvedAt, null, null);
+      // An open form this one revises is withdrawn by the one agent-withdrawal writer, inside
+      // this transaction, so the operator never sees both cards and a failure leaves neither. It
+      // is never also in `replaced`: a revision is a plan form, and only a `request_input`
+      // question supersedes, and only a call-mode question.
+      revision?.withdrawal?.persist();
     });
+    // The replaced form's withdrawal is published before the revision, so no subscriber ever
+    // holds both open cards between the two events.
+    revision?.withdrawal?.publish();
     this.registry.upsertReview(review);
     for (const older of replaced) {
       this.publishSettled({ ...older, status: "superseded", response: null, resolvedAt, resolvedBy: null, selections: null });
@@ -377,24 +478,120 @@ export class ReviewManager {
     return review;
   }
 
-  /** Both wait modes, including questions parked by the operator. */
+  /**
+   * Refuse a `revises` before a caller writes anything of its own (`RevisionRefusal`), for a route
+   * that binds other state to a review id before the review itself is written.
+   */
+  assertRevisable(sessionId: string, kind: ReviewKind, revises: string): void {
+    this.revisionFor(sessionId, kind, revises);
+  }
+
+  /**
+   * Check a `revises` and say what it links to. The target must be a filed plan form of this
+   * session, by the wait mode stored on its row now, that is either still open or was withdrawn by
+   * its own agent (`withdrawnByItsAgent`), and that no form has revised yet. Anything else is a
+   * `RevisionRefusal` with the reason, before anything is written.
+   *
+   * The row is read from the database rather than the registry, because a withdrawn form leaves the
+   * registry at the next restart (`loadPendingReviews` restores only open rows).
+   */
+  private revisionFor(sessionId: string, kind: ReviewKind, revises: string): Revision {
+    const refuse = (why: string): never => {
+      throw new RevisionRefusal(`Not filed: revises names ${revises}, which ${why} Nothing was filed.`);
+    };
+    if (kind !== "plan-decisions") refuse("cannot be revised by this kind of ask; only request_plan_decisions revises a form.");
+    const target = loadReview(revises);
+    if (!target) return refuse("is not a review Mission Control knows.");
+    if (target.sessionId !== sessionId) refuse("belongs to another session. Revise only a plan form your own session filed.");
+    if (target.kind !== "plan-decisions") refuse("is not a plan form. Only a form filed with request_plan_decisions can be revised; file this plan without revises.");
+    if (!isFiledGate(target)) {
+      refuse("waits for its answer inside a tool call, so it cannot be revised. Its call returns the operator's answer; wait for that instead.");
+    }
+    const revisedBy = reviewRevisedBy(target.id);
+    if (revisedBy) refuse(`was already revised by ${revisedBy}. Revise the latest form instead: revises ${revisedBy}.`);
+    const number = (target.revision?.number ?? 1) + 1;
+    let withdrawal: AgentWithdrawal | null = null;
+    if (target.status === "pending") {
+      let admitted: ReviewItem;
+      try {
+        admitted = this.admitAgentWithdrawal(sessionId, target.id);
+      } catch (error) {
+        // Mid runtime transfer, for one: the open form cannot be withdrawn now, so nothing is filed.
+        if (error instanceof ReviewResolutionError) return refuse(`cannot be withdrawn right now (${error.message}) Try again shortly.`);
+        throw error;
+      }
+      withdrawal = this.agentWithdrawal(admitted, `Revised: replaced by revision ${number} of this plan.`);
+    } else if (!withdrawnByItsAgent(target)) {
+      refuse(revisionRefusalFor(target));
+    }
+    return { link: { number, previousId: target.id }, withdrawal };
+  }
+
+  /**
+   * The `request_input` questions the ten-question limit counts: both wait modes, including
+   * questions parked by the operator. Never a plan form, filed or not.
+   */
   openQuestions(sessionId: string): ReviewItem[] {
     return this.registry.outstandingReviews(sessionId).filter(isRequestInputQuestion);
   }
 
+  /**
+   * What an agent may list and withdraw as its own (`isAgentAsk`): its `request_input` questions
+   * and its filed plan forms. Not the limit's count, which stays `openQuestions`.
+   */
+  openAsks(sessionId: string): ReviewItem[] {
+    return this.registry.outstandingReviews(sessionId).filter(isAgentAsk);
+  }
+
+  /**
+   * `withdraw_question`: the asking agent taking back its own filed ask, a question or a plan form.
+   * One of the two entries to the agent withdrawal (`agentWithdrawal`), the one place that writes
+   * the status `withdrawn`. It admits only the calling session's own ask and refuses a call-mode
+   * one, so a `withdrawn` review was always withdrawn by its own agent.
+   */
   withdrawQuestion(sessionId: string, id: string, reason: string): ReviewItem {
-    const review = this.openQuestions(sessionId).find((r) => r.id === id);
+    const withdrawal = this.agentWithdrawal(this.admitAgentWithdrawal(sessionId, id), reason);
+    inTransaction(withdrawal.persist);
+    return withdrawal.publish();
+  }
+
+  /**
+   * Who may enter the agent withdrawal, for both of its entries: the calling session's own open
+   * ask (`openAsks`), filed rather than waited on in a call, outside a runtime transfer.
+   */
+  private admitAgentWithdrawal(sessionId: string, id: string): ReviewItem {
+    const review = this.openAsks(sessionId).find((r) => r.id === id);
     if (!review) throw new ReviewResolutionError("No open question with this id belongs to this session.");
     if (review.waitMode !== "message") throw new ReviewResolutionError("A call-mode question cannot be withdrawn; its call is still waiting.");
     if (transferForSource(sessionId)) throw new ReviewResolutionError("This session is mid runtime transfer.");
-    // Withdraw the question and its still-unclaimed instruction together. Claimed deliveries
-    // may already have reached the agent, so keep their records for delivery reconciliation.
+    return review;
+  }
+
+  /**
+   * The one place that writes the status `withdrawn`, in two halves (`AgentWithdrawal`). Its two
+   * entries are `withdrawQuestion` and a `revises` that names an open form (`revisionFor`), each
+   * admitted by `admitAgentWithdrawal`, so the status is only ever the asking agent's own act and
+   * records no actor. `reason` is stored in `response`.
+   */
+  private agentWithdrawal(review: ReviewItem, reason: string): AgentWithdrawal {
     let noteKey: string | null = null;
-    const withdrawn = this.settle(review, "withdrawn", reason, null, null, () => {
-      noteKey = cancelUnclaimedSnoozeInstruction(review.id);
-    });
-    if (noteKey !== null) this.registry.refreshPendingTurns(noteKey);
-    return withdrawn;
+    let withdrawn: ReviewItem | null = null;
+    return {
+      persist: () => {
+        const resolvedAt = Date.now();
+        updateReviewStatus(review.id, "withdrawn", reason, resolvedAt, null, null);
+        // Withdraw the question and its still-unclaimed instruction together. Claimed deliveries
+        // may already have reached the agent, so keep their records for delivery reconciliation.
+        noteKey = cancelUnclaimedSnoozeInstruction(review.id);
+        withdrawn = { ...review, status: "withdrawn", response: reason, resolvedAt, resolvedBy: null, selections: null };
+      },
+      publish: () => {
+        if (!withdrawn) throw new Error(`withdrawal of ${review.id} was published before it was persisted`);
+        const published = this.publishSettled(withdrawn);
+        if (noteKey !== null) this.registry.refreshPendingTurns(noteKey);
+        return published;
+      },
+    };
   }
 
   /**
@@ -404,6 +601,7 @@ export class ReviewManager {
    * a session blocked in that call would read as still working past its question.
    */
   private attachCall(review: ReviewItem): ReviewItem {
+    if (review.filedByVoiceAt != null) throw new VoiceFiledCallRefusal(review.id);
     if (!markReviewWaitAttached(review.id)) return review;
     const { waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
     this.registry.upsertReview(call);
@@ -633,6 +831,12 @@ export class ReviewManager {
      * decision below the reply it caused. The route takes the reading before it delivers.
      */
     at: number;
+    /**
+     * The filed plan form this record revises: a managed bundle revision that a standing approval
+     * approved outright, so no card is filed to carry the link. Checked and applied as `create`
+     * does, the open target withdrawn in this record's transaction.
+     */
+    revises?: string;
   }): ReviewItem {
     if (!this.registry.getSession(o.sessionId)) {
       throw new ReviewResolutionError(
@@ -640,6 +844,7 @@ export class ReviewManager {
       );
     }
     const now = o.at;
+    const revision = o.revises === undefined ? null : this.revisionFor(o.sessionId, o.kind, o.revises);
     const review: ReviewItem = {
       id: o.id ?? randomUUID(),
       sessionId: o.sessionId,
@@ -651,16 +856,20 @@ export class ReviewManager {
       decisions: o.decisions,
       selections: o.selections,
       resolvedBy: o.resolvedBy,
+      ...(revision ? { revision: revision.link } : {}),
       createdAt: now,
       resolvedAt: now,
     };
     inTransaction(() => {
       insertReview(review);
       updateReviewStatus(review.id, "answered", o.response, now, o.selections, o.resolvedBy);
+      revision?.withdrawal?.persist();
     });
     // Published only after the commit, so nothing can put a review on screen that a rollback
     // then took off disk. The throw from a failed transaction reaches the caller, which
-    // logs it and still reports the delivery that did happen.
+    // logs it and still reports the delivery that did happen. A replaced form's withdrawal goes
+    // first, as in `create`.
+    revision?.withdrawal?.publish();
     this.registry.upsertReview(review);
     this.markSteered(review);
     return review;
@@ -686,41 +895,102 @@ export class ReviewManager {
     this.registry.recordRetroHumanReview(review.sessionId);
   }
 
+  /** Enqueue, compatible polls and the end of blocking calls recheck the durable association. A transient
+   * filing failure leaves the accepted speech in its outbox and the call available to retry. */
+  tryFileForQueuedSpeech(sessionId: string): void {
+    try {
+      if (!this.waiters.size || !featureEnabled("voice")) return;
+      const session = this.registry.getSession(sessionId);
+      if (!session) return;
+      const noteKey = noteKeyFor(session);
+      const blockers = this.registry.pendingReviews(sessionId).filter(review => review.waitMode !== "message");
+      if (blockers.length && blockers.every(review => hasQueuedSpeechForReview(review.id, noteKey))) {
+        this.convertToFiled(...blockers.map(review => review.id));
+      }
+    } catch (error) {
+      console.warn(`[reviews] could not file reviews for queued speech in ${sessionId}; retrying on the next compatible poll:`, error);
+    }
+  }
+
+  /** File the session's blocking calls together, or leave every answer on its original channel. */
+  convertToFiled(...reviewIds: string[]): boolean {
+    for (const id of reviewIds) {
+      const waiters = this.waiters.get(id);
+      if (!waiters?.size || [...waiters].some(waiter => !waiter.convertible)) return false;
+    }
+    if (!reviewIds.length) return false;
+    const at = Date.now();
+    try {
+      const results = inTransaction(() => reviewIds.map(id => {
+        const filed = fileReviewByVoice(id, at);
+        if (!filed) throw voiceFilingVeto;
+        return { filed, response: convertedResponse(filed) };
+      }));
+      for (const result of results) this.releaseWaiters(result.response);
+      this.registry.upsertReviews(results.map(result => result.filed));
+      return true;
+    } catch (error) {
+      if (error === voiceFilingVeto) return false;
+      throw error;
+    }
+  }
+
   /**
    * Resolve immediately if already decided; otherwise wait up to `timeoutMs`.
    * On timeout returns the still-pending item so the caller can long-poll again.
    * Returns null if the id is unknown. `signal` ends the wait early the same way a timeout does,
    * which is how the daemon's shutdown answers a long-poll instead of cutting it.
    */
-  wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<ReviewItem | null> {
+  wait(id: string, timeoutMs: number, signal?: AbortSignal, convertible = false): Promise<ReviewWaitResponse | null> {
     const current = this.registry.getReview(id);
+    // Settled asks can be absent from the registry after restart. Their voice filing
+    // still owns both the receipt and the route by which the human answer is delivered.
+    const review = current ?? loadReview(id);
+    if (review?.waitMode === "message" && review.filedByVoiceAt != null) {
+      if (!convertible) return Promise.reject(new VoiceFiledCallRefusal(id));
+      return Promise.resolve(convertedResponse(review));
+    }
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-    return new Promise<ReviewItem | null>((resolve) => {
+    return new Promise<ReviewWaitResponse | null>((resolve, reject) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
 
-      const finish = (r: ReviewItem | null): void => {
+      const cleanup = (): void => {
+        if (!set!.delete(waiter)) return;
         clearTimeout(timer);
-        set!.delete(waiter);
+        if (!set!.size) this.waiters.delete(id);
         signal?.removeEventListener("abort", early);
+      };
+      const finish = (r: ReviewWaitResponse | null): void => {
+        cleanup();
         resolve(r);
       };
-      const waiter: Waiter = (r) => finish(r);
+      const waiter: Waiter = { finish, convertible };
       const early = (): void => finish(this.registry.getReview(id) ?? null);
       const timer = unref(setTimeout(early, timeoutMs));
 
       set.add(waiter);
-      if (signal?.aborted) early();
-      else signal?.addEventListener("abort", early, { once: true });
-      // A call is waiting on a question filed without one (`async-input`): an MCP child from an
-      // older build re-asked it word for word, was handed the open row, and long-polls it because
-      // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
-      // its answer is this call's result, and only a later detach (a cancelled or restarted call)
-      // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
-      // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
-      // closure that event triggers must be able to release this very call.
-      if (current.waitMode === "message") this.attachCall(current);
+      if (signal?.aborted) return early();
+      signal?.addEventListener("abort", early, { once: true });
+      try {
+        if (!convertible) blockReviewVoiceConversion(id);
+        // A call is waiting on a question filed without one (`async-input`): an MCP child from an
+        // older build re-asked it word for word, was handed the open row, and long-polls it because
+        // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
+        // its answer is this call's result, and only a later detach (a cancelled or restarted call)
+        // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
+        // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
+        // closure that event triggers must be able to release this very call.
+        if (current.waitMode === "message") {
+          this.attachCall(current);
+        } else if (convertible) {
+          this.tryFileForQueuedSpeech(current.sessionId);
+        }
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
     });
   }
 
@@ -781,11 +1051,12 @@ export class ReviewManager {
   }
 
   /**
-   * A merge completed this session's task: close every outstanding `request_input` question as
-   * `orphaned`, with the close reason `merged`, at that moment rather than at a later eviction.
+   * A merge completed this session's task: close every outstanding `request_input` question and
+   * filed plan form as `orphaned`, with the close reason `merged`, at that moment rather than at a
+   * later eviction.
    *
    * The scope is the completion rules' (`questionHoldsCompletion`): pending or snoozed, a
-   * message-mode question always and a call-mode question while the flag is on. With the flag
+   * message-mode ask always and a call-mode question while the flag is on. With the flag
    * off a call-mode question is left exactly as before, to be orphaned without a reason when its
    * session goes. Merging is the operator's own conclusion, so nothing here holds the
    * completion; it only makes sure no question outlives it unexplained.
@@ -934,11 +1205,15 @@ export class ReviewManager {
     return updated;
   }
 
-  private releaseWaiters(review: ReviewItem): void {
+  private releaseWaiters(review: ReviewWaitResponse): void {
     const set = this.waiters.get(review.id);
     if (set) {
-      for (const w of [...set]) w(review);
+      for (const w of Array.from(set)) w.finish(review);
       this.waiters.delete(review.id);
+    }
+    if (review.status !== "pending" && review.waitMode !== "message" && this.waiters.size) {
+      // A settle can publish a whole batch. Reconsider the remaining calls after all its rows are visible.
+      queueMicrotask(() => this.tryFileForQueuedSpeech(review.sessionId));
     }
   }
 }

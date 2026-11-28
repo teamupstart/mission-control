@@ -42,7 +42,6 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/multi-repo-workflow-runs/${name}.png`);
 }
 

@@ -1,14 +1,14 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: HTTP is the only write boundary for browser Persona edits. Every mutation
 // must pass the shared Zod schema, stale revisions must preserve both tabs' text, and archive must
 // remain a durable readable row instead of turning Delete into historical data loss.
 
-const home = mkdtempSync(join(tmpdir(), "mission-personas-http-"));
+const home = tempDir("mission-personas-http-");
 process.env.HARNESS_HOME = join(home, "state");
 for (const prefix of ["MISSION_", "FLEET_", "HARNESS_"]) {
   delete process.env[`${prefix}WORKFLOW_PERSONA_MODEL`];

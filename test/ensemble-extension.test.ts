@@ -1,8 +1,8 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: the whole architectural promise of the ensemble kernel is that a genuinely
@@ -19,7 +19,7 @@ import { join } from "node:path";
  * contract would be incomplete - so the negative half of the proof lives in ensemble-extension-contract.test.ts.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-ensemble-ext-"));
+const home = tempDir("mission-ensemble-ext-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -45,22 +45,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void
     if (Date.now() > deadline) throw new Error("waitFor timed out");
     await new Promise((resolve) => setImmediate(resolve));
   }
-}
-
-async function driveToTerminalBoundary(plan: ReturnType<typeof fx.fixedMatrixPlan>): Promise<{
-  store: InstanceType<typeof EnsembleStore>;
-  runId: string;
-  status: string | null;
-}> {
-  const store = new EnsembleStore(db);
-  const { engine, gateway } = fx.reviewEngine(store);
-  const run = makeRun(store, plan);
-  await fx.runAllMembers(engine, gateway, store, run.id);
-  await waitFor(() => {
-    const s = store.getRun(run.id)?.status;
-    return s === "awaiting_decision" || s === "failed" || s === "completed" || s === "cancelled";
-  });
-  return { store, runId: run.id, status: store.getRun(run.id)?.status ?? null };
 }
 
 // ---- launch-count shapes ----

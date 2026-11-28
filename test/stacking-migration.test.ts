@@ -1,9 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // Stacked pull requests over a database written before it existed. The `tasks` and
 // `inspector_prs` tables gain nullable columns through `addColumn`, an edge stored without any
@@ -11,7 +11,7 @@ import { join } from "node:path";
 // neither stacking gate can ever touch it. Also pinned here: the settings snapshot keeps an
 // unchosen `stacking` absent, and a PR packet for an unstacked task is byte-identical.
 
-const home = mkdtempSync(join(tmpdir(), "mission-stacking-migration-"));
+const home = tempDir("mission-stacking-migration-");
 process.env.MISSION_HOME = home;
 
 function seedPrePhaseDb(): void {

@@ -14,6 +14,7 @@ import { annotatePaneState } from "./pane-mode.ts";
 import { annotateCodexRollouts } from "./codex-rollouts.ts";
 import {
   hasMissionLaunchAncestor,
+  missionLaunchAncestorHome,
   missionLaunchMarkers,
   type MissionLaunchMarkers,
 } from "../terminal/launch-process.ts";
@@ -54,6 +55,12 @@ export interface DiscoveredSession {
    * hand-built sweep in a test need not state it; `correlate` always sets it.
    */
   missionLaunched?: boolean;
+  /**
+   * The private state home of the Mission Control launch the agent runs beneath
+   * (`missionLaunchAncestorHome`), or null. Names the launch exactly, so a launch's work unit
+   * hand-over (`terminal-launch-work-units.ts`) is taken only by the agent that launch started.
+   */
+  missionLaunchHome?: string | null;
   /** Exact passive identity evidence, when the agent process holds its rollout open. */
   agentSessionId?: string | null;
   transcriptPath?: string | null;
@@ -125,9 +132,11 @@ export interface DiscoveryInput {
  * that the same reading answers both the gate and the correlation, instead of an adapter
  * growing a private second way to ask whether its app is up.
  */
-export async function gatherDiscoveryInput(): Promise<DiscoveryInput> {
+export async function gatherDiscoveryInput(
+  emulators?: Parameters<typeof enumerateTerminals>[1],
+): Promise<DiscoveryInput> {
   const procs = await listProcesses();
-  const terminals = await enumerateTerminals(procs);
+  const terminals = await enumerateTerminals(procs, emulators);
   return { procs, terminals };
 }
 
@@ -455,6 +464,7 @@ export function correlate(
       terminals,
       startedAt: root.startMs,
       missionLaunched,
+      missionLaunchHome: missionLaunched ? missionLaunchAncestorHome(root.pid, byPid, markers) : null,
     });
   }
 

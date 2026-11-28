@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * What is at stake: every prompt typed at every terminal, on every agent this bridge serves.
@@ -17,7 +16,7 @@ import { join } from "node:path";
  * one-way property: `null` from every path except a deliberate, well-formed answer.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-hook-bridge-"));
+const home = tempDir("mission-hook-bridge-");
 process.env.MISSION_HOME = home;
 
 const { postHookEvent } = await import("../src/shared/hook-bridge.mjs");

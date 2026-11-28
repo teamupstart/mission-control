@@ -12,6 +12,7 @@ import {
   type CheckGroupTeardownOptions,
 } from "./check-group.ts";
 import { processStartIdentity } from "./check-identity.ts";
+import { setAwakeTimeout } from "../host-suspend.ts";
 
 // Running branch-authored code: the streaming adapter, and the gate that makes its owner
 // durable before it is allowed to start.
@@ -43,8 +44,9 @@ export interface CheckSupervisorIdentity {
 }
 
 export interface CheckSpawnRequest {
-  /** The owning workflow engine is draining for shutdown. */
+  /** The owner can cancel before launch or while the command is running. */
   signal?: AbortSignal;
+  interruptionReason?: string;
   /**
    * The attempt this check belongs to. Passed to the shim as an argument so the supervisor's
    * COMMAND LINE is unique to one attempt - the half of the start identity that a whole-second
@@ -53,6 +55,8 @@ export interface CheckSpawnRequest {
   attemptId: string;
   /** argv, never a shell string, spawned with `shell: false`. */
   command: readonly string[];
+  /** Private input for a trusted command. Ordinary workflow checks receive a closed stdin. */
+  input?: string;
   /** The leased checkout joined with the command's working subpath. */
   cwd: string;
   /** Already scrubbed - see `check-env.ts`. This module does not decide what a check may see. */
@@ -184,7 +188,7 @@ gate.on("data", function () {
   let child;
   try {
     child = cp.spawn(argv[0], argv.slice(1), {
-      stdio: ["ignore", "inherit", "inherit"],
+      stdio: [0, "inherit", "inherit"],
       shell: false,
     });
   } catch (e) {
@@ -336,12 +340,12 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       // build spawns - and what makes the emptiness proof a question about a group rather
       // than about one process.
       detached: true,
-      // stdin is IGNORED rather than piped: a command that blocks on input should fail
-      // immediately on a closed stdin instead of hanging until the timeout. fds 3 and 4 are
+      // Checks receive a closed stdin. A trusted worker can receive private input once its
+      // supervisor identity is durable. Fds 3 and 4 are
       // the control channel - 3 is the gate the parent writes one byte to, 4 is how the shim
       // reports readiness and the command's outcome. Two fds rather than one duplex socket so
       // each direction's EOF means exactly one thing.
-      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+      stdio: [request.input === undefined ? "ignore" : "pipe", "pipe", "pipe", "pipe", "pipe"],
       windowsHide: true,
     });
   } catch (err) {
@@ -380,8 +384,8 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
   const settle = (): void => {
     if (settled) return;
     settled = true;
-    clearTimeout(readyTimer);
-    clearTimeout(runTimer);
+    readyTimer.clear();
+    runTimer.clear();
     resolveSettled();
   };
 
@@ -417,14 +421,15 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     child.kill("SIGKILL");
   };
 
-  const readyTimer = setTimeout(() => {
+  // Both deadlines count awake time, not wall time: a host that idle-sleeps mid-check must not
+  // spend the check's whole budget while nothing ran (issue #1734, `host-suspend.ts`).
+  const readyTimer = setAwakeTimeout(() => {
     abortBeforeRelease(
       `the check supervisor did not start within ${request.readyMs ?? DEFAULT_READY_MS}ms`,
     );
   }, request.readyMs ?? DEFAULT_READY_MS);
-  readyTimer.unref?.();
 
-  const runTimer = setTimeout(() => {
+  const runTimer = setAwakeTimeout(() => {
     // A timeout is INFRASTRUCTURE, never a fail. The command never reported its own exit, so
     // this says nothing about the submission - the same conclusion `RunResult.outcomeUnknown`
     // draws for the buffered runner.
@@ -450,7 +455,6 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     // send. The same promise is awaited below, so the ladder runs once.
     void tearDown().then(settle, settle);
   }, request.timeoutMs);
-  runTimer.unref?.();
 
   child.on("error", (err) => {
     // A spawn failure of the RUNTIME or an unusable cwd - never the configured command, which
@@ -494,7 +498,7 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
    */
   function onReady(): void {
     if (aborted || supervisor || settled) return;
-    clearTimeout(readyTimer);
+    readyTimer.clear();
     const pid = child.pid;
     if (pid === undefined) {
       abortBeforeRelease("the check supervisor reported ready without a pid");
@@ -509,7 +513,7 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       return;
     }
     if (request.signal?.aborted) {
-      abortBeforeRelease("check interrupted because Mission Control is shutting down");
+      abortBeforeRelease(request.interruptionReason ?? "check interrupted because Mission Control is shutting down");
       return;
     }
     const ready: CheckSupervisorIdentity = { pid, identity };
@@ -532,7 +536,18 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       // attempt so emptiness is checked after the shim exits, not while its identity changes.
       report.destroy();
     });
+    const onAbort = () => {
+      failure ??= infrastructure(request.interruptionReason ?? "check interrupted because Mission Control is shutting down");
+      void tearDown().then(settle, settle);
+    };
+    request.signal?.addEventListener("abort", onAbort, { once: true });
+    void settledPromise.then(() => request.signal?.removeEventListener("abort", onAbort));
+    if (request.signal?.aborted) { onAbort(); return; }
     gate.write("G");
+    if (child.stdin) {
+      child.stdin.on("error", () => {}); // A command may exit or be cancelled before reading its input.
+      child.stdin.end(request.input);
+    }
   }
 
   /**

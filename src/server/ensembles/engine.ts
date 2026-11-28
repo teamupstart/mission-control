@@ -67,11 +67,7 @@ export interface EnsembleReviewDeps {
   /** Resolve runner+model at attempt time from the explicit pins / guidance overrides / app ladder. */
   resolveExecution: (guidance: EnsembleEvaluatorGuidance, pins: ReviewExecutionPins) => ReviewExecution;
   /** The bound, tool-less provider call. Tests inject a fake instead of a real model. */
-  runModel: (
-    runnerId: LlmRunnerId,
-    prompt: string,
-    opts: { modelId: string; timeoutMs: number; schema?: Record<string, unknown> },
-  ) => Promise<string>;
+  runModel: ReviewRuntime["runModel"];
   /** Whether this runner enforces the supplied JSON Schema at the provider boundary. */
   guaranteesSchema: (runnerId: LlmRunnerId) => boolean;
   /** Per-attempt wall-clock budget; defaults to the Persona ceiling. */
@@ -101,6 +97,8 @@ export interface ReplacementTaskRequest {
   effort: ThinkingLevel | null;
   /** The commit the replacement worktree is provisioned at and verified against. */
   snapshotSha: string;
+  /** The run's member Task ids, winner first: the replacement shares their work unit. */
+  workUnitFrom: string[];
 }
 
 /**
@@ -204,6 +202,11 @@ export interface MemberTaskRequest {
   agent: AgentType;
   model: string | null;
   effort: ThinkingLevel | null;
+  /**
+   * The run's other member Task ids. A best-of-N run is one piece of work, so its first member
+   * Task gets a new work unit and every later member, retry and replacement shares it.
+   */
+  workUnitFrom: string[];
 }
 
 /**
@@ -895,6 +898,7 @@ export class EnsembleEngine {
         agent,
         model: role.model,
         effort: role.effort,
+        workUnitFrom: this.workUnitPeers(state.run.id, taskId),
       });
       // Dispatch the retry DIRECTLY, not through the wave's service loop: the member's original stage
       // may already have SUCCEEDED (its peers settled while this one failed), and `advanceLocked`
@@ -2284,6 +2288,7 @@ export class EnsembleEngine {
       agent,
       model: role.model,
       effort: role.effort,
+      workUnitFrom: this.workUnitPeers(run.id, taskId),
     });
     this.event(run.id, "member_created", { memberId: member.id, taskId }, `member_created:${member.id}`);
   }
@@ -2312,7 +2317,14 @@ export class EnsembleEngine {
       agent: attempt.agent ?? role.agent ?? AGENT_TYPES[0],
       model: attempt.requestedModel,
       effort: attempt.requestedEffort,
+      workUnitFrom: this.workUnitPeers(state.run.id, attempt.taskId),
     });
+  }
+
+  /** Every member Task id of `runId` other than `taskId`, in attempt order and without repeats. */
+  private workUnitPeers(runId: string, taskId: string, first: string | null = null): string[] {
+    const ids = [first, ...this.store.listAttempts(runId).map((attempt) => attempt.taskId)];
+    return [...new Set(ids.filter((id): id is string => id !== null && id !== taskId))];
   }
 
   /** Resolve where a member's checkout starts, from its compiled input policy. */
@@ -3085,6 +3097,7 @@ export class EnsembleEngine {
       model: winnerAttempt?.requestedModel ?? role?.model ?? null,
       effort: winnerAttempt?.requestedEffort ?? role?.effort ?? null,
       snapshotSha,
+      workUnitFrom: this.workUnitPeers(run.id, replacementTaskId, winnerAttempt?.taskId ?? null),
     });
     if (!materialize.ok && materialize.launchHeld) {
       // The hold began between this engine's check above and TaskManager's. Parked like the check
@@ -3614,7 +3627,7 @@ export class EnsembleEngine {
    * materialize it as a normal Task. Best-effort, because a terminal run cannot be held open on a
    * cleanup hiccup.
    */
-  private async settleMemberTask(member: EnsembleMember, now: number): Promise<void> {
+  private async settleMemberTask(member: EnsembleMember, _now: number): Promise<void> {
     if (!member.taskId) return;
     const taskStatus = this.tasks.status(member.taskId);
     if (taskStatus === null || !LIVE_TASK_STATUSES.includes(taskStatus)) return;

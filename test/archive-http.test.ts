@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import type { Hono } from "hono";
@@ -20,7 +19,7 @@ const JSON_HEADERS = { ...LOOPBACK, "content-type": "application/json" };
  * thing under test - those are the parts a browser and an external tool actually meet.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-scout-http-"));
+const home = tempDir("mission-scout-http-");
 process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
@@ -40,6 +39,7 @@ import type { ArchiveSubject, ArchiveTaskGateway } from "../src/server/archives/
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));

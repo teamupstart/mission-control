@@ -1,13 +1,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
 import type { WorkflowBinding, WorkflowContextSnapshot, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 import { WorkflowInspectorGateStateSchema } from "../src/shared/protocol.ts";
 import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // One workflow run is one repository.
 //
@@ -22,7 +21,7 @@ import { mkTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 // gate vocabulary. That is the design constraint, and the last test in this file is the one
 // that says so - a single-repo session must come out of every rule here unchanged.
 
-const home = mkdtempSync(join(tmpdir(), "mission-per-repo-runs-"));
+const home = tempDir("mission-per-repo-runs-");
 process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -595,6 +594,26 @@ test("a retry that finds a NEW repo changed still captures it, idempotent lead o
 });
 
 // ---- the Foreman completion boundary ----------------------------------------------------
+
+test("a refused lead completion leaves every sibling unclaimed", async t => {
+  const f = seed({ triggerMode: "foreman_complete" });
+  t.after(() => f.manager.stop());
+  f.registry.recordWorktreeHeads(new Map([[f.primaryCwd, MOVED], [f.secondCwd, MOVED]]));
+  const calls: string[] = [];
+  t.mock.method(f.store, "claimForemanCompletion", (input: Parameters<typeof f.store.claimForemanCompletion>[0]) => {
+    calls.push(input.binding.id);
+    return { result: { claimed: false, reason: "no_binding" }, binding: input.binding,
+      run: null, submission: null, created: false, previousFingerprint: undefined };
+  });
+  const result = await f.manager.claimCompletion(f.sessionId, {
+    completionKind: "drain", marker: "b".repeat(64), summary: "work complete",
+    expectedWorkCycle: null, evidenceFingerprint: "fp", expectedIntent: null,
+  });
+  assert.deepEqual(result, { claimed: false, reason: "no_binding" });
+  assert.deepEqual(calls, [f.anchor.id]);
+  assert.equal(f.store.listRuns().length, 0);
+  assert.equal(f.captures.length, 0);
+});
 
 test("one settled turn spends ONE completion episode and starts a run per changed repo", async () => {
   const f = seed({ triggerMode: "foreman_complete" });

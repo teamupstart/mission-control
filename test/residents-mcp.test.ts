@@ -2,10 +2,10 @@ import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Persona } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Resident MCP servers below the drivers: custom servers and their write-only secrets, the
 // global catalog's projection, the effective set a launch resolves, the run snapshot, and the
@@ -14,7 +14,7 @@ import type { Persona } from "../src/shared/workflow.ts";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "mission-residents-mcp-"));
+const home = tempDir("mission-residents-mcp-");
 process.env.HARNESS_HOME = home;
 
 const { openDb, getAppConfig } = await import("../src/server/db.ts");
@@ -24,7 +24,6 @@ const catalog = await import("../src/server/residents/mcp-catalog.ts");
 const launch = await import("../src/server/residents/mcp-launch.ts");
 const sharedMcp = await import("../src/shared/resident-mcp.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { ResidentManager } = await import("../src/server/residents/manager.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
@@ -525,7 +524,7 @@ test("an inherited server residents cannot represent refuses the launch, naming 
   assert.ok(skipped.ok && skipped.servers?.length === 0, "a natively disabled server is not a default");
 });
 
-test("a profile saved before the choice existed, and a new one, keep the pinned set", () => {
+test("stored revisions missing a source mode keep the pinned set", () => {
   assert.equal(profile().mcp.nativeSources, "pinned");
   assert.equal(profile().mcp.disableClaudeAiConnectors, undefined, "legacy profiles do not opt out");
   const stored = ResidentProfileRevisionSchema.parse({
@@ -572,28 +571,18 @@ test("importing all native sources snapshots only the custom servers: global ser
   assert.ok(!refused.ok && /same name as Claude Code's global server/.test(refused.error), JSON.stringify(refused));
 });
 
-test("Codex native MCP is opt-in; native launches snapshot custom servers without reading Codex's global catalog", async () => {
-  const result = await resolve(profile({ agent: "codex", nativeSources: "all" }), globalsOf("codex", {}));
-  assert.ok(!result.ok && /Enable Codex resident native MCP/.test(result.error), JSON.stringify(result));
-
-  const id = "codex-resident-native-mcp";
-  const flag = (enabled: boolean) => assert.ok(applyFeatureFlagIntent({ kind: "flag", id, enabled }).ok);
-  flag(true);
-  try {
-    const custom = create({ name: "notes.custom", harnesses: ["codex"], transport: { type: "stdio", command: "notes" } });
-    const resolved = await launch.resolveResidentMcpSet(profile({
-      agent: "codex", nativeSources: "all", selected: [{ source: "custom", id: custom.id }],
-    }), {
-      globals: async () => assert.fail("Codex native mode checks for name collisions in the actual launch workspace"),
-      custom: mcpStore.listResidentMcpServers,
-      customSecrets: mcpStore.customSecretValues,
-    });
-    assert.ok(resolved.ok && resolved.servers);
-    assert.deepEqual(resolved.servers.map((server) => [server.source, server.name]), [["custom", "notes.custom"]]);
-    assert.equal(resolved.servers[0]?.launcher, true, "even secretless custom definitions stay out of native Codex's argv");
-  } finally {
-    flag(false);
-  }
+test("Codex native launches snapshot custom servers without reading the global catalog", async () => {
+  const custom = create({ name: "notes.custom", harnesses: ["codex"], transport: { type: "stdio", command: "notes" } });
+  const resolved = await launch.resolveResidentMcpSet(profile({
+    agent: "codex", nativeSources: "all", selected: [{ source: "custom", id: custom.id }],
+  }), {
+    globals: async () => assert.fail("Codex native mode checks for name collisions in the actual launch workspace"),
+    custom: mcpStore.listResidentMcpServers,
+    customSecrets: mcpStore.customSecretValues,
+  });
+  assert.ok(resolved.ok && resolved.servers);
+  assert.deepEqual(resolved.servers.map((server) => [server.source, server.name]), [["custom", "notes.custom"]]);
+  assert.equal(resolved.servers[0]?.launcher, true, "even secretless custom definitions stay out of native Codex's argv");
 });
 
 test("secrets under one field name stay bound to their own (source, name)", async () => {
@@ -1026,7 +1015,7 @@ test("a profile cannot save a selection another harness owns or a custom server 
   assert.ok(!notApplicable.ok && /does not apply to Claude Code/.test(notApplicable.error));
 });
 
-test("a Claude profile on all native sources launches, and a Codex profile needs the preview to save it", async () => {
+test("Claude and Codex profiles can use all native sources", async () => {
   const { registry, residents } = manager(async (agent) => globalsOf(agent, { github: { command: "gh" }, helper: { type: "http", url: "https://x", headersHelper: "h" } }));
   const created = residents.createProfile(ResidentProfileRevisionSchema.parse({
     identity: { name: "All Sources" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all" },
@@ -1044,7 +1033,7 @@ test("a Claude profile on all native sources launches, and a Codex profile needs
     // No spend cap, so the MCP check is the one that answers.
     loop: { spendCapUsd: null },
   }));
-  assert.ok(!codex.ok && /Enable Codex resident native MCP/.test(codex.error), JSON.stringify(codex));
+  assert.ok(codex.ok, JSON.stringify(codex));
 });
 
 test("a running resident keeps its launch revision's source mode after the profile is edited back to pinned", async () => {
@@ -1533,4 +1522,85 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
   } finally {
     daemon.close();
   }
+});
+
+// ---- the work unit reference (docs/work-units.md, docs/residents.md) ----
+
+const CLAUDE_REFERENCE = "${WORK_UNIT_ID:-}";
+
+test("Claude Code: the work unit reference is dropped before expansion, set or unset, and a headerless server keeps its login", () => {
+  for (const env of [{}, { WORK_UNIT_ID: "wu_01JD0000000000000000000000" }]) {
+    for (const value of [CLAUDE_REFERENCE, "${WORK_UNIT_ID}", "${WORK_UNIT_ID:-none}"]) {
+      const only = catalog.parseClaudeServer("only-ref", { type: "http", url: "https://mcp.example.com", headers: { "X-Work-Unit-Id": value } }, env);
+      assert.equal(only.summary.unavailable, null, `${value} with ${JSON.stringify(env)}`);
+      assert.equal(only.harnessLogin, true, "headerless again, so the harness is handed the entry it had before");
+      assert.deepEqual(only.transport, { type: "http", url: "https://mcp.example.com", headers: {}, secretHeaders: [], secretQuery: [] });
+      assert.equal(only.secrets.size, 0, "not stored and not a secret");
+    }
+  }
+  const mixed = catalog.parseClaudeServer("mixed", {
+    type: "http", url: "https://mcp.example.com/mcp",
+    headers: { "x-work-unit-id": CLAUDE_REFERENCE, Authorization: `Bearer ${SECRET}` },
+  }, {});
+  assert.equal(mixed.harnessLogin, false, "another header keeps the server on the launcher");
+  assert.ok(mixed.transport?.type === "http");
+  assert.deepEqual(mixed.transport.secretHeaders, ["Authorization"]);
+  // A literal an operator wrote is not the reference: kept and sent like any header.
+  const literal = catalog.parseClaudeServer("literal", { type: "http", url: "https://mcp.example.com/mcp", headers: { "x-work-unit-id": "fixed-value" } }, {});
+  assert.ok(literal.transport?.type === "http");
+  assert.deepEqual(literal.transport.secretHeaders, ["x-work-unit-id"]);
+  assert.equal(literal.secrets.get(sharedMcp.residentMcpSecretField("header", "x-work-unit-id")), "fixed-value");
+  assert.equal(literal.harnessLogin, false);
+});
+
+test("Codex: env_http_headers holding only the reference is accepted and dropped; any other entry keeps today's refusal", async () => {
+  const reference = { url: "https://mcp.example.com/mcp", env_http_headers: { "x-work-unit-id": "WORK_UNIT_ID" } };
+  const only = catalog.parseCodexServer("only-ref", reference, "unsupported", {});
+  assert.equal(only.summary.unavailable, null);
+  assert.deepEqual(only.transport, { type: "http", url: "https://mcp.example.com/mcp", headers: {}, secretHeaders: [], secretQuery: [] });
+  for (const env_http_headers of [{ "x-work-unit-id": "WORK_UNIT_ID", "x-other": "OTHER" }, { "x-other": "OTHER" }, { "x-work-unit-id": "OTHER" }]) {
+    const refused = catalog.parseCodexServer("other", { url: "https://mcp.example.com/mcp", env_http_headers }, "unsupported", {});
+    assert.match(refused.summary.unavailable!, /it uses env_http_headers, which residents cannot carry/);
+  }
+  const literal = catalog.parseCodexServer("literal", { url: "https://mcp.example.com/mcp", http_headers: { "x-work-unit-id": "fixed-value" } }, "unsupported", {});
+  assert.ok(literal.transport?.type === "http");
+  assert.deepEqual(literal.transport.secretHeaders, ["x-work-unit-id"], "a literal is kept, as today");
+
+  // A pinned Codex profile inheriting the server is no longer refused for the reference.
+  const accepted = await resolve(profile({ agent: "codex" }), globalsOf("codex", { remote: reference }));
+  assert.ok(accepted.ok && accepted.servers?.map((server) => server.name).includes("remote"));
+  const refusedSet = await resolve(profile({ agent: "codex" }), globalsOf("codex", {
+    remote: { url: "https://mcp.example.com/mcp", env_http_headers: { "x-other": "OTHER" } },
+  }));
+  assert.ok(!refusedSet.ok, "any other env_http_headers still refuses the launch");
+});
+
+test("a run launched before the reference was understood stops sending its empty x-work-unit-id, and its copy is unchanged", () => {
+  // The shape a launch before this change stored: the reference expanded to an empty secret
+  // header beside a real one.
+  const header = (name: string) => sharedMcp.residentMcpSecretField("header", name);
+  const server: Resolved = {
+    source: "global", name: "remote",
+    transport: { type: "http", url: "https://mcp.example.com/mcp", headers: {}, secretHeaders: ["x-work-unit-id", "Authorization"], secretQuery: [] },
+    launcher: true, options: {}, secrets: new Map([[header("x-work-unit-id"), ""], [header("Authorization"), `Bearer ${SECRET}`]]),
+  };
+  const kept: Resolved = {
+    source: "global", name: "kept",
+    transport: { type: "http", url: "https://mcp.example.com/kept", headers: {}, secretHeaders: ["X-Work-Unit-Id"], secretQuery: [] },
+    launcher: true, options: {}, secrets: new Map([[header("X-Work-Unit-Id"), "operator-literal"]]),
+  };
+  const runId = crypto.randomUUID();
+  seedRun(runId, [server, kept]);
+  const before = mcpStore.runMcpSecretValues(runId, "global", "remote");
+  const redeem = (name: string) => {
+    const entry = launch.residentMcpLaunchForRun(runId)!.forStart().find((candidate) => candidate.name === name)!;
+    if (entry.shape !== "launcher") throw new Error("expected scoped launcher");
+    const { ticket } = JSON.parse(readFileSync(entry.args.at(-1)!, "utf8"));
+    const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: name });
+    assert.ok(redeemed.ok && redeemed.definition.transport === "http");
+    return redeemed.definition.headers;
+  };
+  assert.deepEqual(redeem("remote"), { Authorization: `Bearer ${SECRET}` }, "the empty header is left out at its next start");
+  assert.deepEqual(redeem("kept"), { "X-Work-Unit-Id": "operator-literal" }, "a non-empty stored value is sent as stored");
+  assert.deepEqual(mcpStore.runMcpSecretValues(runId, "global", "remote"), before, "the stored copy is not rewritten");
 });

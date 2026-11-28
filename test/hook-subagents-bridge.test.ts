@@ -2,9 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -16,13 +14,14 @@ import {
   hookText,
 } from "../src/shared/hook-subagents.mjs";
 import { HookIngestSchema } from "../src/shared/protocol.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What each hook bridge lifts off a payload about background sub-agents, run the way the agent
 // runs it: a real `node hooks/<bridge>.mjs <event>` POSTing to a stub daemon. The payloads are
 // the agents' own hook JSON (Claude Code's `SubagentStart`, its Agent tool's `PostToolUse`, and
 // `background_tasks` on `Stop`; Codex's `SubagentStart`).
 
-const home = mkdtempSync(join(tmpdir(), "mission-hook-subagents-bridge-"));
+const home = tempDir("mission-hook-subagents-bridge-");
 const CLAUDE = fileURLToPath(new URL("../hooks/harness-hook.mjs", import.meta.url));
 const CODEX = fileURLToPath(new URL("../hooks/codex-hook.mjs", import.meta.url));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
@@ -103,10 +102,10 @@ test("the Claude bridge says when it cut the in-flight list, and only then", asy
     ["Stop", { background_tasks: many }],
     ["Stop", { background_tasks: many.slice(0, HOOK_BACKGROUND_TASKS_MAX) }],
   ]);
-  assert.equal((cut?.backgroundTasks as unknown[]).length, HOOK_BACKGROUND_TASKS_MAX);
+  assert.equal((cut?.backgroundTasks as unknown[])?.length, HOOK_BACKGROUND_TASKS_MAX);
   assert.equal(cut?.backgroundTasksTruncated, true);
   assert.equal(HookIngestSchema.parse(cut).backgroundTasksTruncated, true);
-  assert.equal((whole?.backgroundTasks as unknown[]).length, HOOK_BACKGROUND_TASKS_MAX);
+  assert.equal((whole?.backgroundTasks as unknown[])?.length, HOOK_BACKGROUND_TASKS_MAX);
   assert.equal("backgroundTasksTruncated" in (whole ?? {}), false, "a list at the bound is whole");
   // Malformed entries are not tasks, so they never make a whole list read as cut.
   assert.equal(backgroundTasksTruncated({ background_tasks: [...many.slice(0, HOOK_BACKGROUND_TASKS_MAX), { type: "shell" }] }), undefined);

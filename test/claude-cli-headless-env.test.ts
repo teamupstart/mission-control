@@ -3,14 +3,13 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A headless `claude -p` runs Claude Code for real, so it fires the SAME hooks a human's
 // session does. `hooks/harness-hook.mjs` binds an event to a card with `captureTerminalEnv()`,
@@ -25,7 +24,7 @@ import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts
 // work queue it was keyed on.
 //
 // The fake bin reports the env it was handed, which is exactly what the hook would capture.
-const dir = mkdtempSync(join(tmpdir(), "headless-env-"));
+const dir = tempDir("headless-env-");
 const fakeBin = join(dir, "fake-claude.sh");
 const runArgs = join(dir, "args");
 const runStdin = join(dir, "stdin");
@@ -58,13 +57,15 @@ if [ "$stream_output" = "1" ]; then
     '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"model-facing text"}]},"tool_use_result":{"content":"model-facing text","structuredContent":{"rows":[{"id":1}],"pageInfo":{"hasNextPage":false}}}}' \\
     '{"type":"result","result":"model summary"}'
 else
-  printf '{"tmuxPane":"%s","weztermPane":"%s","itermSession":"%s","marker":"%s"}' \\
-    "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS"
+  printf '{"tmuxPane":"%s","weztermPane":"%s","itermSession":"%s","marker":"%s","connectors":"%s"}' \\
+    "$TMUX_PANE" "$WEZTERM_PANE" "$ITERM_SESSION_ID" "$MISSION_HEADLESS" "$ENABLE_CLAUDEAI_MCP_SERVERS"
 fi
 `,
 );
 chmodSync(fakeBin, 0o755);
 process.env.MISSION_CLAUDE_BIN = fakeBin;
+// The connector case below asserts the variable is inherited untouched, so start without it.
+delete process.env.ENABLE_CLAUDEAI_MCP_SERVERS;
 
 // Both imports stay below the override. `registry.ts` reaches the harness registry, which reaches
 // `claude-cli.ts`; importing the registry statically would freeze the real binary before this
@@ -115,6 +116,25 @@ test("a headless run is marked so the hook can decline to report it", async () =
   // from a checkout that may lag this code, so neither can be assumed present.
   const seen = await envSeenByHook();
   assert.equal(seen.marker, "1", "headless run carries no MISSION_HEADLESS marker for the hook to see");
+});
+
+test("a headless run turns claude.ai connectors off unless it asks for a connector tool", async () => {
+  // Connectors are not settings, so `--setting-sources` and `--tools ""` leave them on. One
+  // Foreman triage run collected 451 connector tool schemas and overflowed Haiku's context.
+  const seen = await envSeenByHook();
+  assert.equal(seen.connectors, "false");
+
+  // A tool list alone is not a reason to keep them: only a named connector tool is.
+  const ordinary = "Skill,ToolSearch,mcp__plugin_example__search";
+  const withoutConnector = JSON.parse(
+    await runClaudeText("query a plugin", { timeoutMs: 5_000, tools: ordinary, allowedTools: ordinary }),
+  );
+  assert.equal(withoutConnector.connectors, "false");
+
+  // The Jira sweep can name a claude.ai connector tool on purpose, so that run keeps them.
+  const tools = "Skill,ToolSearch,mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql";
+  const withConnector = JSON.parse(await runClaudeText("query Jira", { timeoutMs: 5_000, tools, allowedTools: tools }));
+  assert.equal(withConnector.connectors, "");
 });
 
 test("text-only and empty-image print calls retain exact argv and raw stdin", async () => {

@@ -1,3 +1,4 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EMULATOR_IDS, MULTIPLEXER_IDS, TERMINAL_BACKEND_IDS } from "../src/shared/terminal.ts";
@@ -133,6 +134,7 @@ test("every registered backend gets a row, multiplexers first, unavailable ones 
         // conclude the feature is broken rather than that this backend cannot do it.
         ghostty: fakeEmulator({ id: "ghostty", label: "Ghostty" }),
         iterm: recordingEmu({ emulator: { id: "iterm", label: "iTerm2" } }).backend,
+        "macos-terminal": recordingEmu({ emulator: { id: "macos-terminal", label: "macOS Terminal" } }).backend,
       },
     }),
   );
@@ -255,6 +257,18 @@ test("a multiplexer whose sessions are never without a window needs no emulator 
   assert.equal(views[0]?.unavailable, null);
   assert.equal(views[0]?.blurb, "New workspace in the worktree.");
   assert.equal(views[0]?.detail, null);
+});
+
+test("terminal target launch refuses a checkout reserved by cleanup before opening a window", async () => {
+  const mux = recordingMux();
+  const emu = recordingEmu();
+  const machine = deps({ multiplexers: { tmux: mux.backend }, emulators: { wezterm: emu.backend } });
+  using cleanup = reserveWorktreeCleanup([SPEC.cwd]);
+  assert.ok(cleanup);
+  assert.deepEqual(await launchTerminal("tmux", SPEC, machine),
+    { ok: false, label: "tmux", error: "automatic cleanup currently owns this checkout", status: 409 });
+  assert.deepEqual(mux.created, []);
+  assert.deepEqual(emu.opened, []);
 });
 
 test("launching an unavailable backend refuses with that backend's own sentence", async () => {

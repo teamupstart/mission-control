@@ -343,7 +343,7 @@ test("a Command card states durable configuration, and nothing about a run", () 
   // than vanishing - "unconfigured" and "not loaded" must not be the same missing tile.
   assert.deepEqual(
     commandCards([], true).map((card) => card.fact),
-    WORKFLOW_CHECK_SLOTS.map(() => "Not configured"),
+    WORKFLOW_CHECK_SLOTS.filter((slot) => slot !== "inspector").map(() => "Not configured"),
   );
   // Rendered through the page, so the fact reaches the DOM rather than only the model.
   assert.match(
@@ -360,11 +360,14 @@ test("an unloaded catalog is said out loud, not drawn as unconfigured slots", ()
   const unloaded = commandCards([], false);
   assert.deepEqual(
     unloaded.map((card) => card.fact),
-    WORKFLOW_CHECK_SLOTS.map(() => WORKFLOW_COMMAND_UNKNOWN),
+    WORKFLOW_CHECK_SLOTS.filter((slot) => slot !== "inspector").map(() => WORKFLOW_COMMAND_UNKNOWN),
   );
   // The cards themselves stay: the slots ship with the build, so their existence is
   // knowable without the daemon even though what they run is not.
   assert.deepEqual(unloaded.map((card) => card.id), ["test", "lint", "typecheck", "build", "documentation", "coderabbit"]);
+  const withPreview = commandCards([], false, WORKFLOW_CHECK_SLOTS);
+  assert.deepEqual(withPreview.map((card) => card.id), [...WORKFLOW_CHECK_SLOTS]);
+  assert.equal(withPreview.find((card) => card.id === "inspector")?.fact, WORKFLOW_COMMAND_UNKNOWN);
 
   // A view that HAS arrived is trusted whatever the flag says - the flag describes an
   // absence, and a slot the stream already delivered is not absent.

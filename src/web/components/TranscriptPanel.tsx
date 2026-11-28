@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { VoiceIndicator, useVoiceComposerHint } from "./VoiceIndicators.tsx";
+import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ComposerPauseButton, ComposerPausedBand } from "./PauseControls.tsx";
 import { usePauseConsoleControls } from "../lib/pause-controls.ts";
 import type {
@@ -46,7 +47,9 @@ import {
 import {
   appendLive,
   backAnchor,
+  dropHistory,
   flattenHistory,
+  markVoiceRefresh,
   prependPage,
   readHistory,
   resumeAnchor,
@@ -55,7 +58,11 @@ import {
 } from "../lib/transcript-history.ts";
 import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
-import { mergeConversation } from "../lib/episodes.ts";
+import { mergeConversation, type ConversationRow, type ReviewHistory, type ReviewRowDelivery } from "../lib/episodes.ts";
+import type { ReportItem } from "@shared/reports.ts";
+import type { ReportEntryControls } from "../lib/sessionReports.ts";
+import { ReportEntryCard } from "./ReportEntryCard.tsx";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
 import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
@@ -82,7 +89,8 @@ import { SessionToolbarIcon, SessionToolbarMenu } from "./SessionToolbarMenu.tsx
 import { CONVERSATION_VIEW_OPTIONS, useSessionConversationView } from "../lib/conversation-view.ts";
 import { duration, promptPath } from "../lib/format.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
-import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
+import { ReceivedMessage, ReviewAnswerCard, UnavailableReviewCard, type ReviewCardDelivery } from "./ReviewAnswer.tsx";
+import { AskedQuestionCard, ClosedQuestionCard } from "./AskedQuestion.tsx";
 import { SnoozedReviewCard } from "./ReviewSnooze.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
@@ -320,6 +328,10 @@ export function TranscriptPanel({
   dialogOpen = false,
   episodes = [],
   reviews = [],
+  reviewHistory,
+  reports = [],
+  reportControls,
+  onAnswerQuestion,
   onReplyBox,
   onOpenFile,
   onCommentInFiles,
@@ -373,6 +385,24 @@ export function TranscriptPanel({
    */
   reviews?: ReviewItem[];
   /**
+   * Whether the review history behind `reviews` has loaded, and the reviews a runtime-transfer
+   * predecessor asked (`useTimelineReviews`). Read only to draw delivered answers: while the
+   * history is loading, an answer whose review is not in hand is drawn as loading, not as gone.
+   */
+  reviewHistory?: ReviewHistory;
+  /**
+   * Every report this session posted, every version (`inbox` flag; empty while it is off), each
+   * drawn where it was posted (`useSessionReports`).
+   */
+  reports?: ReportItem[];
+  /** Opening an entry and marking it read. Without them report entries are not drawn. */
+  reportControls?: ReportEntryControls;
+  /**
+   * Open the card that answers this session's open questions, from an Asked entry
+   * (`async-input`). Without it an open Asked entry has no Answer button.
+   */
+  onAnswerQuestion?: () => void;
+  /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
    * wouldn't empty a box that's open on screen. Keying the textarea on this remounts
@@ -403,6 +433,8 @@ export function TranscriptPanel({
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
+  const voiceHint = useVoiceComposerHint(sessionId);
+  const voiceHintId = useId();
   const agent = session.agent;
   const { bindings } = useKeybindings();
   const sendChord = formatChord(bindings.send);
@@ -463,6 +495,8 @@ export function TranscriptPanel({
   );
   const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const retrySpokenPage = useRef<((end: number) => void) | null>(null);
+  const voiceHistoryRestore = useRef<{ to: number; askedFrom: number | null } | null>(null);
   const [olderError, setOlderError] = useState<string | null>(null);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
@@ -613,13 +647,24 @@ export function TranscriptPanel({
    * than inside the turn component. It also draws once a steer the agent recorded twice
    * (`collapseSteerEchoes`).
    */
-  const visible = useMemo(() => collapseSteerEchoes(projectLaunchPresentation(messages)), [messages]);
+  const voiceEnabled = useFeatureFlag("voice");
+  const visible = useMemo(() => collapseSteerEchoes(projectLaunchPresentation(messages, voiceEnabled)), [messages, voiceEnabled]);
   /**
    * The conversation as rows, computed once and shared by the renderer and the
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeConversation(transcriptRows(visible), episodes, reviews);
+  const rows = mergeConversation(
+    transcriptRows(visible),
+    episodes,
+    reviews,
+    session.pendingTurns,
+    reviewHistory,
+    reportControls ? reports : [],
+  );
+  // Report rows exist only when the controls do (above), so the entries below are always drawn
+  // with real callbacks: a missing one is a wiring error to surface, never a card that does nothing.
+  const entryControls = reportControls as ReportEntryControls;
   const agentLabel = AGENT_IDENTITY[agent].speaker;
   /**
    * What the turn currently arriving is doing, or null when nothing is arriving.
@@ -659,6 +704,10 @@ export function TranscriptPanel({
    */
   const { view } = useSessionConversationView(sessionId);
   const terminal = view === "terminal";
+  const replyPrompt = terminal
+    ? "Send the next instruction to this process…"
+    : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)";
+  const composerVoiceHint = canSend && !dialogOpen ? voiceHint : null;
   // The prompt's `~/leaf`, not the whole checkout: a worktree path is 60 characters of
   // pool bookkeeping and the strip directly above already prints it in full. `promptPath`
   // owns the whole displayed string, prefix included - see its note on why a leaf plus a
@@ -872,8 +921,12 @@ export function TranscriptPanel({
     historyEpoch.current += 1;
     // Show whatever this session already has while the stream connects, instead of
     // clearing to "Loading…" and throwing away scroll-back the map still holds.
-    setMessages(flattenHistory(readHistory(sessionId)));
-    setCanLoadOlder(backAnchor(readHistory(sessionId)) !== null);
+    const held = readHistory(sessionId);
+    let refreshFrom = voiceEnabled && held && (held.spokenDeferred || held.voiceRefreshFrom !== undefined) ? markVoiceRefresh(held) : undefined;
+    if (held && !voiceEnabled) markVoiceRefresh(held);
+    setMessages(flattenHistory(held));
+    setCanLoadOlder(backAnchor(held) !== null);
+    voiceHistoryRestore.current = null;
     setLoadingOlder(false);
     setOlderError(null);
     setStatus("connecting");
@@ -890,15 +943,57 @@ export function TranscriptPanel({
     let delay = RECONNECT_MIN_MS;
     let closed = false;
 
+    let proofRetry: ReturnType<typeof setTimeout> | undefined;
+    let proofDelay = RECONNECT_MIN_MS;
+    const proofAbort = new AbortController();
+    const retryDisclosure = (end: number) => {
+      const heldPage = readHistory(sessionId);
+      if (!voiceEnabled || !heldPage || closed) return;
+      heldPage.spokenDeferred = true;
+      if (proofRetry !== undefined) return;
+      // Probe in the background. The existing stream keeps advancing while proof is
+      // unavailable. Once readable, reseed and restore the full range the operator held.
+      proofRetry = setTimeout(async () => {
+        const probe = await fetchTranscriptBefore(sessionId, end, proofAbort.signal);
+        proofRetry = undefined;
+        if (closed) return;
+        if (!probe.ok || probe.spokenDeferred) {
+          retryDisclosure(end);
+          return;
+        }
+        const history = readHistory(sessionId);
+        if (!history?.spokenDeferred) return;
+        refreshFrom = markVoiceRefresh(history);
+        historyEpoch.current += 1;
+        setLoadingOlder(false);
+        if (retry) clearTimeout(retry);
+        es?.close();
+        connect();
+      }, proofDelay);
+      proofDelay = Math.min(proofDelay * 2, RECONNECT_MAX_MS);
+    };
+    retrySpokenPage.current = retryDisclosure;
+
     const connect = (): void => {
       if (closed) return;
-      const from = resumeAnchor(sessionId);
+      // A byte resume only returns new turns. Refresh the held range to acquire spoken attribution.
+      const cached = readHistory(sessionId);
+      if (voiceEnabled && cached?.spokenDeferred) refreshFrom = markVoiceRefresh(cached);
+      const from = refreshFrom === undefined ? resumeAnchor(sessionId) : null;
       const base = `/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`;
-      es = new EventSource(from === null ? base : `${base}?from=${encodeURIComponent(String(from))}`);
+      const params = new URLSearchParams();
+      if (from !== null) {
+        params.set("from", String(from));
+        const history = readHistory(sessionId);
+        if (voiceEnabled && history?.spokenReceipt) params.set("spokenReceipt", history.spokenReceipt);
+        if (voiceEnabled && history?.spokenCursor) params.set("spokenCursor", history.spokenCursor);
+      }
+      es = new EventSource(from === null ? base : `${base}?${params}`);
       es.onopen = () => {
         delay = RECONNECT_MIN_MS;
       };
       es.onmessage = (ev) => {
+        if (closed) return;
         let msg: TranscriptStreamMsg;
         try {
           msg = JSON.parse(ev.data) as TranscriptStreamMsg;
@@ -909,7 +1004,23 @@ export function TranscriptPanel({
           // The start-over path: a first connect, or a resume the server refused because
           // the file moved or too much was written to bridge. `seedTail` keeps whatever
           // pages still abut this window and reports what survived.
+          const previous = readHistory(sessionId);
+          if (msg.refreshSpoken && previous) {
+            refreshFrom = markVoiceRefresh(previous);
+            historyEpoch.current += 1;
+            setLoadingOlder(false);
+            setOlderError(null);
+          }
+          if (refreshFrom !== undefined) dropHistory(sessionId);
           const next = seedTail(sessionId, msg);
+          next.spokenReceipt = msg.spokenReceipt;
+          next.spokenCursor = msg.spokenCursor;
+          if (!voiceEnabled) markVoiceRefresh(next);
+          if (refreshFrom !== undefined) {
+            next.voiceRefreshFrom = refreshFrom;
+            voiceHistoryRestore.current = { to: refreshFrom, askedFrom: null };
+            refreshFrom = undefined;
+          }
           setMessages(flattenHistory(next));
           setCanLoadOlder(backAnchor(next) !== null);
           setStatus("live");
@@ -919,6 +1030,7 @@ export function TranscriptPanel({
           // reset, an eviction) leaves nothing to continue, so fall back to seeding.
           const next = resumeTail(sessionId, msg);
           if (next) {
+            next.spokenCursor = msg.spokenCursor;
             setMessages(flattenHistory(next));
             setCanLoadOlder(backAnchor(next) !== null);
           } else {
@@ -927,12 +1039,15 @@ export function TranscriptPanel({
           setStatus("live");
         } else if (msg.type === "append") {
           const next = appendLive(sessionId, msg.messages, msg.pos);
-          if (next) setMessages(flattenHistory(next));
-          else setMessages((prev) => mergeById(prev, msg.messages));
+          if (next) {
+            next.spokenCursor = msg.spokenCursor;
+            setMessages(flattenHistory(next));
+          } else setMessages((prev) => mergeById(prev, msg.messages));
         } else if (msg.type === "unavailable") {
           setStatus("unavailable");
           setNote(msg.reason);
         }
+        if (msg.type !== "unavailable" && msg.spokenDeferred) retryDisclosure(msg.pos);
       };
       es.onerror = () => {
         // Close before retrying: left open, the browser starts its own reconnect against
@@ -950,9 +1065,12 @@ export function TranscriptPanel({
       closed = true;
       historyEpoch.current += 1;
       if (retry) clearTimeout(retry);
+      clearTimeout(proofRetry);
+      proofAbort.abort();
+      retrySpokenPage.current = null;
       es?.close();
     };
-  }, [resetNonce, sessionId]);
+  }, [resetNonce, sessionId, voiceEnabled]);
 
   /**
    * Fetch the page above what we hold and splice it in.
@@ -984,6 +1102,7 @@ export function TranscriptPanel({
     pendingRestore.current = logRef.current?.scrollHeight ?? null;
     const next = prependPage(sessionId, res);
     if (next) {
+      if (res.spokenDeferred) retrySpokenPage.current?.(res.end);
       setMessages(flattenHistory(next));
       setCanLoadOlder(backAnchor(next) !== null);
     } else {
@@ -994,6 +1113,23 @@ export function TranscriptPanel({
     }
     setLoadingOlder(false);
   }, [loadingOlder, sessionId]);
+
+  // A fresh tail can be shorter than the range the operator already loaded. Reuse ordinary
+  // scrollback paging, including its scroll anchoring, cancellation and retry controls.
+  useEffect(() => {
+    const restore = voiceHistoryRestore.current;
+    if (!voiceEnabled || !restore) return;
+    const held = readHistory(sessionId);
+    if (!held) return;
+    const anchor = backAnchor(held);
+    if (anchor === null || anchor <= restore.to) {
+      delete held.voiceRefreshFrom;
+      voiceHistoryRestore.current = null;
+    } else if (!loadingOlder && !olderError && !pagingStalled(restore.askedFrom, anchor, loadingOlder)) {
+      restore.askedFrom = anchor;
+      void loadOlder();
+    }
+  }, [voiceEnabled, sessionId, messages, loadingOlder, olderError, loadOlder]);
 
   /**
    * Run "Jump to launch" one step at a time: jump when the launching turn is loaded, page
@@ -1354,12 +1490,41 @@ export function TranscriptPanel({
                 >
                   <ForemanEpisodeCard episode={row.episode} absoluteTime />
                 </div>
+              ) : row.kind === "asked" ? (
+                <AskedQuestionCard key={`ask-${row.review.id}`} review={row.review} session={session} onAnswer={onAnswerQuestion} />
+              ) : row.kind === "closed" ? (
+                <ClosedQuestionCard key={`closed-${row.review.id}`} review={row.review} />
+              ) : row.kind === "report" ? (
+                <ReportEntryCard
+                  key={`report-${row.report.id}`}
+                  report={row.report}
+                  open={entryControls.openReportId === row.report.id}
+                  onToggle={() => entryControls.onToggle(row.report)}
+                  onMarkRead={() => entryControls.onMarkRead(row.report)}
+                  onOpenDocument={() => entryControls.onOpenDocument(row.report)}
+                />
               ) : row.kind === "review" ? (
-                row.review.status === "snoozed" ? (
-                  <SnoozedReviewCard key={`rv-${row.review.id}`} review={row.review} />
+                (row.delivery ? row.delivery.envelope === "remind-later" : row.review.status === "snoozed") ? (
+                  <SnoozedReviewCard
+                    key={`rv-${row.review.id}-${row.delivery?.turnId ?? "entry"}`}
+                    review={row.review}
+                    delivery={reviewCardDelivery(row, hits, find?.query ?? "", currentKey)}
+                  />
                 ) : (
-                  <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
+                  <ReviewAnswerCard
+                    key={`rv-${row.review.id}-${row.delivery?.turnId ?? "entry"}`}
+                    review={row.review}
+                    delivery={reviewCardDelivery(row, hits, find?.query ?? "", currentKey)}
+                  />
                 )
+              ) : row.kind === "delivered" ? (
+                <UnavailableReviewCard
+                  key={`rv-gone-${row.reviewId}-${row.delivery.turnId}`}
+                  envelope={row.delivery.envelope}
+                  loading={row.loading}
+                  unreadable={row.unreadable}
+                  delivery={deliveredCard(row.delivery, hits, find?.query ?? "", currentKey)}
+                />
               ) : row.kind === "tools" ? (
                 terminal ? (
                   <TerminalToolRun
@@ -1546,12 +1711,10 @@ export function TranscriptPanel({
         {/* What pausing means for what you type, above the box it is about. */}
         {pauseControls.has("composer") && <ComposerPausedBand session={session} />}
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
+        {composerVoiceHint && <span className="vi-composer-hint" id={voiceHintId}>{composerVoiceHint}</span>}
         <div className="compose-row">
-          {/* Decorative, and marked as such: the box's accessible name stays its
-              placeholder, which says what typing here does. A real `<label>` reading
-              "mission (s) >" would replace that sentence with a prompt. The key is the
-              resolved Send binding, not its default, so rebinding the focus action also
-              updates this cue. */}
+          <VoiceIndicator id="composer" />
+          {/* The decorative prompt shows the resolved Send binding. */}
           <span className="pty-prompt" aria-hidden="true">
             {`mission${sendChord ? ` (${sendChord})` : ""} >`}
           </span>
@@ -1561,18 +1724,14 @@ export function TranscriptPanel({
             key={resetNonce}
             ref={inputRef}
             className={workingProgressBar ? "transcript-input has-progress-bar" : "transcript-input"}
+            aria-label={composerVoiceHint ? replyPrompt : undefined}
+            aria-describedby={composerVoiceHint ? voiceHintId : undefined}
             placeholder={
               !canSend
                 ? "No pane to send to"
                 : dialogOpen
                   ? "Waiting on a menu - pick an option above to answer it"
-                  : terminal
-                    ? // The prompt metaphor, with the keys moved out to the hint beside the
-                      // box the way a shell's own footer carries them. The two BLOCKED
-                      // placeholders above are deliberately identical in both renderings:
-                      // they are the reason you cannot type, and that reason is the same.
-                      "Send the next instruction to this process…"
-                    : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
+                  : replyPrompt
             }
             rows={terminal ? 1 : 2}
             disabled={!canSend || dialogOpen}
@@ -1790,6 +1949,42 @@ function findFor(
 }
 
 /**
+ * How one review row's card says it reached the agent, when it went as a message: still in the
+ * outbox, or delivered at the turn it is drawn at. The delivered text is disclosed on the last
+ * card of its delivery, highlighted for an open find, and held open while it has the current
+ * match so a jump lands on something visible.
+ */
+function reviewCardDelivery(
+  row: Extract<ConversationRow, { kind: "review" }>,
+  scoped: FindHit[],
+  query: string,
+  currentKey: string | null,
+): ReviewCardDelivery | undefined {
+  if (row.queued) return { state: "queued" };
+  return row.delivery ? deliveredCard(row.delivery, scoped, query, currentKey) : undefined;
+}
+
+/** A card's "Delivered to the agent" line, and on the last card of its turn the disclosure. */
+function deliveredCard(
+  delivery: ReviewRowDelivery,
+  scoped: FindHit[],
+  query: string,
+  currentKey: string | null,
+): Extract<ReviewCardDelivery, { state: "delivered" }> {
+  if (!delivery.last) return { state: "delivered", turnId: delivery.turnId, at: delivery.at };
+  const hits = findFor(scoped, delivery.turnId, query, currentKey)?.hits ?? [];
+  return {
+    state: "delivered",
+    turnId: delivery.turnId,
+    at: delivery.at,
+    received: {
+      text: hits.length ? <Highlighted text={delivery.text} hits={hits} currentKey={currentKey} /> : delivery.text,
+      open: hits.some((hit) => hit.key === currentKey),
+    },
+  };
+}
+
+/**
  * Text with its matches wrapped in `<mark>`.
  *
  * Rendered as React children rather than by injecting elements into the DOM. The
@@ -1863,6 +2058,7 @@ export function PendingTurnView({
 }): React.JSX.Element {
   // Crossed the boundary and waiting for pickup: the same claim a steered row makes, drawn
   // the same way, so a terminal delivery and a steer read alike while they are on their way.
+  const voiceEnabled = useFeatureFlag("voice");
   const inFlight = turn.state === "sending" && !hold;
   return (
     <div
@@ -1873,6 +2069,7 @@ export function PendingTurnView({
     >
       <div className="turn-role pending-turn-role">
         <span>You</span>
+        {voiceEnabled && turn.spokenWords !== undefined && <small className="turn-spoken">Spoken</small>}
         {inFlight && <span className="in-flight-pulse" aria-hidden />}
         <span className="pending-turn-state" role="status">
           {hold
@@ -1882,7 +2079,7 @@ export function PendingTurnView({
             : pendingTurnStatus(turn)}
         </span>
       </div>
-      <div className="turn-text">{turn.text}</div>
+      <div className="turn-text">{turn.spokenWords ?? turn.text}</div>
       <div className="pending-turn-actions">
         {inFlight && now !== undefined && (
           <span className="in-flight-age">Sent {sentAgo(turn.claimedAt ?? turn.updatedAt, now)} ago</span>
@@ -2053,6 +2250,7 @@ function Turn({
           "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">
         {m.origin === "session" && m.originSession ? <DelegatedByline source={m.originSession} /> : who}
+        {m.presentation?.kind === "spoken" && <small className="turn-spoken">Spoken</small>}
         {receivedBy && <span className="turn-received" role="status">✓ received by {receivedBy}</span>}
         <ConversationTimestamp at={m.ts} className="turn-time" />
       </div>
@@ -2071,6 +2269,7 @@ function Turn({
           />
         </div>
       )}
+      {m.presentation?.kind === "spoken" && <ReceivedMessage text={m.presentation.received} />}
       {m.advisor && <AdvisorNote advisor={m.advisor} />}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
       <ConversationArtifacts
@@ -2282,8 +2481,10 @@ function TerminalTurn({
               )}
             </span>
           )}
+          {m.presentation?.kind === "spoken" && <small className="turn-spoken">Spoken</small>}
           {!foreman && <ConversationTimestamp at={m.ts} className="pty-time" />}
         </p>
+        {m.presentation?.kind === "spoken" && <ReceivedMessage text={m.presentation.received} />}
         {foreman && (
           <ForemanTerminalMessage
             text={m.text}

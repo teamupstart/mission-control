@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Every collection a request can make Zod parse carries an upper bound.
@@ -27,7 +27,7 @@ import { z } from "zod";
  */
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const home = mkdtempSync(join(tmpdir(), "request-collection-bounds-"));
+const home = tempDir("request-collection-bounds-");
 process.env.HARNESS_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -101,8 +101,11 @@ function moduleUrl(fromFile: string, specifier: string): string {
 const ROUTE_FILES = [
   "src/server/routes.ts",
   "src/server/session-control.ts",
+  "src/server/session-settings.ts",
+  "src/server/report-routes.ts",
   "src/server/residents/routes.ts",
   "src/server/shaping/routes.ts",
+  "src/server/shaping/sign-in/routes.ts",
   "src/server/workflows/mcp.ts",
   "src/server/telemetry/primary-actions.ts",
   "src/server/telemetry/workflow-actions.ts",

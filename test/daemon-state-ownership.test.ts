@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { TaskSourcesView } from "../src/shared/task-source.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { createResumeLease, resumeLeaseRoot, resumeLeaseStatus } from "../src/server/terminal/resume-lease.ts";
+import { tempDir } from "./temp-root.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "mission-daemon-owner-"));
+const root = tempDir("mission-daemon-owner-");
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const children = new Set<ChildProcess>();
 // A source-loaded daemon can legitimately wait behind the full suite's eight workers. Keep
@@ -139,6 +140,26 @@ async function waitForListening(daemon: RunningDaemon): Promise<void> {
   );
 }
 
+/**
+ * A daemon on a port nobody else holds, listening. `unusedPort` can only report a port that was
+ * free a moment ago, and a test file running beside this one can take it first - so a start that
+ * lost that race (`EADDRINUSE`, and only that) is tried again on a fresh port. Any other failure
+ * is this test's to report.
+ */
+async function startListeningDaemon(home: string): Promise<RunningDaemon & { port: number }> {
+  for (let attempt = 1; ; attempt++) {
+    const port = await unusedPort();
+    const daemon = startDaemon(home, port);
+    try {
+      await waitForListening(daemon);
+      return { ...daemon, port };
+    } catch (error) {
+      if (attempt >= 3 || !daemon.output().includes("EADDRINUSE")) throw error;
+      await daemon.exit;
+    }
+  }
+}
+
 async function stopDaemon(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, "exit");
@@ -205,6 +226,45 @@ test("ordinary restart works and stale ownership recovers after a crash", async 
   await stopDaemon(restarted.child);
 });
 
+test("a Task Sources revision from a prior daemon is refused after restart on the same state", async () => {
+  const home = join(root, "task-source-restart");
+  const url = (port: number) => `http://127.0.0.1:${port}/api/task-sources/config`;
+  const readSources = async (port: number): Promise<TaskSourcesView> => {
+    const response = await fetch(url(port));
+    assert.equal(response.status, 200);
+    return await response.json() as TaskSourcesView;
+  };
+  const replaceSources = (port: number, revision: string, sources: unknown[]) => fetch(url(port), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ revision, sources }),
+  });
+
+  const seed = await startListeningDaemon(home);
+  const source = { id: "restart-fixture", kind: "github-issues", repoRoot: repo, config: { repo: "fixture/issues" } };
+  const saved = await replaceSources(seed.port, (await readSources(seed.port)).revision, [source]);
+  assert.equal(saved.status, 200, await saved.text());
+  await stopDaemon(seed.child);
+  await seed.exit;
+
+  // Both reads happen on fresh starts with no source writes, so their in-process
+  // generation would coincide if revisions were based only on the write count.
+  const first = await startListeningDaemon(home);
+  const before = await readSources(first.port);
+  assert.deepEqual(before.sources.map(source => source.id), ["restart-fixture"]);
+  await stopDaemon(first.child);
+  await first.exit;
+
+  const restarted = await startListeningDaemon(home);
+  const stale = await replaceSources(restarted.port, before.revision, []);
+  assert.equal(stale.status, 409);
+  assert.match((await stale.json() as { error: string }).error, /Task sources changed/);
+  const after = await readSources(restarted.port);
+  assert.deepEqual(after.sources, before.sources);
+  assert.notEqual(after.revision, before.revision);
+  await stopDaemon(restarted.child);
+});
+
 test("ownership contention refuses startup before the state database is touched", async () => {
   const home = join(root, "untouched");
   const holder = startOwnershipHolder(home, await unusedPort());
@@ -232,10 +292,10 @@ test("ownership contention refuses startup before the state database is touched"
 });
 
 test("daemons with independent state homes can run concurrently", async () => {
-  const first = startDaemon(join(root, "independent-a"), await unusedPort());
-  const second = startDaemon(join(root, "independent-b"), await unusedPort());
-
-  await Promise.all([waitForListening(first), waitForListening(second)]);
+  const [first, second] = await Promise.all([
+    startListeningDaemon(join(root, "independent-a")),
+    startListeningDaemon(join(root, "independent-b")),
+  ]);
 
   await Promise.all([stopDaemon(first.child), stopDaemon(second.child)]);
 });

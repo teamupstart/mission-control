@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { atomicMigrationJson, MIGRATION_JOURNAL, prepareInPlaceInstall, withMigrationLock } from "../scripts/install-migration.mjs";
@@ -11,11 +10,12 @@ import { prepareStagedInstall } from "../scripts/install-staged-app.mjs";
 import { processIdentity } from "../scripts/update-lock.mjs";
 import { cleanupBinaryDownloads, cleanupSettledBinaryDownloads } from "../src/main/update-binary.ts";
 import { createDefaultUpdaterPort, type UpdateDialogs } from "../src/main/updater.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const dead = {pid: 99999999, identity: "departed fixture process"};
 
 function fixture(t: test.TestContext) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "binary-cleanup-")));
+  const root = realpathSync(tempDir("binary-cleanup-"));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const app = join(root, "Applications", "Agent Mission Control.app");
   const directory = join(root, "update-downloads", "attempt-candidate");

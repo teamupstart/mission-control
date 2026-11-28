@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   commandFailureText,
@@ -10,6 +9,7 @@ import {
   stubRun,
 } from "../src/server/util/exec.ts";
 import { wasRefused } from "../src/server/inspector/github.ts";
+import { testTempRoot } from "./temp-root.mjs";
 
 // `run` is how everything in this app talks to `gh`, and the Inspector is the one caller
 // whose commands PUBLISH - a review carrying up to eight comments on a public pull
@@ -191,7 +191,7 @@ test("a callback-reported spawn refusal keeps its diagnostic", async () => {
   // paths represent the same fact - no process existed - and both need to retain Node's
   // message so an E2BIG reported this way does not degrade to a blank fallback on another
   // runtime or operating system.
-  const missing = join(tmpdir(), `mission-control-missing-${randomUUID()}`);
+  const missing = join(testTempRoot(), `mission-control-missing-${randomUUID()}`);
   const res = await run(missing, []);
 
   assert.notEqual(res.code, 0);
@@ -204,7 +204,7 @@ test("a callback-reported spawn refusal keeps its diagnostic", async () => {
 // the code and text of a missing binary. Read as "not installed", that told an operator
 // with acli on PATH to go and install it, when the thing missing was the source's checkout.
 test("a missing working directory is named as such, not as a missing binary", async () => {
-  const gone = join(tmpdir(), `mission-gone-${randomUUID()}`);
+  const gone = join(testTempRoot(), `mission-gone-${randomUUID()}`);
   const res = await run(process.execPath, ["-e", "0"], { cwd: gone });
   assert.equal(res.missingCwd, gone);
   assert.equal(res.code, 1);
@@ -212,7 +212,7 @@ test("a missing working directory is named as such, not as a missing binary", as
   assert.match(res.stderr, /working directory .* does not exist/);
   assert.doesNotMatch(res.stderr, /ENOENT/);
 
-  const present = await run(process.execPath, ["-e", "0"], { cwd: tmpdir(), timeoutMs: 10_000 });
+  const present = await run(process.execPath, ["-e", "0"], { cwd: testTempRoot(), timeoutMs: 10_000 });
   assert.equal(present.code, 0);
   assert.equal(present.missingCwd, undefined);
 });

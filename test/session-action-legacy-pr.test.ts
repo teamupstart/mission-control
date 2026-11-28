@@ -1,5 +1,5 @@
 /**
- * What is at stake: twenty-two built-in versions now open a pull request two different ways, and
+ * What is at stake: twenty-three built-in versions now open a pull request two different ways, and
  * every one may be pinned by bindings on operators' machines.
  *
  * Versions 5 through 7 reach End and then have the completion policy TYPE a handoff, recorded
@@ -14,11 +14,11 @@
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "session-action-legacy-pr-"));
+const home = tempDir("session-action-legacy-pr-");
 process.env.HARNESS_HOME = join(home, "state");
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -28,7 +28,7 @@ const { WORKFLOW_DELIVERY_KINDS } = await import("../src/shared/workflow.ts");
 const noMistakes = () => BUILTIN_WORKFLOWS.find((item) => item.definition.id === "builtin-workflow:no-mistakes-review")!;
 
 before(() => {
-  assert.equal(noMistakes().versions.length, 22, "this file is written against twenty-two versions");
+  assert.equal(noMistakes().versions.length, 23, "this file is written against twenty-three versions");
 });
 
 test("both delivery kinds remain in the durable vocabulary, and neither replaced the other", () => {
@@ -67,6 +67,8 @@ test("legacy versions keep their post-End handoff policies while versions 9 thro
     "wait",
     "wait",
     "wait",
+    "wait",
+    // Version 23 adds the Local Inspector stage and keeps version 22's Inspector gate.
     "wait",
   ]);
 });

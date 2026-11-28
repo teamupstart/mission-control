@@ -130,9 +130,7 @@ async function shot(
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await locator.screenshot({ path: join(EVIDENCE, `${name}.png`) });
-  // eslint-disable-next-line no-console
   console.log(`OBSERVED ${observed}`);
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/foreman-invite/${name}.png`);
 }
 

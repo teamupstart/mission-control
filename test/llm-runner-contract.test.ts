@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
@@ -12,6 +11,7 @@ import type {
   ClaudeSdkOneShotDeps,
   ClaudeSdkOneShotQueryOptions,
 } from "../src/server/harness/claude/sdk-types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake here is the CONTRACT, not the call shape. `LlmRunner` exists so the
 // app's offline work - Foreman's verdicts, the goal refiner, the titler, the digest, the
@@ -32,7 +32,7 @@ import type {
 //
 // The fake bin records the argv, the cwd and the env it was handed - which is exactly what
 // a provider, and a hook underneath it, would see.
-const home = mkdtempSync(join(tmpdir(), "llm-runner-"));
+const home = tempDir("llm-runner-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const RUN_ARGS = join(home, "args");
@@ -321,7 +321,7 @@ test("the Claude runner routes an sdk transport choice through the SDK one-shot"
 test("a grant follows the configured SDK transport with the Inspector's exact sandbox", async () => {
   clearRecording();
   const fake = fakeClaudeSdk();
-  const dir = mkdtempSync(join(tmpdir(), "llm-sdk-grant-"));
+  const dir = tempDir("llm-sdk-grant-");
   const restore = configureClaudeRunnerTransport(() => "sdk", fake.deps);
   try {
     const text = await claudeRunner.run("review this diff", {
@@ -852,7 +852,7 @@ test("a tool grant renders exactly the deny rules the Inspector ships today", ()
 });
 
 test("a granted run is scoped to the grant's directory", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "llm-grant-"));
+  const dir = tempDir("llm-grant-");
   await withPrintTransport(() =>
     claudeRunner.run("review this diff", {
       timeoutMs: 5000,

@@ -13,15 +13,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // MISSION_HOME *is* the state dir, so the db lands at <home>/harness.db - the file db.ts
 // opens below. It must be set before anything that resolves it is imported, which is why
 // every import that reaches the state dir in this file is dynamic: a static import is hoisted
 // above this assignment and would resolve the operator's real directory.
-const home = mkdtempSync(join(tmpdir(), "workflow-resumption-db-"));
+const home = tempDir("workflow-resumption-db-");
 process.env.MISSION_HOME = home;
 
 const EDGES = [

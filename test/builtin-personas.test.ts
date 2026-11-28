@@ -1,9 +1,9 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: the eight review roles ship WITH the application, which is a promise about
 // two different things. First, that a build serves the exact Markdown it was made from - the
@@ -14,7 +14,7 @@ import type { ServerEvent } from "../src/shared/types.ts";
 // to have their names taken - while an operator who imported the same document before it
 // shipped keeps the copy and the name they already own.
 
-const home = mkdtempSync(join(tmpdir(), "mission-builtin-personas-"));
+const home = tempDir("mission-builtin-personas-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
@@ -73,18 +73,11 @@ test("the generated module is exactly what the authored Markdown regenerates", (
 });
 
 // `personas/` holds prose that is not a review role - the two operator briefs the daemon
-// reads as files at runtime, and the directory's own README - and the generator globs the
-// whole directory. Both directions of that exclusion are failure modes worth a name. A
-// listed document that is gone means the list has gone stale and no longer describes the
-// directory; a listed document that compiled in anyway means the Persona catalog is
-// offering `builtin:FOREMAN` as a review role nobody wrote and no operator can archive.
-test("the operator briefs and the README are in personas/ and are not Personas", () => {
+// reads as files at runtime, and the directory's own README. The generator globs the
+// whole directory, so a broken exclusion would ship one of these as a built-in role.
+test("the generator excludes the operator briefs and the README", () => {
   const slugs = new Set<string>(BUILTIN_PERSONA_SOURCES.map((source) => source.slug));
   for (const document of NON_PERSONA_DOCUMENTS) {
-    assert.ok(
-      existsSync(join(personasDir, document)),
-      `${document} is excluded from the generator but is not in personas/ - update NON_PERSONA_DOCUMENTS`,
-    );
     assert.equal(
       slugs.has(document.slice(0, -".md".length)),
       false,

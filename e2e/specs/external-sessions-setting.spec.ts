@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
@@ -9,6 +8,7 @@ import type { Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
+import { tempDir, testTempRoot } from "../../test/temp-root.mjs";
 
 /**
  * Settings > Setup > Terminals: **Show sessions started outside Mission Control**.
@@ -77,7 +77,6 @@ test("the outside-sessions switch starts off, warns, and keeps each change acros
     const evidence = artifactsDir("external-sessions-setting");
     mkdirSync(evidence, { recursive: true });
     await settledShot(page, join(evidence, "terminals-switch-on.png"));
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/external-sessions-setting/terminals-switch-on.png");
   }
 
@@ -98,7 +97,6 @@ test("the outside-sessions switch starts off, warns, and keeps each change acros
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const evidence = artifactsDir("external-sessions-setting");
     await settledShot(page, join(evidence, "terminals-switch-off.png"));
-    // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/.artifacts/external-sessions-setting/terminals-switch-off.png");
   }
 });
@@ -114,7 +112,7 @@ test.describe("the Board with discovery on", () => {
 
   /** A tmux session running a fake `claude` that idles forever, named for this test only. */
   function startPane(kind: "mission" | "outside"): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), `mc-e2e-${kind}-pane-`)));
+    const dir = realpathSync(tempDir(`mc-e2e-${kind}-pane-`));
     const bin = join(dir, "fake-bin");
     mkdirSync(bin);
     symlinkSync(execPath, join(bin, "claude"));
@@ -126,7 +124,7 @@ test.describe("the Board with discovery on", () => {
     if (kind === "mission") {
       // Where and how a dispatch's wrapper lives: one private home under the shared root, a
       // script that runs the agent without exec, started as `/bin/sh <script>`.
-      const root = join(tmpdir(), "mission-control-agent-state");
+      const root = join(testTempRoot(), "mission-control-agent-state");
       mkdirSync(root, { recursive: true, mode: 0o700 });
       home = mkdtempSync(join(root, "session-"));
       const wrapper = join(home, "launch-and-cleanup.sh");
@@ -179,7 +177,6 @@ test.describe("the Board with discovery on", () => {
       mkdirSync(evidence, { recursive: true });
       await dashboard.mouse.move(0, 0);
       await dashboard.locator("main.board").screenshot({ path: join(evidence, `${name}.png`) });
-      // eslint-disable-next-line no-console
       console.log(`CAPTURED e2e/.artifacts/external-sessions-setting/${name}.png`);
     };
 

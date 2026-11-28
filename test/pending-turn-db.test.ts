@@ -1,11 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { tempDir } from "./temp-root.mjs";
 
-const home = mkdtempSync(join(tmpdir(), "mission-pending-turn-db-"));
+const home = tempDir("mission-pending-turn-db-");
 process.env.MISSION_HOME = home;
 
 // Open a database containing the previous outbox schema, as an upgrade would.
@@ -20,6 +20,7 @@ legacy.close();
 
 const {
   claimNextPendingTurn,
+  closeDb,
   clearPendingTurns,
   createPendingTurn,
   deleteClaimedPendingTurn,
@@ -48,6 +49,24 @@ test("upgrading the existing outbox keeps old messages on next-turn delivery", (
   assert.equal(row.deadlineAt, null);
   assert.equal(row.interruptAttemptedAt, null);
   clearPendingTurns("legacy");
+});
+
+test("the upgrade remembers live and retired spoken IDs across subsequent opens", () => {
+  const live = { id: "voice:live", noteKey: "upgrade", spokenSessionId: "sdk:upgrade", text: "go", spokenWords: "go", now: 10 };
+  const queued = createPendingTurn(live);
+  openDb().exec(`INSERT INTO session_spoken_turns
+    (id, note_key, fingerprint, spoken_words, received, delivered_at, outbox_turn_id)
+    VALUES ('receipt', 'upgrade', 'print', 'done', 'done', 1, 'voice:retired');
+    DROP TABLE spoken_outbox_ids;
+    PRAGMA user_version = 60`);
+  closeDb();
+  assert.deepEqual(createPendingTurn(live), queued);
+  assert.ok(recallPendingTurn(live.noteKey, live.id, queued.revision));
+  closeDb();
+  for (const id of [live.id, "voice:retired"]) {
+    assert.throws(() => createPendingTurn({ ...live, id }), /already queued/);
+  }
+  assert.deepEqual(listPendingTurns(live.noteKey), []);
 });
 
 test("an unknown stored delivery mode blocks selection of another row", () => {
@@ -180,7 +199,7 @@ test("reset cleanup can preserve only an ambiguous claimed row", () => {
     21,
   )!;
 
-  assert.equal(clearPendingTurns(key, [uncertain.id]), 1);
+  assert.deepEqual(clearPendingTurns(key, [uncertain.id]), { count: 1, spokenIds: [] });
   assert.deepEqual(
     listPendingTurns(key).map((turn) => [turn.id, turn.state]),
     [[uncertain.id, "uncertain"]],

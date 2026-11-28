@@ -1,8 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tempDir } from "./temp-root.mjs";
 
 /**
  * Where work ARRIVES in the backlog: the bottom, always, however it was filed.
@@ -29,7 +28,7 @@ import { join } from "node:path";
  * real state dir under the test runner.
  */
 
-const home = mkdtempSync(join(tmpdir(), "mission-backlog-arrival-"));
+const home = tempDir("mission-backlog-arrival-");
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -165,7 +164,7 @@ test("a task re-entering the backlog with NO rank is appended rather than left u
 test("an unranked row already sitting there does not demote what is filed after it", () => {
   // The whole reason `create` repairs before it reads the maximum. Without that, the new
   // task gets a finite rank, finite sorts above unranked, and it lands SECOND to last.
-  const h = setup(["ranked"]);
+  setup(["ranked"]);
   openDb()
     .prepare(
       `INSERT INTO tasks (id, title, intent, kind, agent, repo_root, status, created_at, updated_at, enabled)

@@ -93,7 +93,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     path: `${EVIDENCE}${name}.png`,
     ...(box ? { clip: { x: 0, y: box.y - 8, width: 1280, height: bottom - box.y + 16 } } : {}),
   });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
 }
 
@@ -108,7 +107,6 @@ async function shootPage(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
-  // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/line-review-parked-run/${name}.png`);
 }
 
@@ -392,6 +390,18 @@ test("Cmd+Enter dismisses the away digest and its parked-run toast still opens t
   // constructed and keeps the instance, because the deep link lives on its `onclick`.
   await dashboard.addInitScript(() => {
     const raised: Array<{ title: string; body: string; tag: string }> = [];
+    // Delay the parked workflow update. The desktop toast must still follow the
+    // daemon's stall poll even though the browser cannot offer that round's controls.
+    const Native = window.EventSource;
+    window.EventSource = class extends Native {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) === "/events") this.addEventListener("message", event => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "workflow_run_upsert" && msg.run.status === "waiting_for_session") event.stopImmediatePropagation();
+        });
+      }
+    };
     class FakeNotification {
       onclick: (() => void) | null = null;
       static permission = "granted";

@@ -1,5 +1,4 @@
-import type { Session } from "@shared/types.ts";
-import type { TranscriptSpec } from "../types.ts";
+import type { TranscriptSession, TranscriptSpec } from "../types.ts";
 import type { ToolCall, TranscriptMessage } from "@shared/types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { readTailLines } from "../../util/file-tail.ts";
@@ -59,7 +58,7 @@ const bindings = new Map<string, RolloutBinding>();
  * or agent session changes; a miss is retried only every `RESCAN_MS`, so a rollout-less session doesn't
  * trigger a filesystem walk every tick.
  */
-function locate(s: Session): string | null {
+function locate(s: TranscriptSession): string | null {
   if (s.transcriptPath) {
     // Explicit SDK/hook paths own the same retained metadata as discovered paths.
     // Otherwise retain() drops their verified turn after every poll.
@@ -231,8 +230,10 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
     text: string,
     id: string,
     ts: number,
+    clientId?: unknown,
   ): void => {
-    const msg: TranscriptMessage = { id, role, text, tools: [], ts };
+    const msg: TranscriptMessage = { id, role, text, tools: [], ts,
+      ...(role === "user" && typeof clientId === "string" && clientId && { clientMessageId: clientId }) };
     out.push(msg);
     // A user turn ends any assistant turn: a following run of commands starts a new one.
     currentAssistant = role === "assistant" ? msg : null;
@@ -282,9 +283,10 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
     // below, `joinCodexBatches`, the browser's fold - cannot tell which shape a session
     // was recorded in, which is the point.
     if (rec.type === "event_msg" && p.type === "item_completed") {
-      const prose = itemProse((p.item ?? {}) as Record<string, unknown>);
+      const item = (p.item ?? {}) as Record<string, unknown>;
+      const prose = itemProse(item);
       if (!prose) continue;
-      pushProse(prose.role, prose.text, prose.id ?? id, ts);
+      pushProse(prose.role, prose.text, prose.id ?? id, ts, item.client_id ?? item.clientId);
       continue;
     }
     if (rec.type === "event_msg" && (p.type === "user_message" || p.type === "agent_message")) {
@@ -293,7 +295,7 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
       // Changing that would alter every rollout already on disk, so normalization stays
       // per-shape while the construction step is shared.
       const text = typeof p.message === "string" ? p.message : typeof p.text === "string" ? p.text : "";
-      pushProse(p.type === "user_message" ? "user" : "assistant", text, id, ts);
+      pushProse(p.type === "user_message" ? "user" : "assistant", text, id, ts, p.client_id ?? p.clientId);
       continue;
     }
     if (rec.type !== "custom_tool_call" && rec.type !== "function_call" &&
@@ -387,6 +389,7 @@ export function latestCodexNarration(lines: string[]): string | null {
 export const codexTranscript: TranscriptSpec = {
   metaSource: "codex-rollout",
   locate,
+  locateByConversation: (session) => findRolloutForSession(session),
   // Codex lifecycle markers report task start/completion directly; `readRolloutPassive`
   // reads them from the same bounded tail as runtime metadata.
   passiveRead: readRolloutPassive,

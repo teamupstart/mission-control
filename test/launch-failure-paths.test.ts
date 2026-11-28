@@ -1,12 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // The launch-failure record, driven through each production path that writes or withholds it.
 // The record decides where a failure is drawn and which actions it offers, and the one that
@@ -15,7 +14,7 @@ import type { Task } from "../src/shared/types.ts";
 // the very worktree that agent may still be working in. And a session that ran and was then
 // lost to a restart is not a launch failure at all - it must carry no record.
 
-const home = mkdtempSync(join(tmpdir(), "mission-launch-failure-paths-"));
+const home = tempDir("mission-launch-failure-paths-");
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 

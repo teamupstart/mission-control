@@ -61,6 +61,30 @@ positively known to belong to the *other* provider is replaced with this provide
 default and the row says which id was dropped. An id in no catalog is a new or custom model and
 passes through untouched, because model ids are free text.
 
+## Reasoning effort for background work
+
+Turn on **Background reasoning effort** in **Settings > Feature flags**, then open
+**Settings > Models**. Background jobs, Foreman roles, and GitHub Inspector reviews have
+a **Reasoning effort** setting. Voice routing always runs with thinking off. **Provider default** lets the selected provider and model choose.
+An override takes effect on the next evaluation. Foreman picks up changes when it next reads
+its settings at the start of a worker pass. Retries within one evaluation keep the effort from
+the first attempt.
+
+The available levels follow the effective provider and model. If either changes and the new
+combination cannot use a saved level, the row shows the unsupported level and the call uses
+**Provider default**. The saved choice applies again if the combination later supports it.
+Turning the preview off hides the controls and suspends the overrides while keeping them saved.
+Calls already in progress keep the effort they started with.
+
+Foreman's Review effort also applies to its ship-recovery reviewer. GitHub Inspector uses one
+setting for full reviews and follow-up replies, with one difference from the other rows: until
+you choose, a full review runs at `xhigh` and the row shows `xhigh`, while replies use the
+provider's default. A level you choose applies to both. Choosing **Provider default** is a
+choice too, and turns the `xhigh` review default off. With the preview off, reviews run at
+`xhigh` and replies at the provider's default. A judging Persona's pinned effort takes precedence
+over the Ensemble evaluation setting. Workflow Persona and reviewer-node settings continue to
+control Workflow reviews.
+
 ## The background jobs
 
 **The model** is per job:
@@ -72,8 +96,9 @@ passes through untouched, because model ids are free text.
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
 | Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence, canonically reconciles authored criterion ids, and suggests proof classes without replacing the preserved goal, human decisions, author declarations, or deterministic readiness rules |
 | Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, mines a Consensus run's divergences, or scores one Panel-vote ballot per judge, all tool-less. A judging Persona's own model wins over this |
+| Voice routing | Haiku (disabled) or `gpt-6-luna` | Fixed per provider | Settles a spoken sentence the names alone could not: who was meant, or a split across two agents. Behind the `voice` preview; see below |
 
-Each resolves the same way [Foreman's four](foreman.md#which-model-foreman-runs-as) and the
+The configurable models resolve the same way [Foreman's four](foreman.md#which-model-foreman-runs-as) and the
 [GitHub Inspector's one](inspector-and-shipping.md#the-review-model) do: **your setting, then the environment variable, then the
 shipped default**. Clearing a field means "fall back", never "run with no model" - an unset
 `--model` inherits whatever the CLI happens to default to, which is the priciest tier available
@@ -86,6 +111,14 @@ ids and leaving account defaults and modes out of the picker. Shipped Claude cho
 with a note when the account does not report them. A value saved by another version or through configuration
 remains selected as **not currently reported** instead of being dropped, so catalog loading or
 failure cannot rewrite the configured model.
+
+**Voice routing** is the one job whose provider follows its subject rather than this panel: a
+sentence to Claude sessions runs on Claude, one to Codex sessions on Codex, and only a mixed or
+other set of agents takes the job's own provider. The job uses the measured model for its provider, with thinking off and one attempt inside the
+shared five-second budget. The Claude rung ships off after its retest missed that budget. Codex
+runs Luna, including for mixed candidates when Codex is the selected background provider.
+See [Voice addressing](voice.md#the-model-step). A decision model with a key, when one
+is in use, answers before this job is asked.
 
 The title, goal, digest, and Workflow-context jobs are best-effort calls with a deterministic
 fallback, so a missing or logged-out provider degrades their output rather than failing a

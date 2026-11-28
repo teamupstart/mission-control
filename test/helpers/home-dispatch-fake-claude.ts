@@ -5,9 +5,9 @@
 // `MISSION_CLAUDE_BIN` or from `PATH` meets it unchanged. Its state is a JSON file beside it:
 // the version it reports, the marketplaces and plugins it lists, scripted failures, and a log of
 // every invocation with its argv and cwd. It spends no model tokens and never starts a session.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "../temp-root.mjs";
 
 export interface FakeClaudePlugin {
   /** `name@marketplace`, as `claude plugin install` takes it. */
@@ -15,6 +15,7 @@ export interface FakeClaudePlugin {
   version: string;
   scope: string;
   enabled: boolean;
+  errors?: string[];
 }
 
 /** A failure the fake plays for one `claude plugin` subcommand, then stops playing. */
@@ -95,10 +96,15 @@ if (argv[0] === "plugin") {
   if (sub === "list") {
     fail("list");
     if (argv.includes("--json")) {
-      process.stdout.write(JSON.stringify(state.plugins.map((p) => ({ id: p.id, version: p.version, scope: p.scope, enabled: p.enabled }))) + "\\n");
+      process.stdout.write(JSON.stringify(state.plugins.map((p) => ({ id: p.id, version: p.version, scope: p.scope, enabled: p.enabled, errors: p.errors }))) + "\\n");
     } else {
       process.stdout.write(state.plugins.map((p) => p.id + " (" + p.version + ", " + p.scope + ", " + (p.enabled ? "enabled" : "disabled") + ")").join("\\n") + (state.plugins.length ? "\\n" : ""));
     }
+    process.exit(0);
+  }
+  if (sub === "marketplace" && argv[2] === "list") {
+    fail("marketplace list");
+    process.stdout.write(JSON.stringify(state.marketplaces.map((p) => ({ name: "mission-control", source: "directory", path: p }))) + "\\n");
     process.exit(0);
   }
   if (sub === "marketplace" && argv[2] === "add") {
@@ -140,7 +146,7 @@ process.exit(0);
 `;
 
 export function createFakeClaude(initial: Partial<FakeClaudeState> = {}): FakeClaude {
-  const dir = mkdtempSync(join(tmpdir(), "mission-fake-claude-"));
+  const dir = tempDir("mission-fake-claude-");
   const bin = join(dir, "claude");
   const statePath = join(dir, "state.json");
   const logPath = join(dir, "invocations.jsonl");

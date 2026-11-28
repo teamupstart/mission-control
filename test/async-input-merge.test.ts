@@ -1,18 +1,17 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { setImmediate as tick } from "node:timers/promises";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PlanDecision } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // A merged pull request is the operator's own conclusion (`async-input`): it completes the task
 // even with a request_input question open, and closes every outstanding one with the recorded
 // reason `merged` before the session can be stopped, so none is left behind it unexplained.
 
-const home = mkdtempSync(join(tmpdir(), "mission-async-input-merge-"));
+const home = tempDir("mission-async-input-merge-");
 process.env.HARNESS_HOME = home;
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -183,6 +182,40 @@ test("a merge completes the task past open questions and closes each with the re
   }
   assert.deepEqual(f.registry.outstandingReviews(f.id), [], "nothing is left outstanding behind the merge");
   assert.equal(f.registry.getSession(f.id)?.openQuestions, 0, "it leaves the inbox at once");
+});
+
+test("a merge completes the task past an open filed plan form and closes it as merged in the task's transaction", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  // Both flags off at the merge: a filed form keeps its rule after the flags that filed it are gone.
+  const f = fleet("s-merge-plan");
+  const form = f.reviews.create(f.id, "plan-decisions", "Plan", "Plan", decisions("Plan?"), { waitMode: "message" });
+  const call = f.reviews.create(f.id, "plan-decisions", "Call plan", "Call plan", decisions("Call?"));
+  assert.equal(f.registry.getSession(f.id)?.pendingReviews, 2);
+  f.reviews.resolve(call.id, "dismiss", null, "human");
+
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done", "a merge is the one thing that completes the task past the form");
+  assert.equal(f.registry.getReview(form.id)?.status, "orphaned");
+  assert.equal(f.registry.getReview(form.id)?.closedReason, "merged");
+  assert.match(reviewToolResult(f.registry.getReview(form.id)!).text, /pull request merged/);
+  assert.equal(f.registry.getSession(f.id)?.pendingReviews, 0, "it leaves the inbox at once");
+});
+
+test("a closure that fails leaves a filed plan form open with its task running, and the next observation completes both", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const failing = { times: Number.POSITIVE_INFINITY };
+  const f = fleet("s-merge-plan-fails", failing);
+  const form = f.reviews.create(f.id, "plan-decisions", "Plan", "Plan", decisions("Plan?"), { waitMode: "message" });
+  f.merge();
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  assert.equal(f.registry.getReview(form.id)?.status, "pending", "no finished task with a gate still open");
+  failing.times = 0;
+  f.hook("Stop");
+  await tick();
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  assert.equal(f.registry.getReview(form.id)?.closedReason, "merged");
 });
 
 test("with the flag off a merge records no reason on a snoozed call-mode question, as today", async () => {

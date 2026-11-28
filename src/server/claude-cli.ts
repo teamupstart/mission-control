@@ -13,6 +13,7 @@ import {
 import type { LlmImageInput } from "@shared/llm.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
+import { setAwakeTimeout, type AwakeTimeout } from "./host-suspend.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
 // from a clean context. Two very different callers share it, which is why it lives
@@ -73,6 +74,29 @@ export const CLAUDE_DEFAULT_TIMEOUT_MS = Number(
  */
 export const HEADLESS_CWD = tmpdir();
 
+/**
+ * Claude Code's own switch for the connectors an operator added on claude.ai.
+ *
+ * Those connectors are not settings, so `--setting-sources` and `settingSources: []` leave
+ * them on, and `--tools ""` restricts only the built-in tools. Claude Code connects them in
+ * the background and adds their tools to the first request made after they finish. On a
+ * well-connected account that is hundreds of tool schemas: one Foreman triage run reached
+ * 451 tools (about 938 KB). Haiku cannot defer tool schemas, so the request overflowed its
+ * context and failed with `prompt_too_long`. That happened on the third turn, after a schema
+ * retry, and the first turn was only 24 KB.
+ *
+ * A headless run that asks for no connector tool gets connectors switched off. The one
+ * caller that names a connector tool on purpose (the Jira sweep's
+ * `mcp__claude_ai_Atlassian_Rovo__…`) keeps them.
+ */
+export const CLAUDE_AI_CONNECTORS_ENV = "ENABLE_CLAUDEAI_MCP_SERVERS";
+const CLAUDE_AI_CONNECTOR_TOOL_PREFIX = "mcp__claude_ai_";
+
+/** Whether a comma-separated `--tools` list names a claude.ai connector tool. */
+export function namesClaudeAiConnectorTool(tools: string | undefined): boolean {
+  return (tools ?? "").split(",").some((tool) => tool.trim().startsWith(CLAUDE_AI_CONNECTOR_TOOL_PREFIX));
+}
+
 /** Children we spawned, so a process exit doesn't leave them burning tokens. */
 const live = new Set<ReturnType<typeof spawn>>();
 
@@ -119,6 +143,10 @@ export interface ClaudeRunOptions {
   model?: string;
   /** Maps to the harness's own launch flag (`--effort`); omit for the CLI default. */
   effort?: ThinkingLevel;
+  /** `off` disables extended thinking for this run (`MAX_THINKING_TOKENS=0`). */
+  thinking?: "off";
+  /** `--system-prompt`: replaces Claude Code's own system prompt for this run. */
+  systemPrompt?: string;
   timeoutMs?: number;
   /** Cancels the run and its detached process group. A pre-aborted signal prevents spawning. */
   signal?: AbortSignal;
@@ -256,7 +284,11 @@ async function runClaudeRaw(
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push(...(capabilitiesFor("claude").effort?.launchArgs(opts.effort) ?? []));
     if (opts.settings) args.push("--settings", opts.settings);
+    if (opts.systemPrompt !== undefined) args.push("--system-prompt", opts.systemPrompt);
     const env = headlessEnv();
+    if (!namesClaudeAiConnectorTool(opts.tools)) env[CLAUDE_AI_CONNECTORS_ENV] = "false";
+    // The CLI reads this before any settings layer, and zero turns extended thinking off.
+    if (opts.thinking === "off") env.MAX_THINKING_TOKENS = "0";
     const child = (() => {
       try {
         return spawn(executable.path, args, {
@@ -275,11 +307,11 @@ async function runClaudeRaw(
     let out = "";
     let err = "";
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: AwakeTimeout | undefined;
     const done = (): boolean => {
       if (settled) return false;
       settled = true;
-      if (timer) clearTimeout(timer);
+      timer?.clear();
       opts.signal?.removeEventListener("abort", onAbort);
       live.delete(child);
       cleanupAgentSubprocessEnv(env);
@@ -289,11 +321,11 @@ async function runClaudeRaw(
       killTree(child);
       if (done()) reject(new Error("claude -p aborted"));
     };
-    timer = setTimeout(() => {
+    // Awake time, not wall time (see `host-suspend.ts`).
+    timer = setAwakeTimeout(() => {
       killTree(child);
       if (done()) reject(new Error("claude -p timed out"));
     }, opts.timeoutMs ?? CLAUDE_DEFAULT_TIMEOUT_MS);
-    timer.unref?.();
     // Decode ONCE, as a stream, rather than coercing each Buffer chunk to a string
     // independently. `claude -p` streams its response, so a multi-byte character
     // landing across a chunk boundary is ordinary rather than exotic - and coerced

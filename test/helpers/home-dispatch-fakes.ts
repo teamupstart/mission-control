@@ -62,6 +62,7 @@ import type {
   ModPaneOpen,
   ModState,
 } from "../../src/mod/host.ts";
+import { routes as dispatch } from "./home-dispatch-fakes-dispatch.ts";
 import { renderPane, type PaneProps, type PaneView } from "../../src/mod/pane/index.ts";
 
 export { createFakeClaude } from "./home-dispatch-fake-claude.ts";
@@ -305,7 +306,7 @@ export const ROUTE_REQUEST_SCHEMAS: Partial<Record<FakeRouteKey, ZodType>> = {
  * Per-phase fixture files, one entry each. Add `import { routes as inbox } from
  * "./home-dispatch-fakes-inbox.ts";` above and `inbox` here. Later entries win.
  */
-export const AREA_FIXTURES: readonly FakeRouteOverrides[] = [];
+export const AREA_FIXTURES: readonly FakeRouteOverrides[] = [dispatch];
 
 /* ------------------------------------------------------------------ the fake daemon */
 
@@ -385,6 +386,15 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
     const reply = (status: number, value: unknown): FakeDaemonResponse => ({
       status, text: JSON.stringify(value), contentType: "application/json",
     });
+
+    if (path === "/api/feature-flags" && method === "PUT") {
+      requests.push({ method, path, pattern: path, params: {}, query: {}, body, headers: lower, at: Date.now() });
+      if (token !== null && lower["x-harness-token"] !== token) return reply(401, { error: "unauthorized" });
+      const intent = body as { kind?: unknown; id?: unknown; enabled?: unknown };
+      if (intent?.kind !== "flag" || intent.id !== "headless-mode" || typeof intent.enabled !== "boolean") return reply(400, { error: "invalid" });
+      flag = intent.enabled;
+      return reply(200, { config: { enableAll: false, overrides: { "headless-mode": flag } } });
+    }
 
     for (const candidate of compiled()) {
       if (!candidate.key.startsWith(`${method} `)) continue;
@@ -467,6 +477,7 @@ export type FakeHostCall =
   | { type: "toast"; text: string }
   | { type: "status"; text: string | undefined }
   | { type: "band"; band: ModBand | undefined }
+  | { type: "banner"; lines: readonly string[] | undefined }
   | { type: "fillPrompt"; text: string }
   | { type: "fetch"; path: string; init: ModFetchInit | undefined }
   | { type: "modelWrite"; write: ModModelWrite }
@@ -498,6 +509,7 @@ export interface FakeModHost {
   toasts: string[];
   statuses: (string | undefined)[];
   bands: (ModBand | undefined)[];
+  banners: (readonly string[] | undefined)[];
   prompts: string[];
   fetches: { path: string; init: ModFetchInit | undefined }[];
   modelWrites: ModModelWrite[];
@@ -513,6 +525,10 @@ export interface FakeModHost {
   press: (label: string) => Promise<void>;
   /** Runs every active `clockEvery` callback once. */
   tick: () => Promise<void>;
+  /** Moves virtual time forward and runs each `clockEvery` callback once per period crossed. */
+  advance: (ms: number) => Promise<void>;
+  /** The period each active `clockEvery` was registered with. */
+  clockPeriods: () => number[];
   activeClocks: () => number;
 }
 
@@ -520,17 +536,21 @@ export function createFakeModHost(options: FakeModHostOptions = {}): FakeModHost
   const calls: FakeHostCall[] = [];
   const record = <T extends FakeHostCall>(call: T): T => { calls.push(call); return call; };
   const out: FakeModHost = {
-    calls, dialogs: [], notices: [], toasts: [], statuses: [], bands: [], prompts: [], fetches: [],
+    calls, dialogs: [], notices: [], toasts: [], statuses: [], bands: [], banners: [], prompts: [], fetches: [],
     modelWrites: [], paneOpens: [], paneCloses: 0, links: [], views: [],
     state: { ...options.initialState },
     host: undefined as unknown as ModHost,
     drawPane: undefined as unknown as FakeModHost["drawPane"],
     press: undefined as unknown as FakeModHost["press"],
     tick: undefined as unknown as FakeModHost["tick"],
+    advance: undefined as unknown as FakeModHost["advance"],
+    clockPeriods: undefined as unknown as FakeModHost["clockPeriods"],
     activeClocks: undefined as unknown as FakeModHost["activeClocks"],
   };
   const queue = Array.isArray(options.answers) ? [...options.answers] : [];
   const clocks = new Set<() => void | Promise<void>>();
+  const periods = new Map<() => void | Promise<void>, { ms: number; due: number }>();
+  let virtualNow = 0;
 
   const host: ModHost = {
     ask: async (question) => {
@@ -543,6 +563,7 @@ export function createFakeModHost(options: FakeModHostOptions = {}): FakeModHost
     toast: (text) => { record({ type: "toast", text }); out.toasts.push(text); },
     status: (text) => { record({ type: "status", text }); out.statuses.push(text); },
     band: (band) => { record({ type: "band", band }); out.bands.push(band); },
+    banner: (lines) => { record({ type: "banner", lines }); out.banners.push(lines); },
     fillPrompt: (text) => { record({ type: "fillPrompt", text }); out.prompts.push(text); },
     fetch: async (path, init): Promise<ModFetchResult> => {
       record({ type: "fetch", path, init });
@@ -556,11 +577,12 @@ export function createFakeModHost(options: FakeModHostOptions = {}): FakeModHost
     },
     env: (name) => options.env?.[name],
     modelWrite: (write) => { record({ type: "modelWrite", write }); out.modelWrites.push(write); },
-    clockEvery: (_ms, tick) => {
+    clockEvery: (ms, tick) => {
       // A fresh entry per call, so registering the same callback twice gives two independent clocks.
       const entry = () => tick();
       clocks.add(entry);
-      return () => { clocks.delete(entry); };
+      periods.set(entry, { ms, due: virtualNow + ms });
+      return () => { clocks.delete(entry); periods.delete(entry); };
     },
     paneOpen: async (opts) => {
       record({ type: "paneOpen", opts });
@@ -590,6 +612,13 @@ export function createFakeModHost(options: FakeModHostOptions = {}): FakeModHost
     await button.press();
   };
   out.tick = async () => { for (const tick of clocks) await tick(); };
+  out.advance = async (ms) => {
+    virtualNow += ms;
+    for (const [entry, period] of periods) {
+      while (clocks.has(entry) && period.due <= virtualNow) { period.due += period.ms; await entry(); }
+    }
+  };
+  out.clockPeriods = () => [...periods.values()].map((p) => p.ms);
   out.activeClocks = () => clocks.size;
   return out;
 }

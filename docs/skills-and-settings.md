@@ -320,7 +320,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Task shaping** (preview, while its flag is on), **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`, including the **Repositories** family), **Feature flags**, **Harnesses**, **Tasks**, **Task shaping** (preview, while its flag is on), **Worktrees**, **Skills** (`Writes ~/`), **Standing instructions**, **Reports** (preview, while the `inbox` flag is on), **Cost** (`Writes ~/`), **Telemetry**, **Storage**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (temporarily unavailable), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
@@ -347,9 +347,9 @@ Its **Terminals** family also holds **Show sessions started outside Mission Cont
 default, which decides whether discovery cards sessions Mission Control did not start. Some
 sessions are carded either way; [sessions started outside Mission
 Control](sessions.md#sessions-started-outside-mission-control) lists which.
-In the desktop app, **Application updates** also offers **Check for updates** and the
-default-off **Alpha updates** preference, which follows the latest `main` commit while
-including stable release news. Its badge says `This installation` because this page combines
+In the desktop app, the **Alpha updates** checkbox sits above the setup checks. It defaults
+off and follows the latest `main` commit, with stable release news included. The footer shows
+the installation status and offers **Check for updates**. Setup’s badge says `This installation` because this page combines
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
 
 **Feature flags** sits directly after Setup under Sessions, scoped to this machine. It offers
@@ -362,6 +362,20 @@ search and the palette of every open window the moment the flag changes, with no
 lists the registered shapers by stage, imports a reviewed manifest switched off, switches each
 on or off, orders, dry-runs and removes them, and holds the caller identity and the two shaping
 budgets. Its settings are the `shaping` backup domain. See [Task shaping](task-shaping.md#settings).
+While the `shaper-sign-in` preview flag is also on, a shaper that signs in to an OAuth-protected
+server shows its sign-in in its row, with **Sign in** and **Sign out**, and the state follows a
+sign-in finished in another tab live. With the flag off the row says sign-in is switched off and
+offers no control. Tokens are never part of a settings backup. See
+[Signing in from Settings](task-shaping.md#signing-in-from-settings).
+
+**Reports** (`#/settings/reports`) sits after Standing instructions and exists only while the
+`inbox` preview flag is on, following it live the way Task shaping follows its own. It holds the
+two agent-report noise controls that are settings: **Report guidance**, the text that tells
+agents when to post a report, with **Save** and **Reset to default**, and **Muted agents**, every
+agent whose reports are muted, with **Unmute**. A saved guidance reaches sessions started
+afterwards. The guidance is the `reports` backup domain; muted agents are not backed up, since a
+snapshot restored onto another installation would name agents that never ran there. See
+[When reports get chatty](attention-and-alerts.md#when-reports-get-chatty).
 
 Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
 (today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**
@@ -762,3 +776,49 @@ The
 This catalog is read-only with respect to the skills themselves. It currently offers no profile
 selection because neither harness has a verified frozen-isolation mechanism. See
 [Residents](residents.md#skill-sources) for the launch policy and current limitation.
+
+## Let a session change the theme
+
+Enable **Session settings through MCP** under **Settings > Feature flags** and turn on **Allow
+sessions to access Mission Control settings** in **Settings > Trust** in the desktop app.
+A fresh or upgraded installation requires that Trust choice even when all previews are enabled.
+Then ask a registered session **“Switch Mission Control to Daylight.”** The session can use
+`mission_settings` to find “theme”, read `ui.skin` and its choices, and set it to `daylight`.
+Ask **“Which theme am I using?”** for a read. The result applies to this installation and
+open dashboards repaint as soon as the change is saved.
+
+To revoke access, turn off **Allow sessions to access
+Mission Control settings** in **Settings > Trust** in the desktop app. The next request from any
+session is refused, including requests from sessions that are already running. The choice survives
+restart and settings snapshot restores. You can re-enable access with the same desktop control.
+Browser dashboards show the active choice. Both the preview flag and the Trust preference must be
+on to use the tool.
+
+
+## Discover and edit typed settings
+
+Ask a registered session to look up a preference by its label or purpose. For example,
+“Find the Claude session runtime and set it to Terminal pane” discovers
+`harnesses.sessionRuntime.claude`. Use `get` on an exact key for the current value and
+available choices. If it returns `nextChoiceCursor`, pass that cursor back in a new `get`
+for the same key. `set` returns the selected field after the owner saves it.
+
+A list replacement such as `skills.grillFirstKinds` requires the version returned by
+`get`. Read again before retrying a stale replacement. The tool routes edits to the
+same owners as the dashboard, and the [coverage inventory](session-settings-inventory.md)
+lists the owner and access for each Settings control. Changes that require operator
+confirmation, such as a backup limit that would delete copies, are made in Settings.
+Use Settings > Foreman to change the automatic wrap-up exclusions and Settings > Reports
+to edit the guidance given to future sessions.
+
+Contributors can follow the [setting onboarding guide](../CONTRIBUTING.md#onboard-a-setting).
+
+Specialized preferences use the same operations. Ask a session to find “Counts on Idle rail
+sections” and set `featureFlags.idle-rail-section-counts` to `true`. Open dashboards receive the
+same live update as a click in Feature flags. Use `repoIndex.directories` with a version from
+`get` to edit indexed roots, or find a task source by name to edit one of its supported fields.
+
+A protected response names the panel where the operator can act. Trust grants, credentials, the
+feature flag master switch, microphone arming and other settings that confer authority stay with
+the operator. The dashboard handles changes that shorten retention or require native confirmation.
+Build and preview gates control which settings are discoverable.

@@ -1,9 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./temp-root.mjs";
 
 // The multi-repo upgrade path, seeded as an existing install's database actually looks and
 // then opened by db.ts on the same code path production takes.
@@ -22,7 +22,7 @@ import { join } from "node:path";
 
 // MISSION_HOME *is* the state dir (harness-runtime's stateDir()), so the db lands at
 // <home>/harness.db - the same file db.ts will open below.
-const home = mkdtempSync(join(tmpdir(), "mission-multirepo-migrate-"));
+const home = tempDir("mission-multirepo-migrate-");
 process.env.MISSION_HOME = home;
 
 /**

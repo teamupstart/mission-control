@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { createConnection, createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import { tempDirAsync } from "./temp-root.mjs";
 
 // Real Unix sockets, with only WezTerm's CLI protocol faked. In particular a restart
 // unlinks and rebinds the SAME pathname between discovery, validation and delivery.
 async function fixture(t: test.TestContext) {
-  const dir = await mkdtemp(join(tmpdir(), "mc-wez-incarnation-"));
+  const dir = await tempDirAsync("mc-wez-incarnation-");
   const socket = join(dir, "sock");
   let server: Server;
   let received: string[] = [];

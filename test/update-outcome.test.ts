@@ -3,8 +3,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { withMigrationLock } from "../scripts/install-migration.mjs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -17,9 +16,10 @@ import {
   UPDATE_OUTCOME_SCHEMA,
   writeUpdateOutcome,
 } from "../src/main/update-outcome.js";
+import { tempDirAsync } from "./temp-root.mjs";
 
 test("update outcome markers round-trip schema-1 failures and refuse unknown schemas", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-outcome-"));
+  const directory = await tempDirAsync("mission-update-outcome-");
   t.after(() => rm(directory, { recursive: true, force: true }));
 
   const supportedPath = join(directory, "supported.json");
@@ -44,7 +44,7 @@ test("update outcome markers round-trip schema-1 failures and refuse unknown sch
 });
 
 test("a surfaced outcome is consumed exactly once", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-consume-"));
+  const directory = await tempDirAsync("mission-update-consume-");
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "outcome.json");
   const outcome = {
@@ -57,7 +57,7 @@ test("a surfaced outcome is consumed exactly once", async (t) => {
 });
 
 test("consuming an absent outcome does not require a state directory", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-absent-"));
+  const directory = await tempDirAsync("mission-update-absent-");
   t.after(() => rm(directory, {recursive: true, force: true}));
   const stateDirectory = join(directory, "fresh-state");
   assert.equal(consumeUpdateOutcome(join(stateDirectory, "update-outcome.json")), null);
@@ -66,7 +66,7 @@ test("consuming an absent outcome does not require a state directory", async (t)
 
 
 test("startup waits for its live helper to publish verified success, and an old notice cannot clear a newer failure", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-settled-"));
+  const directory = await tempDirAsync("mission-update-settled-");
   t.after(() => rm(directory, {recursive: true, force: true}));
   const path = join(directory, "update-outcome.json");
   const lockPath = join(directory, HELPER_LOCK_DIR_NAME);
@@ -92,7 +92,7 @@ test("startup waits for its live helper to publish verified success, and an old 
 });
 
 test("a helper finishing after 90 seconds still delivers its outcome in the running app", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-late-"));
+  const directory = await tempDirAsync("mission-update-late-");
   t.after(() => rm(directory, {recursive: true, force: true}));
   const path = join(directory, "update-outcome.json");
   const lockPath = join(directory, HELPER_LOCK_DIR_NAME);
@@ -115,7 +115,7 @@ test("a helper finishing after 90 seconds still delivers its outcome in the runn
 });
 
 test("persistent lock inspection errors expose the saved outcome and log a sanitized diagnostic", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-lock-error-"));
+  const directory = await tempDirAsync("mission-update-lock-error-");
   t.after(() => rm(directory, {recursive: true, force: true}));
   const failure = {result: "failure" as const, targetVersion: "2.0.0", recordedAt: "2026-08-19T12:00:00.000Z", message: "Launch verification failed"};
   writeUpdateOutcome(join(directory, "update-outcome.json"), failure);
@@ -130,7 +130,7 @@ test("persistent lock inspection errors expose the saved outcome and log a sanit
 });
 
 test("transient lock inspection errors retry before reading the helper's final result", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-lock-transient-"));
+  const directory = await tempDirAsync("mission-update-lock-transient-");
   t.after(() => rm(directory, {recursive: true, force: true}));
   const failure = {result: "failure" as const, targetVersion: "2.0.0", recordedAt: "2026-08-19T12:00:00.000Z", message: "Launch verification failed"};
   const lock = realHelperLockOperations();
@@ -147,7 +147,7 @@ test("transient lock inspection errors retry before reading the helper's final r
 
 
 test("outcome retirement excludes a helper trying to replace the marker after comparison", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-retirement-"));
+  const directory = await tempDirAsync("mission-update-retirement-");
   t.after(() => rm(directory, {recursive: true, force: true}));
   const path = join(directory, "update-outcome.json");
   const expected = {result: "success" as const, targetVersion: "2.0.0", recordedAt: "2026-08-19T12:00:00.000Z"};
@@ -194,7 +194,7 @@ test("outcome retirement excludes a helper trying to replace the marker after co
 });
 
 test("outcome retirement cannot overlap recovery in the same app process", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "mission-update-recovery-retirement-"));
+  const directory = await tempDirAsync("mission-update-recovery-retirement-");
   t.after(() => rm(directory, {recursive: true, force: true}));
   const path = join(directory, "update-outcome.json");
   const expected = {result: "success" as const, targetVersion: "2.0.0", recordedAt: "2026-08-19T12:00:00.000Z"};

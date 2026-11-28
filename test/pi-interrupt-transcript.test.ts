@@ -1,11 +1,11 @@
 // An abort is durable conversation evidence even when Pi produced no visible content.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { piMessages } from "../src/server/harness/pi/transcript.ts";
 import { PI_SESSION_LINES } from "./fixtures/pi-sessions.ts";
+import { tempDir } from "./temp-root.mjs";
 
 const capturedAbort = JSON.parse(PI_SESSION_LINES[8]!);
 const marker = {
@@ -14,7 +14,7 @@ const marker = {
 };
 
 test("Pi's captured empty abort survives initial, streaming, history and bounded reads", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-interrupt-"));
+  const dir = tempDir("pi-interrupt-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "session.jsonl");
   writeFileSync(path, PI_SESSION_LINES.slice(0, 8).join("\n") + "\n");
@@ -36,7 +36,7 @@ test("Pi's captured empty abort survives initial, streaming, history and bounded
 });
 
 test("Pi preserves partial prose and tools before a separate interrupt, and accepts the next turn", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-interrupt-partial-"));
+  const dir = tempDir("pi-interrupt-partial-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "session.jsonl");
   const aborted = { ...capturedAbort, message: { ...capturedAbort.message, content: [
@@ -58,7 +58,7 @@ test("Pi preserves partial prose and tools before a separate interrupt, and acce
 });
 
 test("Pi only attributes assistant stopReason aborted to an interruption", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-interrupt-negative-"));
+  const dir = tempDir("pi-interrupt-negative-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "session.jsonl");
   const records = [null, {}, { type: "message", message: null },

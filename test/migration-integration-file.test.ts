@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync, renameSync, linkSync, openSync, writeSync, closeSync, rmSync, chmodSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, renameSync, linkSync, openSync, writeSync, closeSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { publishIntegrationText, verifyIntegrationBackups } from '../src/main/migration-integration-file.ts';
+import { tempDir } from "./temp-root.mjs";
 
 function fixture(t: test.TestContext) {
-  const root = mkdtempSync(join(tmpdir(), 'mission-integration-file-'));
+  const root = tempDir('mission-integration-file-');
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const path = join(root, 'config.json');
   writeFileSync(path, 'original');

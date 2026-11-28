@@ -25,8 +25,27 @@ export const MESSAGE_DELIVERY_MODES = [
 ] as const;
 export type MessageDeliveryMode = (typeof MESSAGE_DELIVERY_MODES)[number];
 
+/**
+ * The turn id prefix of a launch's after-work skills prompt (task shaping's `route` stage), which
+ * the daemon writes once the work is complete. Such a row is delivered only when the session
+ * settles idle: it asks for work after the work, so steering it into a running turn, or
+ * interrupting one for it, would cut across the very turn it follows. An operator who expedites
+ * it by hand still can.
+ */
+export const AFTER_WORK_SKILLS_TURN_PREFIX = "shaping-after-work:";
+
+/** Whether a queued row waits for settled idle and never escalates on the standard clock. */
+export function idleOnlyTurn(turn: Pick<PendingTurn, "id">): boolean {
+  return turn.id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX);
+}
+
 /** What a message may do to a turn that is already running. */
 export type MessageDeliveryAction = "steer" | "interrupt";
+
+/** Addressed speech waits for its own turn; the separate spoken stop command interrupts directly. */
+export function canExpediteTurn(turn: Pick<PendingTurn, "spokenWords">): boolean {
+  return turn.spokenWords === undefined;
+}
 
 export function canSteerMessage(session: Pick<Session, "agent" | "runtime">): boolean {
   return capabilitiesFor(session.agent).steering?.runtimes.includes(session.runtime) ?? false;
@@ -56,10 +75,12 @@ export function deliverySchedule(
   session: Pick<Session, "agent" | "runtime">,
   turn: PendingTurn,
 ): { at: number; action: MessageDeliveryAction }[] {
+  if (!canExpediteTurn(turn)) return [];
   const expedited = expeditedDelivery(turn);
   if (expedited) {
     return supportsDeliveryAction(session, expedited) ? [{ at: turn.deadlineAt!, action: expedited }] : [];
   }
+  if (idleOnlyTurn(turn)) return [];
   return ([["steer", MESSAGE_STEER_AFTER_MS], ["interrupt", MESSAGE_INTERRUPT_AFTER_MS]] as const)
     .filter(([action]) => supportsDeliveryAction(session, action))
     .map(([action, delay]) => ({ at: turn.createdAt + delay, action }));

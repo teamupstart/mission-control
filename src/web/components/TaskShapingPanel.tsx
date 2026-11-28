@@ -1,33 +1,111 @@
-import { useCallback, useEffect, useState } from "react";
-import { canonicalJson, type ShapingReferenceStatus } from "@shared/shaping.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SHAPER_SIGN_IN_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import {
+  canonicalJson,
+  type DiscoveredShaper,
+  type ShapingFolderStatus,
+  type ShapingIntent,
+  type ShapingReferenceStatus,
+  type ShapingSignInView,
+} from "@shared/shaping.ts";
+import {
+  signInConnectionKey,
+  signInControlConnection,
+  signInControlSubject,
+  signInAttemptIn,
+  signInLinkFor,
+  signInLinkHeld,
+  signInLinkKept,
+  signInLinksAfter,
+  signInLinksShown,
+  signInMovedSince,
+  signInMovesAfter,
+  signInMovesSince,
+  signInRefusalApplies,
+  signInRefusalsAfter,
+  signInRowShaper,
+  signInTargetsByShaper,
+  signInTargetUnchanged,
+  shapingList,
+  signInSubject,
+  signInUrlOpenable,
+  type ShaperSignInLink,
+  type ShaperSignInRefusal,
+  type SignInMoves,
+  type ShapingWriteOutcome,
+} from "../lib/shaping-settings.ts";
 import { api, fetchRepos } from "../lib/api.ts";
+import { openExternalChecked } from "../lib/open-external.ts";
+import { NO_SHAPING_SIGN_INS } from "../lib/shaping-sign-ins.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import type { ShapingSettings } from "../useShapingSettings.ts";
 import type { ShapingTestRunner } from "./TaskShapingDialogs.tsx";
-import { TaskShapingView } from "./TaskShapingView.tsx";
+import { TaskShapingView, type ShaperSignInProps } from "./TaskShapingView.tsx";
+
+/** What a row says when the daemon's sign-in link is not one the dashboard may open. */
+export const SIGN_IN_URL_REFUSED = "The daemon's sign-in link is not https or this machine's loopback, so it was not opened. Start again, or check the shaper's server.";
+
+/** What a row says when the sign-in page could not be opened: a blocked tab, or a desktop bridge that failed. */
+export const SIGN_IN_TAB_NOT_OPENED = "The sign-in page did not open. Use Open the sign-in page to try again, or Copy link to open it in another browser.";
+
+/** What a control's request recorded as it went out: the counts, the flag's activation and its target connection. */
+interface SignInRequest {
+  sent: SignInMoves;
+  sentIn: number;
+  target: string | null;
+  /** What each row signed in to as the request went out. */
+  targets: Readonly<Record<string, string | null>>;
+}
+
+/** A refusal's sentence: the daemon's fixed reason, or what the request met when it had none. */
+function refusalText(reply: { reason?: string; error?: string }, what: string): string {
+  return reply.reason ?? `The ${what} did not go through: ${reply.error ?? "no answer"}.`;
+}
 
 /**
  * Settings > Task shaping. The config is the event stream's, through `useShapingSettings`, so
- * every window shows a change the moment it commits. The one read here is whether each named
- * environment variable is set, which is a fact about the daemon's environment rather than the
- * config: it is asked again whenever the config changes, and never carries a value.
+ * every window shows a change the moment it commits. The one read here is of facts about the
+ * daemon's machine rather than the config: whether each named environment variable is set, never
+ * a value, and what the shapers folder holds. It is asked again whenever the config changes.
  */
-export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.JSX.Element {
+export function TaskShapingPanel({ state, signIns = NO_SHAPING_SIGN_INS }: {
+  state?: ShapingSettings;
+  /** The daemon's sign-in list, the event stream's: empty while `shaper-sign-in` is off. */
+  signIns?: readonly ShapingSignInView[];
+}): React.JSX.Element {
   const config = state?.config ?? null;
   const ready = state?.ready ?? false;
   const [references, setReferences] = useState<ShapingReferenceStatus>({});
+  // The shapers folder, as the daemon's scan reported it. Read when Settings opens and again
+  // whenever the config changes, since a stored choice changes what each row shows.
+  const [discovered, setDiscovered] = useState<readonly DiscoveredShaper[]>([]);
+  const [folder, setFolder] = useState<ShapingFolderStatus | null>(null);
   // Keyed on the config the stream confirmed, not the optimistic one: an import is drawn before
   // it commits, and a read taken then knows nothing of the variables it names. The confirming
   // frame changes this key, so the status is read again once the daemon holds the import.
   const confirmed = state?.confirmed ?? null;
   const configKey = confirmed ? canonicalJson(confirmed) : null;
+  // A refused write changes no config, yet a folder shaper's refusal says its manifest changed on
+  // disk. So every write that settles, whatever its outcome, counts one more folder read: the row
+  // then shows what is on disk now, and the operator's next click names that manifest.
+  const [settledWrites, setSettledWrites] = useState(0);
+  const set = useCallback(async (intent: ShapingIntent, key: string): Promise<ShapingWriteOutcome> => {
+    if (!state) return "not_sent";
+    const outcome = await state.set(intent, key);
+    if (outcome !== "not_sent") setSettledWrites((count) => count + 1);
+    return outcome;
+  }, [state]);
   useEffect(() => {
     if (!ready || configKey === null) return;
     let current = true;
     void api.getShaping().then((reply) => {
-      if (current && reply.ok && reply.references) setReferences(reply.references);
+      if (!current || !reply.ok) return;
+      if (reply.references) setReferences(reply.references);
+      setDiscovered(Array.isArray(reply.discovered) ? reply.discovered : []);
+      setFolder(reply.folder ?? null);
     });
     return () => { current = false; };
-  }, [ready, configKey]);
+  }, [ready, configKey, settledWrites]);
   // The folder's shapers, read when a removal is confirmed, so the confirmation can say a folder
   // shaper with the same id stays switched off. Null when the read fails.
   const readFolderIds = useCallback(async (): Promise<string[] | null> => {
@@ -35,6 +113,9 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
     return reply.ok && Array.isArray(reply.discovered) ? reply.discovered.map((entry) => entry.id) : null;
   }, []);
   const onTest = useCallback<ShapingTestRunner>((request, signal) => api.testShaper(request, signal), []);
+  // What each row signs in to, from the definitions the list draws, for a reply to compare with.
+  const targets = useMemo(() => (config ? signInTargetsByShaper(shapingList(config, discovered)) : {}), [config, discovered]);
+  const signIn = useShaperSignIn(signIns, targets);
   const repositories = useCallback(() => fetchRepos(), []);
   return (
     <TaskShapingView
@@ -49,10 +130,183 @@ export function TaskShapingPanel({ state }: { state?: ShapingSettings }): React.
       awaitingRevision={state?.awaitingRevision}
       onDismiss={state?.dismiss}
       ready={ready}
-      onSet={(intent, key) => state ? state.set(intent, key) : Promise.resolve("not_sent" as const)}
+      onSet={set}
       onTest={onTest}
       repositories={repositories}
       readFolderIds={readFolderIds}
+      discovered={discovered}
+      folder={folder}
+      signIn={signIn}
     />
   );
+}
+
+/**
+ * Shaper sign-in as this window holds it. The list is the daemon's; what is this window's own is
+ * the authorization link of each sign-in it started, kept until the list shows that sign-in in
+ * another state, which a reload drops too, and each control's request in flight and refusal. The
+ * dashboard opens the link; the daemon never starts a browser.
+ */
+function useShaperSignIn(
+  signIns: readonly ShapingSignInView[],
+  targets: Readonly<Record<string, string | null>>,
+): ShaperSignInProps {
+  const enabled = useFeatureFlag(SHAPER_SIGN_IN_FLAG_ID);
+  const [held, setHeldState] = useState<Readonly<Record<string, ShaperSignInLink>>>({});
+  // The held links as of every change made so far, ahead of the render that shows them: a reply
+  // that lands right after another, before React renders, must see the link the first one kept.
+  const heldNow = useRef(held);
+  const setHeld = useCallback((next: (current: Readonly<Record<string, ShaperSignInLink>>) => Readonly<Record<string, ShaperSignInLink>>): void => {
+    const value = next(heldNow.current);
+    if (value === heldNow.current) return;
+    heldNow.current = value;
+    setHeldState(value);
+  }, []);
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const [refusals, setRefusals] = useState<Readonly<Record<string, ShaperSignInRefusal>>>({});
+  // A link lives only while its sign-in is pending, so each new list may end some.
+  const shown = enabled ? signIns : NO_SHAPING_SIGN_INS;
+  // The list as it is now, for a reply that lands after the event it follows.
+  const latest = useRef(shown);
+  latest.current = shown;
+  // What each row signs in to now, for a reply that lands after another window changed a shaper.
+  const targetsNow = useRef(targets);
+  targetsNow.current = targets;
+  // Each connection's state changes, counted over every list this window has drawn, so a reply
+  // can tell what happened while its request was in flight. Advanced once per new list, so a
+  // second render of the same list counts nothing.
+  const moves = useRef<{ list: readonly ShapingSignInView[]; moves: SignInMoves }>({ list: shown, moves: {} });
+  if (moves.current.list !== shown) moves.current = { list: shown, moves: signInMovesAfter(moves.current.moves, moves.current.list, shown) };
+  // Counts each time the flag changes. A reply that lands with the flag off, or after it went off
+  // and on again, belongs to controls that are gone: it keeps no link and opens nothing.
+  const activation = useRef({ enabled, count: 0 });
+  if (activation.current.enabled !== enabled) activation.current = { enabled, count: activation.current.count + 1 };
+  const stillActive = useCallback((sentIn: number): boolean => activation.current.enabled && activation.current.count === sentIn, []);
+  useEffect(() => { setHeld((current) => signInLinksAfter(current, shown)); }, [shown, setHeld]);
+  // A refusal describes its connection as it was: once another window, a refresh or an expiry
+  // moves that connection on, the row shows the new state without the old refusal beside it.
+  // A row's refusal is about what its shaper signed in to, so a change to that from another
+  // window ends it too, whether or not the list names either connection.
+  useEffect(() => { setRefusals((current) => signInRefusalsAfter(current, shown, targets)); }, [shown, targets]);
+  /**
+   * Starts a control's request. `busyKey` is what the request holds: a row's Sign in holds its
+   * row, while Cancel sign-in and Sign out hold the connection, so every row and entry on that
+   * connection waits for the one in flight. `key` is where the control's refusal is shown.
+   */
+  const begin = useCallback((busyKey: string, key: string): void => {
+    setBusy((current) => new Set(current).add(busyKey));
+    setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
+  }, []);
+  /** The refusal for `key`, recording what a row's shaper signs in to now. */
+  const refusalFor = useCallback((key: string, text: string, subject: string): ShaperSignInRefusal => {
+    const shaper = signInRowShaper(key);
+    if (shaper === null) return { text, subject };
+    return { text, subject, target: Object.hasOwn(targetsNow.current, shaper) ? targetsNow.current[shaper]! : null };
+  }, []);
+  /** Shows a refusal under `key` against `subject`, outside any request. */
+  const refuse = useCallback((key: string, text: string, subject: string): void => {
+    setRefusals((current) => ({ ...current, [key]: refusalFor(key, text, subject) }));
+  }, [refusalFor]);
+  /** What a control's request recorded as it went out, for its reply to compare with. */
+  const requestState = useCallback((target: string | null): SignInRequest => ({
+    sent: moves.current.moves, sentIn: activation.current.count, target, targets: targetsNow.current,
+  }), []);
+  /** Whether the row behind `key` still signs in to what it did when `request` went out. */
+  const sameTarget = useCallback((request: SignInRequest, key: string): boolean => {
+    const shaper = signInRowShaper(key);
+    return shaper === null || signInTargetUnchanged(request.targets, targetsNow.current, shaper);
+  }, []);
+  /**
+   * Ends a control's request: its busy key is released whatever the reply says. A refusal is
+   * shown against the connection's state now, or against `subject` when it expects a state the
+   * list has yet to show. It is not shown at all when it no longer describes the row: the flag
+   * changed while the request was in flight, the row now names another connection than the one
+   * the request targeted, or that connection changed state meanwhile, such as a sign-out another
+   * window made.
+   */
+  const settle = useCallback((busyKey: string, key: string, error: string | null, request: SignInRequest, subject?: string): void => {
+    setBusy((current) => { const next = new Set(current); next.delete(busyKey); return next; });
+    if (error === null || !stillActive(request.sentIn) || !sameTarget(request, key)) return;
+    if (subject === undefined && !signInRefusalApplies(request, { moves: moves.current.moves, signIns: latest.current, key })) return;
+    const refusal = refusalFor(key, error, subject ?? signInControlSubject(latest.current, key));
+    setRefusals((current) => ({ ...current, [key]: refusal }));
+  }, [stillActive, sameTarget, refusalFor]);
+  /**
+   * Opens a held sign-in link for `attempt`. One that did not open leaves a refusal on the row,
+   * shown while that attempt is pending, pointing at the two controls that offer the link again.
+   */
+  const open = useCallback((connection: string, url: string, attempt: number | null, key: string): void => {
+    // The desktop bridge may answer late. A failure that lands after the sign-in moved on, such
+    // as one another window cancelled or finished meanwhile, after the flag changed, or after
+    // another window changed what the shaper signs in to, no longer describes the row and is not
+    // shown. The last can leave the old connection pending, with no state change to notice.
+    const request = requestState(connection);
+    void openExternalChecked(url).then((opened) => {
+      if (opened || !stillActive(request.sentIn) || !sameTarget(request, key)) return;
+      if (signInMovedSince(request.sent, moves.current.moves, connection)) return;
+      refuse(key, SIGN_IN_TAB_NOT_OPENED, signInSubject(connection, "pending", attempt));
+    });
+  }, [refuse, stillActive, requestState, sameTarget]);
+  const onSignIn = useCallback((shaper: string, key: string): void => {
+    begin(key, key);
+    // The counts and the row's connection as the request went out, so the reply can tell
+    // whether the sign-in moved on, and perhaps back, while it was in flight.
+    const request = requestState(signInControlConnection(latest.current, key));
+    const { sent } = request;
+    void api.signInShaper(shaper).then((reply) => {
+      if (!stillActive(request.sentIn) || !sameTarget(request, key)) {
+        // The flag changed, or another window changed what the shaper signs in to, while the
+        // request was in flight: the row's controls are not the ones that sent it, so there is no
+        // refusal to show, no link to hold and no page to open.
+        settle(key, key, null, request);
+        return;
+      }
+      if (!reply.ok || !reply.authorizationUrl || !reply.connection || typeof reply.attempt !== "number") {
+        settle(key, key, refusalText(reply, "sign-in"), request);
+        return;
+      }
+      // The attempt the reply started, which the list names while it is the one pending.
+      const { authorizationUrl, connection, attempt } = reply;
+      const link = signInLinkFor(
+        latest.current, connection, { url: authorizationUrl, attempt }, signInMovesSince(sent, moves.current.moves, connection),
+      );
+      // Kept only while no later attempt's link is held here: a reply that lands after the reply
+      // of the attempt that replaced it, before either list frame, opens and refuses nothing.
+      const kept = signInLinkKept(heldNow.current, connection, link);
+      if (!signInUrlOpenable(authorizationUrl)) {
+        // The daemon did start this sign-in, so the refusal stands while it is pending and goes
+        // once it lapses or is cancelled, whichever of its event and this reply came first. One
+        // already over or replaced when the reply lands has nothing left to refuse.
+        settle(key, key, kept ? SIGN_IN_URL_REFUSED : null, request, signInSubject(connection, "pending", attempt));
+        return;
+      }
+      setHeld((current) => signInLinkHeld(current, connection, link));
+      settle(key, key, null, request);
+      // A sign-in that is already over, or already replaced, has no page worth opening.
+      if (kept) open(connection, authorizationUrl, attempt, key);
+    });
+  }, [begin, settle, open, stillActive, requestState, sameTarget, setHeld]);
+  const onSignOut = useCallback((connection: string, key: string): void => {
+    const busyKey = signInConnectionKey(connection);
+    begin(busyKey, key);
+    // The request targets this connection: a refusal that lands once the row names another is
+    // about a connection the row no longer shows.
+    const request = requestState(connection);
+    void api.signOutShaper(connection).then((reply) => {
+      if (reply.ok) setHeld((current) => { const next = { ...current }; delete next[connection]; return next; });
+      settle(busyKey, key, reply.ok ? null : refusalText(reply, "sign-out"), request);
+    });
+  }, [begin, settle, requestState, setHeld]);
+  const onOpen = useCallback((connection: string, url: string, key: string): void => {
+    setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
+    // A row offers a link only while the list shows its attempt pending, so that is the attempt opened.
+    if (signInUrlOpenable(url)) open(connection, url, signInAttemptIn(latest.current, connection), key);
+  }, [open]);
+  // Drawn from the list being rendered, so a link whose attempt another window replaced is never
+  // offered, not even for the render before the effect above drops it.
+  const links = useMemo(() => signInLinksShown(held, shown), [held, shown]);
+  const errors = useMemo(() => Object.fromEntries(Object.entries(refusals).map(([key, refusal]) => [key, refusal.text])), [refusals]);
+  return useMemo(() => ({
+    enabled, signIns: enabled ? signIns : NO_SHAPING_SIGN_INS, links, busy, errors, onSignIn, onSignOut, onOpen,
+  }), [enabled, signIns, links, busy, errors, onSignIn, onSignOut, onOpen]);
 }

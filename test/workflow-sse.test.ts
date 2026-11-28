@@ -1,16 +1,16 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { PersonaView, WorkflowSummary } from "../src/shared/workflow.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: Personas are SSE state, not a second polling subsystem. A reconnect snapshot
 // and the incremental upsert stream must converge on the same catalog, including a soft archive.
 
-const home = mkdtempSync(join(tmpdir(), "mission-workflow-sse-"));
+const home = tempDir("mission-workflow-sse-");
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");

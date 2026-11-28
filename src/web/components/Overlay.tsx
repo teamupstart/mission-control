@@ -63,6 +63,7 @@ export const OVERLAY_IDS = {
   tourPicker: "tour-picker",
   productIssue: "product-issue",
   standingInstructions: "standing-instructions",
+  shapingContext: "shaping-context",
   foremanGuide: "foreman-guide",
   restoreSettings: "restore-settings",
   taskSourceWritebackDiscard: "task-source-writeback-discard",
@@ -91,6 +92,8 @@ export const OVERLAY_IDS = {
   // A resident profile's confirmation before it imports all native MCP sources. Opened over the
   // Residents editor, so the fleet's `k` and `r` must not reach a session behind it.
   residentMcpAllSources: "resident-mcp-all-sources",
+  // A resident profile's durable state files, read over the Residents editor.
+  residentState: "resident-state",
   // Settings > GitHub Inspector's read-only findings for one pull request.
   inspectorFindings: "inspector-findings",
   prChecks: "pr-checks",
@@ -98,6 +101,11 @@ export const OVERLAY_IDS = {
   // Settings > Task shaping's manifest import, and its dry run of one shaper.
   shapingImport: "shaping-import",
   shapingTest: "shaping-test",
+  // A revised plan form's earlier version, read-only. Opened from a review card inside the
+  // inbox or the review modal, so it is a layer of its own above them.
+  reviewEarlierVersion: "review-earlier-version",
+  // An agent report's attached document, opened from its inbox card or conversation entry.
+  reportDocument: "report-document",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

@@ -1,14 +1,17 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import type { KeepAwakeStatus } from "../src/shared/types.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
-import { KeepAwakeManager, type KeepAwakeChild } from "../src/server/keep-awake.ts";
+import {
+  KeepAwakeManager,
+  type KeepAwakeChild,
+  type KeepAwakePreferenceStore,
+} from "../src/server/keep-awake.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // What is at stake: these two routes are the only write path to host power state, and
 // their status codes are the browser's contract. A 200 must mean the OBSERVED transition
@@ -17,7 +20,7 @@ import { KeepAwakeManager, type KeepAwakeChild } from "../src/server/keep-awake.
 // each name a different, non-retriable-in-the-same-way failure. The body schema is
 // strict, so a caller confused about the contract is refused rather than half-honoured.
 
-const home = mkdtempSync(join(tmpdir(), "mission-keep-awake-http-"));
+const home = tempDir("mission-keep-awake-http-");
 process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 
@@ -61,7 +64,13 @@ function appWith(manager?: KeepAwakeManager, onStatus?: (s: KeepAwakeStatus) => 
   });
 }
 
-function workingManager(over: { script?: "spawn" | "error"; platform?: NodeJS.Platform } = {}) {
+function workingManager(
+  over: {
+    script?: "spawn" | "error";
+    platform?: NodeJS.Platform;
+    preference?: KeepAwakePreferenceStore;
+  } = {},
+) {
   const statuses: KeepAwakeStatus[] = [];
   const manager = new KeepAwakeManager({
     platform: over.platform ?? "darwin",
@@ -71,6 +80,7 @@ function workingManager(over: { script?: "spawn" | "error"; platform?: NodeJS.Pl
     daemonPid: 7317,
     now: () => 1_700_000_000_000,
     spawn: () => scriptedChild(over.script ?? "spawn"),
+    preference: over.preference,
     onStatus: (s) => statuses.push(s),
   });
   return { manager, statuses };
@@ -183,4 +193,42 @@ test("the routes sit behind the loopback host guard like every data endpoint", a
     headers: { host: "evil.example.com" },
   });
   assert.equal(res.status, 403);
+});
+
+test("a choice the daemon cannot save answers 500 with the state a restart will agree with", async () => {
+  let failing = true;
+  const { manager } = workingManager({
+    preference: {
+      load: () => false,
+      save: () => {
+        if (failing) throw new Error("database is locked");
+      },
+    },
+  });
+  const app = appWith(manager);
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    // Switching on: the assertion is taken, cannot be saved, and is released again - so the
+    // body the browser draws says off, never an `on` the next restart would take away.
+    const on = await put(app, { enabled: true });
+    assert.equal(on.status, 500);
+    const onBody = (await on.json()) as { error: string; code: string; status: KeepAwakeStatus };
+    assert.equal(onBody.code, "keep_awake_not_saved");
+    assert.match(onBody.error, /could not save the Keep awake choice.*database is locked/);
+    assert.equal(onBody.status.state, "off");
+
+    // The fault clears: the same request now succeeds, and a failed switch-off then changes nothing.
+    failing = false;
+    assert.equal((await put(app, { enabled: true })).status, 200);
+    failing = true;
+    const off = await put(app, { enabled: false });
+    assert.equal(off.status, 500);
+    const offBody = (await off.json()) as { code: string; status: KeepAwakeStatus };
+    assert.equal(offBody.code, "keep_awake_not_saved");
+    assert.equal(offBody.status.state, "on", "still held, so the body says so");
+    assert.equal(manager.status().state, "on");
+  } finally {
+    console.warn = warn;
+  }
 });

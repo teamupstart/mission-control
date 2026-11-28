@@ -1,16 +1,16 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Registry } from "../src/server/registry.ts";
 import type { InspectorComment } from "../src/shared/types.ts";
+import { tempDir } from "./temp-root.mjs";
 
 // Drive the real Inspector loop through fake `gh` and Claude binaries. Environment
 // overrides must be installed before importing the worker: its runner and poll interval
 // are resolved at module load.
-const temp = mkdtempSync(join(tmpdir(), "mission-inspector-resolution-"));
+const temp = tempDir("mission-inspector-resolution-");
 const binDir = join(temp, "bin");
 const statePath = join(temp, "github-state.json");
 const reviewCountPath = join(temp, "review-count.txt");
@@ -252,9 +252,11 @@ function registryStub(): Registry {
 }
 
 async function waitFor(description: string, predicate: () => boolean): Promise<void> {
-  // This is a hang ceiling, not a performance assertion. The Inspector's analogous clean-review
-  // fixture uses the same budget because six test files run concurrently and can delay a tick.
-  const deadline = Date.now() + 30_000;
+  // This is a hang ceiling, not a performance assertion. Every sweep spawns fake `gh` and model
+  // processes, and the retry scenarios need several sweeps: on a host running more than one full
+  // suite (load averages above 50 were measured) 30 s was reached by a loop that was still
+  // progressing. A genuine hang still fails here, just later.
+  const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -434,23 +436,28 @@ test("an operator can resolve a finding no review round is left to close", async
   // FIRST, the dead end itself: the head has already been reviewed, so no later round can
   // ever list this fingerprint as resolved, and the block survives every sweep.
   const stop = startInspector(registryStub());
-  await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
-  const firstSweep = readGithubState().sweeps;
-  await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
+    const firstSweep = readGithubState().sweeps;
+    await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
 
-  assert.equal(getInspectorPr(key)!.mergeBlock, "findings", "stuck on the open finding");
-  assert.equal(loadInspectorComments(key)[0]!.status, "open", "and no round closes the row");
-  assert.equal(readGithubState().merged, false, "so it never lands on its own");
-  assert.equal(getInspectorPr(key)!.round, 5, "no further round ran - the head was reviewed");
+    assert.equal(getInspectorPr(key)!.mergeBlock, "findings", "stuck on the open finding");
+    assert.equal(loadInspectorComments(key)[0]!.status, "open", "and no round closes the row");
+    assert.equal(readGithubState().merged, false, "so it never lands on its own");
+    assert.equal(getInspectorPr(key)!.round, 5, "no further round ran - the head was reviewed");
 
-  // THEN the operator resolves it - the same writer `/api/inspector/resolve-findings`
-  // calls - while the loop keeps running, and the next sweep lands the pull request.
-  assert.equal(resolveInspectorFindings(key, Date.now()), 1, "one finding closed");
-  await waitFor(
-    "the pull request and its durable ledger record to merge on the next sweep",
-    () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
-  );
-  await stopAndSettle(stop);
+    // THEN the operator resolves it - the same writer `/api/inspector/resolve-findings`
+    // calls - while the loop keeps running, and the next sweep lands the pull request.
+    assert.equal(resolveInspectorFindings(key, Date.now()), 1, "one finding closed");
+    await waitFor(
+      "the pull request and its durable ledger record to merge on the next sweep",
+      () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
+    );
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   assert.equal(loadInspectorComments(key)[0]!.status, "resolved");
   assert.notEqual(getInspectorPr(key)!.mergedAt, null, "and it merged rather than needing a human");
@@ -473,11 +480,16 @@ test("resolving findings does not merge over a review thread GitHub still has op
   seedReviewedPr(key, fingerprint);
 
   const stop = startInspector(registryStub());
-  await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
-  assert.equal(resolveInspectorFindings(key, Date.now()), 1);
-  const firstSweep = readGithubState().sweeps;
-  await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
-  await stopAndSettle(stop);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    await waitFor("the merge gate to record a block", () => getInspectorPr(key)?.mergeBlock !== null);
+    assert.equal(resolveInspectorFindings(key, Date.now()), 1);
+    const firstSweep = readGithubState().sweeps;
+    await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   // The operator's word closes OUR ledger and nothing else. `threads` counts GitHub's own
   // unresolved review threads, so clearing findings moves the PR from one block to the
@@ -511,14 +523,19 @@ test("a finding the Inspector drops in conversation closes its thread, its row, 
   seedReviewedPr(key, fingerprint);
 
   const stop = startInspector(registryStub());
-  // Every other gate in this fixture is green, so the finding was the only thing left. The
-  // pull request landing on its own is the end-to-end proof the dead end is gone: this is
-  // the PR that previously had to be merged by hand.
-  await waitFor(
-    "the pull request to merge itself and record that merge",
-    () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
-  );
-  await stopAndSettle(stop);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    // Every other gate in this fixture is green, so the finding was the only thing left. The
+    // pull request landing on its own is the end-to-end proof the dead end is gone: this is
+    // the PR that previously had to be merged by hand.
+    await waitFor(
+      "the pull request to merge itself and record that merge",
+      () => readGithubState().merged && getInspectorPr(key)?.mergedAt !== null,
+    );
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   const state = readGithubState();
   const row = loadInspectorComments(key)[0]!;
@@ -563,10 +580,15 @@ test("a reply that only answers a question leaves the finding blocking the merge
   seedReviewedPr(key, fingerprint);
 
   const stop = startInspector(registryStub());
-  await waitFor("the Inspector to answer the follow-up", () => readGithubState().replies.length > 0);
-  const firstSweep = readGithubState().sweeps;
-  await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
-  await stopAndSettle(stop);
+  // Stopped on every exit: a loop left running after a failed wait keeps sweeping into
+  // the next test's tables and turns one timeout into a cascade of unrelated failures.
+  try {
+    await waitFor("the Inspector to answer the follow-up", () => readGithubState().replies.length > 0);
+    const firstSweep = readGithubState().sweeps;
+    await waitFor("three more sweeps", () => readGithubState().sweeps >= firstSweep + 3);
+  } finally {
+    await stopAndSettle(stop);
+  }
 
   const state = readGithubState();
   const row = loadInspectorComments(key)[0]!;

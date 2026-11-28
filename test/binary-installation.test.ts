@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import childProcess, { spawnSync } from 'node:child_process';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { binaryInstallReceipt, readBinaryReceipt, assertPersistentDestination, parseBinaryInstallArgs } from '../scripts/binary-install-policy.mjs';
@@ -15,6 +14,7 @@ import { ensureNativeStateLockAddon } from './helpers/native-state-lock.ts';
 import { validateNativeStateLockBinding } from '../src/server/state-ownership-native.ts';
 import { claimInstallReceiptWriter, readMigrationJournal } from '../scripts/install-migration.mjs';
 import { binaryInstallationPage } from '../src/main/startup-page.ts';
+import { tempDir } from "./temp-root.mjs";
 
 test('the local installation page treats paths and diagnostics as text, not markup', () => {
   const page = binaryInstallationPage({action: 'install', destination: '/Users/<operator & tools>/Applications/Agent Mission Control.app', message: '<script>untrusted()</script>'});
@@ -30,7 +30,7 @@ const manifest = {...identity, assets: [
   {kind: 'app-zip', id: '2', name: 'app.zip', bytes: 100, sha256: 'b'.repeat(64)},
 ]};
 test('the packaged CLI refuses host-runtime execution even through a symlinked entry', t => {
-  const directory = mkdtempSync(join(tmpdir(), 'binary-cli-'));
+  const directory = tempDir('binary-cli-');
   t.after(() => rmSync(directory, {recursive: true, force: true}));
   const entry = join(directory, 'entry.mjs');
   symlinkSync(join(process.cwd(), 'scripts/install-binary.mjs'), entry);
@@ -39,7 +39,7 @@ test('the packaged CLI refuses host-runtime execution even through a symlinked e
   assert.match(result.stderr, /Use scripts\/install.sh/);
 });
 function fixture(t: test.TestContext) {
-  const root = realpathSync(mkdtempSync(join(process.platform === 'darwin' ? '/private/tmp' : tmpdir(), 'binary-install-')));
+  const root = realpathSync(tempDir('binary-install-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const home = join(root, 'home'); mkdirSync(home);
   const stateDirectory = join(root, 'state'); mkdirSync(stateDirectory);

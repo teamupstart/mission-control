@@ -29,9 +29,6 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
   const tabs = await page.getByRole("tab").allTextContents();
   expect(tabs.findIndex(text => text.includes("Feature flags"))).toBe(tabs.findIndex(text => text.includes("Setup")) + 1);
-  const nativeOff = { name: "Codex resident native MCP: off" };
-  const nativeOn = { name: "Codex resident native MCP: on" };
-  await expect(page.getByRole("button", nativeOff)).toBeVisible();
   const prOff = { name: "Automatic PR branch updates: off" };
   await expect(page.getByRole("button", prOff)).toHaveAttribute("aria-pressed", "false");
   // Resident active hours ships as a preview too, off until the operator chooses it.
@@ -41,6 +38,8 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await expect(page.getByRole("button", { name: "Task shaping: off" })).toBeVisible();
   // And Session control requests. `session-control-requests.spec.ts` drives the card it gates.
   await expect(page.getByRole("button", { name: "Session control requests: off" })).toBeVisible();
+  // And Awaiting background work. `session-awaiting.spec.ts` drives the card and band it gates.
+  await expect(page.getByRole("button", { name: "Awaiting background work: off" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
   const peer = await context.newPage();
   await peer.goto(page.url());
@@ -53,21 +52,17 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await expect(master).not.toBeChecked();
   await master.check();
   await expect(peerMaster).toBeChecked();
-  await expect(peer.getByRole("button", nativeOn)).toBeVisible();
   await expect(peer.getByRole("button", { name: "Automatic PR branch updates: on" })).toBeVisible();
   await expect(peerActiveHours).toHaveAttribute("aria-pressed", "true");
   await expect(peer.getByRole("button", { name: "Task shaping: on" })).toBeVisible();
   await expect(peer.getByRole("button", { name: "Session control requests: on" })).toBeVisible();
+  await expect(peer.getByRole("button", { name: "Awaiting background work: on" })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(master).toBeChecked();
   await master.uncheck();
   await expect(peerMaster).not.toBeChecked();
-  await page.getByRole("button", nativeOff).click();
-  await expect(peer.getByRole("button", nativeOn)).toBeVisible();
   await expect(peer.getByRole("button", prOff)).toHaveAttribute("aria-pressed", "false");
-  await page.getByRole("button", nativeOn).click();
-  await expect(peer.getByRole("button", nativeOff)).toBeVisible();
   // Toggling Resident active hours in one window changes the other without a reload.
   await expect(peerActiveHours).toHaveAttribute("aria-pressed", "false");
   await activeHours.click();
@@ -88,8 +83,9 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  await expect(page.getByText("Switching alpha on also switches on Enable all", { exact: false })).toBeVisible();
   const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  await expect(page.getByText("Turns on Enable all for preview features, except those you switched off. Enable all stays on when you turn Alpha off.")).toBeVisible();
+  await expect(alpha).toHaveAccessibleDescription(/Enable all stays on when you turn Alpha off/);
   await expect(alpha).not.toBeChecked();
   await expect(peerMaster).not.toBeChecked();
   await alpha.check();
@@ -105,6 +101,20 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await expect(master).toBeChecked();
   await expect(page.getByText("Switching on Alpha updates also switches this on.")).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: `${artifactsDir("feature-flags")}alpha-enables-all.png`, animations: "disabled" });
+});
+
+test("Feature flags omits the retired Codex resident native MCP preview", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const flags = page.getByRole("region", { name: "Feature flags", exact: true });
+  await expect(flags.getByRole("button", { name: /^Resident active hours:/ })).toBeVisible();
+  await expect(flags.getByText("Codex resident native MCP", { exact: true })).toHaveCount(0);
+
+  await flags.getByRole("textbox", { name: "Filter feature flags" }).fill("Codex resident native MCP");
+  await expect(flags.getByText("No feature flags match your filter.", { exact: true })).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(artifactsDir("feature-flags"), { recursive: true });
+    await flags.screenshot({ path: `${artifactsDir("feature-flags")}retired-codex-native-mcp.png` });
+  }
 });
 
 test("a failed Enable all write keeps alpha on and offers a retry that survives navigation and never locks alpha", async ({ dashboard: page, context, daemon }) => {
@@ -129,12 +139,17 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
   const updates = page.getByRole("region", { name: "Application updates" });
-  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
-  const retry = updates.getByRole("button", { name: "Retry" });
+  const alert = tab.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  const retry = alert.getByRole("button", { name: "Retry" });
   await alpha.check();
   await expect(alert).toContainText("Alpha updates are on, but Enable all feature flags could not be switched on: flag store unavailable");
+  const setupFamilies = tab.getByRole("navigation", { name: "Setup families" });
+  expect((await alert.boundingBox())!.y).toBeGreaterThan((await alpha.boundingBox())!.y);
+  expect((await alert.boundingBox())!.y).toBeLessThan((await setupFamilies.boundingBox())!.y);
+  await expect(updates.getByRole("alert")).toHaveCount(0);
   await expect(alpha).toBeChecked();
   await expect(peerMaster).not.toBeChecked();
   // While an opt-out saves, Retry waits; a refused opt-out leaves alpha on, so its failure and
@@ -144,7 +159,7 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseAlphaSave?: () => void }).releaseAlphaSave)).toBe("function");
   await expect(retry).toBeDisabled();
   await page.evaluate(() => (window as unknown as { releaseAlphaSave(): void }).releaseAlphaSave());
-  await expect(updates.getByRole("alert").filter({ hasText: "update preferences are read-only" })).toBeVisible();
+  await expect(tab.getByRole("alert").filter({ hasText: "update preferences are read-only" })).toBeVisible();
   await expect(alpha).toBeChecked();
   await expect(alert).toContainText("flag store unavailable");
   await expect(retry).toBeEnabled();
@@ -161,7 +176,7 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(artifactsDir("feature-flags"), { recursive: true });
     await page.mouse.move(1, 1);
-    await updates.screenshot({ path: `${artifactsDir("feature-flags")}alpha-enable-all-retry.png`, animations: "disabled" });
+    await alert.screenshot({ path: `${artifactsDir("feature-flags")}alpha-enable-all-retry.png`, animations: "disabled" });
   }
   // While the retried write stalls, Retry waits but the alpha switch stays usable.
   await retry.click();
@@ -201,12 +216,12 @@ test("an Enable all write the daemon never answers times out and frees Retry", a
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
-  const updates = page.getByRole("region", { name: "Application updates" });
-  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
+  const alert = tab.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
   await alpha.check();
   await expect(alert).toContainText("Mission Control did not answer within 10 seconds", { timeout: 20_000 });
-  const retry = updates.getByRole("button", { name: "Retry" });
+  const retry = alert.getByRole("button", { name: "Retry" });
   await expect(retry).toBeEnabled();
   await expect(peerMaster).not.toBeChecked();
   await retry.click();
@@ -236,15 +251,16 @@ test("a failure that lands after another window switched Enable all on never com
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
-  const updates = page.getByRole("region", { name: "Application updates" });
-  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
+  const featureFlagsLink = tab.getByRole("link", { name: "Feature flags", exact: true });
+  const alert = tab.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
   const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
   await alpha.check();
   await expect.poll(() => writes).toBe(1);
   await peerMaster.check();
   // This window has seen the peer's Enable all before its own write settles.
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).toBeChecked();
   await page.getByRole("tab", { name: /Setup/ }).click();
   release();
@@ -252,12 +268,12 @@ test("a failure that lands after another window switched Enable all on never com
   await expect(alert).toHaveCount(0);
   // Switching Enable all off again must not resurface the superseded failure.
   await peerMaster.uncheck();
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).not.toBeChecked();
   await page.getByRole("tab", { name: /Setup/ }).click();
   await expect(alpha).toBeChecked();
   await expect(alert).toHaveCount(0);
-  await expect(updates.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(tab.getByRole("button", { name: "Retry" })).toHaveCount(0);
 });
 
 test("a failure landing after Enable all went on and off elsewhere offers no Retry", async ({ dashboard: page, context, daemon }) => {
@@ -279,28 +295,29 @@ test("a failure landing after Enable all went on and off elsewhere offers no Ret
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
-  const updates = page.getByRole("region", { name: "Application updates" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
+  const featureFlagsLink = tab.getByRole("link", { name: "Feature flags", exact: true });
   const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
   const setup = page.getByRole("tab", { name: /Setup/ });
   await alpha.check();
   await expect.poll(() => writes).toBe(1);
   // Enable all goes on, and this window sees it while its own write is still pending...
   await peerMaster.check();
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).toBeChecked();
   await setup.click();
   await expect(alpha).toBeChecked();
   // ...then the operator switches it off again before that write fails.
   await peerMaster.uncheck();
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).not.toBeChecked();
   await setup.click();
   release();
   await expect.poll(() => settled).toBe(true);
   await expect(alpha).toBeChecked();
-  await expect(updates.getByRole("alert")).toHaveCount(0);
-  await expect(updates.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(tab.getByRole("alert")).toHaveCount(0);
+  await expect(tab.getByRole("button", { name: "Retry" })).toHaveCount(0);
   await expect(peerMaster).not.toBeChecked();
 });
 
@@ -329,4 +346,28 @@ test("opting in to alpha with Enable all already on sends no flag write", async 
   await master.uncheck();
   await expect(peerMaster).not.toBeChecked();
   expect(intents).toEqual([{ kind: "master", enabled: false }]);
+});
+
+test("the seven-day cleanup flag controls daemon retention without a restart", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+  const toggle = page.getByRole("button", { name: /^Seven-day worktree cleanup:/ });
+  const mode = async () => {
+    const response = await page.request.get(`${daemon.baseURL}/api/worktrees`);
+    expect(response.ok()).toBe(true);
+    return (await response.json()).retention.mode;
+  };
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(await mode()).toBe("configured");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(mode).toBe("enforce");
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(artifactsDir("feature-flags"), { recursive: true });
+    await toggle.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    await toggle.locator("..").screenshot({ path: `${artifactsDir("feature-flags")}seven-day-cleanup.png`, animations: "disabled" });
+  }
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(mode).toBe("configured");
 });

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { darwinCheckIdentity } from '../scripts/darwin-process-identity.mjs';
 import { captureUpdateProcessOwners, processFingerprint, readCheckProcessOwners } from '../scripts/update-process-owners.mjs';
 import { waitForBundleExit, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
 import { processIdentity } from '../scripts/update-lock.mjs';
+import { tempDir } from "./temp-root.mjs";
 
 const bundle = '/fixture/Mission Control.app';
 const executable = `${bundle}/Contents/Frameworks/Helper.app/Contents/MacOS/Helper`;
@@ -15,7 +15,7 @@ const identity = 'Tue Nov 3 10:00:00 2026 /fixture/helper -e shim attempt-123';
 const work = 'workflow check test, attempt attempt-123, run run-456, session sdk:789';
 
 function database(t: test.TestContext) {
-  const home = mkdtempSync(join(tmpdir(), 'update-process-owner-'));
+  const home = tempDir('update-process-owner-');
   t.after(() => rmSync(home, {recursive: true, force: true}));
   const db = new DatabaseSync(join(home, 'harness.db'));
   db.exec(`CREATE TABLE workflow_check_leases (attempt_id TEXT, submission_id TEXT, node_id TEXT,

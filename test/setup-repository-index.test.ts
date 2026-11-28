@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
+import { tempDir } from "./temp-root.mjs";
 
 // Seeded before anything resolves the state home, the repository roots, or the scan cache's
 // window. Real path, so the repository the walk reports compares equal on macOS's
 // /private/var temp dir.
-const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-setup-repo-index-")));
+const home = realpathSync(tempDir("mission-setup-repo-index-"));
 process.env.HARNESS_HOME = home;
 const workspace = join(home, "workspace");
 mkdirSync(workspace, { recursive: true });

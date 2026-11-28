@@ -1,9 +1,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-const home = mkdtempSync(join(tmpdir(), 'mission-dashboards-stack-'));
+import { rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tempDir } from "./temp-root.mjs";
+const home = tempDir('mission-dashboards-stack-');
 process.env.MISSION_HOME = home;
 process.env.MISSION_TELEMETRY_ENVIRONMENT = 'test';
 const { MODE, ENDPOINTS, composeService, waitUntilReady } = await import('../scripts/observability.mjs');

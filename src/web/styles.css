@@ -43215,7 +43215,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-state-viewer-files {
   min-height: 0;
   overflow: auto;
-  padding: 8px 8px 8px 12px;
+  padding: 8px 8px 8px var(--modal-inset);
   border-right: 1px solid var(--border-soft);
   background: var(--panel-2);
 }

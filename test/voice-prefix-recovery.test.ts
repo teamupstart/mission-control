@@ -129,6 +129,10 @@ test("a word recovery cannot vouch for, a misheard name or a second name asks; i
   assert.deepEqual(ask("Fish. Steve, check the build."), [["Steve"], "check the build.", "Fish. "]);
   assert.deepEqual(ask("Uh, Steven, check the build."), [["Steve"], "check the build.", "Uh, "]);
   assert.deepEqual(ask("Um, Wil, check the build."), [["Will"], "check the build.", "Um, "]);
+  // An off-roster name close to a roster name asks; one that is not close stays dropped.
+  const withCarol = PREFIX_AUDIO_ROSTER.map(agent);
+  assert.deepEqual(outcome(route("Um, Caroline, run the tests.", true, withCarol)), "ask:Carol");
+  assert.equal(route("Um, Noah, check the build.", true, withCarol).kind, "ignored");
   // "The Atlas, our deploy box, is down." is grammatical, so a determiner asks unless its own boundary cuts it off.
   assert.deepEqual(ask("The Steve, check the build."), [["Steve"], "check the build.", "The "]);
   assert.equal(route("The. Steve, check the build.").kind, "addressed");

@@ -193,6 +193,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PUT", "/api/instructions", "settings.instructions", "settings"],
   ["PUT", "/api/llm/config", "settings.automation_models", "settings"],
   ["PUT", "/api/harnesses/config", "settings.harnesses", "settings"],
+  ["PUT", "/api/agent-environment", "settings.agent_environment", "settings"],
   ["POST", "/api/settings-backups/:id/restore", "settings.restore", "settings"],
   ["PUT", "/api/worktrees/config", "settings.worktrees", "settings"],
   ["PUT", "/api/storage/backups/config", "settings.database_backups", "settings"],

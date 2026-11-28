@@ -1,3 +1,4 @@
+import { agentEnvironmentPresence, saveAgentEnvironment } from "./agent-environment.ts";
 import { isDeepStrictEqual } from "node:util";
 import { disposableWorktreeCensus } from "./worktrees/disposable-census.ts";
 import { backgroundWorktreeRetentionStatus } from "./task-worktree-retention.ts";
@@ -5,8 +6,8 @@ import { specializedSettings, workflowDefaultSettings, pipelineRuntimeSetting } 
 import { taskSourceSettings } from "./session-settings-task-sources.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { decisionLead, formatResponse } from "@shared/review-item.ts";
-import { LOCAL_INSPECTOR_FLAG_ID, PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
-import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
+import { AGENT_ENVIRONMENT_FLAG, LOCAL_INSPECTOR_FLAG_ID, PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { AgentEnvironmentSaveSchema, FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
 import { filedReviewReceipt, OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
@@ -9483,6 +9484,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(saved);
   });
 
+  app.get("/api/agent-environment", requireFeature(AGENT_ENVIRONMENT_FLAG), async (c) => {
+    const view = await agentEnvironmentPresence();
+    return c.json(view, view.variables === null ? 409 : 200);
+  });
+  app.put("/api/agent-environment", requireFeature(AGENT_ENVIRONMENT_FLAG), async (c) => {
+    const parsed = await parseBody(c, AgentEnvironmentSaveSchema);
+    if (!parsed.ok) return c.json({ error: "Enter up to 32 unique, non-reserved variable names." }, 400);
+    const saved = saveAgentEnvironment(parsed.data.names, parsed.data.expectedRevision);
+    if (!saved.ok) return c.json({ ...saved.selection, variables: null }, 409);
+    const view = await agentEnvironmentPresence(saved.selection);
+    return c.json(view, view.variables === null ? 409 : 200);
+  });
   app.get("/api/feature-flags", (c) => c.json({ config: getFeatureFlagsConfig() }));
   app.put("/api/feature-flags", async (c) => {
     const parsed = await parseBody(c, FeatureFlagIntentSchema);

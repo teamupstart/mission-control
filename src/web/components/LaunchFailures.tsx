@@ -220,16 +220,19 @@ const OUTCOME_STATE: Record<LaunchFailureOutcome, string> = {
   "not-started": "Did not start",
   returned: "Did not start, back in Backlog",
   kept: "Launch failed, session kept",
+  "worktree-kept": "Launch failed, worktree kept",
 };
 const OUTCOME_RAIL_STATE: Record<LaunchFailureOutcome, string> = {
   "not-started": "did not start",
   returned: "back in Backlog",
   kept: "session kept",
+  "worktree-kept": "worktree kept",
 };
 const OUTCOME_LABEL: Record<LaunchFailureOutcome, string> = {
   "not-started": "did not start",
   returned: "did not start and went back to the Backlog",
   kept: "failed to launch, its session kept",
+  "worktree-kept": "failed to launch, its worktree kept",
 };
 
 /** The Board's failed tile: the placeholder, stopped, saying why. */
@@ -329,7 +332,7 @@ export function fleetFailureGroups(
   tasks: readonly Task[],
   drawnElsewhere: (group: LaunchFailureGroup) => boolean = () => false,
 ): LaunchFailureGroup[] {
-  return openLaunchFailureGroups(tasks).filter((g) => g.outcome === "not-started" || !drawnElsewhere(g));
+  return openLaunchFailureGroups(tasks).filter((g) => g.outcome === "not-started" || g.outcome === "worktree-kept" || !drawnElsewhere(g));
 }
 
 /**
@@ -348,7 +351,7 @@ export function LaunchFailureNotice(
   const group = useMemo(
     () => controls
       ? openLaunchFailureGroups(controls.tasks).find((g) => {
-        if (g.outcome === "not-started") return false;
+        if (g.outcome === "not-started" || g.outcome === "worktree-kept") return false;
         const latest = latestLaunchFailure(g);
         return taskId !== undefined ? latest.id === taskId : latest.sessionId === sessionId;
       })

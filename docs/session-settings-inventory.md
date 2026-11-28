@@ -37,6 +37,7 @@ follow the dashboard's feature and build gates.
 | `setup-checks` | 3 | Status and actions | Setup gathers executable and integration readiness. Recheck, install, repair and onboarding change machine state on operator intent. |
 | `multiplexer-terminal` | 2 | Read/write | `terminals.multiplexerTerminal` per multiplexer that uses an external terminal app, with platform-specific choices |
 | `external-sessions` | 2 | Read/write | Terminals config `externalSessions` |
+| `agent-environment-names` | 3 | Protected | The operator selects which workstation variables future sessions receive. |
 | `auto-mode` | 3 | Protected | Harness config `autoModeOnDispatch` changes the default approval mode |
 | `harness-*` | 2 | Read/write | One per `AGENT_TYPES`. Harness config `defaultModel`, `defaultEffort`, `sessionRuntime`, `terminalBackend` per agent. Provider/model availability and setup link are read-only. |
 | `feature-flags-enable-all` | 3 | Protected | Feature flag master and clear-disabled-overrides intents can re-enable protected features |

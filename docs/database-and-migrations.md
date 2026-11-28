@@ -336,3 +336,12 @@ disable the Persona repository access preview. Existing runs and their repositor
 remain readable. A pre-migration backup predates later operator changes. Restoring it is
 disaster recovery. Downgrading a live database to a build that cannot read its citations is
 unsupported.
+
+## Terminal dispatch recovery
+
+Schema 68 stores the names missing at terminal launch so discovery can bind the warning to
+the session. Schema 69 records the pinned receipt identifier and its deadline on a dispatching
+task before the daemon submits the terminal command. Acknowledgement or failure clears that
+field in the same transaction that records the outcome. After an interrupted submission,
+startup uses the receipt to check whether the wrapper could still be running. Existing tasks
+upgrade with an empty receipt field.

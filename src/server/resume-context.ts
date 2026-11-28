@@ -1,10 +1,11 @@
 import type { Task } from "@shared/types.ts";
+import { terminalLaunchEnvironment } from "./agent-environment.ts";
 import { kindMissionMcpRequirement, type MissionMcpTool } from "./mission-mcp.ts";
 import type { ResumeContext, ResumeSource } from "./harness/resume.ts";
 import { resolveDispatchAdvisor, resolveDispatchModel } from "./harnesses.ts";
 import { launchWorkUnitId } from "./work-unit.ts";
 
-/** Owners resolve durable facts; harness adapters receive only these plain values. */
+/** The resume owner decides eligibility here and defers the environment lookup until launch. */
 export function resumeContext(
   session: ResumeSource,
   task: Task | null,
@@ -16,7 +17,9 @@ export function resumeContext(
   if (ensembleMember) tools.add("submit_ensemble_result");
   const extraDirs = task ? [task.worktreePath, ...task.extraRepos.map((repo) => repo.worktreePath)]
     .filter((path): path is string => Boolean(path && path !== session.cwd)) : [];
-  return { managed: session.runtime === "sdk" || task !== null || evidence || ensembleMember,
+  const managed = session.runtime === "sdk" || task !== null || evidence || ensembleMember;
+  const resident = task?.kind === "resident";
+  return { managed, resolveNamedEnvironment: managed ? (launchHome) => terminalLaunchEnvironment(launchHome, resident) : undefined,
     requiredTools: [...tools], extraDirs: [...new Set(extraDirs)],
     // A resume is a start, so it decides again, here and once: the agent it opens carries the
     // task's work unit when the preview is on now, whatever the previous process carried.

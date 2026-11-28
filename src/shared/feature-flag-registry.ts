@@ -24,6 +24,8 @@ export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as co
  */
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 
+export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
+
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
 export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
@@ -92,6 +94,14 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "Grants workflow reviewers access to a repository.",
     keywords: ["workflows", "review", "repository", "persona"],
+  },
+  {
+    id: AGENT_ENVIRONMENT_FLAG,
+    label: "Agent environment",
+    description: "Pass selected daemon or login-shell variables to new agent sessions.",
+    stage: "preview",
+    sessionSetting: "Controls access to operator-selected environment variables in future sessions.",
+    keywords: ["harnesses", "environment", "MCP", "token"],
   },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,

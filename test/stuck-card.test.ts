@@ -213,7 +213,7 @@ test("the inbox's reply-box set records a session's Stuck-row box appearing and 
   assert.deepEqual([...withInboxReplyBox(withInboxReplyBox(open, "s2", true), "s1", false)], ["s2"]);
 });
 
-test("with voice on, a Stuck row's header prints the title with the quoted call sign, while its hints and names say the call sign", () => {
+test("with voice on, a Stuck row's header and accessible names use the title, with the quoted call sign beside it, and its spoken hints say the call sign", () => {
   const html = renderToStaticMarkup(createElement(VoiceHintsContext.Provider, { value: true }, createElement(StuckCard, {
     session: mkSession({ id: "s1", state: "working" }),
     stall: stall({ kind: "silent-working" } as StallFacts, "No output for a while."),
@@ -228,8 +228,11 @@ test("with voice on, a Stuck row's header prints the title with the quoted call 
   assert.match(head, /<strong>Fix the parser<\/strong><span class="cs-mark cs-badge">/);
   assert.match(head, /<span class="sr-only">Call sign <\/span>&quot;Granite&quot;<\/span>$/);
   assert.doesNotMatch(head, /<strong>Granite<\/strong>/, "the call sign never stands in for the title");
-  assert.match(html, /aria-label="Granite is stuck"/);
-  assert.match(html, /aria-label="Dismiss Granite from the inbox"/);
+  // Accessible names follow the row's visible title, as every other inbox row's Dismiss does.
+  assert.match(html, /aria-label="Fix the parser is stuck"/);
+  assert.match(html, /aria-label="Dismiss Fix the parser from the inbox"/);
+  assert.match(html, /<textarea[^>]*aria-label="Message Fix the parser"/);
+  assert.doesNotMatch(html, /aria-label="[^"]*Granite[^"]*"/, "no accessible name is the call sign alone");
   assert.match(html, /Granite, nudge/i, "the spoken hints address the agent by its call sign");
   assert.doesNotMatch(html, /Fix the parser, nudge/i);
 });

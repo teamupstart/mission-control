@@ -53,11 +53,12 @@ export function StuckCard({
   session: Session;
   stall: Stall;
   context: string | null;
-  /** The agent's name as its spoken hints and accessible names say it. */
+  /** The agent's name as its spoken hints say it: the call sign, where one names it. */
   subject: AgentNameView;
   /**
    * The name the row's header prints, when it differs from `subject`: the title with the call
-   * sign beside it (`agentNamePairView`). Defaults to `subject`.
+   * sign beside it (`agentNamePairView`). Defaults to `subject`. The row's accessible names (its
+   * label, Dismiss and message box) follow this visible title; only spoken hints use `subject`.
    */
   title?: AgentNameView;
   onOpenSession: (sessionId: string) => void;
@@ -81,7 +82,7 @@ export function StuckCard({
   // pending stays, even when it repeats the words that were sent.
   const draftEdits = useRef(0);
   const facts = stall.facts ?? null;
-  const name = subject.name;
+  const name = title.name;
   const messageable = canMessage(session) && session.state !== "exited";
   // Reported without depending on the callback's identity, as `TranscriptPanel` does: present
   // while the box is drawn, retracted when it goes or the row unmounts.

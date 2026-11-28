@@ -51,7 +51,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
   const ask = await filed.json();
   expect(ask.wait).toBe("message");
   // The fake CLI normally creates its file eagerly. Exercise delivery before a transcript exists.
-  const nativePath = join(daemon.home, ".claude", "projects", session.cwd.replace(/[/.]/g, "-"), `${session.agentSessionId}.jsonl`);
+  const nativePath = join(daemon.home, ".claude", "projects", session.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${session.agentSessionId}.jsonl`);
   renameSync(nativePath, nativePath + ".before-spoken");
   withDaemonDb(daemon, db => db.exec(`CREATE TRIGGER delay_sdk_observation BEFORE UPDATE OF message_ts ON session_spoken_turns
     WHEN OLD.spoken_words = 'check the build' BEGIN SELECT RAISE(ABORT, 'SDK observation delayed'); END`));

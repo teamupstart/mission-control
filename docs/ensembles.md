@@ -636,6 +636,12 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
 - **Cancel ensemble** cancels every launching or active member task through TaskManager; submitted
   refs survive.
 - **Cancel/withdraw member** marks that member withdrawn after its task is cleaned up.
+- Both settle a member once its task is no longer live, not once every resource came back. A
+  cancel that stopped the agent and cancelled the task but then reported a failure (its archive
+  could not be published, its worktree teardown threw, or an Engineer commission's cancel warned)
+  withdraws the member anyway and leaves anything unreleased tracked on the cancelled task for
+  **Reclaim**. Only a task still live holds the member open, and the action reports that it could
+  not be withdrawn.
 - If work settles with **fewer than two** eligible artifacts, the run **fails** with an explanation
   naming the barrier that can no longer be met - a competition is never manufactured from one
   artifact. That failure is terminal and is a hard stop, not a pause: every member's agent is

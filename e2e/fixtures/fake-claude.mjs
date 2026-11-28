@@ -32,7 +32,7 @@ import { tmpdir } from "node:os";
  * None of those frames carry conversation text to the browser. The dashboard reads the
  * transcript from a FILE, re-derived on every poll by `resolveTranscriptPath`:
  *
- *     ~/.claude/projects/<cwd with every "/" and "." replaced by "-">/<session_id>.jsonl
+ *     ~/.claude/projects/<cwd with every character outside [a-zA-Z0-9] replaced by "-">/<session_id>.jsonl
  *
  * So a fake that only wrote to stdout would produce a live, idle, correctly-modelled card
  * with a permanently empty conversation. Writing that file is half of what this does.
@@ -1005,7 +1005,10 @@ function runSession() {
 
 // --- the transcript file the dashboard actually renders -------------------------------
 
-const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[/.]/g, "-"));
+// Claude's own encoding (every non-alphanumeric to `-`), spelled out here rather than imported
+// from `claudeProjectDir`: this stands in for Claude, so it must not agree with the daemon's
+// helper by construction. Claude's 200-character cut never applies to a fixture's cwd.
+const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[^a-zA-Z0-9]/g, "-"));
 mkdirSync(projectDir, { recursive: true });
 const transcriptPath = join(projectDir, `${SESSION_ID}.jsonl`);
 // Created eagerly: `resolveTranscriptPath` returns null for a path that does not exist yet,

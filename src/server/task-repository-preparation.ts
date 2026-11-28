@@ -44,11 +44,16 @@ export async function resolveTaskRepositorySelector(selector: string): Promise<
     };
   }
   const candidates = new Set<string>();
+  let unanswered: string | null = null;
   for (const match of matches) {
     const resolved = await resolveTaskRepoRoot(match);
     if (resolved.ok) candidates.add(resolved.repoRoot);
+    else if (resolved.unanswered) unanswered ??= resolved.error;
   }
   const canonical = [...candidates].sort();
+  // A match git did not answer for is neither missing nor ruled out, so it can make a sole
+  // candidate ambiguous; only two answered candidates prove ambiguity without it.
+  if (unanswered && canonical.length <= 1) return { ok: false, status: 409, error: unanswered };
   if (canonical.length === 0) {
     return {
       ok: false,

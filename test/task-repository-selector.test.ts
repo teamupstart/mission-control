@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -83,5 +83,61 @@ test("a short name on a stalled mount with no scan held is refused with the reas
     process.env.MISSION_WORKSPACE_DIRS = previous;
     t.mock.restoreAll();
     syncBuiltinESMExports();
+  }
+});
+
+test("a short name whose checkout git did not answer for is refused as unanswered, not as missing", async () => {
+  invalidateReposCache();
+  const repo = cloneInto("probe-stopped");
+  assert.ok((await listRepos({ fresh: true })).includes(repo));
+
+  const bin = join(home, "bin-dies", "git");
+  mkdirSync(join(home, "bin-dies"), { recursive: true });
+  writeFileSync(bin, '#!/usr/bin/env node\nprocess.kill(process.pid, "SIGKILL");\n');
+  chmodSync(bin, 0o755);
+  const previous = process.env.MISSION_GIT_BIN;
+  process.env.MISSION_GIT_BIN = bin;
+  try {
+    const result = await resolveTaskRepositorySelector("probe-stopped");
+    assert.equal(result.ok, false);
+    assert.equal(result.ok ? 0 : result.status, 409);
+    assert.doesNotMatch(result.ok ? "" : result.error, /no local repository named/);
+    assert.match(result.ok ? "" : result.error, /could not tell whether .*probe-stopped is a git repository/);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_GIT_BIN;
+    else process.env.MISSION_GIT_BIN = previous;
+  }
+});
+
+test("a sole answered checkout is not accepted while a same-named checkout went unanswered", async () => {
+  invalidateReposCache();
+  const answered = cloneInto("probe-split");
+  const silent = cloneInto(join("nested", "probe-split"));
+  const listed = await listRepos({ fresh: true });
+  assert.ok(listed.includes(answered) && listed.includes(silent));
+
+  const bin = join(home, "bin-dies-for-one", "git");
+  mkdirSync(join(home, "bin-dies-for-one"), { recursive: true });
+  writeFileSync(
+    bin,
+    [
+      "#!/usr/bin/env node",
+      `if (process.argv.includes(${JSON.stringify(silent)})) process.kill(process.pid, "SIGKILL");`,
+      'const r = require("node:child_process").spawnSync("git", process.argv.slice(2), { stdio: "inherit" });',
+      "process.exit(r.status ?? 1);",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(bin, 0o755);
+  const previous = process.env.MISSION_GIT_BIN;
+  process.env.MISSION_GIT_BIN = bin;
+  try {
+    const result = await resolveTaskRepositorySelector("probe-split");
+    assert.equal(result.ok, false, "accepted the answered checkout without ruling out the other");
+    assert.equal(result.ok ? 0 : result.status, 409);
+    assert.match(result.ok ? "" : result.error, /could not tell whether .*nested\/probe-split is a git repository/);
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_GIT_BIN;
+    else process.env.MISSION_GIT_BIN = previous;
   }
 });

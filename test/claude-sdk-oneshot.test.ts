@@ -564,6 +564,20 @@ test("the SDK result frame produces the same Claude spend report as print", asyn
   }]);
 });
 
+test("the SDK transcript path is found for a cwd with an underscore, a space and a plus", () => {
+  // The directory name is the one Claude writes, as a literal rather than re-derived.
+  const projectsDir = join(root, "special-projects");
+  const sessionId = "sdk-special-cwd";
+  const dir = join(projectsDir, "-Users-me-my-app-v2-x");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sessionId}.jsonl`), '{"type":"user"}\n');
+
+  assert.equal(
+    claudeSdkTranscriptPath("/Users/me/my_app v2+x", sessionId, projectsDir),
+    join(dir, `${sessionId}.jsonl`),
+  );
+});
+
 test("the persisted SDK transcript path lands inside the existing pruner directory", () => {
   const projectsDir = join(root, "projects");
   const sessionId = "sdk-headless-run";

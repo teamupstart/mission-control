@@ -20,7 +20,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
 const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
 const { TaskManagerGateway } = await import("../src/server/ensembles/member-launch.ts");
-const { FakeGateway, stubAdapters, singleWavePlan, runInsert } = await import("./ensemble-fixture.ts");
+const { FakeGateway, stubAdapters, singleWavePlan, reviewPlan, runInsert } = await import("./ensemble-fixture.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -427,6 +427,66 @@ test("withdrawMember cancels only that member's Task and recomputes the barrier"
   assert.ok(gateway.cancelled.includes(victimTask), "the withdrawn member's task was cancelled");
   assert.equal(gateway.cancelled.length, 1, "only that member's task");
   assert.equal(store.getMember(victim)!.status, "withdrawn");
+});
+
+// TaskManager can cancel a Task and still answer not-ok - its archive could not be published or
+// its worktree teardown threw - keeping the tree tracked for Reclaim. The Task is no longer
+// live, so the member settles.
+
+test("withdrawals whose cancels left only the trees tracked still withdraw and fail an impossible barrier", async () => {
+  const { store, gateway, engine } = makeEngine();
+  const { run } = store.createRun(runInsert(reviewPlan(2, 2)));
+  await engine.launch(run.id);
+  gateway.keepTreesOnCancel();
+  for (const { taskId } of gateway.dispatched) {
+    gateway.running(taskId, `/wt/${taskId}`);
+    const memberId = store.listAttempts(run.id).find((a) => a.taskId === taskId)!.memberId;
+    assert.equal(await engine.withdrawMember(run.id, memberId, "operator withdrew it"), true);
+    assert.equal(store.getMember(memberId)!.status, "withdrawn");
+  }
+  const after = store.getRun(run.id)!;
+  assert.equal(after.status, "failed", "one candidate left cannot meet a two-candidate barrier");
+  assert.match(after.error ?? "", /barrier/i);
+  assert.deepEqual([...gateway.cancelled].sort(), gateway.dispatched.map((d) => d.taskId).sort());
+});
+
+test("cancelRun reaches cancelled when its member cancels left only the trees tracked", async () => {
+  const { store, gateway, engine } = makeEngine();
+  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  await engine.launch(run.id);
+  gateway.keepTreesOnCancel();
+
+  assert.equal(await engine.cancelRun(run.id, "stop"), true);
+  assert.equal(store.getRun(run.id)!.status, "cancelled");
+  for (const member of store.listMembers(run.id)) assert.equal(member.status, "withdrawn");
+});
+
+test("a member whose cancel left its Task live still holds the withdrawal open", async () => {
+  const { store, gateway, engine } = makeEngine();
+  const { run } = store.createRun(runInsert(reviewPlan(2, 2)));
+  await engine.launch(run.id);
+  const victimTask = gateway.dispatched[0]!.taskId;
+  gateway.failCancel(victimTask);
+  const victim = store.listAttempts(run.id).find((a) => a.taskId === victimTask)!.memberId;
+
+  assert.equal(await engine.withdrawMember(run.id, victim, "operator withdrew it"), false);
+  assert.notEqual(store.getMember(victim)!.status, "withdrawn");
+  assert.notEqual(store.getRun(run.id)!.status, "failed");
+});
+
+test("a cancel that resolves but leaves the Task live still holds the withdrawal open", async () => {
+  const { store, gateway, engine } = makeEngine();
+  const { run } = store.createRun(runInsert(reviewPlan(2, 2)));
+  await engine.launch(run.id);
+  const victimTask = gateway.dispatched[0]!.taskId;
+  gateway.running(victimTask, `/wt/${victimTask}`);
+  gateway.ignoreCancel(victimTask);
+  const victim = store.listAttempts(run.id).find((a) => a.taskId === victimTask)!.memberId;
+
+  assert.equal(await engine.withdrawMember(run.id, victim, "operator withdrew it"), false);
+  assert.ok(gateway.cancelled.includes(victimTask), "the cancel was attempted");
+  assert.notEqual(store.getMember(victim)!.status, "withdrawn");
+  assert.match(store.getMember(victim)!.error ?? "", new RegExp(`${victimTask} is still live after its cancel`));
 });
 
 test("restoreArtifact verifies the private ref, then restores through the adapter", async () => {

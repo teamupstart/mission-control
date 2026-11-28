@@ -38,7 +38,7 @@ function piSessionsDir(): string {
 /**
  * pi's cwd -> project-dir encoding, taken verbatim from its `session-manager.js`:
  * strip a leading slash, replace `/ \ :` with `-`, wrap in `--`. Note dots are NOT replaced,
- * unlike Claude's `[/.]` - a `.treehouse` worktree keeps its dot.
+ * unlike Claude, which replaces every non-alphanumeric - a `.treehouse` worktree keeps its dot.
  */
 export function piProjectDir(cwd: string, sessionsDir = piSessionsDir()): string {
   const safe = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;

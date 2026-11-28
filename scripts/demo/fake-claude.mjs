@@ -456,7 +456,10 @@ function runSession() {
 
 // --- the transcript file the dashboard actually renders ----------------------------------
 
-const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[/.]/g, "-"));
+// Claude's own encoding (every non-alphanumeric to `-`), spelled out here rather than imported
+// from `claudeProjectDir`: this stands in for Claude, so it must not agree with the daemon's
+// helper by construction. Claude's 200-character cut never applies to a fixture's cwd.
+const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[^a-zA-Z0-9]/g, "-"));
 mkdirSync(projectDir, { recursive: true });
 const transcriptPath = join(projectDir, `${SESSION_ID}.jsonl`);
 // Created eagerly, but NEVER truncated: `resolveTranscriptPath` returns null for a path

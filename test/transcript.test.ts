@@ -549,7 +549,7 @@ test("computeRuntimeMeta keeps the model when usage has only output tokens", () 
 // ---- transcript path resolution ----
 
 const UUID = "4aa3d50a-9232-49cf-9ad9-67b8a9e8b51a";
-const encode = (cwd: string): string => cwd.replace(/[/.]/g, "-");
+const encode = (cwd: string): string => cwd.replace(/[^a-zA-Z0-9]/g, "-");
 const session = (p: Partial<Session>): Session =>
   ({ agent: "claude", agentSessionId: UUID, cwd: "/Users/me/work/app", transcriptPath: null, ...p }) as Session;
 
@@ -573,6 +573,17 @@ test("resolveTranscriptPath falls back to the cwd-derived path when no hook path
   const file = join(dir, `${UUID}.jsonl`);
   writeFileSync(file, "{}\n");
   assert.equal(resolveTranscriptPath(session({ cwd }), root), file);
+});
+
+test("resolveTranscriptPath finds the transcript of a cwd with an underscore, a space and a plus", () => {
+  // The directory name is the one Claude writes, as a literal: `encode` above would agree with
+  // whatever rule the resolver used.
+  const root = tempDir("proj-");
+  const dir = join(root, "-Users-me-my-app-v2-x");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${UUID}.jsonl`);
+  writeFileSync(file, "{}\n");
+  assert.equal(resolveTranscriptPath(session({ cwd: "/Users/me/my_app v2+x" }), root), file);
 });
 
 test("resolveTranscriptPath returns null when neither locates a file", () => {

@@ -5,6 +5,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -119,8 +120,13 @@ export interface DaemonHandle {
   installFakeGh(): void;
   /** Remove that fake GitHub CLI so a later Setup read observes a regression. */
   removeFakeGh(): void;
-  /** Make the next daemon-side `git fetch origin` report Git's stale-ref race. */
+  /** Make the next daemon-side fetch from demo-repo's origin report Git's stale-ref race. */
   failNextGitFetchWithRefRace(): void;
+  /**
+   * Every call to demo-repo's origin since the daemon started, in order: whether it met the
+   * armed race, and the command line of the `git` that made it.
+   */
+  gitFetchRefRaceCalls(): { consumed: boolean; caller: string }[];
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -293,33 +299,27 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   const gitFetchRefRaceMarker = join(home, "git-fetch-ref-race");
-  if (gitFetchRefRace || gitCheckHandBackTimeout) {
+  const gitFetchRefRaceCallsLog = join(home, "git-fetch-ref-race-calls.jsonl");
+  // The fetch ref race is not here: it is injected through demo-repo's upload-pack below.
+  if (gitCheckHandBackTimeout) {
     const fakeGit = join(home, "bin", "git");
     mkdirSync(dirname(fakeGit), { recursive: true });
     writeFileSync(
       fakeGit,
       [
         "#!/usr/bin/env node",
-        "const { existsSync, readFileSync, unlinkSync, writeFileSync } = require('node:fs');",
+        "const { existsSync, readFileSync, writeFileSync } = require('node:fs');",
         "const { spawnSync } = require('node:child_process');",
-        `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
         `const realPath = ${JSON.stringify(process.env.PATH ?? "")};`,
         "const args = process.argv.slice(2);",
-        ...(gitCheckHandBackTimeout ? [
-          `const stalled = ${JSON.stringify(join(home, "git-check-hand-back-stalled"))};`,
-          "const reviews = process.env.MC_E2E_RECORD_DIR + '/coderabbit.jsonl';",
-          "if (args.slice(2).join(' ') === 'ls-remote --symref origin HEAD' && !existsSync(stalled)",
-          "    && existsSync(reviews) && readFileSync(reviews, 'utf8').includes('\"args\":[\"review\"')) {",
-          "  writeFileSync(stalled, '', { flag: 'wx' });",
-          // Leave the probe unanswered until the daemon's real 30-second deadline.
-          "  setInterval(() => {}, 1000);",
-          "  return;",
-          "}",
-        ] : []),
-        "if (args[0] === '-C' && args[2] === 'fetch' && args[3] === 'origin' && existsSync(marker)) {",
-        "  unlinkSync(marker);",
-        "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
-        "  process.exit(1);",
+        `const stalled = ${JSON.stringify(join(home, "git-check-hand-back-stalled"))};`,
+        "const reviews = process.env.MC_E2E_RECORD_DIR + '/coderabbit.jsonl';",
+        "if (args.slice(2).join(' ') === 'ls-remote --symref origin HEAD' && !existsSync(stalled)",
+        "    && existsSync(reviews) && readFileSync(reviews, 'utf8').includes('\"args\":[\"review\"')) {",
+        "  writeFileSync(stalled, '', { flag: 'wx' });",
+        // Leave the probe unanswered until the daemon's real 30-second deadline.
+        "  setInterval(() => {}, 1000);",
+        "  return;",
         "}",
         "const result = spawnSync('git', args, { env: { ...process.env, PATH: realPath }, stdio: 'inherit' });",
         "if (result.error) throw result.error;",
@@ -361,6 +361,49 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   }
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
+  if (gitFetchRefRace) {
+    // The race is injected where git talks to origin, not by a fake `git` on the daemon's
+    // PATH. A PATH fake sits in front of every git call the daemon makes, which slows a seed
+    // `rev-parse` on a loaded runner and makes the spec about the fake instead of the race.
+    // Git runs `remote.origin.uploadpack` only for a fetch or `ls-remote` against
+    // demo-repo's origin, and its stderr reaches the fetch's own. Upload-pack is started the
+    // same way for both, so each call logs the `git` above it: only that shows whether the
+    // dispatch's fetch, rather than an earlier `ls-remote`, met the race.
+    const uploadPack = join(home, "ref-race-upload-pack");
+    writeFileSync(
+      uploadPack,
+      [
+        "#!/usr/bin/env node",
+        "const { appendFileSync, existsSync, unlinkSync } = require('node:fs');",
+        "const { spawnSync } = require('node:child_process');",
+        `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
+        `const calls = ${JSON.stringify(gitFetchRefRaceCallsLog)};`,
+        "let caller = 'unknown';",
+        "for (let pid = process.ppid, depth = 0; pid > 1 && depth < 4; depth += 1) {",
+        "  const row = spawnSync('ps', ['-ww', '-o', 'ppid=', '-o', 'args=', '-p', String(pid)], { encoding: 'utf8' }).stdout ?? '';",
+        "  const parsed = /^\\s*(\\d+)\\s+(.*)$/s.exec(row.trim());",
+        "  if (!parsed) break;",
+        "  if (/\\bgit\\b.*\\s(fetch|ls-remote)\\b/.test(parsed[2])) { caller = parsed[2]; break; }",
+        "  pid = Number(parsed[1]);",
+        "}",
+        "const consumed = existsSync(marker);",
+        "appendFileSync(calls, JSON.stringify({ consumed, caller }) + '\\n');",
+        "if (consumed) {",
+        "  unlinkSync(marker);",
+        "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
+        "  process.exit(1);",
+        "}",
+        "const result = spawnSync('git', ['upload-pack', ...process.argv.slice(2)], { stdio: 'inherit' });",
+        "if (result.error) throw result.error;",
+        "process.exit(result.status ?? 1);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(uploadPack, 0o755);
+    // Git hands this to `sh -c`; the quotes keep a path with a space in it a single word.
+    const shellPath = `'${uploadPack.replaceAll("'", "'\\''")}'`;
+    execFileSync("git", ["-C", repo, "config", "remote.origin.uploadpack", shellPath], { stdio: "pipe" });
+  }
   const secondRepo = seedRepo(workspace, "second-repo");
   // Two checkouts that share a basename, in different parents. The repo picker draws a
   // checkout by its DIRECTORY NAME, which makes a shared basename the one case where a name
@@ -420,6 +463,14 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     writeFileSync(gitFetchRefRaceMarker, "fail once\n");
   };
 
+  const gitFetchRefRaceCalls = (): { consumed: boolean; caller: string }[] =>
+    existsSync(gitFetchRefRaceCallsLog)
+      ? readFileSync(gitFetchRefRaceCallsLog, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { consumed: boolean; caller: string })
+      : [];
+
   const isolatedEnv: NodeJS.ProcessEnv = {
     ...process.env,
     // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
@@ -442,7 +493,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     PATH:
       conductorNodeVersion === undefined
         ? [
-            ...(gitFetchRefRace || gitCheckHandBackTimeout ? [join(home, "bin")] : []),
+            ...(gitCheckHandBackTimeout ? [join(home, "bin")] : []),
             ...(codexOnDaemonPathOnly ? [daemonPathBin] : []),
             process.env.PATH ?? "",
           ].filter(Boolean).join(delimiter)
@@ -866,6 +917,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     installFakeGh,
     removeFakeGh,
     failNextGitFetchWithRefRace,
+    gitFetchRefRaceCalls,
     readLog: () => log,
     startForeman,
     crash,

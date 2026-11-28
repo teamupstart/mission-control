@@ -93,8 +93,12 @@ export class FakeGateway implements EnsembleTaskGateway {
   async cancel(taskId: string): Promise<void> {
     if (this.cancelFailures.has(taskId)) throw new Error(`cannot cancel ${taskId}`);
     this.cancelled.push(taskId);
+    if (this.ignoredCancels.has(taskId)) return;
     const t = this.state.get(taskId);
     if (t) t.status = "cancelled";
+    if (this.untrackableTrees) {
+      throw new Error(`task cancelled, but its resources remain tracked: worktree teardown failed`);
+    }
   }
 
   async settleSuperseded(taskId: string, outcome: string): Promise<void> {
@@ -144,6 +148,16 @@ export class FakeGateway implements EnsembleTaskGateway {
   }
   failCancel(taskId: string): void {
     this.cancelFailures.add(taskId);
+  }
+  private readonly ignoredCancels = new Set<string>();
+  /** The task's cancel resolves without error but leaves the Task live. */
+  ignoreCancel(taskId: string): void {
+    this.ignoredCancels.add(taskId);
+  }
+  private untrackableTrees = false;
+  /** Every cancel cancels its Task and then rejects, keeping the tree tracked: TaskManager after a failed teardown. */
+  keepTreesOnCancel(): void {
+    this.untrackableTrees = true;
   }
   failSettle(taskId: string): void {
     this.settleFailures.add(taskId);

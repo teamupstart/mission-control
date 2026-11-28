@@ -95,6 +95,14 @@ head of each question card. The first of these that is set wins:
 4. the session name;
 5. "a session".
 
+The attention inbox's row headers and its split list are the exception to rank 1. A call sign or
+reference name there never replaces the title: the header prints the agent's resident profile name,
+task title or session name, then the spoken name in quotes beside it, drawn by the board card's own
+call sign badge (`CallSignMark`, its Trailing badge in a header and the Console rail's compact pill in
+a list row, where the title is cut short before the pill is). A question card inside the inbox
+leaves the name to its row header and draws no name line of its own. `agentNamePair` in
+`src/shared/display-name.ts` splits the two names; with voice off there is no pill.
+
 With the flag off every surface names an agent exactly as it did before: the inbox, the snoozed
 row and the review modal print the session name, alert titles print the task title or else the
 session name, and question cards print no name line. The tray shows counts only, so it has no

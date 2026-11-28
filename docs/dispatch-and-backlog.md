@@ -216,8 +216,9 @@ launches without one. Your own call sign is always kept. See
 A call sign is not the title and changes nothing the launch provisions. It is annotation, like
 priority: an update may set or clear it while the agent runs (a resident's task takes none; see
 [Call signs](voice.md#call-signs)), and with the
-[inbox](attention-and-alerts.md) naming rule and voice both on it is the name the inbox, the review
-modal, question cards and alerts print for the session. [Call signs](voice.md#call-signs) covers
+[inbox](attention-and-alerts.md) naming rule and voice both on it is the name the review modal,
+question cards outside the inbox and alerts print for the session. The inbox prints it in quotes
+beside the title instead; see [One name for an agent](attention-and-alerts.md#one-name-for-an-agent). [Call signs](voice.md#call-signs) covers
 when it also titles the session's card.
 
 A task in the backlog answers to its call sign only once it launches. From then on it is listed

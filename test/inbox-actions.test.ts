@@ -30,7 +30,7 @@ import type { FeatureFlagsConfig } from "../src/shared/feature-flags.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 import { ResidentNamesContext, VoiceHintsContext } from "../src/web/lib/agent-names.ts";
-import { InboxActionButton, SpokenHint } from "../src/web/components/AgentName.tsx";
+import { AgentNameWithCallSign, InboxActionButton, SpokenHint } from "../src/web/components/AgentName.tsx";
 import { VoiceAnswersContext } from "../src/web/lib/voice-open-cards.ts";
 import { VoiceRosterContext } from "../src/web/lib/voice-roster.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
@@ -153,6 +153,24 @@ test("clicking an inbox action button runs the action it was given, once, under 
   assert.equal(drawnButton({ action: "answer", name: "Steve", tooltip: "t", onClick: () => undefined, disabled: true }).props.disabled, true);
 });
 
+// ---- an inbox name with its call sign beside it ----
+
+test("an inbox name prints the title, then the quoted call sign in the board's badge or the rail's pill", () => {
+  const view = { name: "Split the header", colorId: null, callSign: "Granite" };
+  const badge = renderToStaticMarkup(createElement(AgentNameWithCallSign, { view }));
+  assert.match(badge, /^<strong>Split the header<\/strong><span class="cs-mark cs-badge">/);
+  assert.match(badge, /<span class="sr-only">Call sign <\/span>&quot;Granite&quot;<\/span>$/);
+  const rail = renderToStaticMarkup(createElement(AgentNameWithCallSign, { view, compact: true }));
+  assert.match(rail, /<span class="cs-mark cs-rail">/);
+  const resident = renderToStaticMarkup(createElement(AgentNameWithCallSign, {
+    view: { name: "Dependency Steward", colorId: "violet" as const, callSign: "Scout" },
+  }));
+  assert.match(resident, /<strong class="agent-name-resident" style="--resident:var\(--resident-violet\)">Dependency Steward<\/strong>/);
+  assert.match(resident, /&quot;Scout&quot;<\/span>$/);
+  assert.equal(renderToStaticMarkup(createElement(AgentNameWithCallSign, { view: { name: "Retry banner", colorId: null } })),
+    "<strong>Retry banner</strong>", "no call sign, no pill");
+});
+
 // ---- the question card: a name line and its hints ----
 
 const question: ReviewItem = {
@@ -171,7 +189,7 @@ const withOptions: ReviewItem = {
   decisions: [{ id: "q", question: question.title, options: [{ id: "o0", label: "biome" }, { id: "o1", label: "eslint" }] }],
 };
 
-function card(review: ReviewItem, flags: { inbox: boolean; voice?: boolean; resident?: boolean }): string {
+function card(review: ReviewItem, flags: { inbox: boolean; voice?: boolean; resident?: boolean; namesAsker?: boolean }): string {
   const session = mkSession({ id: "s1", name: "lint-session", task: mkTaskSummary({ id: "t1", title: "Add a linter" }) });
   const config: FeatureFlagsConfig = { enableAll: false, overrides: flags.inbox ? { inbox: true } : {} };
   const runs = flags.resident
@@ -180,7 +198,7 @@ function card(review: ReviewItem, flags: { inbox: boolean; voice?: boolean; resi
   const roster: SpokenName[] = flags.resident ? [{ kind: "resident", key: "resident:lint", name: "Linter watcher",
     role: "Watch the linter", colorId: "violet", state: "running", sessionId: review.sessionId, taskId: "t1", agent: "claude" }] : [];
   const questionCard = createElement(VoiceRosterContext.Provider, { value: roster },
-    createElement(VoiceAnswersContext.Provider, { value: flags.voice ? { answers: new Map() } : null }, createElement(ReviewCard, { review, session })));
+    createElement(VoiceAnswersContext.Provider, { value: flags.voice ? { answers: new Map() } : null }, createElement(ReviewCard, { review, session, namesAsker: flags.namesAsker })));
   return renderToStaticMarkup(
     createElement(FeatureFlagsContext.Provider, { value: config },
       createElement(ResidentNamesContext.Provider, { value: runs },
@@ -195,6 +213,15 @@ test("with the inbox flag off a question card draws no name line, exactly as bef
 
 test("with the inbox flag on a question card names its agent in the head", () => {
   assert.match(card(question, { inbox: true }), /<strong class="review-agent">Add a linter<\/strong><h3>/);
+});
+
+test("a question card in the inbox leaves the name to its row header, and keeps its spoken hints", () => {
+  const html = card(question, { inbox: true, namesAsker: false });
+  assert.doesNotMatch(html, /review-agent/);
+  assert.match(html, /<h3>Which linter should this repo use\?<\/h3>/);
+  const hinted = card(question, { inbox: true, voice: true, resident: true, namesAsker: false });
+  assert.doesNotMatch(hinted, /review-agent/);
+  assert.match(hinted, /Say <q>Linter watcher, my answer is …<\/q>/, "the hints still address the agent by its spoken name");
 });
 
 test("a resident's name on a question card is drawn in its board colour", () => {

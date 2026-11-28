@@ -79,7 +79,7 @@ const advancedOf = (dialog: Locator) => dialog.getByRole("button", { name: /^Adv
 const callSignOf = (scope: Locator) => scope.getByRole("textbox", { name: "Call sign", exact: true });
 const meterOf = (scope: Locator) => scope.getByRole("meter", { name: "Distinctiveness" });
 
-test("a call sign is chosen with a heard-as preview that warns without blocking, and names the session only while voice is on", async ({ dashboard: page, daemon }) => {
+test("a call sign is chosen with a heard-as preview that warns without blocking, and is named beside the session's title only while voice is on", async ({ dashboard: page, daemon }) => {
   test.setTimeout(150_000);
   await page.setViewportSize({ width: 1280, height: 1200 });
 
@@ -167,13 +167,18 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
     if (!(await inbox.isVisible())) await button.click({ timeout: 3000 });
     await expect(inbox).toBeVisible({ timeout: 3000 });
   }).toPass({ timeout: 45_000 });
-  await expect(inbox.locator("section.inbox-reviews .inbox-head strong")).toHaveText("Alice");
-  await expect(inbox.locator("section.review .review-head .review-agent")).toHaveText("Alice");
+  // The row header keeps the task's title and draws the quoted call sign beside it, in the board
+  // card's badge; the card below leaves the name to that header.
+  const head = inbox.locator("section.inbox-reviews .inbox-head");
+  await expect(head.locator("strong")).toHaveText(session.task!.title);
+  await expect(head.locator(".cs-mark.cs-badge")).toHaveText('Call sign "Alice"');
+  await expect(inbox.locator("section.review .review-head .review-agent")).toHaveCount(0);
   await shoot(inbox, "06-question-card-names-alice");
 
   await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
-  await expect(inbox.locator("section.inbox-reviews .inbox-head strong")).toHaveText(session.task!.title);
-  await expect(inbox.locator("section.review .review-head .review-agent")).toHaveText(session.task!.title);
+  await expect(head.locator("strong")).toHaveText(session.task!.title);
+  await expect(head.locator(".cs-mark")).toHaveCount(0);
+  await expect(inbox.locator("section.review .review-head .review-agent")).toHaveCount(0);
   const kept = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)!;
   expect(kept.task?.callSign, "the call sign stays saved while voice is off").toBe("Alice");
   await shoot(inbox, "07-voice-off-names-task-title");
@@ -290,7 +295,7 @@ test("a running resident's question card follows its renamed profile only with V
   await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
   await expectContentClearsBorder(inbox);
-  const author = inbox.locator("section.review .review-head .review-agent");
+  const author = inbox.locator("section.inbox-reviews .inbox-head strong");
   await expect(author).toHaveText("Release Captain");
   await api(daemon, `/api/residents/profiles/${profile.id}`, {
     expectedRevision: profile.revision, settings: { ...profile.settings, identity: { ...profile.settings.identity, name: "Release Lead" } },
@@ -299,4 +304,130 @@ test("a running resident's question card follows its renamed profile only with V
   await shoot(inbox, "09-running-resident-renamed");
   await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
   await expect(author).toHaveText("Release Captain");
+});
+
+test("a resident's question in the split inbox is named by its profile name in its board colour with its quoted reference name beside it", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await turnVoiceOn(daemon);
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "inbox-split", enabled: true }, "PUT");
+  const profile = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Dependency Steward", referenceName: "Scout" },
+    persona: { personaId: "builtin:code-risk-reviewer" },
+    execution: { model: "claude-fable-5" },
+    board: { colorId: "violet" },
+    loop: { delaySeconds: 3600, minDelaySeconds: 60, maxDelaySeconds: 3600 },
+  } });
+  expect(profile.settings.identity.referenceName).toBe("Scout");
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "scout-inbox" });
+  const residentCwd = async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.kind === "resident")?.cwd;
+  await expect.poll(residentCwd, { timeout: 60_000 }).toBeTruthy();
+  await ask(daemon, (await residentCwd())!);
+
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expect(async () => {
+    if (!(await inbox.isVisible())) await page.locator("button.pulse-seg", { hasText: "to answer" }).click({ timeout: 3000 });
+    await expect(inbox).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 45_000 });
+  await expectContentClearsBorder(inbox);
+
+  // The list row: the profile name in the resident's colour, then the quoted reference name pill.
+  const meta = inbox.getByRole("option").filter({ hasText: LINTER }).locator(".inbox-split-row-meta");
+  await expect(meta.locator("strong.agent-name-resident")).toHaveText("Dependency Steward");
+  await expect(meta.locator("strong.agent-name-resident")).toHaveAttribute("style", /--resident:\s*var\(--resident-violet\)/);
+  await expect(meta.locator(".cs-mark.cs-rail")).toHaveText('Call sign "Scout"');
+
+  // The pane header: the same, in the board card's badge, with no name repeated on the card.
+  await inbox.getByRole("option").filter({ hasText: LINTER }).click();
+  const head = inbox.getByRole("region", { name: "Selected item" }).locator("section.inbox-reviews .inbox-head");
+  const name = head.locator("strong");
+  await expect(name).toHaveText("Dependency Steward");
+  await expect(name).toHaveClass(/agent-name-resident/);
+  // Drawn in the violet the profile chose, not inherited from the header around it.
+  expect(await name.evaluate((el) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--resident-violet)";
+    el.parentElement!.appendChild(probe);
+    const violet = getComputedStyle(probe).color;
+    probe.remove();
+    return violet !== getComputedStyle(el.parentElement!).color && getComputedStyle(el).color === violet;
+  })).toBe(true);
+  const badge = head.locator(".cs-mark.cs-badge");
+  await expect(badge).toHaveText('Call sign "Scout"');
+  // Adjacent: the badge is the element right after the name.
+  expect(await name.evaluate((el) => el.nextElementSibling?.classList.contains("cs-badge"))).toBe(true);
+  await expect(inbox.locator("section.review .review-head .review-agent")).toHaveCount(0);
+  await shoot(inbox, "13-split-inbox-resident-reference-name");
+
+  // Voice off: the profile name alone, still in its colour, with no pill.
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
+  await expect(inbox.locator(".cs-mark")).toHaveCount(0);
+  await expect(name).toHaveText("Dependency Steward");
+  await expect(name).toHaveClass(/agent-name-resident/);
+});
+
+test("the split inbox names a question's agent by its title with the quoted call sign beside it, in the list and the pane", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await turnVoiceOn(daemon);
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "inbox-split", enabled: true }, "PUT");
+  // Long enough to be cut short in the list, which must never cut the call sign.
+  const title = "Split the inbox question card header so the title and the call sign both show";
+  const task = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title, intent: "split the header", kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+    callSign: "Granite",
+  });
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
+    return session?.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  expect(session.task?.callSign).toBe("Granite");
+  await ask(daemon, session.cwd!);
+
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expect(async () => {
+    if (!(await inbox.isVisible())) await page.locator("button.pulse-seg", { hasText: "to answer" }).click({ timeout: 3000 });
+    await expect(inbox).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 45_000 });
+  await expectContentClearsBorder(inbox);
+
+  const row = inbox.getByRole("option").filter({ hasText: LINTER });
+  const meta = row.locator(".inbox-split-row-meta");
+  await expect(meta.locator("strong")).toHaveText(title);
+  const pill = meta.locator(".cs-mark.cs-rail");
+  await expect(pill).toHaveText('Call sign "Granite"');
+  // The title gives way, the pill does not: the pill sits wholly inside the row.
+  const [rowBox, pillBox] = [await meta.boundingBox(), await pill.boundingBox()];
+  expect(pillBox!.x + pillBox!.width).toBeLessThanOrEqual(rowBox!.x + rowBox!.width + 0.5);
+  expect(await meta.locator("strong").evaluate((el) => el.scrollWidth > el.clientWidth), "the long title is cut short").toBe(true);
+
+  await row.click();
+  const head = inbox.getByRole("region", { name: "Selected item" }).locator("section.inbox-reviews .inbox-head");
+  await expect(head.locator("strong")).toHaveText(title);
+  await expect(head.locator(".cs-mark.cs-badge")).toHaveText('Call sign "Granite"');
+  await expect(inbox.locator("section.review .review-head .review-agent")).toHaveCount(0);
+  await expect(inbox.getByRole("button", { name: `Dismiss ${title} from the inbox` })).toBeVisible();
+  await shoot(inbox, "10-split-inbox-title-and-call-sign");
+
+  // Narrow: below 800 px the list and the pane stack. At 480 px the pane header still draws the
+  // badge inside the card, and back in the list the title gives way while the pill stays whole.
+  await page.setViewportSize({ width: 480, height: 1000 });
+  await expect(head.locator(".cs-mark.cs-badge")).toBeVisible();
+  const [headBox, badgeBox] = [await head.boundingBox(), await head.locator(".cs-mark.cs-badge").boundingBox()];
+  expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(headBox!.x + headBox!.width + 0.5);
+  await shoot(inbox, "11-split-inbox-narrow-pane");
+  await inbox.getByRole("button", { name: "‹ Inbox" }).click();
+  await expect(pill).toBeVisible();
+  const [narrowRow, narrowPill] = [await meta.boundingBox(), await pill.boundingBox()];
+  expect(narrowPill!.x + narrowPill!.width).toBeLessThanOrEqual(narrowRow!.x + narrowRow!.width + 0.5);
+  expect(await meta.locator("strong").evaluate((el) => el.scrollWidth > el.clientWidth), "the title is cut short, not the pill").toBe(true);
+  await shoot(inbox, "12-split-inbox-narrow-list");
+  await page.setViewportSize({ width: 1280, height: 1000 });
+
+  // Voice off: the title alone, with no pill, in the list and the pane.
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
+  await expect(inbox.locator(".cs-mark")).toHaveCount(0);
+  await expect(meta.locator("strong")).toHaveText(title);
+  await expect(head.locator("strong")).toHaveText(title);
 });

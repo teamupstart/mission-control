@@ -75,6 +75,33 @@ export function agentDisplayName(input: AgentDisplayNameInput): AgentDisplayName
 }
 
 /**
+ * A name in two parts, for a surface that prints both: `display` says what the agent is (a
+ * resident's profile name, else its task title, else its session name) and `spoken` is the name
+ * the operator says to address it (a call sign, else a resident's reference name), or null.
+ *
+ * `agentDisplayName` lets a spoken name stand in for the title, which leaves a surface showing
+ * only "Granite"; this keeps the title and carries the spoken name beside it. A spoken name is kept
+ * even when it reads the same as the title: the quoted pill is what says the agent answers to it.
+ */
+export interface AgentNamePair {
+  display: AgentDisplayName;
+  spoken: string | null;
+}
+
+export function agentNamePair(input: AgentDisplayNameInput): AgentNamePair {
+  // The spoken part is whatever `agentDisplayName` ranks first when that is one of voice's names,
+  // so the inbox badge follows the one precedence every other surface uses.
+  const ranked = agentDisplayName(input);
+  const spoken = ranked.source === "call-sign" || ranked.source === "reference-name" ? ranked.name : null;
+  const display = agentDisplayName({
+    ...input,
+    callSign: null,
+    resident: input.resident ? { ...input.resident, referenceName: null } : null,
+  });
+  return { display, spoken };
+}
+
+/**
  * What the resolver reads from a live resident run: its task, its pinned name and colour, and
  * its reference name (see `withCurrentReferenceNames`).
  */

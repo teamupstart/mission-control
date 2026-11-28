@@ -12,6 +12,7 @@ import type { Stall, StallFacts } from "../src/shared/stall.ts";
 import type { Session } from "../src/shared/types.ts";
 import { interruptDone, StuckCard, stuckDetail } from "../src/web/components/StuckCard.tsx";
 import { parkedStep } from "../src/web/lib/stall-actions.ts";
+import { VoiceHintsContext } from "../src/web/lib/agent-names.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 function stall(facts: StallFacts, reason = "idle 21m with work unfinished"): Stall {
@@ -210,4 +211,35 @@ test("the inbox's reply-box set records a session's Stuck-row box appearing and 
   assert.equal(withInboxReplyBox(none, "s1", false), none);
   // One session's box leaves another's alone.
   assert.deepEqual([...withInboxReplyBox(withInboxReplyBox(open, "s2", true), "s1", false)], ["s2"]);
+});
+
+test("with voice on, a Stuck row's header and accessible names use the title, with the quoted call sign beside it, and its spoken hints say the call sign", () => {
+  const html = renderToStaticMarkup(createElement(VoiceHintsContext.Provider, { value: true }, createElement(StuckCard, {
+    session: mkSession({ id: "s1", state: "working" }),
+    stall: stall({ kind: "silent-working" } as StallFacts, "No output for a while."),
+    context: null,
+    subject: { name: "Granite", colorId: null },
+    title: { name: "Fix the parser", colorId: null, callSign: "Granite" },
+    onOpenSession: () => undefined,
+    onOpenRun: () => undefined,
+    onDismiss: () => undefined,
+  })));
+  const head = html.match(/<div class="inbox-head">([\s\S]*?)<span class="inbox-meta">/)![1]!;
+  assert.match(head, /<strong>Fix the parser<\/strong><span class="cs-mark cs-badge">/);
+  assert.match(head, /<span class="sr-only">Call sign <\/span>&quot;Granite&quot;<\/span>$/);
+  assert.doesNotMatch(head, /<strong>Granite<\/strong>/, "the call sign never stands in for the title");
+  // Accessible names follow the row's visible title, as every other inbox row's Dismiss does.
+  assert.match(html, /aria-label="Fix the parser is stuck"/);
+  assert.match(html, /aria-label="Dismiss Fix the parser from the inbox"/);
+  assert.match(html, /<textarea[^>]*aria-label="Message Fix the parser"/);
+  assert.doesNotMatch(html, /aria-label="[^"]*Granite[^"]*"/, "no accessible name is the call sign alone");
+  assert.match(html, /Granite, nudge/i, "the spoken hints address the agent by its call sign");
+  assert.doesNotMatch(html, /Fix the parser, nudge/i);
+});
+
+test("without a call sign, a Stuck row's header is its title alone", () => {
+  const html = draw(stall({ kind: "unfinished-work", task, queueOpen: 0 }));
+  const head = html.match(/<div class="inbox-head">([\s\S]*?)<span class="inbox-meta">/)![1]!;
+  assert.match(head, /<strong>Fix the parser<\/strong>$/);
+  assert.doesNotMatch(html, /cs-mark/);
 });

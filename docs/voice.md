@@ -1298,8 +1298,10 @@ and on its own `voice_roster` frame when it alone changes. See
 
 Both names are the first rank of the display name the inbox plan defines (`agentDisplayName` in
 `src/shared/display-name.ts`): with the `inbox` and `voice` flags on, a session with a call sign is
-called by it on the inbox, the review modal, question cards, alert titles, the Away digest and a
-report's author, and a resident by its reference name in its board colour. They are voice's names,
+called by it on the review modal, question cards outside the inbox, alert titles, the Away digest
+and a report's author, and a resident by its reference name in its board colour. The attention
+inbox is the exception: [One name for an agent](attention-and-alerts.md#one-name-for-an-agent)
+states how it prints the title with the spoken name beside it. They are voice's names,
 so with `voice` off a saved one is kept but names nothing: `sessionDisplayNameInput` takes the flag
 as `spokenNames`, off unless a caller passes it, and the ranks below answer as they did before.
 Schema 53 adds nullable `author_spoken_name` columns to `reports` and `report_mutes`.
@@ -1647,7 +1649,9 @@ What these runs did not establish:
   resident never named by its task's call sign.
 - `e2e/specs/voice-call-sign.spec.ts`: "Will" draws the everyday-word warning with Dispatch still
   enabled and its verdict in the status region; dispatched as "Alice", the roster lists Alice
-  running and the question card names the session Alice; a shelved task's call sign survives a
+  running and the inbox row header names the session by its title with a quoted "Alice" badge; the
+  split inbox draws the title and a quoted "Granite" pill in its list row and pane, and a resident's
+  profile name in its board colour with a quoted "Scout" reference name; a shelved task's call sign survives a
   restart, stays off the roster while saved, is kept when voice goes off mid-edit, and clears.
 - `e2e/specs/voice-reference-name.spec.ts`: a resident's reference name is checked as it is typed,
   survives a restart, is listed in the roster, and clears.

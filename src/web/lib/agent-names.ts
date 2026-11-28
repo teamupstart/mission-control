@@ -3,6 +3,7 @@ import {
   agentDisplayName,
   agentNameColor,
   agentNameLabel,
+  agentNamePair,
   sessionDisplayNameInput,
   type ResidentNameSource,
 } from "@shared/display-name.ts";
@@ -23,6 +24,11 @@ export interface AgentNameView {
   isReferenceName?: true;
   name: string;
   colorId: ResidentMarkerColorId | null;
+  /**
+   * The name the operator says to address the agent, drawn beside `name` rather than in its place.
+   * Set only by `agentNamePairView`, for a surface that prints both.
+   */
+  callSign?: string;
 }
 
 export type NamedSession = Pick<Session, "name"> & {
@@ -46,6 +52,24 @@ export function agentNameView(
   const input = sessionDisplayNameInput(session, runs, spokenNames);
   const display = agentDisplayName(input);
   return { ...(display.source === "reference-name" && { isReferenceName: true }), name: agentNameLabel(display), colorId: agentNameColor(input, display) };
+}
+
+/**
+ * `agentNameView` for a surface that prints the title and the spoken name together: `name` never
+ * gives way to a call sign or reference name, which ride in `callSign` instead. With the `inbox`
+ * flag off it is `legacy`, as `agentNameView` is; with `voice` off there is no `callSign`.
+ */
+export function agentNamePairView(
+  session: NamedSession,
+  legacy: string,
+  enabled: boolean,
+  runs: readonly ResidentNameSource[],
+  spokenNames = false,
+): AgentNameView {
+  if (!enabled) return { name: legacy, colorId: null };
+  const input = sessionDisplayNameInput(session, runs, spokenNames);
+  const { display, spoken } = agentNamePair(input);
+  return { name: display.name, colorId: agentNameColor(input, display), ...(spoken && { callSign: spoken }) };
 }
 
 /** `agentNameView` for a component, from the `inbox` and `voice` flags and `ResidentNamesContext`. */

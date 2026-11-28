@@ -8427,6 +8427,26 @@ a.btn {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* A row naming a call sign (`AgentNameWithCallSign`, compact): the title ellipsises and the
+   pill never does, as on the Console rail. The trailing facts keep their leading spaces. */
+.inbox-split-row-meta:has(> .cs-mark) {
+  display: flex;
+  align-items: center;
+}
+.inbox-split-row-meta:has(> .cs-mark) > * {
+  flex: none;
+  white-space: pre;
+}
+.inbox-split-row-meta:has(> .cs-mark) > strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inbox-split-row-meta > .cs-mark {
+  margin-left: 6px;
+}
 .inbox-split-unread {
   flex: 0 0 auto;
   width: 7px;

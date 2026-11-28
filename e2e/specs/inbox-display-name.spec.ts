@@ -11,8 +11,9 @@ import type { Session, Task } from "../../src/shared/types.ts";
 
 /**
  * What is at stake: with the `inbox` preview flag on, one rule names an agent on the inbox row
- * header, the review modal header and the question card, so the three agree; with it off each
- * prints the session name, exactly as before. A resident is named by its profile name, in its
+ * header, the review modal header and the question card, so they agree; inside the inbox the card
+ * leaves the name to its row header rather than repeating it. With the flag off each prints the
+ * session name, exactly as before. A resident is named by its profile name, in its
  * board colour.
  *
  * Real daemon, real routes, real SSE and the real built dashboard. Questions are filed on the
@@ -103,7 +104,7 @@ const rowHeader = (inbox: Locator) => inbox.locator("section.inbox-reviews .inbo
 const cardName = (scope: Locator) => scope.locator("section.review .review-head .review-agent");
 const modalHeader = (modal: Locator) => modal.locator(".modal-head strong");
 
-test("with the inbox flag on, the inbox row, the review modal and the question card all name the agent by its task title; off, by its session name", async ({ dashboard: page, daemon }) => {
+test("with the inbox flag on, the inbox row, the review modal and its question card all name the agent by its task title; off, by its session name", async ({ dashboard: page, daemon }) => {
   test.setTimeout(120_000);
   const title = "Add a linter to CI";
   const task = await api<Task>(daemon, "/api/tasks", {
@@ -139,8 +140,9 @@ test("with the inbox flag on, the inbox row, the review modal and the question c
   await setInbox(daemon, true);
   inbox = await openInbox(page);
   await expect(rowHeader(inbox)).toHaveText(title);
-  await expect(cardName(inbox)).toHaveText(title);
-  await expect(cardName(inbox)).not.toHaveClass(/agent-name-resident/);
+  // The row header names the agent, so the card under it does not repeat the name.
+  await expect(cardName(inbox)).toHaveCount(0);
+  await expect(rowHeader(inbox)).not.toHaveClass(/agent-name-resident/);
   // The row's Dismiss is named after the row it removes, by the same name.
   await expect(inbox.getByRole("button", { name: `Dismiss ${title} from the inbox` })).toBeVisible();
   // No control appears for the spoken-hint seam until voice turns hints on.
@@ -301,11 +303,9 @@ test("with the inbox flag on, a resident's question is named by its profile name
   const header = rowHeader(inbox);
   await expect(header).toHaveText(RESIDENT);
   await expect(header).toHaveClass(/agent-name-resident/);
-  await expect(cardName(inbox)).toHaveText(RESIDENT);
-  await expect(cardName(inbox)).toHaveClass(/agent-name-resident/);
+  await expect(cardName(inbox)).toHaveCount(0);
   // Drawn in the board colour the profile chose, as the skin resolves it.
   expect(await inBoardColour(header, "violet")).toBe(true);
-  expect(await inBoardColour(cardName(inbox), "violet")).toBe(true);
   await capture(inbox, "04-inbox-resident-board-colour", page);
   await closeOverlay(page, inbox);
 

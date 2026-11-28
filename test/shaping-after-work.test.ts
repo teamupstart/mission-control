@@ -152,7 +152,7 @@ test("schema 45 adds the prompt table to an upgraded database, keyed by task and
 });
 
 test("an after-work row is idle-only on the outbox: it never steers or interrupts, unless expedited", () => {
-  const session = { agent: "claude", runtime: "sdk" } as Session;
+  const session = { agent: "claude", runtime: "sdk", pendingReviews: 0 } as Session;
   const turn = { id: `${AFTER_WORK_SKILLS_TURN_PREFIX}t:s`, createdAt: 0, deliveryMode: "after-turn", deadlineAt: null } as PendingTurn;
   assert.deepEqual(deliverySchedule(session, turn), []);
   assert.equal(deliveryStage(session, turn, 10 * 60_000), null);

@@ -2,7 +2,7 @@ import { transferForNote, transferHold } from "./session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import type { MessageSendDisposition, PendingTurn, ServerEvent, Session, SdkSendDisposition, TurnOrigin } from "@shared/types.ts";
 import {
-  AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, deliverySchedule, deliveryStage, idleOnlyTurn,
+  AFTER_WORK_SKILLS_TURN_PREFIX, MESSAGE_INTERRUPT_WATCHDOG_MS, canSteerMessage, canSteerRunningTurn, deliverySchedule, deliveryStage, idleOnlyTurn,
   assignSteerReceipts, supportsDeliveryAction, type MessageDeliveryAction,
 } from "@shared/message-delivery.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -1150,6 +1150,13 @@ export class PendingTurnManager {
           this.armDrain(key, following.at);
         } else if (recheckAfterWork) {
           this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+        } else if (next.action === "steer" && following?.turn.id === retiredId && following?.action === "interrupt") {
+          // A steer refused because the turn stopped on a question falls back to interruption,
+          // whose instant may already be behind it, and `nextEscalationAt` arms only what is
+          // still ahead. Arming that one interruption is not a retry: the refused steer is no
+          // longer in the schedule, and the attempt is recorded before it is made, so it cannot
+          // repeat.
+          this.armDrain(key, following.at);
         } else {
           const escalation = this.nextEscalationAt(current);
           if (escalation != null) this.armDrain(key, escalation);
@@ -1642,6 +1649,9 @@ export class PendingTurnManager {
       return "The SDK conversation owner changed before delivery.";
     }
     if (this.spokenBlocked(current, handoff.turn)) return "Voice is off or the agent is waiting on a review.";
+    if (steer && this.canDeliver(current) && canSteerMessage(current) && !canSteerRunningTurn(current)) {
+      return "The agent is waiting on a question inside a tool call and cannot read a steered message. It will be interrupted to deliver this one.";
+    }
     if (steer ? (!this.canDeliver(current) || !canSteerMessage(current)) : !this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }

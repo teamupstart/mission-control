@@ -51,11 +51,36 @@ export function canSteerMessage(session: Pick<Session, "agent" | "runtime">): bo
   return capabilitiesFor(session.agent).steering?.runtimes.includes(session.runtime) ?? false;
 }
 
+/**
+ * The session fields that decide which delivery actions can reach the running turn.
+ * `pendingReviews` is required: a caller that left it out would read as "not waiting on a
+ * question" and steer into a turn that cannot read it, so an omission must fail to compile.
+ */
+export type DeliverySession = Pick<Session, "agent" | "runtime" | "pendingReviews">;
+
+/**
+ * Whether the running turn is stopped inside a call that waits on the operator: a call-mode
+ * `request_input`, a diff review, or another question counted in `pendingReviews`.
+ *
+ * A steer joins the running turn, and an agent reads a steered message only between tool calls.
+ * While the turn is parked in a call that returns only when a question is answered, a steer sits
+ * unread for as long as the question stays open, which can be hours, and nothing escalates it
+ * because the outbox already handed it over. Interruption is what reaches that turn.
+ */
+export function turnWaitsOnQuestion(session: DeliverySession): boolean {
+  return session.pendingReviews > 0;
+}
+
+/** Whether a steered message would be read by this session's running turn. */
+export function canSteerRunningTurn(session: DeliverySession): boolean {
+  return canSteerMessage(session) && !turnWaitsOnQuestion(session);
+}
+
 export function supportsDeliveryAction(
-  session: Pick<Session, "agent" | "runtime">,
+  session: DeliverySession,
   action: MessageDeliveryAction,
 ): boolean {
-  return action === "steer" ? canSteerMessage(session) : canInterrupt(session.agent, session.runtime);
+  return action === "steer" ? canSteerRunningTurn(session) : canInterrupt(session.agent, session.runtime);
 }
 
 /** The operator's explicit action on a queued row, which acts at its own recorded instant. */
@@ -69,17 +94,19 @@ export function expeditedDelivery(turn: PendingTurn): MessageDeliveryAction | nu
 /**
  * Every instant this message may act on a running turn, earliest first, filtered to what the
  * harness and runtime can actually do. A session that can neither steer nor be interrupted
- * has an empty schedule and waits for the next turn, exactly as it always did.
+ * has an empty schedule and waits for the next turn, exactly as it always did. A turn stopped
+ * on a question (`turnWaitsOnQuestion`) cannot read a steer, so only interruption reaches it.
  */
 export function deliverySchedule(
-  session: Pick<Session, "agent" | "runtime">,
+  session: DeliverySession,
   turn: PendingTurn,
 ): { at: number; action: MessageDeliveryAction }[] {
   if (!canExpediteTurn(turn)) return [];
   const expedited = expeditedDelivery(turn);
-  if (expedited) {
-    return supportsDeliveryAction(session, expedited) ? [{ at: turn.deadlineAt!, action: expedited }] : [];
-  }
+  if (expedited && supportsDeliveryAction(session, expedited)) return [{ at: turn.deadlineAt!, action: expedited }];
+  // A steer asked for by hand before the turn stopped on a question keeps the standard
+  // interruption rather than waiting, unreadable, for a turn that may not end for hours.
+  if (expedited && !(expedited === "steer" && canSteerMessage(session))) return [];
   if (idleOnlyTurn(turn)) return [];
   return ([["steer", MESSAGE_STEER_AFTER_MS], ["interrupt", MESSAGE_INTERRUPT_AFTER_MS]] as const)
     .filter(([action]) => supportsDeliveryAction(session, action))
@@ -88,7 +115,7 @@ export function deliverySchedule(
 
 /** What this message would do now: the latest stage already due, else the next one coming. */
 export function deliveryStage(
-  session: Pick<Session, "agent" | "runtime">,
+  session: DeliverySession,
   turn: PendingTurn,
   now: number,
 ): { at: number; action: MessageDeliveryAction } | null {

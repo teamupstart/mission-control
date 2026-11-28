@@ -53,6 +53,9 @@ can drive it, labels that row "(system default)", and otherwise starts on the fi
 backend. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
+Every read probes the machine afresh, except that a read arriving while another is still
+probing - a second tab, a reload, or **Re-check** pressed mid-round - shares that round's result
+instead of starting a second set of probes. Each read still gets its own snapshot for dismissal.
 
 The **Jira** family covers the Atlassian CLI (acli) that Jira task sources can read through.
 **Atlassian CLI** reports the binary Mission Control resolves and where it found it, and offers

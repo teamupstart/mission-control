@@ -1,6 +1,6 @@
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
 import { INBOX_FLAG } from "./inbox.ts";
-import { VOICE_FIRST_PREVIEW_HOLD_FLAG, VOICE_FLAG } from "./voice.ts";
+import { VOICE_FIRST_PREVIEW_HOLD_FLAG, VOICE_FLAG, VOICE_PREFIX_RECOVERY_FLAG } from "./voice.ts";
 
 /** The one owner of the headless-mode flag id: the gates and the shared contracts import it from here. */
 export const HEADLESS_MODE_FLAG_ID = "headless-mode" as const;
@@ -295,6 +295,17 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "read-write",
     keywords: ["voice", "transcript", "preview", "live words", "phantom", "filler", "noise", "always-on"],
+  },
+  {
+    id: VOICE_PREFIX_RECOVERY_FLAG,
+    label: "Voice prefix recovery",
+    description:
+      "When a stray word comes before the call sign, look past it: \"Um, Steve, check the build.\" goes to Steve. " +
+      "When the word might be part of the sentence, such as a cough heard as \"The\", the card asks who it is for " +
+      "instead. Speech that only mentions a name stays unrouted, and routes that already work never change.",
+    stage: "preview",
+    sessionSetting: "read-write",
+    keywords: ["voice", "call sign", "filler", "noise", "um", "prefix", "dropped", "unrouted", "opening name"],
   },
   {
     id: MACOS_TERMINAL_FLAG_ID,

@@ -14,6 +14,7 @@ import {
   knownVoiceCapabilities,
   VOICE_FLAG,
   VOICE_FIRST_PREVIEW_HOLD_FLAG,
+  VOICE_PREFIX_RECOVERY_FLAG,
   VOICE_FIRST_PREVIEW_VOICED_MS,
   VOICE_MODEL_STATE_NONE,
   VOICE_HELLO_LAPSE_MS,
@@ -501,7 +502,7 @@ export class VoiceStateStore {
     const backend = reported && this.backendSelected(reported) ? reported : null;
     const longCapture = backend === "fluidaudio" && Number(hello?.version.split(".")[1] ?? 0) >= 2;
     return { mode, roster, backend, longCapture, reportsSpeechOnset: hello?.reportsSpeechOnset === true,
-      separatorWord: this.deps.config().separatorWord };
+      separatorWord: this.deps.config().separatorWord, prefixRecovery: this.deps.enabled(VOICE_PREFIX_RECOVERY_FLAG) };
   }
 
   /**
